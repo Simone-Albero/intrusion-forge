@@ -1,0 +1,8 @@
+name: tabular_reconstruction_loss
+
+params:
+  reduction: mean
+  numerical_sigma: 1.0
+  categorical_sigma: 1.0
+  learnable_weight: True
+  save_path: ${path.models}/loss_weights.pt

@@ -1,0 +1,17 @@
+# @package _global_
+defaults:
+  - override /model: tabular_classifier
+  - override /loss: classification
+  - override /loops: default
+  - override /optimizer: adamw
+  - override /scheduler: one_cycle
+
+model:
+  args:
+    # num_classes: 10
+    num_classes: 11
+
+name: supervised_bg
+ignore_classes: [0]  # Ignore 'Benign' class during training
+
+

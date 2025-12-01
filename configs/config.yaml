@@ -1,0 +1,25 @@
+defaults:
+  - data: cic_2018_v2
+  - loops: default
+  - model: tabular_classifier
+  - loss: classification
+  - optimizer: adamw
+  - scheduler: one_cycle
+  - _self_
+  - experiment: supervised
+  - path: default
+
+seed: 42
+name: supervised_bg
+device: cpu
+
+n_samples: null  # Set to an integer to subsample the dataset for quicker experiments
+
+
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  job:
+    chdir: False

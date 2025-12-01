@@ -1,0 +1,27 @@
+training:
+  epochs: 10
+
+  dataloader:
+    batch_size: 1024
+    num_workers: 8
+    shuffle: true
+    pin_memory: false
+
+  early_stopping:
+    patience: 5
+    min_delta: 0.001
+
+validation:
+  dataloader:
+    batch_size: 1024
+    num_workers: 8
+    shuffle: false
+    pin_memory: false
+
+test:
+
+  dataloader:
+    batch_size: 2048
+    num_workers: 8
+    shuffle: false
+    pin_memory: false

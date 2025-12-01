@@ -1,0 +1,11 @@
+name: tabular_encoder
+
+params:
+  num_numerical_features: ${data.num_numerical}
+  num_categorical_features: ${data.num_categorical}
+  max_emb_dim: ${data.top_n_categories}
+
+  # Architecture
+  hidden_dims: [128, 64]
+  dropout: 0.1
+  out_features: 32

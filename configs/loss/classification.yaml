@@ -1,0 +1,6 @@
+name: classification_loss
+
+params:
+  reduction: mean
+  ignore_index: -1
+  label_smoothing: 0.0

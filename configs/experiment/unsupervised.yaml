@@ -1,0 +1,12 @@
+# @package _global_
+defaults:
+  - override /model: tabular_autoencoder
+  - override /loss: reconstruction
+  - override /loops: default
+  - override /optimizer: adamw
+  - override /scheduler: one_cycle
+
+name: unsupervised
+
+global_step: 1  # Global step counter for logging
+noise_fraction: 0.1  # Fraction of noise to add to the training data
