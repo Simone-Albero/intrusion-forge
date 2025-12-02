@@ -149,7 +149,7 @@ def train(
     """Train the model with validation and checkpointing."""
     tb_logger = TensorboardLogger(log_dir=log_dir)
 
-    trainer = setup_trainer(model, loss_fn, optimizer, scheduler, device, max_grad_norm)
+    trainer = setup_trainer(model, loss_fn, optimizer, device, scheduler, max_grad_norm)
     validator = setup_validator(model, loss_fn, device)
     attach_early_stopping_and_checkpointing(
         trainer, validator, model, patience, min_delta, checkpoint_dir

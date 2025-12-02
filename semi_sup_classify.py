@@ -180,6 +180,9 @@ def train(
         val_loss = validator.state.metrics["loss"]
         logger.info(f"Epoch [{engine.state.epoch}] Val Loss: {val_loss:.6f}")
 
+        # Plot latent space visualization for each epoch
+        # Compute and log clustering metrics over the latent space (sparsity, separability, etc.)
+
     try:
         trainer.run(train_loader, max_epochs=max_epochs)
     finally:
