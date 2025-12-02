@@ -1,6 +1,7 @@
-from typing import Literal, Optional
+from typing import Tuple
 from pathlib import Path
 import pickle
+import logging
 
 import pandas as pd
 
@@ -34,3 +35,36 @@ def save_df(
             pickle.dump(df, f)
     else:
         raise ValueError(f"Unsupported file extension: {ext}")
+
+
+logger = logging.getLogger(__name__)
+
+
+def load_data_splits(
+    base_path: Path, file_base: str, ext: str
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Load train, validation, and test dataframes.
+
+    Args:
+        base_path: Path to the directory containing data files
+        file_base: Base name of the data files
+        ext: File extension
+
+    Returns:
+        Tuple of (train_df, val_df, test_df)
+
+    Raises:
+        FileNotFoundError: If data files are not found
+        Exception: For other loading errors
+    """
+    try:
+        train_df = load_df(base_path / f"{file_base}_train.{ext}")
+        val_df = load_df(base_path / f"{file_base}_val.{ext}")
+        test_df = load_df(base_path / f"{file_base}_test.{ext}")
+        return train_df, val_df, test_df
+    except FileNotFoundError as e:
+        logger.error(f"Data file not found: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Error loading data files: {e}")
+        raise

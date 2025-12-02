@@ -1,4 +1,4 @@
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple
 from pathlib import Path
 import logging
 import sys
@@ -8,87 +8,82 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from ignite.engine import Engine, Events
-from ignite.handlers import EarlyStopping, ModelCheckpoint
-from ignite.metrics import Average, Accuracy, Precision, Recall, ConfusionMatrix
-from ignite.handlers.tensorboard_logger import *
-
-from src.data.io import load_df
+from ignite.metrics import Accuracy, Precision, Recall, ConfusionMatrix
+from ignite.handlers.tensorboard_logger import TensorboardLogger
 
 from src.common.config import load_config
 from src.common.logging import setup_logger
 
-from src.torch.dataset import MixedTabularDataset
-from src.torch.batch import default_collate
+from src.data.io import load_data_splits
+
+from src.torch.data.loaders import create_dataset, create_dataloader
+from src.torch.module.checkpoint import load_best_checkpoint
 from src.torch.model import ModelFactory
 from src.torch.loss import LossFactory
-from src.torch.engine import train_step, eval_step, test_step, filter_output
+from src.torch.engine import test_step
+
+from src.ignite.setup import (
+    setup_trainer,
+    setup_validator,
+    attach_early_stopping_and_checkpointing,
+    attach_tensorboard_logging,
+)
 
 from src.ml.projection import tsne_projection, subsample_data_and_labels
 
 from src.plot.array import confusion_matrix_to_plot, vectors_plot
-from src.plot.dict import dict_to_bar_plot, dict_to_table
+from src.plot.dict import dict_to_bar_plot
 
 setup_logger()
 logger = logging.getLogger(__name__)
 
+# Constants
+EPSILON = 1e-8
+VISUALIZATION_SAMPLES = 3000
+
 
 def prepare_loader(cfg) -> Tuple[DataLoader, DataLoader, DataLoader]:
+    """Prepare train, validation, and test data loaders."""
     logger.info("Preparing data for PyTorch...")
 
     base_path = Path(cfg.path.processed_data)
-    file_base = f"{cfg.data.file_name}"
-    ext = cfg.data.extension
-
-    train_df = load_df(base_path / f"{file_base}_train.{ext}")
-    val_df = load_df(base_path / f"{file_base}_val.{ext}")
-    test_df = load_df(base_path / f"{file_base}_test.{ext}")
+    train_df, val_df, test_df = load_data_splits(
+        base_path, cfg.data.file_name, cfg.data.extension
+    )
+    test_df = test_df[
+        test_df[cfg.data.label_col] != cfg.data.benign_tag
+    ]  # Ever exclude benign samples from test set
 
     num_cols = list(cfg.data.num_cols)
     cat_cols = list(cfg.data.cat_cols)
-    label_col = "multi_" + cfg.data.label_col
+    label_col = f"multi_{cfg.data.label_col}"
 
-    train_dataset = MixedTabularDataset(
-        train_df,
-        num_cols=num_cols,
-        cat_cols=cat_cols,
-        label_col=label_col,
-    )
-    val_dataset = MixedTabularDataset(
-        val_df,
-        num_cols=num_cols,
-        cat_cols=cat_cols,
-        label_col=label_col,
-    )
-    test_dataset = MixedTabularDataset(
-        test_df,
-        num_cols=num_cols,
-        cat_cols=cat_cols,
-        label_col=label_col,
-    )
+    # Create datasets
+    train_dataset = create_dataset(train_df, num_cols, cat_cols, label_col)
+    val_dataset = create_dataset(val_df, num_cols, cat_cols, label_col)
+    test_dataset = create_dataset(test_df, num_cols, cat_cols, label_col)
 
-    train_loader = DataLoader(
+    # Create dataloaders
+    train_loader = create_dataloader(
         train_dataset,
-        batch_size=cfg.loops.training.dataloader.batch_size,
+        cfg.loops.training.dataloader.batch_size,
         shuffle=True,
         num_workers=cfg.loops.training.dataloader.num_workers,
         pin_memory=cfg.loops.training.dataloader.pin_memory,
-        collate_fn=default_collate,
     )
-    val_loader = DataLoader(
+    val_loader = create_dataloader(
         val_dataset,
-        batch_size=cfg.loops.validation.dataloader.batch_size,
+        cfg.loops.validation.dataloader.batch_size,
         shuffle=False,
         num_workers=cfg.loops.validation.dataloader.num_workers,
         pin_memory=cfg.loops.validation.dataloader.pin_memory,
-        collate_fn=default_collate,
     )
-    test_loader = DataLoader(
+    test_loader = create_dataloader(
         test_dataset,
-        batch_size=cfg.loops.test.dataloader.batch_size,
+        cfg.loops.test.dataloader.batch_size,
         shuffle=False,
         num_workers=cfg.loops.test.dataloader.num_workers,
         pin_memory=cfg.loops.test.dataloader.pin_memory,
-        collate_fn=default_collate,
     )
 
     logger.info("Data preparation for PyTorch completed.")
@@ -144,50 +139,24 @@ def train(
     optimizer: torch.optim.Optimizer,
     scheduler: Optional[torch.optim.lr_scheduler._LRScheduler],
     device: torch.device,
-    max_grad_norm: float = 1.0,
+    patience: int,
+    min_delta: float,
+    log_dir: Path,
+    checkpoint_dir: Path,
     max_epochs: int = 50,
-    checkpoint_dir: Path = Path("./checkpoints"),
+    max_grad_norm: float = 1.0,
 ) -> None:
-    tb_logger = TensorboardLogger(log_dir=cfg.path.logs)
+    """Train the model with validation and checkpointing."""
+    tb_logger = TensorboardLogger(log_dir=log_dir)
 
-    trainer = Engine(train_step)
-    trainer.state.model = model
-    trainer.state.loss_fn = loss_fn
-    trainer.state.optimizer = optimizer
-    trainer.state.scheduler = scheduler
-    trainer.state.device = device
-    trainer.state.max_grad_norm = max_grad_norm
-
-    # Attach metrics to the trainer
-    Average(output_transform=lambda x: x["loss"]).attach(trainer, "loss")
-
-    validator = Engine(eval_step)
-    validator.state.model = model
-    validator.state.loss_fn = loss_fn
-    validator.state.device = device
-
-    # Attach metrics to the validator
-    Average(output_transform=lambda x: x["loss"]).attach(validator, "loss")
-
-    early_stopping_handler = EarlyStopping(
-        patience=cfg.loops.training.early_stopping.patience,
-        min_delta=cfg.loops.training.early_stopping.min_delta,
-        score_function=lambda engine: -engine.state.metrics["loss"],
-        trainer=trainer,
+    trainer = setup_trainer(model, loss_fn, optimizer, scheduler, device, max_grad_norm)
+    validator = setup_validator(model, loss_fn, device)
+    attach_early_stopping_and_checkpointing(
+        trainer, validator, model, patience, min_delta, checkpoint_dir
     )
-    validator.add_event_handler(Events.COMPLETED, early_stopping_handler)
-
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    best_model_handler = ModelCheckpoint(
-        dirname=checkpoint_dir,
-        filename_prefix="best",
-        score_function=lambda engine: -engine.state.metrics["loss"],
-        score_name="val_loss",
-        n_saved=1,
-        global_step_transform=lambda engine, event_name: trainer.state.epoch,
-        require_empty=False,
+    attach_tensorboard_logging(
+        trainer, validator, model, optimizer, tb_logger, log_weights=True
     )
-    validator.add_event_handler(Events.COMPLETED, best_model_handler, {"model": model})
 
     @trainer.on(Events.EPOCH_COMPLETED)
     def run_eval(engine):
@@ -197,38 +166,140 @@ def train(
         val_loss = validator.state.metrics["loss"]
         logger.info(f"Epoch [{engine.state.epoch}] Val Loss: {val_loss:.6f}")
 
-    tb_logger.attach_output_handler(
-        trainer,
-        event_name=Events.ITERATION_COMPLETED,
-        tag="training",
-        output_transform=lambda x: {"loss": x["loss"], "grad_norm": x["grad_norm"]},
+    try:
+        trainer.run(train_loader, max_epochs=max_epochs)
+    finally:
+        tb_logger.close()
+
+
+def _setup_tester(model: nn.Module, device: torch.device, num_classes: int) -> Engine:
+    """Setup and configure the test engine with metrics."""
+    tester = Engine(test_step)
+    tester.state.model = model
+    tester.state.device = device
+
+    prepare_output = lambda x: (x["output"]["logits"], x["y_true"])
+
+    Accuracy(output_transform=prepare_output).attach(tester, "accuracy")
+
+    Precision(average=True, output_transform=prepare_output).attach(
+        tester, "precision_macro"
+    )
+    Recall(average=True, output_transform=prepare_output).attach(tester, "recall_macro")
+
+    Precision(average=False, output_transform=prepare_output).attach(
+        tester, "precision_per_class"
+    )
+    Recall(average=False, output_transform=prepare_output).attach(
+        tester, "recall_per_class"
     )
 
-    tb_logger.attach_output_handler(
-        validator,
-        event_name=Events.COMPLETED,
-        tag="validation",
-        metric_names=["loss"],
-        global_step_transform=global_step_from_engine(trainer),
+    ConfusionMatrix(num_classes=num_classes, output_transform=prepare_output).attach(
+        tester, "confusion_matrix"
     )
 
-    tb_logger.attach(
-        trainer,
-        log_handler=WeightsHistHandler(model),
-        event_name=Events.EPOCH_COMPLETED,
+    return tester
+
+
+def _compute_f1_scores(precision, recall):
+    """Compute F1 scores from precision and recall."""
+    return (2 * precision * recall) / (precision + recall + EPSILON)
+
+
+def _log_test_metrics(metrics: dict) -> Tuple:
+    """Log test metrics and compute F1 scores."""
+    accuracy = metrics["accuracy"]
+    precision_macro = metrics["precision_macro"]
+    recall_macro = metrics["recall_macro"]
+    precision_per_class = metrics["precision_per_class"]
+    recall_per_class = metrics["recall_per_class"]
+    confusion_matrix = metrics["confusion_matrix"]
+
+    f1_macro = _compute_f1_scores(precision_macro, recall_macro)
+    f1_per_class = _compute_f1_scores(precision_per_class, recall_per_class)
+
+    logger.info("Test Results:")
+    logger.info(f"Test Accuracy: {accuracy:.4f}")
+    logger.info(f"Test Precision (Macro): {precision_macro:.4f}")
+    logger.info(f"Test Recall (Macro): {recall_macro:.4f}")
+    logger.info(f"Test F1 Score (Macro): {f1_macro:.4f}")
+    logger.info(f"Test Precision (Per Class): {precision_per_class}")
+    logger.info(f"Test Recall (Per Class): {recall_per_class}")
+    logger.info(f"Test F1 Score (Per Class): {f1_per_class}")
+    logger.info(f"Test Confusion Matrix:\n{confusion_matrix}")
+
+    return (
+        accuracy,
+        precision_macro,
+        recall_macro,
+        f1_macro,
+        f1_per_class,
+        confusion_matrix,
     )
 
-    tb_logger.attach(
-        trainer, log_handler=GradsHistHandler(model), event_name=Events.EPOCH_COMPLETED
+
+def _prepare_visualization(
+    all_z: list, all_labels: list
+) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    """Prepare latent space visualization using t-SNE."""
+    try:
+        z_array = np.vstack(all_z)
+        labels_array = np.concatenate(all_labels)
+
+        subsampled_z, subsampled_labels = subsample_data_and_labels(
+            z_array,
+            labels_array,
+            n_samples=min(VISUALIZATION_SAMPLES, len(labels_array)),
+            stratify=True,
+        )
+        projected_z = tsne_projection(subsampled_z)
+        return projected_z, subsampled_labels
+    except Exception as e:
+        logger.warning(f"Error during visualization: {e}")
+        return None, None
+
+
+def _log_to_tensorboard(
+    tb_logger: TensorboardLogger,
+    metrics: dict,
+    f1_macro: float,
+    f1_per_class,
+    projected_z: Optional[np.ndarray],
+    subsampled_labels: Optional[np.ndarray],
+) -> None:
+    """Log metrics and visualizations to TensorBoard."""
+    accuracy = metrics["accuracy"]
+    precision_macro = metrics["precision_macro"]
+    recall_macro = metrics["recall_macro"]
+    confusion_matrix = metrics["confusion_matrix"]
+
+    global_metrics = {
+        "accuracy": accuracy,
+        "precision_macro": precision_macro,
+        "recall_macro": recall_macro,
+        "f1_macro": f1_macro,
+    }
+
+    f1_per_class_dict = {f"f1_{i}": f1.item() for i, f1 in enumerate(f1_per_class)}
+
+    # Plot confusion matrix and metrics
+    cm_figure = confusion_matrix_to_plot(
+        cm=confusion_matrix.cpu().numpy(),
+        title="Test Confusion Matrix",
+        normalize="true",
+    )
+    tb_logger.writer.add_figure("test/confusion_matrix", cm_figure, 0)
+    tb_logger.writer.add_figure(
+        "test/global_metrics", dict_to_bar_plot(global_metrics), 0
+    )
+    tb_logger.writer.add_figure(
+        "test/f1_per_class", dict_to_bar_plot(f1_per_class_dict), 0
     )
 
-    tb_logger.attach(
-        trainer,
-        log_handler=OptimizerParamsHandler(optimizer, param_name="lr"),
-        event_name=Events.ITERATION_COMPLETED,
-    )
-
-    trainer.run(train_loader, max_epochs=max_epochs)
+    # Plot latent space if available
+    if projected_z is not None and subsampled_labels is not None:
+        latent_figure = vectors_plot(projected_z, subsampled_labels)
+        tb_logger.writer.add_figure("test/latent_space_2d", latent_figure, 0)
 
 
 def test(
@@ -237,45 +308,10 @@ def test(
     device: torch.device,
     log_dir: Path,
     num_classes: int,
-    ignore_classes: Optional[List[int]] = None,
 ) -> None:
+    """Test the model and log results to TensorBoard."""
     tb_logger = TensorboardLogger(log_dir=log_dir)
-
-    tester = Engine(test_step)
-    tester.state.model = model
-    tester.state.device = device
-
-    # Attach classification metrics
-    filtered_transform = lambda x: filter_output(
-        x["output"]["logits"], x["y_true"], ignore_classes
-    )
-
-    Accuracy(output_transform=filtered_transform).attach(tester, "accuracy")
-
-    Precision(
-        average=True,
-        output_transform=filtered_transform,
-    ).attach(tester, "precision_macro")
-
-    Recall(
-        average=True,
-        output_transform=filtered_transform,
-    ).attach(tester, "recall_macro")
-
-    Precision(
-        average=False,
-        output_transform=filtered_transform,
-    ).attach(tester, "precision_per_class")
-
-    Recall(
-        average=False,
-        output_transform=filtered_transform,
-    ).attach(tester, "recall_per_class")
-
-    ConfusionMatrix(
-        num_classes=num_classes,
-        output_transform=filtered_transform,
-    ).attach(tester, "confusion_matrix")
+    tester = _setup_tester(model, device, num_classes)
 
     all_z = []
     all_labels = []
@@ -283,71 +319,30 @@ def test(
     @tester.on(Events.ITERATION_COMPLETED)
     def store_outputs(engine):
         output = engine.state.output
-        all_z.append(output["output"]["z"].cpu().numpy())
-        all_labels.append(output["y_true"].cpu().numpy())
+        all_z.append(output["output"]["z"].detach().cpu().numpy())
+        all_labels.append(output["y_true"].detach().cpu().numpy())
 
     @tester.on(Events.COMPLETED)
     def log_results(engine):
-        metrics = engine.state.metrics
+        (
+            accuracy,
+            precision_macro,
+            recall_macro,
+            f1_macro,
+            f1_per_class,
+            confusion_matrix,
+        ) = _log_test_metrics(engine.state.metrics)
 
-        accuracy = metrics["accuracy"]
-        precision_macro = metrics["precision_macro"]
-        recall_macro = metrics["recall_macro"]
-        precision_per_class = metrics["precision_per_class"]
-        recall_per_class = metrics["recall_per_class"]
-        confusion_matrix = metrics["confusion_matrix"]
-        f1_macro = (2 * precision_macro * recall_macro) / (
-            precision_macro + recall_macro + 1e-8
+        projected_z, subsampled_labels = _prepare_visualization(all_z, all_labels)
+
+        _log_to_tensorboard(
+            tb_logger,
+            engine.state.metrics,
+            f1_macro,
+            f1_per_class,
+            projected_z,
+            subsampled_labels,
         )
-        f1_per_class = (2 * precision_per_class * recall_per_class) / (
-            precision_per_class + recall_per_class + 1e-8
-        )
-
-        logger.info("Test Results:")
-        logger.info(f"Test Accuracy: {accuracy:.4f}")
-        logger.info(f"Test Precision (Macro): {precision_macro:.4f}")
-        logger.info(f"Test Recall (Macro): {recall_macro:.4f}")
-        logger.info(f"Test F1 Score (Macro): {f1_macro:.4f}")
-        logger.info(f"Test Precision (Per Class): {precision_per_class}")
-        logger.info(f"Test Recall (Per Class): {recall_per_class}")
-        logger.info(f"Test F1 Score (Per Class): {f1_per_class}")
-        logger.info(f"Test Confusion Matrix:\n{confusion_matrix}")
-
-        # Subsample latent representations and labels for visualization
-        subsampled_z, subsampled_labels = subsample_data_and_labels(
-            np.vstack(all_z),
-            np.concatenate(all_labels),
-            n_samples=3000,
-            stratify=True,
-        )
-        projected_z = tsne_projection(subsampled_z)
-
-        global_metrics = {
-            "accuracy": accuracy,
-            "precision_macro": precision_macro,
-            "recall_macro": recall_macro,
-            "f1_macro": f1_macro,
-        }
-
-        f1_per_class_dict = {}
-        for i, f1 in enumerate(f1_per_class):
-            f1_per_class_dict[f"f1_{i}"] = f1.item()
-
-        cm_figure = confusion_matrix_to_plot(
-            cm=confusion_matrix.cpu().numpy(),
-            title="Test Confusion Matrix",
-            normalize="true",
-        )
-        tb_logger.writer.add_figure("test/confusion_matrix", cm_figure, 0)
-        tb_logger.writer.add_figure(
-            "test/global_metrics", dict_to_bar_plot(global_metrics), 0
-        )
-        tb_logger.writer.add_figure(
-            "test/f1_per_class", dict_to_bar_plot(f1_per_class_dict), 0
-        )
-
-        latent_figure = vectors_plot(projected_z, subsampled_labels)
-        tb_logger.writer.add_figure("test/latent_space_2d", latent_figure, 0)
 
         logger.info("Test results logged to TensorBoard.")
 
@@ -356,46 +351,52 @@ def test(
     tb_logger.close()
 
 
-if __name__ == "__main__":
+def main():
+    """Main training and testing pipeline."""
     cfg = load_config(
         config_path=Path(__file__).parent / "configs",
         config_name="config",
         overrides=sys.argv[1:],
     )
 
+    device = torch.device(cfg.device)
+    logger.info(f"Using device: {device}")
+
+    # Prepare data
     train_loader, val_loader, test_loader = prepare_loader(cfg)
+
+    # Setup model and training components
     model, loss_fn = create_model_and_loss(cfg)
     optimizer = create_optimizer(cfg, model, loss_fn)
     scheduler = create_scheduler(cfg, optimizer, train_loader)
 
     # Training
+    checkpoint_dir = Path(cfg.path.models)
     train(
-        train_loader,
-        val_loader,
-        model,
-        loss_fn,
-        optimizer,
-        scheduler,
-        device=torch.device(cfg.device),
-        checkpoint_dir=Path(cfg.path.models),
+        train_loader=train_loader,
+        val_loader=val_loader,
+        model=model,
+        loss_fn=loss_fn,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        device=device,
+        patience=cfg.loops.training.early_stopping.patience,
+        min_delta=cfg.loops.training.early_stopping.min_delta,
+        log_dir=Path(cfg.path.logs),
+        checkpoint_dir=checkpoint_dir,
         max_epochs=cfg.loops.training.epochs,
     )
 
-    # Load best model for testing
-    best_model_path = Path(cfg.path.models)
-    checkpoint_files = list(best_model_path.glob("best_model_*.pt"))
-    if checkpoint_files:
-        latest_checkpoint = max(checkpoint_files, key=lambda p: p.stat().st_mtime)
-        logger.info(f"Loading best model from {latest_checkpoint}")
-        checkpoint = torch.load(latest_checkpoint, map_location=cfg.device)
-        model.load_state_dict(checkpoint)
-
-    # Testing
+    # Load best model and test
+    load_best_checkpoint(checkpoint_dir, model, device)
     test(
         test_loader=test_loader,
         model=model,
-        device=torch.device(cfg.device),
+        device=device,
         log_dir=Path(cfg.path.logs),
         num_classes=cfg.model.params.num_classes,
-        ignore_classes=cfg.get("ignore_classes", None),
     )
+
+
+if __name__ == "__main__":
+    main()

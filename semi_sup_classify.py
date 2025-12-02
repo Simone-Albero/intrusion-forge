@@ -1,4 +1,4 @@
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple
 from pathlib import Path
 import logging
 import sys
@@ -8,114 +8,90 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from ignite.engine import Engine, Events
-from ignite.handlers import EarlyStopping, ModelCheckpoint
-from ignite.metrics import Average
-from ignite.handlers.tensorboard_logger import *
-from sklearn.metrics import roc_curve, auc, precision_recall_fscore_support
+from ignite.engine import Events
+from ignite.handlers.tensorboard_logger import TensorboardLogger
 
-from src.data.io import load_df
+from src.data.io import load_data_splits
 from src.data.preprocessing import subsample_df
 
 from src.common.config import load_config
 from src.common.logging import setup_logger
 
-from src.torch.dataset import MixedTabularDataset
-from src.torch.batch import default_collate
+from src.torch.data.loaders import create_dataset, create_dataloader
+from src.torch.module.checkpoint import load_best_checkpoint
 from src.torch.model import ModelFactory
 from src.torch.loss import LossFactory
-from src.torch.engine import train_step, eval_step, test_step, filter_output
+from src.torch.engine import test_step
 
-from src.ml.projection import tsne_projection, subsample_data_and_labels
-
-from src.plot.array import confusion_matrix_to_plot, vectors_plot
-from src.plot.dict import dict_to_bar_plot, dict_to_table
+from src.ignite.setup import (
+    setup_trainer,
+    setup_validator,
+    attach_early_stopping_and_checkpointing,
+    attach_tensorboard_logging,
+)
 
 setup_logger()
 logger = logging.getLogger(__name__)
+
+# Constants
+VISUALIZATION_SAMPLES = 3000
 
 
 def prepare_loader(
     cfg,
     is_unsupervised: bool = True,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
+    """Prepare train, validation, and test data loaders for semi-supervised learning."""
     logger.info("Preparing data for PyTorch...")
 
     base_path = Path(cfg.path.processed_data)
-    file_base = f"{cfg.data.file_name}"
-    ext = cfg.data.extension
-
-    train_df = load_df(base_path / f"{file_base}_train.{ext}")
-    train_df = (
-        train_df[train_df[cfg.data.label_col] != cfg.data.benign_tag]
-        if is_unsupervised
-        else train_df
+    train_df, val_df, test_df = load_data_splits(
+        base_path, cfg.data.file_name, cfg.data.extension
     )
 
-    train_df = (
-        subsample_df(
-            train_df,
-            n_samples=cfg.n_samples,
-            random_state=cfg.seed,
-            label_col=cfg.data.label_col,
-        )
-        if cfg.n_samples is not None and not is_unsupervised
-        else train_df
-    )
-
-    val_df = load_df(base_path / f"{file_base}_val.{ext}")
-    val_df = (
-        val_df[val_df[cfg.data.label_col] != cfg.data.benign_tag]
-        if is_unsupervised
-        else val_df
-    )
-    test_df = load_df(base_path / f"{file_base}_test.{ext}")
+    if is_unsupervised:
+        train_df = train_df[train_df[cfg.data.label_col] != cfg.data.benign_tag]
+        val_df = val_df[val_df[cfg.data.label_col] != cfg.data.benign_tag]
+    else:
+        # Subsample training data for fine-tuning if specified
+        if cfg.n_samples is not None:
+            train_df = subsample_df(
+                train_df,
+                n_samples=cfg.n_samples,
+                random_state=cfg.seed,
+                label_col=cfg.data.label_col,
+            )
 
     num_cols = list(cfg.data.num_cols)
     cat_cols = list(cfg.data.cat_cols)
+    label_col = cfg.data.label_col if not is_unsupervised else None
 
-    train_dataset = MixedTabularDataset(
-        train_df,
-        num_cols=num_cols,
-        cat_cols=cat_cols,
-        label_col=cfg.data.label_col if not is_unsupervised else None,
-    )
-    val_dataset = MixedTabularDataset(
-        val_df,
-        num_cols=num_cols,
-        cat_cols=cat_cols,
-        label_col=cfg.data.label_col if not is_unsupervised else None,
-    )
-    test_dataset = MixedTabularDataset(
-        test_df,
-        num_cols=num_cols,
-        cat_cols=cat_cols,
-        label_col=cfg.data.label_col if not is_unsupervised else None,
-    )
+    # Create datasets
+    train_dataset = create_dataset(train_df, num_cols, cat_cols, label_col)
+    val_dataset = create_dataset(val_df, num_cols, cat_cols, label_col)
+    test_dataset = create_dataset(test_df, num_cols, cat_cols, label_col)
 
-    train_loader = DataLoader(
+    # Create dataloaders
+    train_loader = create_dataloader(
         train_dataset,
-        batch_size=cfg.loops.training.dataloader.batch_size,
+        cfg.loops.training.dataloader.batch_size,
         shuffle=True,
         num_workers=cfg.loops.training.dataloader.num_workers,
         pin_memory=cfg.loops.training.dataloader.pin_memory,
-        collate_fn=default_collate,
     )
-    val_loader = DataLoader(
+    val_loader = create_dataloader(
         val_dataset,
-        batch_size=cfg.loops.validation.dataloader.batch_size,
+        cfg.loops.validation.dataloader.batch_size,
         shuffle=False,
         num_workers=cfg.loops.validation.dataloader.num_workers,
         pin_memory=cfg.loops.validation.dataloader.pin_memory,
-        collate_fn=default_collate,
     )
-    test_loader = DataLoader(
+    test_loader = create_dataloader(
         test_dataset,
-        batch_size=cfg.loops.test.dataloader.batch_size,
+        cfg.loops.test.dataloader.batch_size,
         shuffle=False,
         num_workers=cfg.loops.test.dataloader.num_workers,
         pin_memory=cfg.loops.test.dataloader.pin_memory,
-        collate_fn=default_collate,
     )
 
     logger.info("Data preparation for PyTorch completed.")
@@ -123,8 +99,13 @@ def prepare_loader(
 
 
 def create_model_and_loss(
-    model_name, model_params, loss_name, loss_params, device
+    model_name: str,
+    model_params: dict,
+    loss_name: str,
+    loss_params: dict,
+    device: torch.device,
 ) -> Tuple[nn.Module, nn.Module]:
+    """Create model and loss function."""
     logger.info("Creating model and loss function...")
 
     model = ModelFactory.create(model_name, model_params).to(device)
@@ -172,50 +153,24 @@ def train(
     optimizer: torch.optim.Optimizer,
     scheduler: Optional[torch.optim.lr_scheduler._LRScheduler],
     device: torch.device,
-    max_grad_norm: float = 1.0,
+    patience: int,
+    min_delta: float,
+    log_dir: Path,
+    checkpoint_dir: Path,
     max_epochs: int = 50,
-    checkpoint_dir: Path = Path("./checkpoints"),
+    max_grad_norm: float = 1.0,
 ) -> None:
-    tb_logger = TensorboardLogger(log_dir=cfg.path.logs)
+    """Train the model with validation and checkpointing."""
+    tb_logger = TensorboardLogger(log_dir=log_dir)
 
-    trainer = Engine(train_step)
-    trainer.state.model = model
-    trainer.state.loss_fn = loss_fn
-    trainer.state.optimizer = optimizer
-    trainer.state.scheduler = scheduler
-    trainer.state.device = device
-    trainer.state.max_grad_norm = max_grad_norm
-
-    # Attach metrics to the trainer
-    Average(output_transform=lambda x: x["loss"]).attach(trainer, "loss")
-
-    validator = Engine(eval_step)
-    validator.state.model = model
-    validator.state.loss_fn = loss_fn
-    validator.state.device = device
-
-    # Attach metrics to the validator
-    Average(output_transform=lambda x: x["loss"]).attach(validator, "loss")
-
-    early_stopping_handler = EarlyStopping(
-        patience=cfg.loops.training.early_stopping.patience,
-        min_delta=cfg.loops.training.early_stopping.min_delta,
-        score_function=lambda engine: -engine.state.metrics["loss"],
-        trainer=trainer,
+    trainer = setup_trainer(model, loss_fn, optimizer, device, scheduler, max_grad_norm)
+    validator = setup_validator(model, loss_fn, device)
+    attach_early_stopping_and_checkpointing(
+        trainer, validator, model, patience, min_delta, checkpoint_dir
     )
-    validator.add_event_handler(Events.COMPLETED, early_stopping_handler)
-
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    best_model_handler = ModelCheckpoint(
-        dirname=checkpoint_dir,
-        filename_prefix="best",
-        score_function=lambda engine: -engine.state.metrics["loss"],
-        score_name="val_loss",
-        n_saved=1,
-        global_step_transform=lambda engine, event_name: trainer.state.epoch,
-        require_empty=False,
+    attach_tensorboard_logging(
+        trainer, validator, model, optimizer, tb_logger, log_weights=False
     )
-    validator.add_event_handler(Events.COMPLETED, best_model_handler, {"model": model})
 
     @trainer.on(Events.EPOCH_COMPLETED)
     def run_eval(engine):
@@ -225,89 +180,94 @@ def train(
         val_loss = validator.state.metrics["loss"]
         logger.info(f"Epoch [{engine.state.epoch}] Val Loss: {val_loss:.6f}")
 
-    tb_logger.attach_output_handler(
-        trainer,
-        event_name=Events.ITERATION_COMPLETED,
-        tag="training",
-        output_transform=lambda x: {"loss": x["loss"], "grad_norm": x["grad_norm"]},
-    )
-
-    tb_logger.attach_output_handler(
-        validator,
-        event_name=Events.COMPLETED,
-        tag="validation",
-        metric_names=["loss"],
-        global_step_transform=global_step_from_engine(trainer),
-    )
-
-    tb_logger.attach(
-        trainer,
-        log_handler=OptimizerParamsHandler(optimizer, param_name="lr"),
-        event_name=Events.ITERATION_COMPLETED,
-    )
-
-    trainer.run(train_loader, max_epochs=max_epochs)
+    try:
+        trainer.run(train_loader, max_epochs=max_epochs)
+    finally:
+        tb_logger.close()
 
 
-if __name__ == "__main__":
+def main():
+    """Main training pipeline for semi-supervised learning (pretraining + fine-tuning)."""
     cfg = load_config(
         config_path=Path(__file__).parent / "configs",
         config_name="config",
         overrides=sys.argv[1:],
     )
 
+    device = torch.device(cfg.device)
+    logger.info(f"Using device: {device}")
+
+    # Phase 1: Unsupervised pretraining on malicious samples
+    logger.info("Starting unsupervised pretraining phase...")
     train_loader, val_loader, test_loader = prepare_loader(cfg, is_unsupervised=True)
-    autoencoder, loss_fn = create_model_and_loss(
+
+    autoencoder, pretrain_loss_fn = create_model_and_loss(
         cfg.pretraining.model.name,
         cfg.pretraining.model.params,
         cfg.pretraining.loss.name,
         cfg.pretraining.loss.params,
-        cfg.device,
+        device,
     )
-    optimizer = create_optimizer(cfg, autoencoder, loss_fn)
-    scheduler = create_scheduler(cfg, optimizer, train_loader)
 
-    # Training
+    pretrain_optimizer = create_optimizer(cfg, autoencoder, pretrain_loss_fn)
+    pretrain_scheduler = create_scheduler(cfg, pretrain_optimizer, train_loader)
+
+    pretrain_checkpoint_dir = Path(cfg.path.models) / "autoencoder"
     train(
-        train_loader,
-        val_loader,
-        autoencoder,
-        loss_fn,
-        optimizer,
-        scheduler,
-        device=torch.device(cfg.device),
-        checkpoint_dir=Path(cfg.path.models) / "autoencoder",
+        train_loader=train_loader,
+        val_loader=val_loader,
+        model=autoencoder,
+        loss_fn=pretrain_loss_fn,
+        optimizer=pretrain_optimizer,
+        scheduler=pretrain_scheduler,
+        device=device,
+        patience=cfg.loops.training.early_stopping.patience,
+        min_delta=cfg.loops.training.early_stopping.min_delta,
+        log_dir=Path(cfg.path.logs),
+        checkpoint_dir=pretrain_checkpoint_dir,
         max_epochs=cfg.loops.training.epochs,
     )
 
-    # Load best model for fine-tuning
-    best_model_path = Path(cfg.path.models) / "autoencoder"
-    checkpoint_files = list(best_model_path.glob("best_model_*.pt"))
-    if checkpoint_files:
-        latest_checkpoint = max(checkpoint_files, key=lambda p: p.stat().st_mtime)
-        logger.info(f"Loading best model from {latest_checkpoint}")
-        checkpoint = torch.load(latest_checkpoint, map_location=cfg.device)
-        autoencoder.load_state_dict(checkpoint)
+    # Load best pretrained autoencoder
+    load_best_checkpoint(pretrain_checkpoint_dir, autoencoder, device)
 
+    # Phase 2: Supervised fine-tuning on labeled data
+    logger.info("Starting supervised fine-tuning phase...")
     train_loader, val_loader, test_loader = prepare_loader(cfg, is_unsupervised=False)
-    model, loss_fn = create_model_and_loss(
+
+    classifier, finetune_loss_fn = create_model_and_loss(
         cfg.finetuning.model.name,
         cfg.finetuning.model.params,
         cfg.finetuning.loss.name,
         cfg.finetuning.loss.params,
-        torch.device(cfg.device),
+        device,
     )
 
-    model.encoder_module = autoencoder.encoder_module
+    # Transfer pretrained encoder to classifier
+    classifier.encoder_module = autoencoder.encoder_module
+    logger.info("Transferred pretrained encoder to classifier")
 
+    finetune_optimizer = create_optimizer(cfg, classifier, finetune_loss_fn)
+    finetune_scheduler = create_scheduler(cfg, finetune_optimizer, train_loader)
+
+    finetune_checkpoint_dir = Path(cfg.path.models) / "classifier"
     train(
-        train_loader,
-        val_loader,
-        model,
-        loss_fn,
-        optimizer,
-        scheduler,
-        device=torch.device(cfg.device),
-        checkpoint_dir=Path(cfg.path.models) / "classifier",
+        train_loader=train_loader,
+        val_loader=val_loader,
+        model=classifier,
+        loss_fn=finetune_loss_fn,
+        optimizer=finetune_optimizer,
+        scheduler=finetune_scheduler,
+        device=device,
+        patience=cfg.loops.training.early_stopping.patience,
+        min_delta=cfg.loops.training.early_stopping.min_delta,
+        log_dir=Path(cfg.path.logs),
+        checkpoint_dir=finetune_checkpoint_dir,
         max_epochs=cfg.loops.training.epochs,
     )
+
+    logger.info("Semi-supervised training completed successfully")
+
+
+if __name__ == "__main__":
+    main()

@@ -5,9 +5,9 @@ from torch.nn.utils import clip_grad_norm_
 
 from ignite.engine import Engine
 
-from src.torch.batch import Batch, ensure_batch
-from src.torch.model.base import BaseModel, ModelOutput
-from src.torch.loss.base import BaseLoss
+from .data.batch import Batch, ensure_batch
+from .model.base import BaseModel, ModelOutput
+from .loss.base import BaseLoss
 
 
 def _forward_and_loss(

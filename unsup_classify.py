@@ -1,4 +1,4 @@
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple
 from pathlib import Path
 import logging
 import sys
@@ -9,41 +9,50 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from ignite.engine import Engine, Events
-from ignite.handlers import EarlyStopping, ModelCheckpoint
-from ignite.metrics import Average
-from ignite.handlers.tensorboard_logger import *
+from ignite.handlers.tensorboard_logger import TensorboardLogger
 from sklearn.metrics import roc_curve, auc, precision_recall_fscore_support
 
-from src.data.io import load_df
+from src.data.io import load_data_splits
 
 from src.common.config import load_config
 from src.common.logging import setup_logger
 
-from src.torch.dataset import MixedTabularDataset
-from src.torch.batch import default_collate
+from src.torch.data.loaders import create_dataset, create_dataloader
+from src.torch.module.checkpoint import load_best_checkpoint
 from src.torch.model import ModelFactory
 from src.torch.loss import LossFactory
-from src.torch.engine import train_step, eval_step, test_step, filter_output
+from src.torch.engine import test_step
+
+from src.ignite.setup import (
+    setup_trainer,
+    setup_validator,
+    attach_early_stopping_and_checkpointing,
+    attach_tensorboard_logging,
+)
 
 from src.ml.projection import tsne_projection, subsample_data_and_labels
 
-from src.plot.array import confusion_matrix_to_plot, vectors_plot
-from src.plot.dict import dict_to_bar_plot, dict_to_table
+from src.plot.array import vectors_plot
+from src.plot.dict import dict_to_bar_plot
 
 setup_logger()
 logger = logging.getLogger(__name__)
+
+# Constants
+VISUALIZATION_SAMPLES = 3000
 
 
 def prepare_loader(
     cfg,
 ) -> Tuple[DataLoader, DataLoader, DataLoader, np.ndarray, np.ndarray]:
+    """Prepare train, validation, and test data loaders for unsupervised learning."""
     logger.info("Preparing data for PyTorch...")
 
     base_path = Path(cfg.path.processed_data)
-    file_base = f"{cfg.data.file_name}"
-    ext = cfg.data.extension
+    train_df, val_df, test_df = load_data_splits(
+        base_path, cfg.data.file_name, cfg.data.extension
+    )
 
-    train_df = load_df(base_path / f"{file_base}_train.{ext}")
     benign_train_df = train_df[train_df[cfg.data.label_col] == cfg.data.benign_tag]
 
     if cfg.noise_fraction > 0:
@@ -62,62 +71,46 @@ def prepare_loader(
     else:
         train_df = benign_train_df
 
-    val_df = load_df(base_path / f"{file_base}_val.{ext}")
+    # Filter validation data to benign samples only
     val_df = val_df[val_df[cfg.data.label_col] == cfg.data.benign_tag]
-    test_df = load_df(base_path / f"{file_base}_test.{ext}")
 
     num_cols = list(cfg.data.num_cols)
     cat_cols = list(cfg.data.cat_cols)
 
-    train_dataset = MixedTabularDataset(
-        train_df,
-        num_cols=num_cols,
-        cat_cols=cat_cols,
-    )
-    val_dataset = MixedTabularDataset(
-        val_df,
-        num_cols=num_cols,
-        cat_cols=cat_cols,
-    )
-    test_dataset = MixedTabularDataset(
-        test_df,
-        num_cols=num_cols,
-        cat_cols=cat_cols,
-    )
+    # Create datasets
+    train_dataset = create_dataset(train_df, num_cols, cat_cols)
+    val_dataset = create_dataset(val_df, num_cols, cat_cols)
+    test_dataset = create_dataset(test_df, num_cols, cat_cols)
 
-    train_loader = DataLoader(
+    # Create dataloaders
+    train_loader = create_dataloader(
         train_dataset,
-        batch_size=cfg.loops.training.dataloader.batch_size,
+        cfg.loops.training.dataloader.batch_size,
         shuffle=True,
         num_workers=cfg.loops.training.dataloader.num_workers,
         pin_memory=cfg.loops.training.dataloader.pin_memory,
-        collate_fn=default_collate,
     )
-    val_loader = DataLoader(
+    val_loader = create_dataloader(
         val_dataset,
-        batch_size=cfg.loops.validation.dataloader.batch_size,
+        cfg.loops.validation.dataloader.batch_size,
         shuffle=False,
         num_workers=cfg.loops.validation.dataloader.num_workers,
         pin_memory=cfg.loops.validation.dataloader.pin_memory,
-        collate_fn=default_collate,
     )
-    test_loader = DataLoader(
+    test_loader = create_dataloader(
         test_dataset,
-        batch_size=cfg.loops.test.dataloader.batch_size,
+        cfg.loops.test.dataloader.batch_size,
         shuffle=False,
         num_workers=cfg.loops.test.dataloader.num_workers,
         pin_memory=cfg.loops.test.dataloader.pin_memory,
-        collate_fn=default_collate,
     )
 
+    # Extract test labels
+    bin_test_labels = test_df[f"bin_{cfg.data.label_col}"].values
+    multi_test_labels = test_df[f"multi_{cfg.data.label_col}"].values
+
     logger.info("Data preparation for PyTorch completed.")
-    return (
-        train_loader,
-        val_loader,
-        test_loader,
-        test_df["bin_" + cfg.data.label_col].values,
-        test_df["multi_" + cfg.data.label_col].values,
-    )
+    return train_loader, val_loader, test_loader, bin_test_labels, multi_test_labels
 
 
 def create_model_and_loss(cfg) -> Tuple[nn.Module, nn.Module]:
@@ -169,50 +162,24 @@ def train(
     optimizer: torch.optim.Optimizer,
     scheduler: Optional[torch.optim.lr_scheduler._LRScheduler],
     device: torch.device,
-    max_grad_norm: float = 1.0,
+    patience: int,
+    min_delta: float,
+    log_dir: Path,
+    checkpoint_dir: Path,
     max_epochs: int = 50,
-    checkpoint_dir: Path = Path("./checkpoints"),
+    max_grad_norm: float = 1.0,
 ) -> None:
-    tb_logger = TensorboardLogger(log_dir=cfg.path.logs)
+    """Train the model with validation and checkpointing."""
+    tb_logger = TensorboardLogger(log_dir=log_dir)
 
-    trainer = Engine(train_step)
-    trainer.state.model = model
-    trainer.state.loss_fn = loss_fn
-    trainer.state.optimizer = optimizer
-    trainer.state.scheduler = scheduler
-    trainer.state.device = device
-    trainer.state.max_grad_norm = max_grad_norm
-
-    # Attach metrics to the trainer
-    Average(output_transform=lambda x: x["loss"]).attach(trainer, "loss")
-
-    validator = Engine(eval_step)
-    validator.state.model = model
-    validator.state.loss_fn = loss_fn
-    validator.state.device = device
-
-    # Attach metrics to the validator
-    Average(output_transform=lambda x: x["loss"]).attach(validator, "loss")
-
-    early_stopping_handler = EarlyStopping(
-        patience=cfg.loops.training.early_stopping.patience,
-        min_delta=cfg.loops.training.early_stopping.min_delta,
-        score_function=lambda engine: -engine.state.metrics["loss"],
-        trainer=trainer,
+    trainer = setup_trainer(model, loss_fn, optimizer, device, scheduler, max_grad_norm)
+    validator = setup_validator(model, loss_fn, device)
+    attach_early_stopping_and_checkpointing(
+        trainer, validator, model, patience, min_delta, checkpoint_dir
     )
-    validator.add_event_handler(Events.COMPLETED, early_stopping_handler)
-
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    best_model_handler = ModelCheckpoint(
-        dirname=checkpoint_dir,
-        filename_prefix="best",
-        score_function=lambda engine: -engine.state.metrics["loss"],
-        score_name="val_loss",
-        n_saved=1,
-        global_step_transform=lambda engine, event_name: trainer.state.epoch,
-        require_empty=False,
+    attach_tensorboard_logging(
+        trainer, validator, model, optimizer, tb_logger, log_weights=False
     )
-    validator.add_event_handler(Events.COMPLETED, best_model_handler, {"model": model})
 
     @trainer.on(Events.EPOCH_COMPLETED)
     def run_eval(engine):
@@ -222,38 +189,98 @@ def train(
         val_loss = validator.state.metrics["loss"]
         logger.info(f"Epoch [{engine.state.epoch}] Val Loss: {val_loss:.6f}")
 
-    tb_logger.attach_output_handler(
-        trainer,
-        event_name=Events.ITERATION_COMPLETED,
-        tag="training",
-        output_transform=lambda x: {"loss": x["loss"], "grad_norm": x["grad_norm"]},
+    try:
+        trainer.run(train_loader, max_epochs=max_epochs)
+    finally:
+        tb_logger.close()
+
+
+def _setup_tester(model: nn.Module, device: torch.device, loss_fn: nn.Module) -> Engine:
+    """Setup and configure the test engine."""
+    tester = Engine(test_step)
+    tester.state.model = model
+    tester.state.device = device
+    loss_fn.reduction = "none"
+    tester.state.loss_fn = loss_fn
+    return tester
+
+
+def _compute_anomaly_metrics(
+    bin_labels: np.ndarray, predictions: np.ndarray
+) -> Tuple[float, float, float, float, float]:
+    """Compute anomaly detection metrics including optimal threshold."""
+    fpr, tpr, thresholds = roc_curve(bin_labels, predictions)
+    roc_auc = auc(fpr, tpr)
+    optimal_threshold = thresholds[np.argmax(tpr - fpr)]
+    predictions_binary = (predictions >= optimal_threshold).astype(int)
+
+    precision, recall, f1, _ = precision_recall_fscore_support(
+        bin_labels,
+        predictions_binary,
+        average="macro",
+        zero_division=0,
     )
 
-    tb_logger.attach_output_handler(
-        validator,
-        event_name=Events.COMPLETED,
-        tag="validation",
-        metric_names=["loss"],
-        global_step_transform=global_step_from_engine(trainer),
+    return precision, recall, f1, roc_auc, optimal_threshold
+
+
+def _log_test_metrics(
+    precision: float, recall: float, f1: float, roc_auc: float
+) -> None:
+    """Log test metrics to console."""
+    logger.info("Test Results:")
+    logger.info(f"Test Precision (Macro): {precision:.4f}")
+    logger.info(f"Test Recall (Macro): {recall:.4f}")
+    logger.info(f"Test F1 Score (Macro): {f1:.4f}")
+    logger.info(f"Test AUC-ROC: {roc_auc:.4f}")
+
+
+def _prepare_visualization(
+    all_z: list, multi_labels: np.ndarray
+) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    """Prepare latent space visualization using t-SNE."""
+    try:
+        z_array = np.vstack(all_z)
+        subsampled_z, subsampled_labels = subsample_data_and_labels(
+            z_array,
+            multi_labels,
+            n_samples=min(VISUALIZATION_SAMPLES, len(multi_labels)),
+            stratify=True,
+        )
+        projected_z = tsne_projection(subsampled_z)
+        return projected_z, subsampled_labels
+    except Exception as e:
+        logger.warning(f"Error during visualization: {e}")
+        return None, None
+
+
+def _log_to_tensorboard(
+    tb_logger: TensorboardLogger,
+    precision: float,
+    recall: float,
+    f1: float,
+    roc_auc: float,
+    projected_z: Optional[np.ndarray],
+    subsampled_labels: Optional[np.ndarray],
+    global_step: int,
+) -> None:
+    """Log metrics and visualizations to TensorBoard."""
+    global_metrics = {
+        "precision_macro": precision,
+        "recall_macro": recall,
+        "f1_macro": f1,
+        "auc_roc": roc_auc,
+    }
+
+    tb_logger.writer.add_figure(
+        "test/global_metrics", dict_to_bar_plot(global_metrics), global_step
     )
+    tb_logger.writer.add_scalar("test/auc_roc", roc_auc, global_step)
+    tb_logger.writer.add_scalar("test/f1_macro", f1, global_step)
 
-    # tb_logger.attach(
-    #     trainer,
-    #     log_handler=WeightsHistHandler(model),
-    #     event_name=Events.EPOCH_COMPLETED,
-    # )
-
-    # tb_logger.attach(
-    #     trainer, log_handler=GradsHistHandler(model), event_name=Events.EPOCH_COMPLETED
-    # )
-
-    tb_logger.attach(
-        trainer,
-        log_handler=OptimizerParamsHandler(optimizer, param_name="lr"),
-        event_name=Events.ITERATION_COMPLETED,
-    )
-
-    trainer.run(train_loader, max_epochs=max_epochs)
+    if projected_z is not None and subsampled_labels is not None:
+        latent_figure = vectors_plot(projected_z, subsampled_labels)
+        tb_logger.writer.add_figure("test/latent_space_2d", latent_figure, global_step)
 
 
 def test(
@@ -266,13 +293,9 @@ def test(
     multi_labels: np.ndarray,
     global_step: int = 0,
 ) -> None:
+    """Test the model for anomaly detection and log results to TensorBoard."""
     tb_logger = TensorboardLogger(log_dir=log_dir)
-
-    tester = Engine(test_step)
-    tester.state.model = model
-    tester.state.device = device
-    loss_fn.reduction = "none"
-    tester.state.loss_fn = loss_fn
+    tester = _setup_tester(model, device, loss_fn)
 
     all_z = []
     all_preds = []
@@ -280,55 +303,31 @@ def test(
     @tester.on(Events.ITERATION_COMPLETED)
     def store_outputs(engine):
         output = engine.state.output
-        all_z.append(output["output"]["z"].cpu().numpy())
-        all_preds.append(output["loss"].cpu().numpy())
+        all_z.append(output["output"]["z"].detach().cpu().numpy())
+        all_preds.append(output["loss"].detach().cpu().numpy())
 
     @tester.on(Events.COMPLETED)
     def log_results(engine):
-        fpr, tpr, thresholds = roc_curve(bin_labels, np.concatenate(all_preds))
-        roc_auc = auc(fpr, tpr)
-        optimal_threshold = thresholds[np.argmax(tpr - fpr)]
-        predictions_binary = (np.concatenate(all_preds) >= optimal_threshold).astype(
-            int
+        predictions = np.concatenate(all_preds)
+        precision, recall, f1, roc_auc, _ = _compute_anomaly_metrics(
+            bin_labels, predictions
         )
 
-        precision, recall, f1, _ = precision_recall_fscore_support(
-            bin_labels,
-            predictions_binary,
-            average="macro",
-            zero_division=0,
+        _log_test_metrics(precision, recall, f1, roc_auc)
+
+        projected_z, subsampled_labels = _prepare_visualization(all_z, multi_labels)
+
+        _log_to_tensorboard(
+            tb_logger,
+            precision,
+            recall,
+            f1,
+            roc_auc,
+            projected_z,
+            subsampled_labels,
+            global_step,
         )
 
-        logger.info("Test Results:")
-        logger.info(f"Test Precision (Macro): {precision:.4f}")
-        logger.info(f"Test Recall (Macro): {recall:.4f}")
-        logger.info(f"Test F1 Score (Macro): {f1:.4f}")
-        logger.info(f"Test AUC-ROC: {roc_auc:.4f}")
-
-        # Subsample latent representations and labels for visualization
-        subsampled_z, subsampled_labels = subsample_data_and_labels(
-            np.vstack(all_z),
-            multi_labels,
-            n_samples=3000,
-            stratify=True,
-        )
-        projected_z = tsne_projection(subsampled_z)
-
-        global_metrics = {
-            "precision_macro": precision,
-            "recall_macro": recall,
-            "f1_macro": f1,
-            "auc_roc": roc_auc,
-        }
-
-        tb_logger.writer.add_figure(
-            "test/global_metrics", dict_to_bar_plot(global_metrics), global_step
-        )
-        tb_logger.writer.add_scalar("test/auc_roc", roc_auc, global_step)
-        tb_logger.writer.add_scalar("test/f1_macro", f1, global_step)
-
-        latent_figure = vectors_plot(projected_z, subsampled_labels)
-        tb_logger.writer.add_figure("test/latent_space_2d", latent_figure, global_step)
         logger.info("Test results logged to TensorBoard.")
 
     logger.info("Running test evaluation...")
@@ -336,50 +335,57 @@ def test(
     tb_logger.close()
 
 
-if __name__ == "__main__":
+def main():
+    """Main training and testing pipeline for unsupervised anomaly detection."""
     cfg = load_config(
         config_path=Path(__file__).parent / "configs",
         config_name="config",
         overrides=sys.argv[1:],
     )
 
+    device = torch.device(cfg.device)
+    logger.info(f"Using device: {device}")
+
+    # Prepare data
     train_loader, val_loader, test_loader, bin_test_labels, multi_test_labels = (
         prepare_loader(cfg)
     )
+
+    # Setup model and training components
     model, loss_fn = create_model_and_loss(cfg)
     optimizer = create_optimizer(cfg, model, loss_fn)
     scheduler = create_scheduler(cfg, optimizer, train_loader)
 
     # Training
+    checkpoint_dir = Path(cfg.path.models)
     train(
-        train_loader,
-        val_loader,
-        model,
-        loss_fn,
-        optimizer,
-        scheduler,
-        device=torch.device(cfg.device),
-        checkpoint_dir=Path(cfg.path.models),
+        train_loader=train_loader,
+        val_loader=val_loader,
+        model=model,
+        loss_fn=loss_fn,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        device=device,
+        patience=cfg.loops.training.early_stopping.patience,
+        min_delta=cfg.loops.training.early_stopping.min_delta,
+        log_dir=Path(cfg.path.logs),
+        checkpoint_dir=checkpoint_dir,
         max_epochs=cfg.loops.training.epochs,
     )
 
-    # Load best model for testing
-    best_model_path = Path(cfg.path.models)
-    checkpoint_files = list(best_model_path.glob("best_model_*.pt"))
-    if checkpoint_files:
-        latest_checkpoint = max(checkpoint_files, key=lambda p: p.stat().st_mtime)
-        logger.info(f"Loading best model from {latest_checkpoint}")
-        checkpoint = torch.load(latest_checkpoint, map_location=cfg.device)
-        model.load_state_dict(checkpoint)
-
-    # Testing
+    # Load best model and test
+    load_best_checkpoint(checkpoint_dir, model, device)
     test(
         test_loader=test_loader,
         model=model,
-        device=torch.device(cfg.device),
+        device=device,
         log_dir=Path(cfg.path.logs),
         loss_fn=loss_fn,
         bin_labels=bin_test_labels,
         multi_labels=multi_test_labels,
         global_step=cfg.global_step,
     )
+
+
+if __name__ == "__main__":
+    main()
