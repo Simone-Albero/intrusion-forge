@@ -9,26 +9,27 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from ignite.engine import Events
+from ignite.metrics import Average
 from ignite.handlers.tensorboard_logger import TensorboardLogger
-
-from src.data.io import load_data_splits
-from src.data.preprocessing import subsample_df
 
 from src.common.config import load_config
 from src.common.logging import setup_logger
 
-from src.torch.data.loaders import create_dataset, create_dataloader
-from src.torch.module.checkpoint import load_best_checkpoint
-from src.torch.model import ModelFactory
-from src.torch.loss import LossFactory
-from src.torch.engine import test_step
+from src.data.io import load_data_splits
+from src.data.preprocessing import subsample_df
 
-from src.ignite.setup import (
-    setup_trainer,
-    setup_validator,
-    attach_early_stopping_and_checkpointing,
-    attach_tensorboard_logging,
+from src.torch.module.checkpoint import load_best_checkpoint
+from src.torch.engine import train_step, eval_step, test_step
+from src.torch.builders import (
+    create_dataloader,
+    create_dataset,
+    create_model,
+    create_loss,
+    create_optimizer,
+    create_scheduler,
 )
+
+from src.ignite.builders import EngineBuilder
 
 setup_logger()
 logger = logging.getLogger(__name__)
@@ -66,83 +67,25 @@ def prepare_loader(
     cat_cols = list(cfg.data.cat_cols)
     label_col = cfg.data.label_col if not is_unsupervised else None
 
-    # Create datasets
     train_dataset = create_dataset(train_df, num_cols, cat_cols, label_col)
     val_dataset = create_dataset(val_df, num_cols, cat_cols, label_col)
     test_dataset = create_dataset(test_df, num_cols, cat_cols, label_col)
 
-    # Create dataloaders
     train_loader = create_dataloader(
         train_dataset,
-        cfg.loops.training.dataloader.batch_size,
-        shuffle=True,
-        num_workers=cfg.loops.training.dataloader.num_workers,
-        pin_memory=cfg.loops.training.dataloader.pin_memory,
+        cfg.loops.training.dataloader,
     )
     val_loader = create_dataloader(
         val_dataset,
-        cfg.loops.validation.dataloader.batch_size,
-        shuffle=False,
-        num_workers=cfg.loops.validation.dataloader.num_workers,
-        pin_memory=cfg.loops.validation.dataloader.pin_memory,
+        cfg.loops.validation.dataloader,
     )
     test_loader = create_dataloader(
         test_dataset,
-        cfg.loops.test.dataloader.batch_size,
-        shuffle=False,
-        num_workers=cfg.loops.test.dataloader.num_workers,
-        pin_memory=cfg.loops.test.dataloader.pin_memory,
+        cfg.loops.test.dataloader,
     )
 
     logger.info("Data preparation for PyTorch completed.")
     return train_loader, val_loader, test_loader
-
-
-def create_model_and_loss(
-    model_name: str,
-    model_params: dict,
-    loss_name: str,
-    loss_params: dict,
-    device: torch.device,
-) -> Tuple[nn.Module, nn.Module]:
-    """Create model and loss function."""
-    logger.info("Creating model and loss function...")
-
-    model = ModelFactory.create(model_name, model_params).to(device)
-    loss_fn = LossFactory.create(loss_name, loss_params).to(device)
-    return model, loss_fn
-
-
-def create_optimizer(
-    cfg, model: nn.Module, loss_fn: Optional[nn.Module] = None
-) -> torch.optim.Optimizer:
-    logger.info("Creating optimizer...")
-
-    params = model.parameters()
-    if loss_fn is not None and len(list(loss_fn.parameters())) > 0:
-        params = list(model.parameters()) + list(loss_fn.parameters())
-
-    optimizer = torch.optim.__dict__[cfg.optimizer.name](params, **cfg.optimizer.params)
-
-    return optimizer
-
-
-def create_scheduler(
-    cfg, optimizer: torch.optim.Optimizer, dataloader: DataLoader
-) -> Optional[torch.optim.lr_scheduler._LRScheduler]:
-    logger.info("Creating learning rate scheduler...")
-
-    if cfg.scheduler is None:
-        return None
-
-    if cfg.scheduler.params.steps_per_epoch == "auto":
-        cfg.scheduler.params.steps_per_epoch = len(dataloader)
-
-    scheduler = torch.optim.lr_scheduler.__dict__[cfg.scheduler.name](
-        optimizer, **cfg.scheduler.params
-    )
-
-    return scheduler
 
 
 def train(
@@ -163,13 +106,50 @@ def train(
     """Train the model with validation and checkpointing."""
     tb_logger = TensorboardLogger(log_dir=log_dir)
 
-    trainer = setup_trainer(model, loss_fn, optimizer, device, scheduler, max_grad_norm)
-    validator = setup_validator(model, loss_fn, device)
-    attach_early_stopping_and_checkpointing(
-        trainer, validator, model, patience, min_delta, checkpoint_dir
+    trainer = (
+        EngineBuilder(train_step)
+        .with_state(
+            model=model,
+            loss_fn=loss_fn,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            device=device,
+            max_grad_norm=max_grad_norm,
+        )
+        .with_metric("loss", Average(output_transform=lambda x: x["loss"]))
+        .with_tensorboard(
+            tb_logger=tb_logger,
+            tag="training",
+            output_transform=lambda x: {"loss": x["loss"], "grad_norm": x["grad_norm"]},
+        )
+        .with_optimizer_logging(tb_logger=tb_logger, optimizer=optimizer)
+        .build()
     )
-    attach_tensorboard_logging(
-        trainer, validator, model, optimizer, tb_logger, log_weights=False
+
+    validator = (
+        EngineBuilder(eval_step)
+        .with_state(model=model, loss_fn=loss_fn, device=device)
+        .with_metric("loss", Average(output_transform=lambda x: x["loss"]))
+        .with_early_stopping(
+            trainer=trainer,
+            metric="loss",
+            patience=patience,
+            min_delta=min_delta,
+        )
+        .with_checkpointing(
+            trainer=trainer,
+            checkpoint_dir=checkpoint_dir,
+            objects_to_save={"model": model},
+            metric="loss",
+        )
+        .with_tensorboard(
+            tb_logger=tb_logger,
+            event=Events.COMPLETED,
+            tag="validation",
+            metric_names=["loss"],
+            trainer=trainer,
+        )
+        .build()
     )
 
     @trainer.on(Events.EPOCH_COMPLETED)
@@ -180,8 +160,8 @@ def train(
         val_loss = validator.state.metrics["loss"]
         logger.info(f"Epoch [{engine.state.epoch}] Val Loss: {val_loss:.6f}")
 
-        # Plot latent space visualization for each epoch
-        # Compute and log clustering metrics over the latent space (sparsity, separability, etc.)
+        # plot the latent space (only for unsupervised pretraining)
+        # compute latent space sparsity (only for unsupervised pretraining)
 
     try:
         trainer.run(train_loader, max_epochs=max_epochs)
@@ -204,16 +184,19 @@ def main():
     logger.info("Starting unsupervised pretraining phase...")
     train_loader, val_loader, test_loader = prepare_loader(cfg, is_unsupervised=True)
 
-    autoencoder, pretrain_loss_fn = create_model_and_loss(
-        cfg.pretraining.model.name,
-        cfg.pretraining.model.params,
-        cfg.pretraining.loss.name,
-        cfg.pretraining.loss.params,
-        device,
+    autoencoder = create_model(
+        cfg.pretraining.model.name, cfg.pretraining.model.params, device
+    )
+    pretrain_loss_fn = create_loss(
+        cfg.pretraining.loss.name, cfg.pretraining.loss.params, device
     )
 
-    pretrain_optimizer = create_optimizer(cfg, autoencoder, pretrain_loss_fn)
-    pretrain_scheduler = create_scheduler(cfg, pretrain_optimizer, train_loader)
+    pretrain_optimizer = create_optimizer(
+        cfg.optimizer.name, cfg.optimizer.params, autoencoder, pretrain_loss_fn
+    )
+    pretrain_scheduler = create_scheduler(
+        cfg.scheduler.name, cfg.scheduler.params, pretrain_optimizer, train_loader
+    )
 
     pretrain_checkpoint_dir = Path(cfg.path.models) / "autoencoder"
     train(
@@ -226,7 +209,7 @@ def main():
         device=device,
         patience=cfg.loops.training.early_stopping.patience,
         min_delta=cfg.loops.training.early_stopping.min_delta,
-        log_dir=Path(cfg.path.logs),
+        log_dir=Path(cfg.path.logs) / "pretraining",
         checkpoint_dir=pretrain_checkpoint_dir,
         max_epochs=cfg.loops.training.epochs,
     )
@@ -238,20 +221,23 @@ def main():
     logger.info("Starting supervised fine-tuning phase...")
     train_loader, val_loader, test_loader = prepare_loader(cfg, is_unsupervised=False)
 
-    classifier, finetune_loss_fn = create_model_and_loss(
-        cfg.finetuning.model.name,
-        cfg.finetuning.model.params,
-        cfg.finetuning.loss.name,
-        cfg.finetuning.loss.params,
-        device,
+    classifier = create_model(
+        cfg.finetuning.model.name, cfg.finetuning.model.params, device
+    )
+    finetune_loss_fn = create_loss(
+        cfg.finetuning.loss.name, cfg.finetuning.loss.params, device
     )
 
     # Transfer pretrained encoder to classifier
     classifier.encoder_module = autoencoder.encoder_module
     logger.info("Transferred pretrained encoder to classifier")
 
-    finetune_optimizer = create_optimizer(cfg, classifier, finetune_loss_fn)
-    finetune_scheduler = create_scheduler(cfg, finetune_optimizer, train_loader)
+    finetune_optimizer = create_optimizer(
+        cfg.optimizer.name, cfg.optimizer.params, classifier, finetune_loss_fn
+    )
+    finetune_scheduler = create_scheduler(
+        cfg.scheduler.name, cfg.scheduler.params, finetune_optimizer, train_loader
+    )
 
     finetune_checkpoint_dir = Path(cfg.path.models) / "classifier"
     train(
@@ -264,7 +250,7 @@ def main():
         device=device,
         patience=cfg.loops.training.early_stopping.patience,
         min_delta=cfg.loops.training.early_stopping.min_delta,
-        log_dir=Path(cfg.path.logs),
+        log_dir=Path(cfg.path.logs) / "finetuning",
         checkpoint_dir=finetune_checkpoint_dir,
         max_epochs=cfg.loops.training.epochs,
     )

@@ -6,18 +6,12 @@ from pathlib import Path
 import torch.nn as nn
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import _LRScheduler
-from ignite.engine import Engine, Events
-from ignite.handlers import EarlyStopping, ModelCheckpoint
+from ignite.engine import Engine
 from ignite.metrics import Average
-from ignite.handlers.tensorboard_logger import (
-    TensorboardLogger,
-    global_step_from_engine,
-    WeightsHistHandler,
-    GradsHistHandler,
-    OptimizerParamsHandler,
-)
+from ignite.handlers.tensorboard_logger import TensorboardLogger
 
 from src.torch.engine import train_step, eval_step
+from .builders import EngineBuilder
 
 
 def setup_trainer(
@@ -41,16 +35,19 @@ def setup_trainer(
     Returns:
         Configured training engine
     """
-    trainer = Engine(train_step)
-    trainer.state.model = model
-    trainer.state.loss_fn = loss_fn
-    trainer.state.optimizer = optimizer
-    trainer.state.scheduler = scheduler
-    trainer.state.device = device
-    trainer.state.max_grad_norm = max_grad_norm
-
-    Average(output_transform=lambda x: x["loss"]).attach(trainer, "loss")
-    return trainer
+    return (
+        EngineBuilder(train_step)
+        .with_state(
+            model=model,
+            loss_fn=loss_fn,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            device=device,
+            max_grad_norm=max_grad_norm,
+        )
+        .with_metric("loss", Average(output_transform=lambda x: x["loss"]))
+        .build()
+    )
 
 
 def setup_validator(
@@ -68,13 +65,12 @@ def setup_validator(
     Returns:
         Configured validation engine
     """
-    validator = Engine(eval_step)
-    validator.state.model = model
-    validator.state.loss_fn = loss_fn
-    validator.state.device = device
-
-    Average(output_transform=lambda x: x["loss"]).attach(validator, "loss")
-    return validator
+    return (
+        EngineBuilder(eval_step)
+        .with_state(model=model, loss_fn=loss_fn, device=device)
+        .with_metric("loss", Average(output_transform=lambda x: x["loss"]))
+        .build()
+    )
 
 
 def attach_early_stopping_and_checkpointing(
@@ -94,7 +90,15 @@ def attach_early_stopping_and_checkpointing(
         patience: Number of epochs to wait before early stopping
         min_delta: Minimum change in score to qualify as improvement
         checkpoint_dir: Directory to save checkpoints
+
+    Note:
+        This function is deprecated. Use EngineBuilder.with_early_stopping()
+        and .with_checkpointing() instead when building the validator.
     """
+    # Use builder methods to attach handlers to existing engine
+    from ignite.engine import Events
+    from ignite.handlers import EarlyStopping, ModelCheckpoint
+
     early_stopping_handler = EarlyStopping(
         patience=patience,
         min_delta=min_delta,
@@ -133,7 +137,20 @@ def attach_tensorboard_logging(
         optimizer: Optimizer to log
         tb_logger: TensorBoard logger
         log_weights: Whether to log weight and gradient histograms
+
+    Note:
+        This function is deprecated. Use EngineBuilder.with_tensorboard(),
+        .with_weights_logging(), .with_gradients_logging(), and
+        .with_optimizer_logging() instead when building engines.
     """
+    from ignite.engine import Events
+    from ignite.handlers.tensorboard_logger import (
+        global_step_from_engine,
+        WeightsHistHandler,
+        GradsHistHandler,
+        OptimizerParamsHandler,
+    )
+
     tb_logger.attach_output_handler(
         trainer,
         event_name=Events.ITERATION_COMPLETED,
