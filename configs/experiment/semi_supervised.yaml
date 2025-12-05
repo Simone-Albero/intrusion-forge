@@ -1,0 +1,18 @@
+# @package _global_
+defaults:
+  - /model@pretraining.model: tabular_autoencoder
+  - /loss@pretraining.loss: reconstruction
+  - /model@finetuning.model: tabular_classifier
+  - /loss@finetuning.loss: classification
+  - override /loops: default
+  - override /optimizer: adamw
+  - override /scheduler: one_cycle
+
+model:
+  args:
+    # num_classes: 10
+    num_classes: 11
+
+name: semi_supervised
+n_samples: 200
+

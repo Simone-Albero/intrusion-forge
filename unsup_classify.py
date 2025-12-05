@@ -31,7 +31,7 @@ from src.torch.builders import (
 
 from src.ignite.builders import EngineBuilder
 
-from src.ml.projection import tsne_projection, subsample_data_and_labels
+from src.ml.projection import tsne_projection, create_subsample_mask
 
 from src.plot.array import vectors_plot
 from src.plot.dict import dict_to_bar_plot
@@ -265,12 +265,14 @@ def test(
         }
 
         z_array = np.vstack(all_z)
-        subsampled_z, subsampled_labels = subsample_data_and_labels(
+        mask = create_subsample_mask(
             z_array,
             multi_labels,
             n_samples=min(VISUALIZATION_SAMPLES, len(multi_labels)),
             stratify=True,
         )
+        subsampled_z = z_array[mask]
+        subsampled_labels = multi_labels[mask]
         projected_z = tsne_projection(subsampled_z)
 
         latent_figure = vectors_plot(projected_z, subsampled_labels)

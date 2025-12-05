@@ -30,7 +30,7 @@ from src.torch.builders import (
 from src.ignite.builders import EngineBuilder
 from src.ignite.metrics import F1Score
 
-from src.ml.projection import tsne_projection, subsample_data_and_labels
+from src.ml.projection import tsne_projection, create_subsample_mask
 
 from src.plot.array import confusion_matrix_to_plot, vectors_plot
 from src.plot.dict import dict_to_bar_plot
@@ -216,7 +216,7 @@ def test(
     )
 
     @tester.on(Events.ITERATION_COMPLETED)
-    def store_outputs(engine):
+    def collect_latents(engine):
         """Store latent representations and labels for visualization."""
         output = engine.state.output
         all_z.append(output["output"]["z"].detach().cpu().numpy())
@@ -257,12 +257,14 @@ def test(
         z_array = np.vstack(all_z)
         labels_array = np.concatenate(all_labels)
 
-        subsampled_z, subsampled_labels = subsample_data_and_labels(
+        mask = create_subsample_mask(
             z_array,
             labels_array,
             n_samples=min(VISUALIZATION_SAMPLES, len(labels_array)),
             stratify=True,
         )
+        subsampled_z = z_array[mask]
+        subsampled_labels = labels_array[mask]
         projected_z = tsne_projection(subsampled_z)
 
         latent_figure = vectors_plot(projected_z, subsampled_labels)

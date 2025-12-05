@@ -89,6 +89,7 @@ def test_step(engine: Engine, batch: Batch) -> Dict[str, torch.Tensor]:
             loss = loss_fn(*model.for_loss(output, *batch.targets))
 
     return {
+        "input": torch.cat(batch.features, dim=0).detach().cpu().numpy(),
         "output": output,
         "loss": loss if loss_fn is not None else torch.tensor(0.0),
         "y_true": batch.targets[0] if len(batch.targets) == 1 else torch.tensor([]),

@@ -4,18 +4,23 @@ import numpy as np
 from sklearn.manifold import TSNE
 
 
-def subsample_data_and_labels(
-    data: np.ndarray,
+def create_subsample_mask(
     labels: np.ndarray,
     n_samples: Optional[int] = None,
     stratify: bool = True,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> np.ndarray:
     """
-    Subsample the data and labels to the specified number of samples.
-    If n_samples is None or greater than the dataset size, return the original data and labels.
+    Generate a boolean mask for subsampling data based on labels.
+    If n_samples is None or greater than the dataset size, return a mask with all True values.
+
+    Returns:
+        np.ndarray: Boolean mask indicating which samples to keep.
     """
-    if n_samples is None or n_samples >= data.shape[0]:
-        return data, labels
+    mask = np.zeros(len(labels), dtype=bool)
+
+    if n_samples is None or n_samples >= len(labels):
+        mask[:] = True
+        return mask
 
     if stratify:
         unique_labels, label_counts = np.unique(labels, return_counts=True)
@@ -32,7 +37,6 @@ def subsample_data_and_labels(
             samples_per_class[largest_class_idx] += diff
 
         # Sample from each class
-        indices = []
         for label, n_class_samples in zip(unique_labels, samples_per_class):
             class_indices = np.where(labels == label)[0]
             if n_class_samples > len(class_indices):
@@ -42,14 +46,12 @@ def subsample_data_and_labels(
                 selected = np.random.choice(
                     class_indices, size=n_class_samples, replace=False
                 )
-            indices.extend(selected)
-
-        indices = np.array(indices)
-        np.random.shuffle(indices)
-        return data[indices], labels[indices]
+            mask[selected] = True
     else:
-        indices = np.random.choice(data.shape[0], size=n_samples, replace=False)
-        return data[indices], labels[indices]
+        indices = np.random.choice(len(labels), size=n_samples, replace=False)
+        mask[indices] = True
+
+    return mask
 
 
 def tsne_projection(
