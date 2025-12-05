@@ -8,10 +8,10 @@ defaults:
   - override /optimizer: adamw
   - override /scheduler: one_cycle
 
-model:
-  args:
-    # num_classes: 10
-    num_classes: 11
+finetuning:
+  model:
+    params:
+      num_classes: 11  # 10 attack + 1 benign
 
 name: semi_supervised
 n_samples: 200

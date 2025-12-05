@@ -258,7 +258,6 @@ def test(
         labels_array = np.concatenate(all_labels)
 
         mask = create_subsample_mask(
-            z_array,
             labels_array,
             n_samples=min(VISUALIZATION_SAMPLES, len(labels_array)),
             stratify=True,

@@ -15,6 +15,14 @@ def trustworthiness(
     are also close in the original space. High trustworthiness means the embedded
     space doesn't introduce false neighbors.
 
+    Interpretation:
+        - Score range: [0, 1]
+        - 1.0 = Perfect: All nearby points in latent space were also nearby in original space
+        - >0.9 = Excellent: Latent space preserves local neighborhoods very well
+        - 0.7-0.9 = Good: Most local relationships are preserved
+        - 0.5-0.7 = Fair: Some false neighbors introduced
+        - <0.5 = Poor: Many false neighbors; latent space is misleading
+
     Args:
         X: Original high-dimensional data of shape (n_samples, n_features)
         X_embedded: Embedded low-dimensional data of shape (n_samples, n_components)
@@ -72,6 +80,14 @@ def continuity(
     are also close in the embedded space. High continuity means the embedded
     space doesn't tear apart neighborhoods.
 
+    Interpretation:
+        - Score range: [0, 1]
+        - 1.0 = Perfect: All original neighbors remain neighbors in latent space
+        - >0.9 = Excellent: Local structure is well preserved
+        - 0.7-0.9 = Good: Most neighborhoods stay intact
+        - 0.5-0.7 = Fair: Some neighborhoods are torn apart
+        - <0.5 = Poor: Original structure is heavily distorted
+
     Args:
         X: Original high-dimensional data of shape (n_samples, n_features)
         X_embedded: Embedded low-dimensional data of shape (n_samples, n_components)
@@ -128,6 +144,15 @@ def local_distance_consistency(
     Measures how well the relative distances between neighbors are preserved
     in the latent space. Returns the Spearman correlation between distances.
 
+    Interpretation:
+        - Score range: [-1, 1]
+        - >0.9 = Excellent: Distance ranking is almost perfectly preserved
+        - 0.7-0.9 = Good: Relative distances are well maintained
+        - 0.5-0.7 = Fair: Some distance relationships preserved
+        - 0.3-0.5 = Poor: Distance relationships are distorted
+        - <0.3 = Very Poor: Little correlation between original and latent distances
+        - Negative values indicate inverse relationships (very problematic)
+
     Args:
         X: Original high-dimensional data of shape (n_samples, n_features)
         X_embedded: Embedded low-dimensional data of shape (n_samples, n_components)
@@ -179,6 +204,17 @@ def reconstruction_latent_correlation(
 
     Ideally, points in dense regions of latent space should have better
     reconstruction (lower error). This metric measures this relationship.
+
+    Interpretation:
+        - Score range: [-1, 1] (returns negative of Pearson correlation)
+        - >0.5 = Excellent: Dense regions have significantly better reconstruction
+        - 0.3-0.5 = Good: Clear positive relationship between density and quality
+        - 0.1-0.3 = Fair: Weak correlation; some relationship exists
+        - -0.1-0.1 = Poor: No clear relationship between density and reconstruction
+        - <-0.1 = Very Poor: Dense regions have worse reconstruction (problematic)
+
+        High positive scores indicate the autoencoder has learned a meaningful
+        latent structure where dense regions represent well-learned patterns.
 
     Args:
         X_embedded: Embedded latent representations of shape (n_samples, n_components)

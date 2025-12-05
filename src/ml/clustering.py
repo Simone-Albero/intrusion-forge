@@ -24,7 +24,7 @@ def kmeans_grid_search(
 
     Args:
         X: Input data of shape (n_samples, n_features)
-        n_clusters_range: List of number of clusters to try. Default: [2, 3, 4, 5, 6, 7, 8, 9, 10]
+        n_clusters_range: List of number of clusters to try. Default: range(6, 32, 2)
         init_methods: List of initialization methods. Default: ['k-means++', 'random']
         n_init: Number of time the k-means algorithm will be run with different centroid seeds
         max_iter: Maximum number of iterations
@@ -36,7 +36,7 @@ def kmeans_grid_search(
         best_params: Dictionary containing best parameters and scores
     """
     if n_clusters_range is None:
-        n_clusters_range = [2, 3, 4, 5, 6, 7, 8, 9, 10]
+        n_clusters_range = list(range(6, 32, 2))
 
     if init_methods is None:
         init_methods = ["k-means++", "random"]

@@ -82,7 +82,7 @@ def prepare_loader(
 
     num_cols = list(cfg.data.num_cols)
     cat_cols = list(cfg.data.cat_cols)
-    label_col = cfg.data.label_col if not is_unsupervised else None
+    label_col = "multi_" + cfg.data.label_col if not is_unsupervised else None
 
     train_dataset = create_dataset(train_df, num_cols, cat_cols, label_col)
     val_dataset = create_dataset(val_df, num_cols, cat_cols, label_col)
@@ -170,6 +170,10 @@ def train(
         .build()
     )
 
+    all_inputs = []
+    all_z = []
+    all_recons_err = []
+
     if test_loader is not None:
         tester = (
             EngineBuilder(test_step)
@@ -177,18 +181,12 @@ def train(
             .build()
         )
 
-    all_inputs = []
-    all_z = []
-    all_recons_err = []
-    all_labels = []
-
-    @tester.on(Events.COMPLETED)
-    def collect_latents(engine):
-        output = engine.state.output
-        all_inputs.append(output["input"])
-        all_z.append(output["output"]["z"].detach().cpu().numpy())
-        all_recons_err.append(output["loss"].detach().cpu().numpy())
-        all_labels.append(output["y_true"].detach().cpu().numpy())
+        @tester.on(Events.ITERATION_COMPLETED)
+        def collect_latents(engine):
+            output = engine.state.output
+            all_inputs.append(output["input"].detach().cpu().numpy())
+            all_z.append(output["output"]["z"].detach().cpu().numpy())
+            all_recons_err.append(output["loss"].detach().cpu().numpy())
 
     @trainer.on(Events.EPOCH_COMPLETED)
     def run_eval(engine):
@@ -198,54 +196,52 @@ def train(
         val_loss = validator.state.metrics["loss"]
         logger.info(f"Epoch [{engine.state.epoch}] Val Loss: {val_loss:.6f}")
         if test_loader is not None:
+            all_inputs.clear()
+            all_z.clear()
+            all_recons_err.clear()
+
+            tester.state.loss_fn.reduction = "none"
             tester.run(test_loader)
 
             inputs_array = np.vstack(all_inputs)
             z_array = np.vstack(all_z)
-            recons_err_array = np.array(all_recons_err)
-            labels_array = np.concatenate(all_labels)
+            recons_err_array = np.concatenate(all_recons_err)
 
             mask = create_subsample_mask(
-                z_array,
-                labels_array,
-                n_samples=min(VISUALIZATION_SAMPLES, len(labels_array)),
-                stratify=True,
+                recons_err_array,
+                n_samples=min(VISUALIZATION_SAMPLES, len(recons_err_array)),
+                stratify=False,
             )
 
             subsampled_inputs = inputs_array[mask]
             subsampled_z = z_array[mask]
             subsampled_recons_err = recons_err_array[mask]
-            subsampled_labels = labels_array[mask]
-
-            projected_z = tsne_projection(subsampled_z)
-
-            latent_figure = vectors_plot(projected_z, subsampled_labels)
-            tb_logger.writer.add_figure(
-                "test/pretraining/latent_space_2d", latent_figure, engine.state.epoch
-            )
 
             # Compute latent quality metrics
+            logging.info("Computing latent quality metrics...")
             trust = trustworthiness(subsampled_inputs, subsampled_z)
             cont = continuity(subsampled_inputs, subsampled_z)
             ldc = local_distance_consistency(subsampled_inputs, subsampled_z)
             rlc = reconstruction_latent_correlation(subsampled_z, subsampled_recons_err)
 
             tb_logger.writer.add_scalar(
-                "test/pretraining/trustworthiness", trust, engine.state.epoch
+                "pretraining/trustworthiness", trust, engine.state.epoch
             )
             tb_logger.writer.add_scalar(
-                "test/pretraining/continuity", cont, engine.state.epoch
+                "pretraining/continuity", cont, engine.state.epoch
             )
             tb_logger.writer.add_scalar(
-                "test/pretraining/consistency",
+                "pretraining/consistency",
                 ldc,
                 engine.state.epoch,
             )
             tb_logger.writer.add_scalar(
-                "test/pretraining/reconstruction_correlation",
+                "pretraining/reconstruction_correlation",
                 rlc,
                 engine.state.epoch,
             )
+
+            tester.state.loss_fn.reduction = "mean"
 
     try:
         trainer.run(train_loader, max_epochs=max_epochs)
@@ -347,7 +343,6 @@ def test(
         labels_array = np.concatenate(all_labels)
 
         mask = create_subsample_mask(
-            z_array,
             labels_array,
             n_samples=min(VISUALIZATION_SAMPLES, len(labels_array)),
             stratify=True,
@@ -370,16 +365,23 @@ def test(
         hdbscan_cluster_measures = compute_cluster_quality_measures(
             subsampled_z, hdbscan_labels
         )
+        gt_cluster_measures = compute_cluster_quality_measures(
+            subsampled_z, subsampled_labels
+        )
 
         tb_logger.writer.add_figure(
             "test/kmeans_cluster_measures",
             dict_to_table(kmeans_cluster_measures),
             0,
         )
-
         tb_logger.writer.add_figure(
             "test/hdbscan_cluster_measures",
             dict_to_table(hdbscan_cluster_measures),
+            0,
+        )
+        tb_logger.writer.add_figure(
+            "test/ground_truth_cluster_measures",
+            dict_to_table(gt_cluster_measures),
             0,
         )
 

@@ -266,7 +266,6 @@ def test(
 
         z_array = np.vstack(all_z)
         mask = create_subsample_mask(
-            z_array,
             multi_labels,
             n_samples=min(VISUALIZATION_SAMPLES, len(multi_labels)),
             stratify=True,

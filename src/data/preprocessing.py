@@ -38,12 +38,13 @@ def subsample_df(
         return df.sample(n=n_samples, random_state=random_state)
     else:
         return (
-            df.groupby(label_col)
+            df.groupby(label_col, group_keys=False)
             .apply(
                 lambda x: x.sample(
                     n=int(n_samples / df[label_col].nunique()),
                     random_state=random_state,
-                )
+                ),
+                include_groups=False,
             )
             .reset_index(drop=True)
         )
