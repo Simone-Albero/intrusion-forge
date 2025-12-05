@@ -12,5 +12,5 @@ model:
     num_classes: 11
 
 name: supervised
-
+ignore_classes: [0]  # List of class indices to ignore during evaluation
 

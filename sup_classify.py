@@ -1,4 +1,4 @@
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 from pathlib import Path
 import logging
 import sys
@@ -17,7 +17,7 @@ from src.common.logging import setup_logger
 from src.data.io import load_data_splits
 
 from src.torch.module.checkpoint import load_best_checkpoint
-from src.torch.engine import train_step, eval_step, test_step
+from src.torch.engine import train_step, eval_step, test_step, ignore_classes
 from src.torch.builders import (
     create_dataloader,
     create_dataset,
@@ -51,9 +51,9 @@ def prepare_loader(cfg) -> Tuple[DataLoader, DataLoader, DataLoader]:
     train_df, val_df, test_df = load_data_splits(
         base_path, cfg.data.file_name, cfg.data.extension
     )
-    test_df = test_df[
-        test_df[cfg.data.label_col] != cfg.data.benign_tag
-    ]  # Ever exclude benign samples from test set
+    # test_df = test_df[
+    #     test_df[cfg.data.label_col] != cfg.data.benign_tag
+    # ]
 
     num_cols = list(cfg.data.num_cols)
     cat_cols = list(cfg.data.cat_cols)
@@ -167,6 +167,7 @@ def test(
     device: torch.device,
     log_dir: Path,
     num_classes: int,
+    ignore_classes: Optional[List[int]] = None,
 ) -> None:
     """Test the model and log results to TensorBoard."""
     logger.info("Running test evaluation...")
@@ -178,7 +179,9 @@ def test(
     all_labels = []
 
     # Setup output transform for metrics
-    prepare_output = lambda x: (x["output"]["logits"], x["y_true"])
+    prepare_output = lambda x: ignore_classes(
+        x["output"]["logits"], x["y_true"], ignore_classes
+    )
 
     tester = (
         EngineBuilder(test_step)
@@ -332,6 +335,7 @@ def main():
         device=device,
         log_dir=Path(cfg.path.logs),
         num_classes=cfg.model.params.num_classes,
+        ignore_classes=list(cfg.ignore_classes),
     )
 
 
