@@ -439,28 +439,23 @@ def test(
         )
         tb_logger.writer.add_scalar("test/metrics/f1_weighted", f1_weighted, run_id)
 
-        # Log figures with run-specific names
+        tb_logger.writer.add_figure(f"test/confusion_matrix", cm_figure, run_id)
         tb_logger.writer.add_figure(
-            f"test/confusion_matrix/run_{run_id}", cm_figure, run_id
-        )
-        tb_logger.writer.add_figure(
-            f"test/metrics_summary/run_{run_id}",
+            f"test/metrics_summary",
             dict_to_bar_plot(global_metrics),
             run_id,
         )
         tb_logger.writer.add_figure(
-            f"test/f1_per_class/run_{run_id}",
+            f"test/f1_per_class",
             dict_to_bar_plot(f1_per_class_dict),
             run_id,
         )
         tb_logger.writer.add_figure(
-            f"test/latent_space/ground_truth/run_{run_id}", latent_gt, run_id
+            f"test/latent_space/ground_truth", latent_gt, run_id
         )
+        tb_logger.writer.add_figure(f"test/latent_space/kmeans", latent_kmeans, run_id)
         tb_logger.writer.add_figure(
-            f"test/latent_space/kmeans/run_{run_id}", latent_kmeans, run_id
-        )
-        tb_logger.writer.add_figure(
-            f"test/latent_space/hdbscan/run_{run_id}", latent_hdbscan, run_id
+            f"test/latent_space/hdbscan", latent_hdbscan, run_id
         )
 
         # Log text summary
@@ -474,9 +469,7 @@ def test(
             f"Recall Weighted: {recall_weighted:.4f}\n"
             f"F1 Weighted: {f1_weighted:.4f}"
         )
-        tb_logger.writer.add_text(
-            f"test/run_summary/run_{run_id}", metrics_text, run_id
-        )
+        tb_logger.writer.add_text(f"test/run_summary", metrics_text, run_id)
 
         logger.info("Test results logged to TensorBoard.")
 

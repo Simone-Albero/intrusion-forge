@@ -288,21 +288,16 @@ def test(
         tb_logger.writer.add_scalar("test/metrics/f1_macro", f1, run_id)
         tb_logger.writer.add_scalar("test/metrics/precision_macro", precision, run_id)
         tb_logger.writer.add_scalar("test/metrics/recall_macro", recall, run_id)
-
-        # Log noise_fraction as a scalar to track the experimental parameter
         tb_logger.writer.add_scalar(
             "test/experiment/noise_fraction", noise_fraction, run_id
         )
 
-        # Log bar plot and latent space visualization
         tb_logger.writer.add_figure(
-            f"test/metrics_summary/run_{run_id}",
+            f"test/metrics_summary",
             dict_to_bar_plot(global_metrics),
             run_id,
         )
-        tb_logger.writer.add_figure(
-            f"test/latent_space/run_{run_id}", latent_figure, run_id
-        )
+        tb_logger.writer.add_figure(f"test/latent_space", latent_figure, run_id)
 
         # Log as text for easy reference
         metrics_text = (
@@ -313,9 +308,7 @@ def test(
             f"Precision Macro: {precision:.4f}\n"
             f"Recall Macro: {recall:.4f}"
         )
-        tb_logger.writer.add_text(
-            f"test/run_summary/run_{run_id}", metrics_text, run_id
-        )
+        tb_logger.writer.add_text(f"test/run_summary", metrics_text, run_id)
 
         logger.info("Test results logged to TensorBoard.")
 
