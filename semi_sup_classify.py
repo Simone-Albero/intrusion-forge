@@ -1,4 +1,4 @@
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple
 from pathlib import Path
 import logging
 import sys
@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from ignite.engine import Events
-from ignite.metrics import Accuracy, Precision, Recall, ConfusionMatrix, Average
+from ignite.metrics import Accuracy, ConfusionMatrix, Average
 from ignite.handlers.tensorboard_logger import TensorboardLogger
 
 from src.common.config import load_config
@@ -30,7 +30,7 @@ from src.torch.builders import (
 )
 
 from src.ignite.builders import EngineBuilder
-from src.ignite.metrics import F1Score
+from src.ignite.metrics import F1, Precision, Recall
 
 from src.ml.projection import tsne_projection, create_subsample_mask
 
@@ -274,25 +274,40 @@ def test(
         .with_state(model=model, device=device)
         .with_metric("accuracy", Accuracy(output_transform=prepare_output))
         .with_metric(
-            "precision_macro", Precision(average=True, output_transform=prepare_output)
+            "precision_macro",
+            Precision(average="macro", output_transform=prepare_output),
         )
         .with_metric(
-            "recall_macro", Recall(average=True, output_transform=prepare_output)
+            "recall_macro",
+            Recall(average="macro", output_transform=prepare_output),
+        )
+        .with_metric(
+            "precision_weighted",
+            Precision(average="weighted", output_transform=prepare_output),
+        )
+        .with_metric(
+            "recall_weighted",
+            Recall(average="weighted", output_transform=prepare_output),
         )
         .with_metric(
             "precision_per_class",
-            Precision(average=False, output_transform=prepare_output),
+            Precision(average=None, output_transform=prepare_output),
         )
         .with_metric(
-            "recall_per_class", Recall(average=False, output_transform=prepare_output)
+            "recall_per_class",
+            Recall(average=None, output_transform=prepare_output),
         )
         .with_metric(
             "f1_macro",
-            F1Score(average="macro", output_transform=prepare_output),
+            F1(average="macro", output_transform=prepare_output),
+        )
+        .with_metric(
+            "f1_weighted",
+            F1(average="weighted", output_transform=prepare_output),
         )
         .with_metric(
             "f1_per_class",
-            F1Score(average=None, output_transform=prepare_output),
+            F1(average=None, output_transform=prepare_output),
         )
         .with_metric(
             "confusion_matrix",
@@ -329,6 +344,9 @@ def test(
         precision_macro = metrics["precision_macro"]
         recall_macro = metrics["recall_macro"]
         f1_macro = metrics["f1_macro"]
+        precision_weighted = metrics["precision_weighted"]
+        recall_weighted = metrics["recall_weighted"]
+        f1_weighted = metrics["f1_weighted"]
         f1_per_class = metrics["f1_per_class"]
         confusion_matrix = metrics["confusion_matrix"]
 
@@ -337,6 +355,9 @@ def test(
             "precision_macro": precision_macro,
             "recall_macro": recall_macro,
             "f1_macro": f1_macro,
+            "precision_weighted": precision_weighted,
+            "recall_weighted": recall_weighted,
+            "f1_weighted": f1_weighted,
         }
         f1_per_class_dict = {f"f1_{i}": f1.item() for i, f1 in enumerate(f1_per_class)}
 
@@ -369,20 +390,6 @@ def test(
         gt_cluster_measures = compute_cluster_quality_measures(
             subsampled_z, subsampled_labels
         )
-
-        # Log clustering measures as scalars
-        for measure_name, measure_value in kmeans_cluster_measures.items():
-            tb_logger.writer.add_scalar(
-                f"test/clustering/kmeans/{measure_name}", measure_value, run_id
-            )
-        for measure_name, measure_value in hdbscan_cluster_measures.items():
-            tb_logger.writer.add_scalar(
-                f"test/clustering/hdbscan/{measure_name}", measure_value, run_id
-            )
-        for measure_name, measure_value in gt_cluster_measures.items():
-            tb_logger.writer.add_scalar(
-                f"test/clustering/ground_truth/{measure_name}", measure_value, run_id
-            )
 
         tb_logger.writer.add_figure(
             f"test/cluster_measures/kmeans/run_{run_id}",
@@ -419,10 +426,13 @@ def test(
         )
         tb_logger.writer.add_scalar("test/metrics/recall_macro", recall_macro, run_id)
         tb_logger.writer.add_scalar("test/metrics/f1_macro", f1_macro, run_id)
-
-        # Log per-class F1 scores
-        for i, f1 in enumerate(f1_per_class):
-            tb_logger.writer.add_scalar(f"test/metrics/f1_class_{i}", f1.item(), run_id)
+        tb_logger.writer.add_scalar(
+            "test/metrics/precision_weighted", precision_weighted, run_id
+        )
+        tb_logger.writer.add_scalar(
+            "test/metrics/recall_weighted", recall_weighted, run_id
+        )
+        tb_logger.writer.add_scalar("test/metrics/f1_weighted", f1_weighted, run_id)
 
         # Log figures with run-specific names
         tb_logger.writer.add_figure(
@@ -454,7 +464,10 @@ def test(
             f"Accuracy: {accuracy:.4f}\n"
             f"Precision Macro: {precision_macro:.4f}\n"
             f"Recall Macro: {recall_macro:.4f}\n"
-            f"F1 Macro: {f1_macro:.4f}"
+            f"F1 Macro: {f1_macro:.4f}\n"
+            f"Precision Weighted: {precision_weighted:.4f}\n"
+            f"Recall Weighted: {recall_weighted:.4f}\n"
+            f"F1 Weighted: {f1_weighted:.4f}"
         )
         tb_logger.writer.add_text(
             f"test/run_summary/run_{run_id}", metrics_text, run_id
