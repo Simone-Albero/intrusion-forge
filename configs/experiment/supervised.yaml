@@ -12,4 +12,4 @@ model:
 
 name: supervised
 ignore_classes: [0]  # List of class indices to ignore during evaluation
-
+n_samples: null
