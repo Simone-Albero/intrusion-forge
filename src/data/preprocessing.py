@@ -45,8 +45,7 @@ def subsample_df(
                 lambda x: x.sample(
                     n=min(len(x), n_samples // df[label_col].nunique()),
                     random_state=random_state,
-                ),
-                include_groups=False,
+                )
             )
             .reset_index(drop=True)
         )
@@ -60,10 +59,7 @@ def equalize_classes(
     min_count = df[label_col].value_counts().min()
     return (
         df.groupby(label_col, group_keys=False)
-        .apply(
-            lambda x: x.sample(n=min_count, random_state=random_state),
-            include_groups=False,
-        )
+        .apply(lambda x: x.sample(n=min_count, random_state=random_state))
         .reset_index(drop=True)
     )
 
