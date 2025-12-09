@@ -15,6 +15,7 @@ from src.common.config import load_config
 from src.common.logging import setup_logger
 
 from src.data.io import load_data_splits
+from src.data.preprocessing import subsample_df, equalize_classes
 
 from src.torch.module.checkpoint import load_best_checkpoint
 from src.torch.engine import train_step, eval_step, test_step, filter_ignored_classes
@@ -51,9 +52,19 @@ def prepare_loader(cfg) -> Tuple[DataLoader, DataLoader, DataLoader]:
     train_df, val_df, test_df = load_data_splits(
         base_path, cfg.data.file_name, cfg.data.extension
     )
-    # test_df = test_df[
-    #     test_df[cfg.data.label_col] != cfg.data.benign_tag
-    # ]
+    train_df = equalize_classes(
+        train_df,
+        label_col=f"multi_{cfg.data.label_col}",
+        random_state=cfg.seed,
+    )
+
+    if cfg.n_samples is not None:
+        train_df = subsample_df(
+            train_df,
+            n_samples=cfg.n_samples,
+            random_state=cfg.seed,
+            label_col=cfg.data.label_col,
+        )
 
     num_cols = list(cfg.data.num_cols)
     cat_cols = list(cfg.data.cat_cols)

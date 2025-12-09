@@ -15,7 +15,7 @@ from src.common.config import load_config
 from src.common.logging import setup_logger
 
 from src.data.io import load_data_splits
-from src.data.preprocessing import subsample_df
+from src.data.preprocessing import subsample_df, equalize_classes
 
 from src.plot.array import vectors_plot
 from src.torch.module.checkpoint import load_best_checkpoint
@@ -71,7 +71,12 @@ def prepare_loader(
         train_df = train_df[train_df[cfg.data.label_col] != cfg.data.benign_tag]
         val_df = val_df[val_df[cfg.data.label_col] != cfg.data.benign_tag]
     else:
-        # Subsample training data for fine-tuning if specified
+        train_df = equalize_classes(
+            train_df,
+            label_col=f"multi_{cfg.data.label_col}",
+            random_state=cfg.seed,
+        )
+
         if cfg.n_samples is not None:
             train_df = subsample_df(
                 train_df,

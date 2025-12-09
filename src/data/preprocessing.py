@@ -35,19 +35,37 @@ def subsample_df(
     label_col: Optional[str] = None,
 ) -> pd.DataFrame:
     if label_col is None:
+        if n_samples > len(df):
+            return df.sample(n=len(df), random_state=random_state)
         return df.sample(n=n_samples, random_state=random_state)
     else:
         return (
             df.groupby(label_col, group_keys=False)
             .apply(
                 lambda x: x.sample(
-                    n=int(n_samples / df[label_col].nunique()),
+                    n=min(len(x), n_samples // df[label_col].nunique()),
                     random_state=random_state,
                 ),
                 include_groups=False,
             )
             .reset_index(drop=True)
         )
+
+
+def equalize_classes(
+    df: pd.DataFrame,
+    label_col: str,
+    random_state: Optional[int] = None,
+) -> pd.DataFrame:
+    min_count = df[label_col].value_counts().min()
+    return (
+        df.groupby(label_col, group_keys=False)
+        .apply(
+            lambda x: x.sample(n=min_count, random_state=random_state),
+            include_groups=False,
+        )
+        .reset_index(drop=True)
+    )
 
 
 def ml_split(
