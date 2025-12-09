@@ -481,19 +481,10 @@ def test(
         tb_logger.close()
 
 
-def main():
-    """Main training pipeline for semi-supervised learning (pretraining + fine-tuning)."""
-    cfg = load_config(
-        config_path=Path(__file__).parent / "configs",
-        config_name="config",
-        overrides=sys.argv[1:],
-    )
+def run_pretraining(cfg, device):
+    """Phase 1: Unsupervised pretraining on malicious samples."""
+    logger.info("UNSUPERVISED PRETRAINING")
 
-    device = torch.device(cfg.device)
-    logger.info(f"Using device: {device}")
-
-    # Phase 1: Unsupervised pretraining on malicious samples
-    logger.info("Starting unsupervised pretraining phase...")
     train_loader, val_loader, test_loader = prepare_loader(cfg, is_unsupervised=True)
 
     autoencoder = create_model(
@@ -527,11 +518,14 @@ def main():
         max_epochs=cfg.loops.training.epochs,
     )
 
-    # Load best pretrained autoencoder
-    load_best_checkpoint(pretrain_checkpoint_dir, autoencoder, device)
+    logger.info("Pretraining phase completed successfully")
+    return autoencoder, pretrain_checkpoint_dir
 
-    # Phase 2: Supervised fine-tuning on labeled data
-    logger.info("Starting supervised fine-tuning phase...")
+
+def run_finetuning(cfg, device, autoencoder=None):
+    """Phase 2: Supervised fine-tuning on labeled data."""
+    logger.info("SUPERVISED FINE-TUNING")
+
     train_loader, val_loader, test_loader = prepare_loader(cfg, is_unsupervised=False)
 
     classifier = create_model(
@@ -541,9 +535,21 @@ def main():
         cfg.finetuning.loss.name, cfg.finetuning.loss.params, device
     )
 
-    # Transfer pretrained encoder to classifier
-    classifier.encoder_module = autoencoder.encoder_module
-    logger.info("Transferred pretrained encoder to classifier")
+    # Transfer pretrained encoder to classifier if provided
+    if autoencoder is not None:
+        classifier.encoder_module = autoencoder.encoder_module
+        logger.info("Transferred pretrained encoder to classifier")
+    else:
+        pretrain_checkpoint_dir = Path(cfg.path.models) / "autoencoder"
+        if pretrain_checkpoint_dir.exists():
+            temp_autoencoder = create_model(
+                cfg.pretraining.model.name, cfg.pretraining.model.params, device
+            )
+            load_best_checkpoint(pretrain_checkpoint_dir, temp_autoencoder, device)
+            classifier.encoder_module = temp_autoencoder.encoder_module
+            logger.info("Loaded and transferred pretrained encoder from checkpoint")
+        else:
+            logger.warning("No pretrained encoder found. Training from scratch.")
 
     finetune_optimizer = create_optimizer(
         cfg.optimizer.name, cfg.optimizer.params, classifier, finetune_loss_fn
@@ -568,9 +574,23 @@ def main():
         max_epochs=cfg.loops.training.epochs,
     )
 
-    logger.info("Semi-supervised training completed successfully")
+    logger.info("Fine-tuning phase completed successfully")
+    return classifier, finetune_checkpoint_dir
 
+
+def run_testing(cfg, device):
+    """Phase 3: Testing the fine-tuned classifier."""
+    logger.info("TESTING")
+
+    _, _, test_loader = prepare_loader(cfg, is_unsupervised=False)
+
+    classifier = create_model(
+        cfg.finetuning.model.name, cfg.finetuning.model.params, device
+    )
+
+    finetune_checkpoint_dir = Path(cfg.path.models) / "classifier"
     load_best_checkpoint(finetune_checkpoint_dir, classifier, device)
+
     test(
         test_loader=test_loader,
         model=classifier,
@@ -579,6 +599,63 @@ def main():
         num_classes=cfg.finetuning.model.params.num_classes,
         run_id=cfg.get("run_id", 0),
     )
+
+    logger.info("Testing phase completed successfully")
+
+
+def main():
+    """Main training pipeline for semi-supervised learning.
+
+    Supported stages (controlled by cfg.experiment.stage):
+    - 'all': Run all stages (pretraining → fine-tuning → testing)
+    - 'pretraining': Run only unsupervised pretraining
+    - 'finetuning': Run only supervised fine-tuning (loads pretrained encoder if available)
+    - 'testing': Run only testing (loads fine-tuned model)
+    - 'pretrain_finetune': Run pretraining and fine-tuning (skip testing)
+    - 'finetune_test': Run fine-tuning and testing (skip pretraining)
+    """
+    cfg = load_config(
+        config_path=Path(__file__).parent / "configs",
+        config_name="config",
+        overrides=sys.argv[1:],
+    )
+
+    device = torch.device(cfg.device)
+    logger.info(f"Using device: {device}")
+
+    stage = cfg.get("stage", "all")
+    logger.info(f"Running stage: {stage}")
+
+    # Execute the appropriate pipeline based on the stage
+    if stage == "all":
+        autoencoder, _ = run_pretraining(cfg, device)
+        classifier, _ = run_finetuning(cfg, device, autoencoder=autoencoder)
+        run_testing(cfg, device)
+
+    elif stage == "pretraining":
+        run_pretraining(cfg, device)
+
+    elif stage == "finetuning":
+        run_finetuning(cfg, device, autoencoder=None)
+
+    elif stage == "testing":
+        run_testing(cfg, device)
+
+    elif stage == "pretrain_finetune":
+        autoencoder, _ = run_pretraining(cfg, device)
+        run_finetuning(cfg, device, autoencoder=autoencoder)
+
+    elif stage == "finetune_test":
+        run_finetuning(cfg, device, autoencoder=None)
+        run_testing(cfg, device)
+
+    else:
+        logger.error(f"Unknown stage: {stage}")
+        logger.info(
+            "Valid stages are: 'all', 'pretraining', 'finetuning', 'testing', "
+            "'pretrain_finetune', 'finetune_test'"
+        )
+        sys.exit(1)
 
 
 if __name__ == "__main__":

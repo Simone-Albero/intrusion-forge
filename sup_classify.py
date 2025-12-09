@@ -359,16 +359,9 @@ def test(
         tb_logger.close()
 
 
-def main():
-    """Main training and testing pipeline."""
-    cfg = load_config(
-        config_path=Path(__file__).parent / "configs",
-        config_name="config",
-        overrides=sys.argv[1:],
-    )
-
-    device = torch.device(cfg.device)
-    logger.info(f"Using device: {device}")
+def run_training(cfg, device):
+    """Phase 1: Training the supervised classifier."""
+    logger.info("TRAINING")
 
     train_loader, val_loader, test_loader = prepare_loader(cfg)
 
@@ -397,7 +390,20 @@ def main():
         max_epochs=cfg.loops.training.epochs,
     )
 
+    logger.info("Training phase completed successfully")
+    return model, checkpoint_dir
+
+
+def run_testing(cfg, device):
+    """Phase 2: Testing the trained classifier."""
+    logger.info("TESTING")
+
+    _, _, test_loader = prepare_loader(cfg)
+
+    model = create_model(cfg.model.name, cfg.model.params, device)
+    checkpoint_dir = Path(cfg.path.models)
     load_best_checkpoint(checkpoint_dir, model, device)
+
     test(
         test_loader=test_loader,
         model=model,
@@ -407,6 +413,46 @@ def main():
         ignore_classes=list(cfg.ignore_classes) if cfg.ignore_classes else None,
         run_id=cfg.get("run_id", 0),
     )
+
+    logger.info("Testing phase completed successfully")
+
+
+def main():
+    """Main training pipeline for supervised learning.
+
+    Supported stages (controlled by cfg.experiment.stage):
+    - 'all': Run all stages (training → testing)
+    - 'training': Run only training
+    - 'testing': Run only testing
+    """
+    cfg = load_config(
+        config_path=Path(__file__).parent / "configs",
+        config_name="config",
+        overrides=sys.argv[1:],
+    )
+
+    device = torch.device(cfg.device)
+    logger.info(f"Using device: {device}")
+
+    # Get the stage to run from config (default to 'all')
+    stage = cfg.experiment.get("stage", "all")
+    logger.info(f"Running stage: {stage}")
+
+    # Execute the appropriate pipeline based on the stage
+    if stage == "all":
+        run_training(cfg, device)
+        run_testing(cfg, device)
+
+    elif stage == "training":
+        run_training(cfg, device)
+
+    elif stage == "testing":
+        run_testing(cfg, device)
+
+    else:
+        logger.error(f"Unknown stage: {stage}")
+        logger.info("Valid stages are: 'all', 'training', 'testing'")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

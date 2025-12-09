@@ -13,6 +13,7 @@ seed: 42
 name: supervised_bg
 device: cpu
 run_id: 0
+stage: all
 
 
 
