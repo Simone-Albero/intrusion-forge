@@ -208,10 +208,15 @@ def test(
     loss_fn: nn.Module,
     bin_labels: np.ndarray,
     multi_labels: np.ndarray,
+    noise_fraction: float = 0.0,
+    run_id: int = 0,
 ) -> None:
     """Test the model for anomaly detection and log results to TensorBoard."""
-    logger.info("Running test evaluation...")
+    logger.info(
+        f"Running test evaluation (noise_fraction={noise_fraction:.3f}, run_id={run_id})..."
+    )
 
+    # Use the same log directory for all runs to enable comparison
     tb_logger = TensorboardLogger(log_dir=log_dir)
 
     # Storage for latent representations and predictions
@@ -242,7 +247,9 @@ def test(
             bin_labels, predictions
         )
 
-        logger.info("Test Results:")
+        logger.info(
+            f"Test Results (noise_fraction={noise_fraction:.3f}, run_id={run_id}):"
+        )
         logger.info(f"  precision_macro: {precision:.4f}")
         logger.info(f"  recall_macro: {recall:.4f}")
         logger.info(f"  f1_macro: {f1:.4f}")
@@ -276,12 +283,39 @@ def test(
 
         latent_figure = vectors_plot(projected_z, subsampled_labels)
 
-        tb_logger.writer.add_figure(
-            "test/global_metrics", dict_to_bar_plot(global_metrics), 0
+        # Log individual metrics with organized tags
+        tb_logger.writer.add_scalar("test/metrics/auc_roc", roc_auc, run_id)
+        tb_logger.writer.add_scalar("test/metrics/f1_macro", f1, run_id)
+        tb_logger.writer.add_scalar("test/metrics/precision_macro", precision, run_id)
+        tb_logger.writer.add_scalar("test/metrics/recall_macro", recall, run_id)
+
+        # Log noise_fraction as a scalar to track the experimental parameter
+        tb_logger.writer.add_scalar(
+            "test/experiment/noise_fraction", noise_fraction, run_id
         )
-        tb_logger.writer.add_scalar("test/auc_roc", roc_auc, 0)
-        tb_logger.writer.add_scalar("test/f1_macro", f1, 0)
-        tb_logger.writer.add_figure("test/latent_space_2d", latent_figure, 0)
+
+        # Log bar plot and latent space visualization
+        tb_logger.writer.add_figure(
+            f"test/metrics_summary/run_{run_id}",
+            dict_to_bar_plot(global_metrics),
+            run_id,
+        )
+        tb_logger.writer.add_figure(
+            f"test/latent_space/run_{run_id}", latent_figure, run_id
+        )
+
+        # Log as text for easy reference
+        metrics_text = (
+            f"Run ID: {run_id}\n"
+            f"Noise Fraction: {noise_fraction:.3f}\n"
+            f"AUC-ROC: {roc_auc:.4f}\n"
+            f"F1 Macro: {f1:.4f}\n"
+            f"Precision Macro: {precision:.4f}\n"
+            f"Recall Macro: {recall:.4f}"
+        )
+        tb_logger.writer.add_text(
+            f"test/run_summary/run_{run_id}", metrics_text, run_id
+        )
 
         logger.info("Test results logged to TensorBoard.")
 
@@ -340,6 +374,8 @@ def main():
         loss_fn=loss_fn,
         bin_labels=bin_test_labels,
         multi_labels=multi_test_labels,
+        noise_fraction=cfg.noise_fraction,
+        run_id=cfg.get("run_id", 0),
     )
 
 

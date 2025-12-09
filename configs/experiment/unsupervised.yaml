@@ -8,5 +8,4 @@ defaults:
 
 name: unsupervised
 
-global_step: 0  # Global step counter for logging
 noise_fraction: 0.0  # Fraction of noise to add to the training data

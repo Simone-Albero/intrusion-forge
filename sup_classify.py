@@ -17,7 +17,7 @@ from src.common.logging import setup_logger
 from src.data.io import load_data_splits
 
 from src.torch.module.checkpoint import load_best_checkpoint
-from src.torch.engine import train_step, eval_step, test_step, ignore_classes
+from src.torch.engine import train_step, eval_step, test_step, filter_ignored_classes
 from src.torch.builders import (
     create_dataloader,
     create_dataset,
@@ -168,9 +168,10 @@ def test(
     log_dir: Path,
     num_classes: int,
     ignore_classes: Optional[List[int]] = None,
+    run_id: int = 0,
 ) -> None:
     """Test the model and log results to TensorBoard."""
-    logger.info("Running test evaluation...")
+    logger.info(f"Running test evaluation (run_id={run_id})...")
 
     tb_logger = TensorboardLogger(log_dir=log_dir)
 
@@ -179,9 +180,12 @@ def test(
     all_labels = []
 
     # Setup output transform for metrics
-    prepare_output = lambda x: ignore_classes(
-        x["output"]["logits"], x["y_true"], ignore_classes
-    )
+    if ignore_classes is not None:
+        prepare_output = lambda x: filter_ignored_classes(
+            x["output"]["logits"], x["y_true"], ignore_classes
+        )
+    else:
+        prepare_output = lambda x: (x["output"]["logits"], x["y_true"])
 
     tester = (
         EngineBuilder(test_step)
@@ -225,7 +229,7 @@ def test(
     @tester.on(Events.COMPLETED)
     def log_metrics_to_console(engine):
         """Log all metrics to console using a loop."""
-        logger.info("Test Results:")
+        logger.info(f"Test Results (run_id={run_id}):")
         for metric_name, metric_value in engine.state.metrics.items():
             if isinstance(metric_value, torch.Tensor):
                 if metric_value.numel() == 1:
@@ -274,14 +278,47 @@ def test(
             normalize="true",
         )
 
-        tb_logger.writer.add_figure("test/confusion_matrix", cm_figure, 0)
+        # Log individual metrics as scalars for trend visualization
+        tb_logger.writer.add_scalar("test/metrics/accuracy", accuracy, run_id)
+        tb_logger.writer.add_scalar(
+            "test/metrics/precision_macro", precision_macro, run_id
+        )
+        tb_logger.writer.add_scalar("test/metrics/recall_macro", recall_macro, run_id)
+        tb_logger.writer.add_scalar("test/metrics/f1_macro", f1_macro, run_id)
+
+        # Log per-class F1 scores
+        for i, f1 in enumerate(f1_per_class):
+            tb_logger.writer.add_scalar(f"test/metrics/f1_class_{i}", f1.item(), run_id)
+
+        # Log figures with run-specific names
         tb_logger.writer.add_figure(
-            "test/global_metrics", dict_to_bar_plot(global_metrics), 0
+            f"test/confusion_matrix/run_{run_id}", cm_figure, run_id
         )
         tb_logger.writer.add_figure(
-            "test/f1_per_class", dict_to_bar_plot(f1_per_class_dict), 0
+            f"test/metrics_summary/run_{run_id}",
+            dict_to_bar_plot(global_metrics),
+            run_id,
         )
-        tb_logger.writer.add_figure("test/latent_space_2d", latent_figure, 0)
+        tb_logger.writer.add_figure(
+            f"test/f1_per_class/run_{run_id}",
+            dict_to_bar_plot(f1_per_class_dict),
+            run_id,
+        )
+        tb_logger.writer.add_figure(
+            f"test/latent_space/run_{run_id}", latent_figure, run_id
+        )
+
+        # Log text summary
+        metrics_text = (
+            f"Run ID: {run_id}\n"
+            f"Accuracy: {accuracy:.4f}\n"
+            f"Precision Macro: {precision_macro:.4f}\n"
+            f"Recall Macro: {recall_macro:.4f}\n"
+            f"F1 Macro: {f1_macro:.4f}"
+        )
+        tb_logger.writer.add_text(
+            f"test/run_summary/run_{run_id}", metrics_text, run_id
+        )
 
         logger.info("Test results logged to TensorBoard.")
 
@@ -336,7 +373,8 @@ def main():
         device=device,
         log_dir=Path(cfg.path.logs),
         num_classes=cfg.model.params.num_classes,
-        ignore_classes=list(cfg.ignore_classes),
+        ignore_classes=list(cfg.ignore_classes) if cfg.ignore_classes else None,
+        run_id=cfg.get("run_id", 0),
     )
 
 

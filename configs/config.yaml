@@ -12,8 +12,7 @@ defaults:
 seed: 42
 name: supervised_bg
 device: cpu
-
-n_samples: null  # Set to an integer to subsample the dataset for quicker experiments
+run_id: 0
 
 
 

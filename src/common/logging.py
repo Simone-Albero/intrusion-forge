@@ -12,7 +12,7 @@ def setup_logger(
     fmt: str = "%(asctime)s: %(message)s",
     date_fmt: str = "%H:%M:%S",
     console: bool = True,
-    log_file: Optional[str] = None,
+    log_file: Optional[str] = "resources/logs",
     file_level: Optional[int] = None,
     max_bytes: int = 10 * 1024 * 1024,
     backup_count: int = 3,

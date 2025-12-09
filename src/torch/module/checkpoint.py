@@ -31,10 +31,21 @@ def load_best_checkpoint(
         return
 
     # Sort by validation loss in filename (lower is better)
+    def extract_loss_value(path: Path) -> float:
+        """Extract loss value from checkpoint filename, handling negative values."""
+        try:
+            # Split by 'val_loss=' and get the part after it
+            loss_part = path.stem.split("val_loss=")[1]
+            # Remove any trailing suffixes and convert to float
+            # This handles formats like: "val_loss=-0.5_epoch=10" or "val_loss=0.5"
+            loss_str = loss_part.split("_")[0] if "_" in loss_part else loss_part
+            return float(loss_str)
+        except (IndexError, ValueError) as e:
+            logger.warning(f"Failed to parse loss from {path.name}: {e}")
+            return float("inf")  # Return infinity so it won't be selected as best
+
     try:
-        best_checkpoint = min(
-            checkpoint_files, key=lambda p: float(p.stem.split("val_loss=")[1])
-        )
+        best_checkpoint = min(checkpoint_files, key=extract_loss_value)
     except (IndexError, ValueError):
         # Fallback to modification time if parsing fails
         logger.warning(

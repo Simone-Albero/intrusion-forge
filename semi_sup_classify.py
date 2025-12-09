@@ -255,9 +255,10 @@ def test(
     device: torch.device,
     log_dir: Path,
     num_classes: int,
+    run_id: int = 0,
 ) -> None:
     """Test the model and log results to TensorBoard."""
-    logger.info("Running test evaluation...")
+    logger.info(f"Running test evaluation (run_id={run_id})...")
 
     tb_logger = TensorboardLogger(log_dir=log_dir)
 
@@ -310,7 +311,7 @@ def test(
     @tester.on(Events.COMPLETED)
     def log_metrics_to_console(engine):
         """Log all metrics to console using a loop."""
-        logger.info("Test Results:")
+        logger.info(f"Test Results (run_id={run_id}):")
         for metric_name, metric_value in engine.state.metrics.items():
             if isinstance(metric_value, torch.Tensor):
                 if metric_value.numel() == 1:
@@ -369,20 +370,34 @@ def test(
             subsampled_z, subsampled_labels
         )
 
+        # Log clustering measures as scalars
+        for measure_name, measure_value in kmeans_cluster_measures.items():
+            tb_logger.writer.add_scalar(
+                f"test/clustering/kmeans/{measure_name}", measure_value, run_id
+            )
+        for measure_name, measure_value in hdbscan_cluster_measures.items():
+            tb_logger.writer.add_scalar(
+                f"test/clustering/hdbscan/{measure_name}", measure_value, run_id
+            )
+        for measure_name, measure_value in gt_cluster_measures.items():
+            tb_logger.writer.add_scalar(
+                f"test/clustering/ground_truth/{measure_name}", measure_value, run_id
+            )
+
         tb_logger.writer.add_figure(
-            "test/kmeans_cluster_measures",
+            f"test/cluster_measures/kmeans/run_{run_id}",
             dict_to_table(kmeans_cluster_measures),
-            0,
+            run_id,
         )
         tb_logger.writer.add_figure(
-            "test/hdbscan_cluster_measures",
+            f"test/cluster_measures/hdbscan/run_{run_id}",
             dict_to_table(hdbscan_cluster_measures),
-            0,
+            run_id,
         )
         tb_logger.writer.add_figure(
-            "test/ground_truth_cluster_measures",
+            f"test/cluster_measures/ground_truth/run_{run_id}",
             dict_to_table(gt_cluster_measures),
-            0,
+            run_id,
         )
 
         projected_z = tsne_projection(subsampled_z)
@@ -397,16 +412,53 @@ def test(
             normalize="true",
         )
 
-        tb_logger.writer.add_figure("test/confusion_matrix", cm_figure, 0)
+        # Log individual metrics as scalars for trend visualization
+        tb_logger.writer.add_scalar("test/metrics/accuracy", accuracy, run_id)
+        tb_logger.writer.add_scalar(
+            "test/metrics/precision_macro", precision_macro, run_id
+        )
+        tb_logger.writer.add_scalar("test/metrics/recall_macro", recall_macro, run_id)
+        tb_logger.writer.add_scalar("test/metrics/f1_macro", f1_macro, run_id)
+
+        # Log per-class F1 scores
+        for i, f1 in enumerate(f1_per_class):
+            tb_logger.writer.add_scalar(f"test/metrics/f1_class_{i}", f1.item(), run_id)
+
+        # Log figures with run-specific names
         tb_logger.writer.add_figure(
-            "test/global_metrics", dict_to_bar_plot(global_metrics), 0
+            f"test/confusion_matrix/run_{run_id}", cm_figure, run_id
         )
         tb_logger.writer.add_figure(
-            "test/f1_per_class", dict_to_bar_plot(f1_per_class_dict), 0
+            f"test/metrics_summary/run_{run_id}",
+            dict_to_bar_plot(global_metrics),
+            run_id,
         )
-        tb_logger.writer.add_figure("test/latent_space_2d/ground_truth", latent_gt, 0)
-        tb_logger.writer.add_figure("test/latent_space_2d/kmeans", latent_kmeans, 0)
-        tb_logger.writer.add_figure("test/latent_space_2d/hdbscan", latent_hdbscan, 0)
+        tb_logger.writer.add_figure(
+            f"test/f1_per_class/run_{run_id}",
+            dict_to_bar_plot(f1_per_class_dict),
+            run_id,
+        )
+        tb_logger.writer.add_figure(
+            f"test/latent_space/ground_truth/run_{run_id}", latent_gt, run_id
+        )
+        tb_logger.writer.add_figure(
+            f"test/latent_space/kmeans/run_{run_id}", latent_kmeans, run_id
+        )
+        tb_logger.writer.add_figure(
+            f"test/latent_space/hdbscan/run_{run_id}", latent_hdbscan, run_id
+        )
+
+        # Log text summary
+        metrics_text = (
+            f"Run ID: {run_id}\n"
+            f"Accuracy: {accuracy:.4f}\n"
+            f"Precision Macro: {precision_macro:.4f}\n"
+            f"Recall Macro: {recall_macro:.4f}\n"
+            f"F1 Macro: {f1_macro:.4f}"
+        )
+        tb_logger.writer.add_text(
+            f"test/run_summary/run_{run_id}", metrics_text, run_id
+        )
 
         logger.info("Test results logged to TensorBoard.")
 
@@ -510,8 +562,9 @@ def main():
         test_loader=test_loader,
         model=classifier,
         device=device,
-        log_dir=Path(cfg.path.logs),
-        num_classes=cfg.model.params.num_classes,
+        log_dir=Path(cfg.path.logs) / "finetuning",
+        num_classes=cfg.finetuning.model.params.num_classes,
+        run_id=cfg.get("run_id", 0),
     )
 
 
