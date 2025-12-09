@@ -611,7 +611,7 @@ def run_testing(cfg, device):
 def main():
     """Main training pipeline for semi-supervised learning.
 
-    Supported stages (controlled by cfg.experiment.stage):
+    Supported stages (controlled by cfg.stage):
     - 'all': Run all stages (pretraining → fine-tuning → testing)
     - 'pretraining': Run only unsupervised pretraining
     - 'finetuning': Run only supervised fine-tuning (loads pretrained encoder if available)

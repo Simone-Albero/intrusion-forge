@@ -8,4 +8,4 @@ defaults:
 
 name: unsupervised
 
-noise_fraction: 0.0  # Fraction of noise to add to the training data
+noise_fraction: 0.0

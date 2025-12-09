@@ -11,8 +11,8 @@ defaults:
 finetuning:
   model:
     params:
-      num_classes: 11  # 10 attack + 1 benign
+      num_classes: 11
 
 name: semi_supervised
-n_samples: 200
+n_samples: null
 

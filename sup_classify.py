@@ -431,7 +431,7 @@ def run_testing(cfg, device):
 def main():
     """Main training pipeline for supervised learning.
 
-    Supported stages (controlled by cfg.experiment.stage):
+    Supported stages (controlled by cfg.stage):
     - 'all': Run all stages (training → testing)
     - 'training': Run only training
     - 'testing': Run only testing
@@ -446,7 +446,7 @@ def main():
     logger.info(f"Using device: {device}")
 
     # Get the stage to run from config (default to 'all')
-    stage = cfg.experiment.get("stage", "all")
+    stage = cfg.get("stage", "all")
     logger.info(f"Running stage: {stage}")
 
     # Execute the appropriate pipeline based on the stage
