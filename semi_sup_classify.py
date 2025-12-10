@@ -18,7 +18,7 @@ from src.data.io import load_data_splits
 from src.data.preprocessing import subsample_df, equalize_classes
 
 from src.plot.array import vectors_plot
-from src.torch.module.checkpoint import load_best_checkpoint
+from src.torch.module.checkpoint import load_latest_checkpoint
 from src.torch.engine import train_step, eval_step, test_step
 from src.torch.builders import (
     create_dataloader,
@@ -397,17 +397,17 @@ def test(
         )
 
         tb_logger.writer.add_figure(
-            f"test/cluster_measures/kmeans/run_{run_id}",
+            f"test/cluster_measures/kmeans",
             dict_to_table(kmeans_cluster_measures),
             run_id,
         )
         tb_logger.writer.add_figure(
-            f"test/cluster_measures/hdbscan/run_{run_id}",
+            f"test/cluster_measures/hdbscan",
             dict_to_table(hdbscan_cluster_measures),
             run_id,
         )
         tb_logger.writer.add_figure(
-            f"test/cluster_measures/ground_truth/run_{run_id}",
+            f"test/cluster_measures/ground_truth",
             dict_to_table(gt_cluster_measures),
             run_id,
         )
@@ -543,7 +543,7 @@ def run_finetuning(cfg, device, autoencoder=None):
             temp_autoencoder = create_model(
                 cfg.pretraining.model.name, cfg.pretraining.model.params, device
             )
-            load_best_checkpoint(pretrain_checkpoint_dir, temp_autoencoder, device)
+            load_latest_checkpoint(pretrain_checkpoint_dir, temp_autoencoder, device)
             classifier.encoder_module = temp_autoencoder.encoder_module
             logger.info("Loaded and transferred pretrained encoder from checkpoint")
         else:
@@ -587,7 +587,7 @@ def run_testing(cfg, device):
     )
 
     finetune_checkpoint_dir = Path(cfg.path.models) / "classifier"
-    load_best_checkpoint(finetune_checkpoint_dir, classifier, device)
+    load_latest_checkpoint(finetune_checkpoint_dir, classifier, device)
 
     test(
         test_loader=test_loader,

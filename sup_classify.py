@@ -17,7 +17,7 @@ from src.common.logging import setup_logger
 from src.data.io import load_data_splits
 from src.data.preprocessing import subsample_df, equalize_classes
 
-from src.torch.module.checkpoint import load_best_checkpoint
+from src.torch.module.checkpoint import load_latest_checkpoint
 from src.torch.engine import train_step, eval_step, test_step, filter_ignored_classes
 from src.torch.builders import (
     create_dataloader,
@@ -402,7 +402,7 @@ def run_testing(cfg, device):
 
     model = create_model(cfg.model.name, cfg.model.params, device)
     checkpoint_dir = Path(cfg.path.models)
-    load_best_checkpoint(checkpoint_dir, model, device)
+    load_latest_checkpoint(checkpoint_dir, model, device)
 
     test(
         test_loader=test_loader,

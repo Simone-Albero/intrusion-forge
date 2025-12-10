@@ -18,7 +18,7 @@ from src.common.logging import setup_logger
 
 from src.data.io import load_data_splits
 
-from src.torch.module.checkpoint import load_best_checkpoint
+from src.torch.module.checkpoint import load_latest_checkpoint
 from src.torch.engine import train_step, eval_step, test_step
 from src.torch.builders import (
     create_dataloader,
@@ -369,7 +369,7 @@ def run_testing(cfg, device, bin_test_labels=None, multi_test_labels=None):
     loss_fn = create_loss(cfg.loss.name, cfg.loss.params, device)
 
     checkpoint_dir = Path(cfg.path.models)
-    load_best_checkpoint(checkpoint_dir, model, device)
+    load_latest_checkpoint(checkpoint_dir, model, device)
 
     test(
         test_loader=test_loader,
