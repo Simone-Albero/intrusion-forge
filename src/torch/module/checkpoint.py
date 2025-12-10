@@ -24,7 +24,7 @@ def load_best_checkpoint(
     Raises:
         Exception: If checkpoint loading fails
     """
-    checkpoint_files = list(checkpoint_dir.glob("best_model_*.pt"))
+    checkpoint_files = list(checkpoint_dir.glob("*.pt"))
 
     if not checkpoint_files:
         logger.warning("No checkpoint found, using current model state")
@@ -83,7 +83,7 @@ def load_latest_checkpoint(
     Raises:
         Exception: If checkpoint loading fails
     """
-    checkpoint_files = list(checkpoint_dir.glob("model_epoch_*.pt"))
+    checkpoint_files = list(checkpoint_dir.glob("*.pt"))
 
     if not checkpoint_files:
         logger.warning("No checkpoint found, using current model state")
