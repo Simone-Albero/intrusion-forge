@@ -5,17 +5,19 @@ from pathlib import Path
 from typing import Any, Tuple
 
 import pandas as pd
+import numpy as np
 from sklearn import set_config
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.preprocessing import LabelEncoder, RobustScaler
 
 from src.common.config import load_config
 from src.common.logging import setup_logger
 from src.data.io import load_df, save_df
 from src.data.preprocessing import (
     QuantileClipper,
-    TopNCategoryEncoder,
+    LogTransformer,
+    TopNHashEncoder,
     drop_nans,
     ml_split,
     query_filter,
@@ -39,9 +41,14 @@ def preprocess_df(
     cat_cols = list(cfg.data.cat_cols)
     label_col = cfg.data.label_col
     benign_tag = cfg.data.benign_tag
+
     query = cfg.data.filter_query
     min_cat_count = cfg.data.min_cat_count
-    top_n_categories = cfg.data.top_n_categories
+    top_n = cfg.data.top_n
+    hash_buckets = cfg.data.hash_buckets
+    add_log_freq = cfg.data.add_log_freq
+    add_is_unk = cfg.data.add_is_unk
+
     train_frac = cfg.data.train_frac
     val_frac = cfg.data.val_frac
     test_frac = cfg.data.test_frac
@@ -67,13 +74,22 @@ def preprocess_df(
     num_pipeline = Pipeline(
         steps=[
             ("quantile_clipper", QuantileClipper()),
-            ("scaler", StandardScaler()),
+            ("log_transformer", LogTransformer()),
+            ("scaler", RobustScaler()),
         ]
     )
 
     cat_pipeline = Pipeline(
         steps=[
-            ("top_n_encoder", TopNCategoryEncoder(top_n=top_n_categories)),
+            (
+                "top_n_encoder",
+                TopNHashEncoder(
+                    top_n=top_n,
+                    hash_buckets=hash_buckets,
+                    add_log_freq=add_log_freq,
+                    add_is_unk=add_is_unk,
+                ),
+            ),
         ]
     )
 
@@ -123,6 +139,14 @@ def preprocess_df(
             "val": val_df[label_col].value_counts().to_dict(),
             "test": test_df[label_col].value_counts().to_dict(),
         },
+        "numerical_columns": num_cols
+        + [f"{col}__is_unk" for col in cat_cols if add_is_unk]
+        + [f"{col}__log_freq" for col in cat_cols if add_log_freq],
+        "categorical_columns": cat_cols,
+        "multi_label_column": multi_label_col,
+        "bin_label_column": f"bin_{label_col}" if benign_tag is not None else None,
+        "benign_tag": benign_tag,
+        "num_classes": len(label_encoder.classes_),
     }
 
     metadata_path = Path(cfg.path.processed_data) / "df_metadata.json"
@@ -131,27 +155,6 @@ def preprocess_df(
         json.dump(metadata, f, indent=2)
     logger.info(f"Dataset metadata saved to {metadata_path}")
 
-    return train_df, val_df, test_df
-
-
-def main() -> None:
-    """Main entry point for data preparation."""
-    cfg = load_config(
-        config_path=Path(__file__).parent / "configs",
-        config_name="config",
-        overrides=sys.argv[1:],
-    )
-
-    # Load raw data
-    logger.info("Loading raw data...")
-    raw_data_path = Path(cfg.path.raw_data) / f"{cfg.data.file_name}.csv"
-    df = load_df(str(raw_data_path))
-
-    # Preprocess data
-    logger.info("Preprocessing data...")
-    train_df, val_df, test_df = preprocess_df(df, cfg)
-
-    # Save processed data
     logger.info("Saving processed data...")
     processed_data_dir = Path(cfg.path.processed_data)
     processed_data_dir.mkdir(parents=True, exist_ok=True)
@@ -168,7 +171,61 @@ def main() -> None:
         save_df(split_df, str(output_path))
         logger.info(f"Saved {split_name} data: {len(split_df)} samples")
 
-    logger.info("Data preparation complete!")
+    return train_df, val_df, test_df
+
+
+def analize_df(
+    df: pd.DataFrame,
+    cfg: Any,
+) -> None:
+    """Analyze dataframe and log basic statistics."""
+    logger.info("Dataframe Analysis:")
+    logger.info("General Info:")
+    logger.info(f"Number of samples: {len(df)}")
+    logger.info(f"Columns: {df.columns.tolist()}")
+    logger.info("Missing values per column:")
+    df = df.replace([np.inf, -np.inf], np.nan)
+    logger.info(df.isnull().sum())
+    logger.info("Data types:")
+    logger.info(df.dtypes)
+
+    num_cols = list(cfg.data.num_cols)
+    cat_cols = list(cfg.data.cat_cols)
+    label_col = cfg.data.label_col
+
+    logger.info("Numerical Columns Statistics:")
+    logger.info(df[num_cols].describe().T)
+
+    logger.info("Categorical Columns Statistics:")
+    for col in cat_cols:
+        logger.info(f"Column: {col}")
+        logger.info(f"Number of unique values: {df[col].nunique()}")
+        logger.info(df[col].value_counts())
+
+    logger.info("Label Distribution:")
+    logger.info(df[label_col].value_counts())
+
+
+def main() -> None:
+    """Main entry point for data preparation."""
+    cfg = load_config(
+        config_path=Path(__file__).parent / "configs",
+        config_name="config",
+        overrides=sys.argv[1:],
+    )
+
+    # Load raw data
+    logger.info("Loading raw data...")
+    raw_data_path = Path(cfg.path.raw_data) / f"{cfg.data.file_name}.csv"
+    df = load_df(str(raw_data_path))
+
+    # Analyze data
+    # logger.info("Analyzing data...")
+    # analize_df(df, cfg)
+
+    # Preprocess data
+    logger.info("Preprocessing data...")
+    train_df, val_df, test_df = preprocess_df(df, cfg)
 
 
 if __name__ == "__main__":

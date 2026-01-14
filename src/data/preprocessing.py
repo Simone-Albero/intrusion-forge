@@ -1,4 +1,5 @@
 from typing import Optional, Tuple
+import hashlib
 
 import pandas as pd
 import numpy as np
@@ -108,8 +109,25 @@ class QuantileClipper(BaseEstimator, TransformerMixin):
         return X.clip(lower=self.lower_bounds_, upper=self.upper_bounds_, axis=1)
 
 
+class LogTransformer(BaseEstimator, TransformerMixin):
+    """Apply log1p transformation to handle skewed data with zeros."""
+
+    def __init__(self, epsilon=1e-10):
+        self.epsilon = epsilon
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        X_transformed = X.copy()
+        return np.log1p(np.maximum(X_transformed, 0) + self.epsilon)
+
+    def inverse_transform(self, X):
+        return np.expm1(X) - self.epsilon
+
+
 class TopNCategoryEncoder(BaseEstimator, TransformerMixin):
-    def __init__(self, top_n: int = 32, default_value: int = 0):
+    def __init__(self, top_n: int = 256, default_value: int = 0):
         self.top_n = top_n
         self.default_value = default_value
 
@@ -132,3 +150,112 @@ class TopNCategoryEncoder(BaseEstimator, TransformerMixin):
             category_map = self.category_maps_.get(col, {})
             X[col] = X[col].map(category_map).fillna(self.default_value).astype(int)
         return X
+
+
+class TopNHashEncoder(BaseEstimator, TransformerMixin):
+    """
+    Hybrid categorical encoder with top-N frequent categories and hash buckets for rare values.
+
+    Encoding scheme:
+      - missing_token (default 1): Missing/NaN values
+      - 2 to (top_n + 1): Top-N most frequent categories
+      - (top_n + 2) onwards: Hashed buckets for rare/OOV categories
+
+    Optional features:
+      - log_freq: log1p of category frequency from training
+      - is_unk: binary flag indicating unknown/hashed category
+    """
+
+    def __init__(
+        self,
+        top_n: int = 256,
+        hash_buckets: int = 1024,
+        add_log_freq: bool = True,
+        add_is_unk: bool = True,
+        missing_token: int = 1,
+        hash_key: str = "cat-encoder-v1",
+        dtype: type = np.int32,
+    ):
+        self.top_n = top_n
+        self.hash_buckets = hash_buckets
+        self.add_log_freq = add_log_freq
+        self.add_is_unk = add_is_unk
+        self.missing_token = missing_token
+        self.hash_key = hash_key
+        self.dtype = dtype
+
+    def _stable_hash_bucket(self, col: str, value, num_buckets: int) -> int:
+        """Deterministic hash bucket [0, num_buckets-1] using column-specific hashing."""
+        value_str = "NA" if pd.isna(value) else str(value)
+        payload = f"{self.hash_key}|{col}|{value_str}".encode("utf-8")
+        hash_digest = hashlib.blake2b(payload, digest_size=8).digest()
+        return (
+            int.from_bytes(hash_digest, byteorder="little", signed=False) % num_buckets
+        )
+
+    def fit(self, X: pd.DataFrame, y: pd.Series = None):
+        if self.top_n < 0 or self.hash_buckets < 0:
+            raise ValueError("top_n and hash_buckets must be non-negative")
+
+        X = pd.DataFrame(X)
+        self.columns_ = list(X.columns)
+        self.category_maps_ = {}
+        self.freq_maps_ = {}
+
+        for col in self.columns_:
+            counts = X[col].value_counts(dropna=True)
+            self.freq_maps_[col] = counts.to_dict()
+
+            # Map top-N categories to contiguous IDs starting after missing_token
+            top_categories = counts.nlargest(self.top_n).index if self.top_n > 0 else []
+            self.category_maps_[col] = {
+                cat: self.missing_token + 1 + idx
+                for idx, cat in enumerate(top_categories)
+            }
+
+        return self
+
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        X = pd.DataFrame(X)
+        cols = [c for c in self.columns_ if c in X.columns]
+        hashed_start = self.missing_token + 1 + self.top_n
+        out = {}
+
+        for col in cols:
+            category_map = self.category_maps_[col]
+            freq_map = self.freq_maps_[col]
+            values = X[col].values
+
+            # Encode IDs and track unknown categories
+            ids = []
+            is_unk = []
+
+            for val in values:
+                if pd.isna(val):
+                    ids.append(self.missing_token)
+                    is_unk.append(1)
+                elif val in category_map:
+                    ids.append(category_map[val])
+                    is_unk.append(0)
+                else:
+                    # Unknown category: use hash bucket or default
+                    if self.hash_buckets > 0:
+                        bucket = self._stable_hash_bucket(col, val, self.hash_buckets)
+                        ids.append(hashed_start + bucket)
+                    else:
+                        ids.append(self.missing_token)
+                    is_unk.append(1)
+
+            out[col] = np.asarray(ids, dtype=self.dtype)
+
+            if self.add_is_unk:
+                out[f"{col}__is_unk"] = np.asarray(is_unk, dtype=np.int8)
+
+            if self.add_log_freq:
+                log_freqs = [
+                    np.log1p(1.0) if pd.isna(val) else np.log1p(freq_map.get(val, 1.0))
+                    for val in values
+                ]
+                out[f"{col}__log_freq"] = np.asarray(log_freqs, dtype=np.float32)
+
+        return pd.DataFrame(out, index=X.index)
