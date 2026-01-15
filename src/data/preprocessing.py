@@ -52,17 +52,31 @@ def subsample_df(
         )
 
 
-def equalize_classes(
-    df: pd.DataFrame,
-    label_col: str,
-    random_state: Optional[int] = None,
+def random_undersample_df(
+    df: pd.DataFrame, label_col: str, random_state: Optional[int] = None
 ) -> pd.DataFrame:
-    min_count = df[label_col].value_counts().min()
-    return (
-        df.groupby(label_col, group_keys=False)
-        .apply(lambda x: x.sample(n=min_count, random_state=random_state))
-        .reset_index(drop=True)
-    )
+    counts = df[label_col].value_counts()
+    min_count = counts.min()
+    sampled_groups = []
+    for label, group in df.groupby(label_col):
+        sampled = group.sample(n=min_count, random_state=random_state)
+        sampled_groups.append(sampled)
+    return pd.concat(sampled_groups, ignore_index=True)
+
+
+def random_oversample_df(
+    df: pd.DataFrame, label_col: str, random_state: Optional[int] = None
+) -> pd.DataFrame:
+    counts = df[label_col].value_counts()
+    max_count = counts.max()
+    sampled_groups = []
+    for label, group in df.groupby(label_col):
+        n_samples = max_count - len(group)
+        if n_samples > 0:
+            sampled = group.sample(n=n_samples, replace=True, random_state=random_state)
+            group = pd.concat([group, sampled], ignore_index=True)
+        sampled_groups.append(group)
+    return pd.concat(sampled_groups, ignore_index=True)
 
 
 def ml_split(
@@ -157,9 +171,9 @@ class TopNHashEncoder(BaseEstimator, TransformerMixin):
     Hybrid categorical encoder with top-N frequent categories and hash buckets for rare values.
 
     Encoding scheme:
-      - missing_token (default 1): Missing/NaN values
-      - 2 to (top_n + 1): Top-N most frequent categories
-      - (top_n + 2) onwards: Hashed buckets for rare/OOV categories
+      - 0: Missing/NaN values (padding_idx compatible)
+      - 1 to top_n: Top-N most frequent categories
+      - (top_n + 1) onwards: Hashed buckets for rare/OOV categories
 
     Optional features:
       - log_freq: log1p of category frequency from training
@@ -172,7 +186,7 @@ class TopNHashEncoder(BaseEstimator, TransformerMixin):
         hash_buckets: int = 1024,
         add_log_freq: bool = True,
         add_is_unk: bool = True,
-        missing_token: int = 1,
+        missing_token: int = 0,  # Changed from 1 to 0
         hash_key: str = "cat-encoder-v1",
         dtype: type = np.int32,
     ):
@@ -206,10 +220,10 @@ class TopNHashEncoder(BaseEstimator, TransformerMixin):
             counts = X[col].value_counts(dropna=True)
             self.freq_maps_[col] = counts.to_dict()
 
-            # Map top-N categories to contiguous IDs starting after missing_token
+            # Map top-N categories to contiguous IDs starting at 1 (0 reserved for missing)
             top_categories = counts.nlargest(self.top_n).index if self.top_n > 0 else []
             self.category_maps_[col] = {
-                cat: self.missing_token + 1 + idx
+                cat: 1 + idx  # Start from 1, reserve 0 for missing
                 for idx, cat in enumerate(top_categories)
             }
 
@@ -218,7 +232,7 @@ class TopNHashEncoder(BaseEstimator, TransformerMixin):
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         X = pd.DataFrame(X)
         cols = [c for c in self.columns_ if c in X.columns]
-        hashed_start = self.missing_token + 1 + self.top_n
+        hashed_start = 1 + self.top_n  # Hash buckets start after top-N categories
         out = {}
 
         for col in cols:
@@ -232,16 +246,16 @@ class TopNHashEncoder(BaseEstimator, TransformerMixin):
 
             for val in values:
                 if pd.isna(val):
-                    ids.append(self.missing_token)
+                    ids.append(self.missing_token)  # 0 for missing
                     is_unk.append(1)
                 elif val in category_map:
-                    ids.append(category_map[val])
+                    ids.append(category_map[val])  # 1 to top_n
                     is_unk.append(0)
                 else:
-                    # Unknown category: use hash bucket or default
+                    # Unknown category: use hash bucket or default to missing
                     if self.hash_buckets > 0:
                         bucket = self._stable_hash_bucket(col, val, self.hash_buckets)
-                        ids.append(hashed_start + bucket)
+                        ids.append(hashed_start + bucket)  # top_n+1 onwards
                     else:
                         ids.append(self.missing_token)
                     is_unk.append(1)

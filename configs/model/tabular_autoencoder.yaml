@@ -3,7 +3,7 @@ name: tabular_autoencoder
 params:
   num_numerical_features: ${data.num_numerical}
   num_categorical_features: ${data.num_categorical}
-  max_emb_dim: 24
+  max_emb_dim: 384
   noise_factor: 0.0
 
   # Architecture

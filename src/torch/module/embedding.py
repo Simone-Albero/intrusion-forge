@@ -29,7 +29,9 @@ class EmbeddingModule(nn.Module):
 
         for card in cardinalities:
             dim = min(max_emb_dim, int(card**0.5))
-            embedding_layer = nn.Embedding(card + 1, dim, padding_idx=0)
+            embedding_layer = nn.Embedding(
+                num_embeddings=card + 1, embedding_dim=dim, padding_idx=0
+            )
             self.embedding_layers.append(embedding_layer)
             self.embedding_dims.append(dim)
 

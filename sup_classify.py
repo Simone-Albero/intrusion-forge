@@ -1,3 +1,4 @@
+import json
 from typing import Optional, Tuple, List
 from pathlib import Path
 import logging
@@ -15,7 +16,11 @@ from src.common.config import load_config
 from src.common.logging import setup_logger
 
 from src.data.io import load_data_splits
-from src.data.preprocessing import subsample_df, equalize_classes
+from src.data.preprocessing import (
+    subsample_df,
+    random_oversample_df,
+    random_undersample_df,
+)
 
 from src.torch.module.checkpoint import load_latest_checkpoint
 from src.torch.engine import train_step, eval_step, test_step, filter_ignored_classes
@@ -48,13 +53,17 @@ def prepare_loader(cfg) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """Prepare train, validation, and test data loaders."""
     logger.info("Preparing data for PyTorch...")
 
+    num_cols = list(cfg.data.num_cols)
+    cat_cols = list(cfg.data.cat_cols)
+    label_col = "multi_" + cfg.data.label_col
+
     base_path = Path(cfg.path.processed_data)
     train_df, val_df, test_df = load_data_splits(
         base_path, cfg.data.file_name, cfg.data.extension
     )
-    train_df = equalize_classes(
+    train_df = random_oversample_df(
         train_df,
-        label_col=f"multi_{cfg.data.label_col}",
+        label_col=label_col,
         random_state=cfg.seed,
     )
 
@@ -63,12 +72,8 @@ def prepare_loader(cfg) -> Tuple[DataLoader, DataLoader, DataLoader]:
             train_df,
             n_samples=cfg.n_samples,
             random_state=cfg.seed,
-            label_col=cfg.data.label_col,
+            label_col=label_col,
         )
-
-    num_cols = list(cfg.data.num_cols)
-    cat_cols = list(cfg.data.cat_cols)
-    label_col = f"multi_{cfg.data.label_col}"
 
     train_dataset = create_dataset(train_df, num_cols, cat_cols, label_col)
     val_dataset = create_dataset(val_df, num_cols, cat_cols, label_col)
@@ -363,7 +368,7 @@ def run_training(cfg, device):
     """Phase 1: Training the supervised classifier."""
     logger.info("TRAINING")
 
-    train_loader, val_loader, test_loader = prepare_loader(cfg)
+    train_loader, val_loader, _ = prepare_loader(cfg)
 
     model = create_model(cfg.model.name, cfg.model.params, device)
     loss_fn = create_loss(cfg.loss.name, cfg.loss.params, device)
@@ -430,6 +435,13 @@ def main():
         config_name="config",
         overrides=sys.argv[1:],
     )
+
+    df_meta = json.load(open(Path(cfg.path.processed_data) / "df_metadata.json", "r"))
+    cfg.data.num_cols = df_meta["numerical_columns"]
+    cfg.data.cat_cols = df_meta["categorical_columns"]
+    cfg.model.params.num_numerical_features = len(df_meta["numerical_columns"])
+    cfg.model.params.num_categorical_features = len(df_meta["categorical_columns"])
+    cfg.model.params.num_classes = df_meta["num_classes"]
 
     device = torch.device(cfg.device)
     logger.info(f"Using device: {device}")
