@@ -11,6 +11,8 @@ from torch.utils.data import DataLoader
 from ignite.engine import Events
 from ignite.metrics import Accuracy, ConfusionMatrix, Average
 from ignite.handlers.tensorboard_logger import TensorboardLogger
+from sklearn.metrics.pairwise import paired_distances
+from sklearn.metrics import silhouette_score
 
 from src.common.config import load_config
 from src.common.logging import setup_logger
@@ -61,11 +63,11 @@ def prepare_loader(cfg) -> Tuple[DataLoader, DataLoader, DataLoader]:
     train_df, val_df, test_df = load_data_splits(
         base_path, cfg.data.file_name, cfg.data.extension
     )
-    train_df = random_oversample_df(
-        train_df,
-        label_col=label_col,
-        random_state=cfg.seed,
-    )
+    # train_df = random_oversample_df(
+    #     train_df,
+    #     label_col=label_col,
+    #     random_state=cfg.seed,
+    # )
 
     if cfg.n_samples is not None:
         train_df = subsample_df(
@@ -192,8 +194,10 @@ def test(
     tb_logger = TensorboardLogger(log_dir=log_dir)
 
     # Storage for latent representations and labels
-    all_z = []
-    all_labels = []
+    z = []
+    y_true = []
+    y_pred = []
+    X = []
 
     # Setup output transform for metrics
     if ignore_classes is not None:
@@ -209,39 +213,67 @@ def test(
         .with_metric("accuracy", Accuracy(output_transform=prepare_output))
         .with_metric(
             "precision_macro",
-            Precision(average="macro", output_transform=prepare_output),
+            Precision(
+                average="macro",
+                output_transform=prepare_output,
+                num_classes=num_classes,
+            ),
         )
         .with_metric(
             "recall_macro",
-            Recall(average="macro", output_transform=prepare_output),
+            Recall(
+                average="macro",
+                output_transform=prepare_output,
+                num_classes=num_classes,
+            ),
         )
         .with_metric(
             "precision_weighted",
-            Precision(average="weighted", output_transform=prepare_output),
+            Precision(
+                average="weighted",
+                output_transform=prepare_output,
+                num_classes=num_classes,
+            ),
         )
         .with_metric(
             "recall_weighted",
-            Recall(average="weighted", output_transform=prepare_output),
+            Recall(
+                average="weighted",
+                output_transform=prepare_output,
+                num_classes=num_classes,
+            ),
         )
         .with_metric(
             "precision_per_class",
-            Precision(average=None, output_transform=prepare_output),
+            Precision(
+                average=None, output_transform=prepare_output, num_classes=num_classes
+            ),
         )
         .with_metric(
             "recall_per_class",
-            Recall(average=None, output_transform=prepare_output),
+            Recall(
+                average=None, output_transform=prepare_output, num_classes=num_classes
+            ),
         )
         .with_metric(
             "f1_macro",
-            F1(average="macro", output_transform=prepare_output),
+            F1(
+                average="macro",
+                output_transform=prepare_output,
+                num_classes=num_classes,
+            ),
         )
         .with_metric(
             "f1_weighted",
-            F1(average="weighted", output_transform=prepare_output),
+            F1(
+                average="weighted",
+                output_transform=prepare_output,
+                num_classes=num_classes,
+            ),
         )
         .with_metric(
             "f1_per_class",
-            F1(average=None, output_transform=prepare_output),
+            F1(average=None, output_transform=prepare_output, num_classes=num_classes),
         )
         .with_metric(
             "confusion_matrix",
@@ -254,8 +286,10 @@ def test(
     def collect_latents(engine):
         """Store latent representations and labels for visualization."""
         output = engine.state.output
-        all_z.append(output["output"]["z"].detach().cpu().numpy())
-        all_labels.append(output["y_true"].detach().cpu().numpy())
+        z.append(output["output"]["z"].detach().cpu().numpy())
+        y_true.append(output["y_true"].detach().cpu().numpy())
+        y_pred.append(output["output"]["logits"].argmax(dim=1).detach().cpu().numpy())
+        X.append(output["input"].detach().cpu().numpy())
 
     @tester.on(Events.COMPLETED)
     def log_metrics_to_console(engine):
@@ -269,6 +303,32 @@ def test(
                     logger.info(f"  {metric_name}: {metric_value}")
             else:
                 logger.info(f"  {metric_name}: {metric_value:.4f}")
+
+    @tester.on(Events.COMPLETED)
+    def compute_failure_analysis(engine):
+        """Compute failure analysis statistics for each class."""
+        X_array = np.vstack(X)
+        y_true_array = np.concatenate(y_true)
+        y_pred_array = np.concatenate(y_pred)
+
+        labels = np.unique(y_true_array)
+        failure_stats = []
+
+        for label in labels:
+            stats = failure_analysis_for_class(
+                X_test=X_array,
+                y_true=y_true_array,
+                y_pred=y_pred_array,
+                target_label=label,
+                metric="euclidean",
+                n_pairs=200_000,
+            )
+            failure_stats.append(stats)
+
+        failure_analysis_path = log_dir / f"failure_analysis_run_{run_id}.json"
+        with open(failure_analysis_path, "w") as f:
+            json.dump(failure_stats, f, indent=2)
+        logger.info(f"Failure analysis saved to {failure_analysis_path}")
 
     @tester.on(Events.COMPLETED)
     def log_metrics_to_tensorboard(engine):
@@ -295,8 +355,8 @@ def test(
         }
         f1_per_class_dict = {f"f1_{i}": f1.item() for i, f1 in enumerate(f1_per_class)}
 
-        z_array = np.vstack(all_z)
-        labels_array = np.concatenate(all_labels)
+        z_array = np.vstack(z)
+        labels_array = np.concatenate(y_true)
 
         mask = create_subsample_mask(
             labels_array,
@@ -422,6 +482,106 @@ def run_testing(cfg, device):
     logger.info("Testing phase completed successfully")
 
 
+def sample_pair_distances(
+    X, idx_a, idx_b, n_pairs=100_000, metric="euclidean", rng=None
+):
+    """
+    Sample pairwise distances between two sets of indices in X.
+    Args:
+        X: np.ndarray of shape (n_samples, n_features)
+        idx_a: indices of samples in the first set
+        idx_b: indices of samples in the second set
+        n_pairs: number of distance pairs to sample
+        metric: distance metric to use
+        rng: optional numpy random generator
+    Returns:
+        distances: np.ndarray of sampled distances
+    """
+    if rng is None:
+        rng = np.random.default_rng(0)
+
+    idx_a = np.asarray(idx_a)
+    idx_b = np.asarray(idx_b)
+
+    if len(idx_a) == 0 or len(idx_b) == 0:
+        return np.array([])
+
+    ia = rng.integers(0, len(idx_a), size=n_pairs)
+    ib = rng.integers(0, len(idx_b), size=n_pairs)
+
+    if np.array_equal(idx_a, idx_b):
+        mask = ia != ib
+        ia, ib = ia[mask], ib[mask]
+
+    if len(ia) == 0 or len(ib) == 0:
+        return np.array([])
+
+    Xa = X[idx_a[ia]]
+    Xb = X[idx_b[ib]]
+    return paired_distances(Xa, Xb, metric=metric)
+
+
+def failure_analysis_for_class(
+    X_test, y_true, y_pred, target_label, metric="euclidean", n_pairs=200_000, rng=None
+):
+    """
+    Perform failure analysis for a specific class by sampling distances
+    between true positives and false negatives:
+     - fn - fn: small distances may indicate clustered failures
+     - fn - tp: high distances may indicate hard-to-classify points, far away from correct ones
+    """
+    logger.info(f"Computing failure analysis for class {target_label}...")
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+
+    mask_class = y_true == target_label
+    idx_class = np.where(mask_class)[0]
+
+    idx_tp = np.where(mask_class & (y_pred == target_label))[0]
+    idx_fn = np.where(mask_class & (y_pred != target_label))[0]
+
+    d_tp_tp = sample_pair_distances(
+        X_test, idx_tp, idx_tp, n_pairs=n_pairs, metric=metric, rng=rng
+    )
+    d_fn_fn = sample_pair_distances(
+        X_test, idx_fn, idx_fn, n_pairs=n_pairs, metric=metric, rng=rng
+    )
+    d_fn_tp = sample_pair_distances(
+        X_test, idx_fn, idx_tp, n_pairs=n_pairs, metric=metric, rng=rng
+    )
+
+    def summ(d):
+        if d.size == 0:
+            return {"mean": None, "median": None, "p90": None, "n": 0}
+        return {
+            "mean": float(np.mean(d)),
+            "median": float(np.median(d)),
+            "p90": float(np.quantile(d, 0.9)),
+            "n": int(d.size),
+        }
+
+    stats = {
+        "target_label": int(target_label),
+        "n_class": int(len(idx_class)),
+        "n_tp": int(len(idx_tp)),
+        "n_fn": int(len(idx_fn)),
+        "tp_tp": summ(d_tp_tp),
+        "fn_fn": summ(d_fn_fn),
+        "fn_tp": summ(d_fn_tp),
+    }
+
+    # if len(idx_tp) >= 2 and len(idx_fn) >= 2:
+    #     X_sub = X_test[np.concatenate([idx_tp, idx_fn])]
+    #     g = np.array([0] * len(idx_tp) + [1] * len(idx_fn))
+    #     stats["tp_fn_silhouette_within_class"] = float(
+    #         silhouette_score(X_sub, g, metric=metric)
+    #     )
+    # else:
+    #     stats["tp_fn_silhouette_within_class"] = None
+
+    return stats
+
+
 def main():
     """Main training pipeline for supervised learning.
 
@@ -437,11 +597,12 @@ def main():
     )
 
     df_meta = json.load(open(Path(cfg.path.processed_data) / "df_metadata.json", "r"))
-    cfg.data.num_cols = df_meta["numerical_columns"]
-    cfg.data.cat_cols = df_meta["categorical_columns"]
-    cfg.model.params.num_numerical_features = len(df_meta["numerical_columns"])
-    cfg.model.params.num_categorical_features = len(df_meta["categorical_columns"])
+    # cfg.data.num_cols = df_meta["numerical_columns"]
+    # cfg.data.cat_cols = df_meta["categorical_columns"]
+    # cfg.model.params.num_numerical_features = len(df_meta["numerical_columns"])
+    # cfg.model.params.num_categorical_features = len(df_meta["categorical_columns"])
     cfg.model.params.num_classes = df_meta["num_classes"]
+    cfg.loss.params.class_weight = df_meta["class_weights"]
 
     device = torch.device(cfg.device)
     logger.info(f"Using device: {device}")

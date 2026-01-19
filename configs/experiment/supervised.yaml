@@ -1,7 +1,7 @@
 # @package _global_
 defaults:
   - override /model: tabular_classifier
-  - override /loss: classification
+  - override /loss: focal
   - override /loops: default
   - override /optimizer: adamw
   - override /scheduler: one_cycle
@@ -11,5 +11,5 @@ model:
     num_classes: 11
 
 name: supervised
-ignore_classes: [0]
+ignore_classes: null # [0]
 n_samples: null

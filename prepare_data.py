@@ -10,6 +10,7 @@ from sklearn import set_config
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import LabelEncoder, RobustScaler
+from sklearn.decomposition import PCA
 
 from src.common.config import load_config
 from src.common.logging import setup_logger
@@ -23,6 +24,7 @@ from src.data.preprocessing import (
     query_filter,
     rare_category_filter,
 )
+from src.ml.clustering import kmeans_grid_search, hdbscan_grid_search
 
 setup_logger()
 logger = logging.getLogger(__name__)
@@ -125,6 +127,12 @@ def preprocess_df(
     }
     logger.info(f"Label mapping: {label_mapping}")
 
+    class_counts = train_df[multi_label_col].value_counts().sort_index()
+    num_classes = len(class_counts)
+    total_samples = len(train_df)
+    class_weights = total_samples / (num_classes * class_counts)
+    class_weights_list = class_weights.tolist()
+
     # Prepare and save metadata
     metadata = {
         "label_mapping": label_mapping,
@@ -146,7 +154,8 @@ def preprocess_df(
         "multi_label_column": multi_label_col,
         "bin_label_column": f"bin_{label_col}" if benign_tag is not None else None,
         "benign_tag": benign_tag,
-        "num_classes": len(label_encoder.classes_),
+        "num_classes": len(train_df[multi_label_col].unique()),
+        "class_weights": class_weights_list,
     }
 
     metadata_path = Path(cfg.path.processed_data) / "df_metadata.json"
@@ -174,36 +183,47 @@ def preprocess_df(
     return train_df, val_df, test_df
 
 
-def analize_df(
-    df: pd.DataFrame,
+def expand_class_labels(
+    train_df: pd.DataFrame,
+    val_df: pd.DataFrame,
+    test_df: pd.DataFrame,
     cfg: Any,
-) -> None:
-    """Analyze dataframe and log basic statistics."""
-    logger.info("Dataframe Analysis:")
-    logger.info("General Info:")
-    logger.info(f"Number of samples: {len(df)}")
-    logger.info(f"Columns: {df.columns.tolist()}")
-    logger.info("Missing values per column:")
-    df = df.replace([np.inf, -np.inf], np.nan)
-    logger.info(df.isnull().sum())
-    logger.info("Data types:")
-    logger.info(df.dtypes)
+    target_class: Any,
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    feature_cols = list(cfg.data.num_cols) + list(cfg.data.cat_cols)
+    label_col = "multi_" + cfg.data.label_col
 
-    num_cols = list(cfg.data.num_cols)
-    cat_cols = list(cfg.data.cat_cols)
-    label_col = cfg.data.label_col
+    train_mask = train_df[label_col] == target_class
+    val_mask = val_df[label_col] == target_class
+    test_mask = test_df[label_col] == target_class
 
-    logger.info("Numerical Columns Statistics:")
-    logger.info(df[num_cols].describe().T)
+    pca = PCA(n_components=0.95)
+    pca.fit(train_df.loc[train_mask, feature_cols])
+    train_reduced = pca.transform(train_df.loc[train_mask, feature_cols])
+    val_reduced = pca.transform(val_df.loc[val_mask, feature_cols])
+    test_reduced = pca.transform(test_df.loc[test_mask, feature_cols])
 
-    logger.info("Categorical Columns Statistics:")
-    for col in cat_cols:
-        logger.info(f"Column: {col}")
-        logger.info(f"Number of unique values: {df[col].nunique()}")
-        logger.info(df[col].value_counts())
+    model, _ = kmeans_grid_search(train_reduced, n_clusters_range=list(range(1, 10, 1)))
+    train_clusters = model.predict(train_reduced)
+    val_clusters = model.predict(val_reduced)
+    test_clusters = model.predict(test_reduced)
 
-    logger.info("Label Distribution:")
-    logger.info(df[label_col].value_counts())
+    # Shift all labels greater than target_class by number of clusters - 1
+    num_clusters = len(np.unique(train_clusters))
+    shift_amount = num_clusters - 1
+
+    train_df.loc[train_df[label_col] > target_class, label_col] += shift_amount
+    val_df.loc[val_df[label_col] > target_class, label_col] += shift_amount
+    test_df.loc[test_df[label_col] > target_class, label_col] += shift_amount
+
+    # Replace target_class with cluster labels (starting from target_class)
+    train_df.loc[train_mask, label_col] = target_class + train_clusters
+    val_df.loc[val_mask, label_col] = target_class + val_clusters
+    test_df.loc[test_mask, label_col] = target_class + test_clusters
+
+    logger.info(f"Expanded class {target_class} into {num_clusters} subclasses")
+
+    return train_df, val_df, test_df
 
 
 def main() -> None:
@@ -218,10 +238,6 @@ def main() -> None:
     logger.info("Loading raw data...")
     raw_data_path = Path(cfg.path.raw_data) / f"{cfg.data.file_name}.csv"
     df = load_df(str(raw_data_path))
-
-    # Analyze data
-    # logger.info("Analyzing data...")
-    # analize_df(df, cfg)
 
     # Preprocess data
     logger.info("Preprocessing data...")

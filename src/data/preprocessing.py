@@ -22,6 +22,10 @@ def rare_category_filter(
     df: pd.DataFrame, cat_cols: list, min_count: int = 3000
 ) -> pd.DataFrame:
     df = df.copy()
+
+    if min_count is None or min_count <= 0:
+        return df
+
     for col in cat_cols:
         value_counts = df[col].value_counts()
         rare_categories = value_counts[value_counts < min_count].index

@@ -10,9 +10,7 @@ class Precision(Metric):
     Calculates Precision for binary or multiclass classification.
 
     Args:
-        output_transform: A callable that is used to transform the
-            :class:`~ignite.engine.engine.Engine`'s ``process_function``'s output into the
-            form expected by the metric. Default is lambda x: x.
+        output_transform: A callable that is used to transform the output into the form expected by the metric. Default is lambda x: x.
         pred_transform: A callable that converts raw predictions to class predictions.
             Default converts logits to classes (argmax for multi-class, threshold at 0.5 for binary).
             Custom function should take a tensor and return a tensor of predicted class indices.
@@ -26,6 +24,7 @@ class Precision(Metric):
 
     def __init__(
         self,
+        num_classes: int,
         output_transform: Callable = lambda x: x,
         pred_transform: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
         average: Optional[str] = "macro",
@@ -33,6 +32,7 @@ class Precision(Metric):
     ):
         self._pred_transform = pred_transform
         self._average = average
+        self._num_classes = num_classes
         if average not in ["micro", "macro", "weighted", None]:
             raise ValueError(
                 f"Average must be 'micro', 'macro', 'weighted', or None, got {average}"
@@ -41,7 +41,6 @@ class Precision(Metric):
         self._true_positives = None
         self._false_positives = None
         self._support = None
-        self._num_classes = None
 
         super(Precision, self).__init__(
             output_transform=output_transform, device=device
@@ -52,14 +51,16 @@ class Precision(Metric):
         self._true_positives = None
         self._false_positives = None
         self._support = None
-        self._num_classes = None
         super(Precision, self).reset()
 
     @reinit__is_reduced
     def update(self, output: tuple) -> None:
         y_pred, y_true = output[0].detach(), output[1].detach()
 
-        # Apply custom prediction transform or use default
+        # Handle empty batches
+        if y_pred.numel() == 0 or y_true.numel() == 0:
+            return
+
         if self._pred_transform is not None:
             y_pred = self._pred_transform(y_pred)
         else:
@@ -73,9 +74,13 @@ class Precision(Metric):
 
         y_true = y_true.long().squeeze()
 
+        if y_pred.shape != y_true.shape:
+            raise ValueError(
+                f"Shape mismatch after transform: y_pred {y_pred.shape} vs y_true {y_true.shape}"
+            )
+
         # Initialize on first update
-        if self._num_classes is None:
-            self._num_classes = max(y_pred.max().item(), y_true.max().item()) + 1
+        if self._true_positives is None:
             self._true_positives = torch.zeros(
                 self._num_classes, dtype=torch.long, device=self._device
             )
@@ -102,24 +107,29 @@ class Precision(Metric):
                 "PrecisionScore must have at least one update before compute."
             )
 
-        # Calculate precision for each class
         tp = self._true_positives.float()
         fp = self._false_positives.float()
 
         # Avoid division by zero
-        precision = tp / (tp + fp + 1e-15)
+        precision = tp / (tp + fp + 1e-10)
 
         if self._average == "micro":
             # Micro-average: aggregate TP, FP globally
             total_tp = tp.sum()
             total_fp = fp.sum()
-            return (total_tp / (total_tp + total_fp + 1e-15)).item()
+            return (total_tp / (total_tp + total_fp + 1e-10)).item()
+
         elif self._average == "macro":
-            # Macro-average: unweighted mean
-            return precision.mean().item()
+            # Macro-average: unweighted mean (only over classes with support > 0)
+            valid_mask = self._support > 0
+            if valid_mask.any():
+                return precision[valid_mask].mean().item()
+            else:
+                return 0.0
+
         elif self._average == "weighted":
             # Weighted average by support
-            weights = self._support.float() / (self._support.sum().float() + 1e-15)
+            weights = self._support.float() / (self._support.sum().float() + 1e-10)
             return (precision * weights).sum().item()
         else:
             # Return per-class precision
@@ -131,9 +141,7 @@ class Recall(Metric):
     Calculates Recall for binary or multiclass classification.
 
     Args:
-        output_transform: A callable that is used to transform the
-            :class:`~ignite.engine.engine.Engine`'s ``process_function``'s output into the
-            form expected by the metric. Default is lambda x: x.
+        output_transform: A callable that is used to transform the output into the form expected by the metric. Default is lambda x: x.
         pred_transform: A callable that converts raw predictions to class predictions.
             Default converts logits to classes (argmax for multi-class, threshold at 0.5 for binary).
             Custom function should take a tensor and return a tensor of predicted class indices.
@@ -147,6 +155,7 @@ class Recall(Metric):
 
     def __init__(
         self,
+        num_classes: int,
         output_transform: Callable = lambda x: x,
         pred_transform: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
         average: Optional[str] = "macro",
@@ -154,6 +163,7 @@ class Recall(Metric):
     ):
         self._pred_transform = pred_transform
         self._average = average
+        self._num_classes = num_classes
         if average not in ["micro", "macro", "weighted", None]:
             raise ValueError(
                 f"Average must be 'micro', 'macro', 'weighted', or None, got {average}"
@@ -162,7 +172,6 @@ class Recall(Metric):
         self._true_positives = None
         self._false_negatives = None
         self._support = None
-        self._num_classes = None
 
         super(Recall, self).__init__(output_transform=output_transform, device=device)
 
@@ -171,14 +180,16 @@ class Recall(Metric):
         self._true_positives = None
         self._false_negatives = None
         self._support = None
-        self._num_classes = None
         super(Recall, self).reset()
 
     @reinit__is_reduced
     def update(self, output: tuple) -> None:
         y_pred, y_true = output[0].detach(), output[1].detach()
 
-        # Apply custom prediction transform or use default
+        # Handle empty batches
+        if y_pred.numel() == 0 or y_true.numel() == 0:
+            return
+
         if self._pred_transform is not None:
             y_pred = self._pred_transform(y_pred)
         else:
@@ -191,10 +202,12 @@ class Recall(Metric):
                 y_pred = (y_pred > 0.5).long().squeeze()
 
         y_true = y_true.long().squeeze()
+        if y_pred.shape != y_true.shape:
+            raise ValueError(
+                f"Shape mismatch after transform: y_pred {y_pred.shape} vs y_true {y_true.shape}"
+            )
 
-        # Initialize on first update
-        if self._num_classes is None:
-            self._num_classes = max(y_pred.max().item(), y_true.max().item()) + 1
+        if self._true_positives is None:
             self._true_positives = torch.zeros(
                 self._num_classes, dtype=torch.long, device=self._device
             )
@@ -203,6 +216,13 @@ class Recall(Metric):
             )
             self._support = torch.zeros(
                 self._num_classes, dtype=torch.long, device=self._device
+            )
+
+        max_pred = y_pred.max().item() if y_pred.numel() > 0 else 0
+        max_true = y_true.max().item() if y_true.numel() > 0 else 0
+        if max_pred >= self._num_classes or max_true >= self._num_classes:
+            raise ValueError(
+                f"Found class index {max(max_pred, max_true)} but num_classes is {self._num_classes}"
             )
 
         # Update confusion matrix components for each class
@@ -221,24 +241,29 @@ class Recall(Metric):
                 "RecallScore must have at least one update before compute."
             )
 
-        # Calculate recall for each class
         tp = self._true_positives.float()
         fn = self._false_negatives.float()
 
         # Avoid division by zero
-        recall = tp / (tp + fn + 1e-15)
+        recall = tp / (tp + fn + 1e-10)
 
         if self._average == "micro":
             # Micro-average: aggregate TP, FN globally
             total_tp = tp.sum()
             total_fn = fn.sum()
-            return (total_tp / (total_tp + total_fn + 1e-15)).item()
+            return (total_tp / (total_tp + total_fn + 1e-10)).item()
+
         elif self._average == "macro":
-            # Macro-average: unweighted mean
-            return recall.mean().item()
+            # Macro-average: unweighted mean (only over classes with support > 0)
+            valid_mask = self._support > 0
+            if valid_mask.any():
+                return recall[valid_mask].mean().item()
+            else:
+                return 0.0
+
         elif self._average == "weighted":
             # Weighted average by support
-            weights = self._support.float() / (self._support.sum().float() + 1e-15)
+            weights = self._support.float() / (self._support.sum().float() + 1e-10)
             return (recall * weights).sum().item()
         else:
             # Return per-class recall
@@ -250,9 +275,7 @@ class F1(Metric):
     Calculates F1 Score for binary or multiclass classification.
 
     Args:
-        output_transform: A callable that is used to transform the
-            :class:`~ignite.engine.engine.Engine`'s ``process_function``'s output into the
-            form expected by the metric. Default is lambda x: x.
+        output_transform: A callable that is used to transform the output into the form expected by the metric. Default is lambda x: x.
         pred_transform: A callable that converts raw predictions to class predictions.
             Default converts logits to classes (argmax for multi-class, threshold at 0.5 for binary).
             Custom function should take a tensor and return a tensor of predicted class indices.
@@ -266,6 +289,7 @@ class F1(Metric):
 
     def __init__(
         self,
+        num_classes: int,
         output_transform: Callable = lambda x: x,
         pred_transform: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
         average: Optional[str] = "macro",
@@ -273,6 +297,7 @@ class F1(Metric):
     ):
         self._pred_transform = pred_transform
         self._average = average
+        self._num_classes = num_classes
         if average not in ["micro", "macro", "weighted", None]:
             raise ValueError(
                 f"Average must be 'micro', 'macro', 'weighted', or None, got {average}"
@@ -282,7 +307,6 @@ class F1(Metric):
         self._false_positives = None
         self._false_negatives = None
         self._support = None
-        self._num_classes = None
 
         super(F1, self).__init__(output_transform=output_transform, device=device)
 
@@ -292,14 +316,16 @@ class F1(Metric):
         self._false_positives = None
         self._false_negatives = None
         self._support = None
-        self._num_classes = None
         super(F1, self).reset()
 
     @reinit__is_reduced
     def update(self, output: tuple) -> None:
         y_pred, y_true = output[0].detach(), output[1].detach()
 
-        # Apply custom prediction transform or use default
+        # Handle empty batches
+        if y_pred.numel() == 0 or y_true.numel() == 0:
+            return
+
         if self._pred_transform is not None:
             y_pred = self._pred_transform(y_pred)
         else:
@@ -313,9 +339,12 @@ class F1(Metric):
 
         y_true = y_true.long().squeeze()
 
-        # Initialize on first update
-        if self._num_classes is None:
-            self._num_classes = max(y_pred.max().item(), y_true.max().item()) + 1
+        if y_pred.shape != y_true.shape:
+            raise ValueError(
+                f"Shape mismatch after transform: y_pred {y_pred.shape} vs y_true {y_true.shape}"
+            )
+
+        if self._true_positives is None:
             self._true_positives = torch.zeros(
                 self._num_classes, dtype=torch.long, device=self._device
             )
@@ -327,6 +356,14 @@ class F1(Metric):
             )
             self._support = torch.zeros(
                 self._num_classes, dtype=torch.long, device=self._device
+            )
+
+        # Validate indices
+        max_pred = y_pred.max().item() if y_pred.numel() > 0 else 0
+        max_true = y_true.max().item() if y_true.numel() > 0 else 0
+        if max_pred >= self._num_classes or max_true >= self._num_classes:
+            raise ValueError(
+                f"Found class index {max(max_pred, max_true)} but num_classes is {self._num_classes}"
             )
 
         # Update confusion matrix components for each class
@@ -346,37 +383,42 @@ class F1(Metric):
         if self._true_positives is None:
             raise RuntimeError("F1Score must have at least one update before compute.")
 
-        # Calculate precision and recall for each class
         tp = self._true_positives.float()
         fp = self._false_positives.float()
         fn = self._false_negatives.float()
 
         # Avoid division by zero
-        precision = tp / (tp + fp + 1e-15)
-        recall = tp / (tp + fn + 1e-15)
+        precision = tp / (tp + fp + 1e-10)
+        recall = tp / (tp + fn + 1e-10)
 
         # Calculate F1 score
-        f1 = 2 * (precision * recall) / (precision + recall + 1e-15)
+        f1 = 2 * (precision * recall) / (precision + recall + 1e-10)
 
         if self._average == "micro":
             # Micro-average: aggregate TP, FP, FN globally
             total_tp = tp.sum()
             total_fp = fp.sum()
             total_fn = fn.sum()
-            micro_precision = total_tp / (total_tp + total_fp + 1e-15)
-            micro_recall = total_tp / (total_tp + total_fn + 1e-15)
+            micro_precision = total_tp / (total_tp + total_fp + 1e-10)
+            micro_recall = total_tp / (total_tp + total_fn + 1e-10)
             return (
                 2
                 * micro_precision
                 * micro_recall
-                / (micro_precision + micro_recall + 1e-15)
+                / (micro_precision + micro_recall + 1e-10)
             ).item()
+
         elif self._average == "macro":
-            # Macro-average: unweighted mean
-            return f1.mean().item()
+            # Macro-average: unweighted mean (only over classes with support > 0)
+            valid_mask = self._support > 0
+            if valid_mask.any():
+                return f1[valid_mask].mean().item()
+            else:
+                return 0.0
+
         elif self._average == "weighted":
             # Weighted average by support
-            weights = self._support.float() / (self._support.sum().float() + 1e-15)
+            weights = self._support.float() / (self._support.sum().float() + 1e-10)
             return (f1 * weights).sum().item()
         else:
             # Return per-class F1 scores

@@ -280,39 +280,67 @@ def test(
         .with_metric("accuracy", Accuracy(output_transform=prepare_output))
         .with_metric(
             "precision_macro",
-            Precision(average="macro", output_transform=prepare_output),
+            Precision(
+                average="macro",
+                output_transform=prepare_output,
+                num_classes=num_classes,
+            ),
         )
         .with_metric(
             "recall_macro",
-            Recall(average="macro", output_transform=prepare_output),
+            Recall(
+                average="macro",
+                output_transform=prepare_output,
+                num_classes=num_classes,
+            ),
         )
         .with_metric(
             "precision_weighted",
-            Precision(average="weighted", output_transform=prepare_output),
+            Precision(
+                average="weighted",
+                output_transform=prepare_output,
+                num_classes=num_classes,
+            ),
         )
         .with_metric(
             "recall_weighted",
-            Recall(average="weighted", output_transform=prepare_output),
+            Recall(
+                average="weighted",
+                output_transform=prepare_output,
+                num_classes=num_classes,
+            ),
         )
         .with_metric(
             "precision_per_class",
-            Precision(average=None, output_transform=prepare_output),
+            Precision(
+                average=None, output_transform=prepare_output, num_classes=num_classes
+            ),
         )
         .with_metric(
             "recall_per_class",
-            Recall(average=None, output_transform=prepare_output),
+            Recall(
+                average=None, output_transform=prepare_output, num_classes=num_classes
+            ),
         )
         .with_metric(
             "f1_macro",
-            F1(average="macro", output_transform=prepare_output),
+            F1(
+                average="macro",
+                output_transform=prepare_output,
+                num_classes=num_classes,
+            ),
         )
         .with_metric(
             "f1_weighted",
-            F1(average="weighted", output_transform=prepare_output),
+            F1(
+                average="weighted",
+                output_transform=prepare_output,
+                num_classes=num_classes,
+            ),
         )
         .with_metric(
             "f1_per_class",
-            F1(average=None, output_transform=prepare_output),
+            F1(average=None, output_transform=prepare_output, num_classes=num_classes),
         )
         .with_metric(
             "confusion_matrix",
