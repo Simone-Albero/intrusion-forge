@@ -96,7 +96,7 @@ def test_step(engine: Engine, batch: Batch) -> Dict[str, torch.Tensor]:
     }
 
 
-def filter_ignored_classes(
+def exclude_ignored_classes(
     output: torch.Tensor,
     y_true: torch.Tensor,
     ignore_classes: Optional[List[int]] = None,

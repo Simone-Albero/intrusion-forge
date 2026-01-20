@@ -158,7 +158,7 @@ def preprocess_df(
         "class_weights": class_weights_list,
     }
 
-    metadata_path = Path(cfg.path.processed_data) / "df_metadata.json"
+    metadata_path = Path(cfg.path.json_logs) / "df_metadata.json"
     metadata_path.parent.mkdir(parents=True, exist_ok=True)
     with open(metadata_path, "w") as f:
         json.dump(metadata, f, indent=2)

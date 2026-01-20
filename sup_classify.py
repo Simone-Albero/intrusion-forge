@@ -4,15 +4,12 @@ from pathlib import Path
 import logging
 import sys
 
-import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from ignite.engine import Events
 from ignite.metrics import Accuracy, ConfusionMatrix, Average
 from ignite.handlers.tensorboard_logger import TensorboardLogger
-from sklearn.metrics.pairwise import paired_distances
-from sklearn.metrics import silhouette_score
 
 from src.common.config import load_config
 from src.common.logging import setup_logger
@@ -25,7 +22,7 @@ from src.data.preprocessing import (
 )
 
 from src.torch.module.checkpoint import load_latest_checkpoint
-from src.torch.engine import train_step, eval_step, test_step, filter_ignored_classes
+from src.torch.engine import exclude_ignored_classes, train_step, eval_step, test_step
 from src.torch.builders import (
     create_dataloader,
     create_dataset,
@@ -38,9 +35,7 @@ from src.torch.builders import (
 from src.ignite.builders import EngineBuilder
 from src.ignite.metrics import F1, Precision, Recall
 
-from src.ml.projection import tsne_projection, create_subsample_mask
-
-from src.plot.array import confusion_matrix_to_plot, vectors_plot
+from src.plot.array import confusion_matrix_to_plot
 from src.plot.dict import dict_to_bar_plot
 
 setup_logger()
@@ -183,25 +178,20 @@ def test(
     test_loader: DataLoader,
     model: nn.Module,
     device: torch.device,
-    log_dir: Path,
+    tb_log_dir: Path,
+    json_log_dir: Path,
     num_classes: int,
     ignore_classes: Optional[List[int]] = None,
-    run_id: int = 0,
+    run_id: Optional[int] = None,
 ) -> None:
     """Test the model and log results to TensorBoard."""
-    logger.info(f"Running test evaluation (run_id={run_id})...")
+    logger.info(f"Running test evaluation...")
 
-    tb_logger = TensorboardLogger(log_dir=log_dir)
-
-    # Storage for latent representations and labels
-    z = []
-    y_true = []
-    y_pred = []
-    X = []
+    tb_logger = TensorboardLogger(log_dir=tb_log_dir)
 
     # Setup output transform for metrics
     if ignore_classes is not None:
-        prepare_output = lambda x: filter_ignored_classes(
+        prepare_output = lambda x: exclude_ignored_classes(
             x["output"]["logits"], x["y_true"], ignore_classes
         )
     else:
@@ -282,140 +272,89 @@ def test(
         .build()
     )
 
-    @tester.on(Events.ITERATION_COMPLETED)
-    def collect_latents(engine):
-        """Store latent representations and labels for visualization."""
-        output = engine.state.output
-        z.append(output["output"]["z"].detach().cpu().numpy())
-        y_true.append(output["y_true"].detach().cpu().numpy())
-        y_pred.append(output["output"]["logits"].argmax(dim=1).detach().cpu().numpy())
-        X.append(output["input"].detach().cpu().numpy())
-
     @tester.on(Events.COMPLETED)
-    def log_metrics_to_console(engine):
+    def log_to_console(engine):
         """Log all metrics to console using a loop."""
-        logger.info(f"Test Results (run_id={run_id}):")
-        for metric_name, metric_value in engine.state.metrics.items():
+        logger.info(f"Test Results:")
+        metrics = engine.state.metrics
+
+        for metric_name, metric_value in metrics.items():
+            logger.info(f"{metric_name}: {metric_value}")
+
+    @tester.on(Events.COMPLETED)
+    def log_on_json(engine):
+        """Log all metrics to a JSON file."""
+        metrics = engine.state.metrics
+        metrics_to_log = {}
+
+        for metric_name, metric_value in metrics.items():
             if isinstance(metric_value, torch.Tensor):
-                if metric_value.numel() == 1:
-                    logger.info(f"  {metric_name}: {metric_value.item():.4f}")
-                else:
-                    logger.info(f"  {metric_name}: {metric_value}")
+                metrics_to_log[metric_name] = (
+                    metric_value.cpu().numpy().tolist()
+                    if metric_value.numel() > 1
+                    else float(metric_value.cpu().numpy())
+                )
+            elif isinstance(metric_value, list):
+                metrics_to_log[metric_name] = metric_value
+            elif isinstance(metric_value, (int, float, str, bool, type(None))):
+                metrics_to_log[metric_name] = metric_value
             else:
-                logger.info(f"  {metric_name}: {metric_value:.4f}")
+                metrics_to_log[metric_name] = str(metric_value)
+
+        json_path = (
+            json_log_dir
+            / f"test_summary{'_run_' + str(run_id) if run_id is not None else ''}.json"
+        )
+        with open(json_path, "w") as f:
+            json.dump(metrics_to_log, f, indent=4)
+
+        logger.info(f"Test metrics saved to {json_path}")
 
     @tester.on(Events.COMPLETED)
-    def compute_failure_analysis(engine):
-        """Compute failure analysis statistics for each class."""
-        X_array = np.vstack(X)
-        y_true_array = np.concatenate(y_true)
-        y_pred_array = np.concatenate(y_pred)
-
-        labels = np.unique(y_true_array)
-        failure_stats = []
-
-        for label in labels:
-            stats = failure_analysis_for_class(
-                X_test=X_array,
-                y_true=y_true_array,
-                y_pred=y_pred_array,
-                target_label=label,
-                metric="euclidean",
-                n_pairs=200_000,
-            )
-            failure_stats.append(stats)
-
-        failure_analysis_path = log_dir / f"failure_analysis_run_{run_id}.json"
-        with open(failure_analysis_path, "w") as f:
-            json.dump(failure_stats, f, indent=2)
-        logger.info(f"Failure analysis saved to {failure_analysis_path}")
-
-    @tester.on(Events.COMPLETED)
-    def log_metrics_to_tensorboard(engine):
+    def log_to_tensorboard(engine):
         """Log visualizations and metrics to TensorBoard."""
         metrics = engine.state.metrics
-        accuracy = metrics["accuracy"]
-        precision_macro = metrics["precision_macro"]
-        recall_macro = metrics["recall_macro"]
-        f1_macro = metrics["f1_macro"]
-        precision_weighted = metrics["precision_weighted"]
-        recall_weighted = metrics["recall_weighted"]
-        f1_weighted = metrics["f1_weighted"]
-        f1_per_class = metrics["f1_per_class"]
-        confusion_matrix = metrics["confusion_matrix"]
+        global_metrics = [
+            "accuracy",
+            "precision_macro",
+            "recall_macro",
+            "f1_macro",
+            "precision_weighted",
+            "recall_weighted",
+            "f1_weighted",
+        ]
 
-        global_metrics = {
-            "accuracy": accuracy,
-            "precision_macro": precision_macro,
-            "recall_macro": recall_macro,
-            "f1_macro": f1_macro,
-            "precision_weighted": precision_weighted,
-            "recall_weighted": recall_weighted,
-            "f1_weighted": f1_weighted,
-        }
-        f1_per_class_dict = {f"f1_{i}": f1.item() for i, f1 in enumerate(f1_per_class)}
+        for metric_name, metric_value in metrics.items():
+            if metric_name in global_metrics:
+                tb_logger.writer.add_scalar(
+                    f"test/metrics/{metric_name}", metric_value, run_id
+                )
 
-        z_array = np.vstack(z)
-        labels_array = np.concatenate(y_true)
+            if metric_name == "confusion_matrix":
+                cm_figure = confusion_matrix_to_plot(
+                    cm=metric_value.cpu().numpy(),
+                    title="Confusion Matrix",
+                    normalize="true",
+                )
+                tb_logger.writer.add_figure(f"test/confusion_matrix", cm_figure, run_id)
 
-        mask = create_subsample_mask(
-            labels_array,
-            n_samples=min(VISUALIZATION_SAMPLES, len(labels_array)),
-            stratify=True,
-        )
-        subsampled_z = z_array[mask]
-        subsampled_labels = labels_array[mask]
-        projected_z = tsne_projection(subsampled_z)
+            if metric_name == "f1_per_class":
+                f1_per_class = metric_value.cpu().numpy()
+                f1_per_class_dict = {
+                    f"class_{i}": float(f1_per_class[i])
+                    for i in range(len(f1_per_class))
+                }
+                tb_logger.writer.add_figure(
+                    f"test/f1_per_class",
+                    dict_to_bar_plot(f1_per_class_dict),
+                    run_id,
+                )
 
-        latent_figure = vectors_plot(projected_z, subsampled_labels)
-
-        cm_figure = confusion_matrix_to_plot(
-            cm=confusion_matrix.cpu().numpy(),
-            title="Test Confusion Matrix",
-            normalize="true",
-        )
-
-        # Log individual metrics as scalars for trend visualization
-        tb_logger.writer.add_scalar("test/metrics/accuracy", accuracy, run_id)
-        tb_logger.writer.add_scalar(
-            "test/metrics/precision_macro", precision_macro, run_id
-        )
-        tb_logger.writer.add_scalar("test/metrics/recall_macro", recall_macro, run_id)
-        tb_logger.writer.add_scalar("test/metrics/f1_macro", f1_macro, run_id)
-        tb_logger.writer.add_scalar(
-            "test/metrics/precision_weighted", precision_weighted, run_id
-        )
-        tb_logger.writer.add_scalar(
-            "test/metrics/recall_weighted", recall_weighted, run_id
-        )
-        tb_logger.writer.add_scalar("test/metrics/f1_weighted", f1_weighted, run_id)
-
-        tb_logger.writer.add_figure(f"test/confusion_matrix", cm_figure, run_id)
         tb_logger.writer.add_figure(
-            f"test/metrics_summary",
-            dict_to_bar_plot(global_metrics),
+            f"test/global_metrics",
+            dict_to_bar_plot({k: v for k, v in metrics.items() if k in global_metrics}),
             run_id,
         )
-        tb_logger.writer.add_figure(
-            f"test/f1_per_class",
-            dict_to_bar_plot(f1_per_class_dict),
-            run_id,
-        )
-        tb_logger.writer.add_figure(f"test/latent_space", latent_figure, run_id)
-
-        # Log text summary
-        metrics_text = (
-            f"Run ID: {run_id}\n"
-            f"Accuracy: {accuracy:.4f}\n"
-            f"Precision Macro: {precision_macro:.4f}\n"
-            f"Recall Macro: {recall_macro:.4f}\n"
-            f"F1 Macro: {f1_macro:.4f}\n"
-            f"Precision Weighted: {precision_weighted:.4f}\n"
-            f"Recall Weighted: {recall_weighted:.4f}\n"
-            f"F1 Weighted: {f1_weighted:.4f}"
-        )
-        tb_logger.writer.add_text(f"test/run_summary", metrics_text, run_id)
-
         logger.info("Test results logged to TensorBoard.")
 
     try:
@@ -425,8 +364,8 @@ def test(
 
 
 def run_training(cfg, device):
-    """Phase 1: Training the supervised classifier."""
-    logger.info("TRAINING")
+    """Training the supervised classifier."""
+    logger.info("Performing training phase...")
 
     train_loader, val_loader, _ = prepare_loader(cfg)
 
@@ -450,7 +389,7 @@ def run_training(cfg, device):
         device=device,
         patience=cfg.loops.training.early_stopping.patience,
         min_delta=cfg.loops.training.early_stopping.min_delta,
-        log_dir=Path(cfg.path.logs),
+        log_dir=Path(cfg.path.tb_logs),
         checkpoint_dir=checkpoint_dir,
         max_epochs=cfg.loops.training.epochs,
     )
@@ -460,8 +399,8 @@ def run_training(cfg, device):
 
 
 def run_testing(cfg, device):
-    """Phase 2: Testing the trained classifier."""
-    logger.info("TESTING")
+    """Testing the trained classifier."""
+    logger.info("Performing testing phase...")
 
     _, _, test_loader = prepare_loader(cfg)
 
@@ -473,113 +412,14 @@ def run_testing(cfg, device):
         test_loader=test_loader,
         model=model,
         device=device,
-        log_dir=Path(cfg.path.logs),
+        tb_log_dir=Path(cfg.path.tb_logs),
+        json_log_dir=Path(cfg.path.json_logs),
         num_classes=cfg.model.params.num_classes,
         ignore_classes=list(cfg.ignore_classes) if cfg.ignore_classes else None,
-        run_id=cfg.get("run_id", 0),
+        run_id=cfg.get("run_id", None),
     )
 
     logger.info("Testing phase completed successfully")
-
-
-def sample_pair_distances(
-    X, idx_a, idx_b, n_pairs=100_000, metric="euclidean", rng=None
-):
-    """
-    Sample pairwise distances between two sets of indices in X.
-    Args:
-        X: np.ndarray of shape (n_samples, n_features)
-        idx_a: indices of samples in the first set
-        idx_b: indices of samples in the second set
-        n_pairs: number of distance pairs to sample
-        metric: distance metric to use
-        rng: optional numpy random generator
-    Returns:
-        distances: np.ndarray of sampled distances
-    """
-    if rng is None:
-        rng = np.random.default_rng(0)
-
-    idx_a = np.asarray(idx_a)
-    idx_b = np.asarray(idx_b)
-
-    if len(idx_a) == 0 or len(idx_b) == 0:
-        return np.array([])
-
-    ia = rng.integers(0, len(idx_a), size=n_pairs)
-    ib = rng.integers(0, len(idx_b), size=n_pairs)
-
-    if np.array_equal(idx_a, idx_b):
-        mask = ia != ib
-        ia, ib = ia[mask], ib[mask]
-
-    if len(ia) == 0 or len(ib) == 0:
-        return np.array([])
-
-    Xa = X[idx_a[ia]]
-    Xb = X[idx_b[ib]]
-    return paired_distances(Xa, Xb, metric=metric)
-
-
-def failure_analysis_for_class(
-    X_test, y_true, y_pred, target_label, metric="euclidean", n_pairs=200_000, rng=None
-):
-    """
-    Perform failure analysis for a specific class by sampling distances
-    between true positives and false negatives:
-     - fn - fn: small distances may indicate clustered failures
-     - fn - tp: high distances may indicate hard-to-classify points, far away from correct ones
-    """
-    logger.info(f"Computing failure analysis for class {target_label}...")
-    y_true = np.asarray(y_true)
-    y_pred = np.asarray(y_pred)
-
-    mask_class = y_true == target_label
-    idx_class = np.where(mask_class)[0]
-
-    idx_tp = np.where(mask_class & (y_pred == target_label))[0]
-    idx_fn = np.where(mask_class & (y_pred != target_label))[0]
-
-    d_tp_tp = sample_pair_distances(
-        X_test, idx_tp, idx_tp, n_pairs=n_pairs, metric=metric, rng=rng
-    )
-    d_fn_fn = sample_pair_distances(
-        X_test, idx_fn, idx_fn, n_pairs=n_pairs, metric=metric, rng=rng
-    )
-    d_fn_tp = sample_pair_distances(
-        X_test, idx_fn, idx_tp, n_pairs=n_pairs, metric=metric, rng=rng
-    )
-
-    def summ(d):
-        if d.size == 0:
-            return {"mean": None, "median": None, "p90": None, "n": 0}
-        return {
-            "mean": float(np.mean(d)),
-            "median": float(np.median(d)),
-            "p90": float(np.quantile(d, 0.9)),
-            "n": int(d.size),
-        }
-
-    stats = {
-        "target_label": int(target_label),
-        "n_class": int(len(idx_class)),
-        "n_tp": int(len(idx_tp)),
-        "n_fn": int(len(idx_fn)),
-        "tp_tp": summ(d_tp_tp),
-        "fn_fn": summ(d_fn_fn),
-        "fn_tp": summ(d_fn_tp),
-    }
-
-    # if len(idx_tp) >= 2 and len(idx_fn) >= 2:
-    #     X_sub = X_test[np.concatenate([idx_tp, idx_fn])]
-    #     g = np.array([0] * len(idx_tp) + [1] * len(idx_fn))
-    #     stats["tp_fn_silhouette_within_class"] = float(
-    #         silhouette_score(X_sub, g, metric=metric)
-    #     )
-    # else:
-    #     stats["tp_fn_silhouette_within_class"] = None
-
-    return stats
 
 
 def main():
@@ -596,7 +436,7 @@ def main():
         overrides=sys.argv[1:],
     )
 
-    df_meta = json.load(open(Path(cfg.path.processed_data) / "df_metadata.json", "r"))
+    df_meta = json.load(open(Path(cfg.path.json_logs) / "df_metadata.json", "r"))
     # cfg.data.num_cols = df_meta["numerical_columns"]
     # cfg.data.cat_cols = df_meta["categorical_columns"]
     # cfg.model.params.num_numerical_features = len(df_meta["numerical_columns"])
