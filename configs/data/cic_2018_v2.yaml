@@ -59,6 +59,6 @@ filter_query: null # ${data.label_col} != '${data.benign_tag}'
 min_cat_count: 1000
 top_n: 128
 hash_buckets: 256
-add_log_freq: true
-add_is_unk: true
+add_log_freq: false
+add_is_unk: false
 

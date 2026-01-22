@@ -166,10 +166,20 @@ def sample_inter_class_distances(
 
 def summarize_distances(d):
     if d.size == 0:
-        return {"mean": np.nan, "median": np.nan, "p90": np.nan, "p95": np.nan, "n": 0}
+        return {
+            "mean": np.nan,
+            "median": np.nan,
+            "min": np.nan,
+            "max": np.nan,
+            "p90": np.nan,
+            "p95": np.nan,
+            "n": 0,
+        }
     return {
         "mean": float(np.mean(d)),
         "median": float(np.median(d)),
+        "min": float(np.min(d)),
+        "max": float(np.max(d)),
         "p90": float(np.quantile(d, 0.90)),
         "p95": float(np.quantile(d, 0.95)),
         "n": int(d.size),
@@ -191,20 +201,13 @@ def run_separability_analysis(df: pd.DataFrame, label_col: str):
         idx_c = class_indices[c]
         idx_not = all_idx[y != c]
 
-        # Compute class centroid and radius
         X_c = X[idx_c]
         centroid = np.mean(X_c, axis=0)
         distances_from_centroid = np.linalg.norm(X_c - centroid, axis=1)
         class_radius = float(np.max(distances_from_centroid))
         radius_mean = float(np.mean(distances_from_centroid))
         radius_median = float(np.median(distances_from_centroid))
-
-        logger.info(f"  Class radius (max distance from centroid): {class_radius:.4f}")
-        logger.info(f"  Mean distance from centroid: {radius_mean:.4f}")
-
-        logger.info(f"  Computing intra-class distances.")
         intra = sample_intra_class_distances(X, idx_c)
-        logger.info(f"  Computing inter-class distances.")
         inter = sample_inter_class_distances(X, idx_c, idx_not)
 
         s_intra = summarize_distances(intra)
@@ -226,7 +229,6 @@ def run_separability_analysis(df: pd.DataFrame, label_col: str):
             return (inter_mean - intra_mean) / max(intra_mean, inter_mean)
 
         class_sil_score = approximate_class_silhouette(s_intra["mean"], s_inter["mean"])
-        logger.info(f"  Approximate silhouette score for class {c}: {class_sil_score}")
 
         rows.append(
             {
@@ -237,10 +239,14 @@ def run_separability_analysis(df: pd.DataFrame, label_col: str):
                 "radius_median": radius_median,
                 "intra_mean": s_intra["mean"],
                 "intra_median": s_intra["median"],
+                "intra_min": s_intra["min"],
+                "intra_max": s_intra["max"],
                 "intra_p90": s_intra["p90"],
                 "intra_p95": s_intra["p95"],
                 "inter_mean": s_inter["mean"],
                 "inter_median": s_inter["median"],
+                "inter_min": s_inter["min"],
+                "inter_max": s_inter["max"],
                 "inter_p90": s_inter["p90"],
                 "inter_p95": s_inter["p95"],
                 "intra_inter_ratio": float(ratio),
@@ -277,11 +283,7 @@ def main() -> None:
         config_name="config",
         overrides=sys.argv[1:],
     )
-    num_cols = list(cfg.data.num_cols)
-    cat_cols = list(cfg.data.cat_cols)
-    features = num_cols + cat_cols
     label_col = cfg.data.label_col
-    benign_tag = cfg.data.benign_tag
 
     # Load raw data
 

@@ -1,8 +1,9 @@
 import json
-from typing import Optional, Tuple, List
+from typing import Any, Optional, Tuple, List
 from pathlib import Path
 import logging
 import sys
+import shutil
 
 import torch
 import torch.nn as nn
@@ -58,11 +59,6 @@ def prepare_loader(cfg) -> Tuple[DataLoader, DataLoader, DataLoader]:
     train_df, val_df, test_df = load_data_splits(
         base_path, cfg.data.file_name, cfg.data.extension
     )
-    # train_df = random_oversample_df(
-    #     train_df,
-    #     label_col=label_col,
-    #     random_state=cfg.seed,
-    # )
 
     if cfg.n_samples is not None:
         train_df = subsample_df(
@@ -95,6 +91,7 @@ def prepare_loader(cfg) -> Tuple[DataLoader, DataLoader, DataLoader]:
 
 
 def train(
+    cfg: Any,
     train_loader: DataLoader,
     val_loader: DataLoader,
     model: nn.Module,
@@ -104,12 +101,17 @@ def train(
     device: torch.device,
     patience: int,
     min_delta: float,
-    log_dir: Path,
-    checkpoint_dir: Path,
     max_epochs: int = 50,
     max_grad_norm: float = 1.0,
 ) -> None:
     """Train the model with validation and checkpointing."""
+    checkpoint_dir = Path(cfg.path.models)
+
+    log_dir = Path(cfg.path.tb_logs) / "training"
+    if log_dir.exists():
+        shutil.rmtree(log_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
+
     tb_logger = TensorboardLogger(log_dir=log_dir)
 
     trainer = (
@@ -125,7 +127,7 @@ def train(
         .with_metric("loss", Average(output_transform=lambda x: x["loss"]))
         .with_tensorboard(
             tb_logger=tb_logger,
-            tag="training",
+            tag="train",
             output_transform=lambda x: {"loss": x["loss"], "grad_norm": x["grad_norm"]},
         )
         .with_optimizer_logging(tb_logger=tb_logger, optimizer=optimizer)
@@ -175,11 +177,10 @@ def train(
 
 
 def test(
+    cfg: Any,
     test_loader: DataLoader,
     model: nn.Module,
     device: torch.device,
-    tb_log_dir: Path,
-    json_log_dir: Path,
     num_classes: int,
     ignore_classes: Optional[List[int]] = None,
     run_id: Optional[int] = None,
@@ -187,7 +188,12 @@ def test(
     """Test the model and log results to TensorBoard."""
     logger.info(f"Running test evaluation...")
 
-    tb_logger = TensorboardLogger(log_dir=tb_log_dir)
+    log_dir = Path(cfg.path.tb_logs) / "testing"
+    if log_dir.exists():
+        shutil.rmtree(log_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    tb_logger = TensorboardLogger(log_dir=log_dir)
 
     # Setup output transform for metrics
     if ignore_classes is not None:
@@ -302,7 +308,7 @@ def test(
                 metrics_to_log[metric_name] = str(metric_value)
 
         json_path = (
-            json_log_dir
+            Path(cfg.path.json_logs)
             / f"test_summary{'_run_' + str(run_id) if run_id is not None else ''}.json"
         )
         with open(json_path, "w") as f:
@@ -378,8 +384,8 @@ def run_training(cfg, device):
         cfg.scheduler.name, cfg.scheduler.params, optimizer, train_loader
     )
 
-    checkpoint_dir = Path(cfg.path.models)
     train(
+        cfg,
         train_loader=train_loader,
         val_loader=val_loader,
         model=model,
@@ -389,13 +395,11 @@ def run_training(cfg, device):
         device=device,
         patience=cfg.loops.training.early_stopping.patience,
         min_delta=cfg.loops.training.early_stopping.min_delta,
-        log_dir=Path(cfg.path.tb_logs),
-        checkpoint_dir=checkpoint_dir,
         max_epochs=cfg.loops.training.epochs,
     )
 
     logger.info("Training phase completed successfully")
-    return model, checkpoint_dir
+    return model
 
 
 def run_testing(cfg, device):
@@ -409,11 +413,10 @@ def run_testing(cfg, device):
     load_latest_checkpoint(checkpoint_dir, model, device)
 
     test(
+        cfg,
         test_loader=test_loader,
         model=model,
         device=device,
-        tb_log_dir=Path(cfg.path.tb_logs),
-        json_log_dir=Path(cfg.path.json_logs),
         num_classes=cfg.model.params.num_classes,
         ignore_classes=list(cfg.ignore_classes) if cfg.ignore_classes else None,
         run_id=cfg.get("run_id", None),
@@ -437,10 +440,6 @@ def main():
     )
 
     df_meta = json.load(open(Path(cfg.path.json_logs) / "df_metadata.json", "r"))
-    # cfg.data.num_cols = df_meta["numerical_columns"]
-    # cfg.data.cat_cols = df_meta["categorical_columns"]
-    # cfg.model.params.num_numerical_features = len(df_meta["numerical_columns"])
-    # cfg.model.params.num_categorical_features = len(df_meta["categorical_columns"])
     cfg.model.params.num_classes = df_meta["num_classes"]
     cfg.loss.params.class_weight = df_meta["class_weights"]
 

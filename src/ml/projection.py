@@ -54,14 +54,14 @@ def create_subsample_mask(
     return mask
 
 
-def tsne_projection(
-    data: np.ndarray,
-    n_components: int = 2,
-    random_state: int = 42,
-) -> np.ndarray:
-    """
-    Apply t-SNE projection to reduce the dimensionality of the data.
-    """
-    tsne = TSNE(n_components=n_components, random_state=random_state)
+def tsne_projection(data, perplexity=None):
+    """Project data using t-SNE with adaptive perplexity."""
+    n_samples = len(data)
+
+    if perplexity is None:
+        perplexity = min(30, (n_samples - 1) // 3)
+        perplexity = max(5, perplexity)
+
+    tsne = TSNE(n_components=2, perplexity=perplexity, random_state=42)
     projected_data = tsne.fit_transform(data)
     return projected_data

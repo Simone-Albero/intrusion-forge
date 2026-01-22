@@ -1,8 +1,10 @@
 import json
+import shutil
 from typing import Optional
 from pathlib import Path
 import logging
 import sys
+import pickle
 
 import numpy as np
 import torch
@@ -84,7 +86,6 @@ def failure_analysis_for_class(
      - fn - fn: small distances may indicate clustered failures
      - fn - tp: high distances may indicate hard-to-classify points, far away from correct ones
     """
-    logger.info(f"Computing failure analysis for class {target_class}...")
     y_true = np.asarray(y_true)
     y_pred = np.asarray(y_pred)
 
@@ -167,15 +168,18 @@ def perform_inference(
     x_categorical,
     y,
     device,
-    tb_log_dir: Path,
-    json_log_dir: Path,
     suffix: str = "",
 ) -> None:
     logger.info("Running inference...")
     VISUALIZATION_SAMPLES = 3000
     EVALUATION_SAMPLES = 10_000
 
-    tb_logger = TensorboardLogger(log_dir=tb_log_dir)
+    log_dir = Path(cfg.path.tb_logs) / "inference" / suffix
+    if log_dir.exists():
+        shutil.rmtree(log_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    tb_logger = TensorboardLogger(log_dir=log_dir)
 
     model = create_model(cfg.model.name, cfg.model.params, device)
     checkpoint_dir = Path(cfg.path.models)
@@ -199,32 +203,73 @@ def perform_inference(
         title="Confusion Matrix",
         normalize="true",
     )
-    tb_logger.writer.add_figure(
-        f"{suffix}/confusion_matrix", cm_figure, cfg.get("run_id", 0)
-    )
+    tb_logger.writer.add_figure(f"confusion_matrix", cm_figure, cfg.get("run_id", 0))
+
+    fn_dict = {}
+    for label in unique_classes:
+        fn_indices = np.where((y_true == label) & (y_pred != label))[0]
+        fn_dict[int(label)] = fn_indices.tolist()
+
+    pickle_path = Path(cfg.path.pickles) / f"false_negatives_{suffix}.pkl"
+    pickle_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(pickle_path, "wb") as f:
+        pickle.dump(fn_dict, f)
+    logger.info(f"False negatives dictionary saved to {pickle_path}")
 
     all_stats = []
     for label in unique_classes:
+        logger.info(f"Failure analysis for class {label} ...")
         stats = failure_analysis_for_class(
-            X=z,
+            X=x_numerical.cpu().numpy(),
             y_true=y_true,
             y_pred=y_pred,
             target_class=label,
             metric="euclidean",
             max_samples=EVALUATION_SAMPLES,
         )
-        logger.info(f"Failure analysis for class {label}:\n{stats}")
         tb_logger.writer.add_text(
-            f"failure_analysis_{suffix}/class_{label}", json.dumps(stats, indent=2)
+            f"failure_analysis/class_{label}", json.dumps(stats, indent=2)
         )
         all_stats.append(stats)
 
+        class_mask = y_true == label
+        x_class = x_numerical[class_mask]
+        z_class = z[class_mask]
+        y_class = y_true[class_mask]
+        y_pred_class = y_pred[class_mask]
+
+        n_samples = min(len(z_class), EVALUATION_SAMPLES)
+        if n_samples < len(z_class):
+            sample_indices = np.random.choice(
+                len(z_class), size=n_samples, replace=False
+            )
+            x_class = x_class[sample_indices]
+            z_class = z_class[sample_indices]
+            y_class = y_class[sample_indices]
+            y_pred_class = y_pred_class[sample_indices]
+
+        reduced_z = tsne_projection(z_class)
+        # TP labeled by 1, FN by 0
+        is_correct = (y_class == y_pred_class).astype(int)
+        latent_figure = vectors_plot(reduced_z, is_correct)
+        tb_logger.writer.add_figure(f"latent_spaces/class_{label}", latent_figure)
+
+        reduced_x = tsne_projection(x_class)
+        latent_figure = vectors_plot(reduced_x, is_correct)
+        tb_logger.writer.add_figure(f"raw_spaces/class_{label}", latent_figure)
+
     json_path = (
-        json_log_dir
+        Path(cfg.path.json_logs)
         / f"failure_analysis{'_run_' + str(cfg.get('run_id')) if cfg.get('run_id') is not None else ''}.json"
     )
+    json_path.parent.mkdir(parents=True, exist_ok=True)
     with open(json_path, "w") as f:
         json.dump(all_stats, f, indent=2)
+
+    mask = y_true != 2
+    y_true = y_true[mask]
+    z = z[mask]
+    x_numerical = x_numerical[mask]
 
     visualizzation_mask = create_subsample_mask(
         labels=y_true,
@@ -233,7 +278,12 @@ def perform_inference(
     )
     reduced_z = tsne_projection(z[visualizzation_mask])
     latent_figure = vectors_plot(reduced_z, y_true[visualizzation_mask])
-    tb_logger.writer.add_figure(f"{suffix}/latent_space", latent_figure)
+    tb_logger.writer.add_figure(f"latent_spaces/class_all", latent_figure)
+
+    reduced_x = tsne_projection(x_numerical[visualizzation_mask])
+    latent_figure = vectors_plot(reduced_x, y_true[visualizzation_mask])
+    tb_logger.writer.add_figure(f"raw_spaces/class_all", latent_figure)
+
     tb_logger.close()
     logger.info("Inference completed.")
 
@@ -246,21 +296,11 @@ def main():
     )
 
     df_meta = json.load(open(Path(cfg.path.json_logs) / "df_metadata.json", "r"))
-    # cfg.data.num_cols = df_meta["numerical_columns"]
-    # cfg.data.cat_cols = df_meta["categorical_columns"]
-    # cfg.model.params.num_numerical_features = len(df_meta["numerical_columns"])
-    # cfg.model.params.num_categorical_features = len(df_meta["categorical_columns"])
     cfg.model.params.num_classes = df_meta["num_classes"]
     cfg.loss.params.class_weight = df_meta["class_weights"]
 
     device = torch.device(cfg.device)
     logger.info(f"Using device: {device}")
-
-    tb_log_dir = Path(cfg.path.tb_logs)
-    tb_log_dir.mkdir(parents=True, exist_ok=True)
-
-    json_log_dir = Path(cfg.path.json_logs)
-    json_log_dir.mkdir(parents=True, exist_ok=True)
 
     filter_query = cfg.get("filter_query", None)
     (x_num_train, x_cat_train, y_train), (x_num_test, x_cat_test, y_test) = (
@@ -273,8 +313,6 @@ def main():
         x_cat_train,
         y_train,
         device,
-        tb_log_dir,
-        json_log_dir,
         suffix="train",
     )
 
@@ -284,11 +322,14 @@ def main():
         x_cat_test,
         y_test,
         device,
-        tb_log_dir,
-        json_log_dir,
         suffix="test",
     )
 
 
 if __name__ == "__main__":
     main()
+
+
+# test creazione nuove classi da matrice di confusione (anche ricorsivo)
+# fortifica misurazioni confrontando con scenario "migliore" su cic
+# rafforza i risultati accorpando le calssi in cic e ricostruendo quelle originali con procedimento inverso

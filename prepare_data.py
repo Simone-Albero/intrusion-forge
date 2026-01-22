@@ -131,7 +131,9 @@ def preprocess_df(
     num_classes = len(class_counts)
     total_samples = len(train_df)
     class_weights = total_samples / (num_classes * class_counts)
-    class_weights_list = class_weights.tolist()
+    log_weights = np.log1p(class_weights)  # log(1 + x)
+    normalized_weights = log_weights / log_weights.max()
+    class_weights_list = normalized_weights.tolist()
 
     # Prepare and save metadata
     metadata = {
