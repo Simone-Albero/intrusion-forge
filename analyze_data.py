@@ -34,7 +34,7 @@ def prepare_data(cfg, filter_query: str = None):
     num_cols = list(cfg.data.num_cols)
     cat_cols = list(cfg.data.cat_cols)
     feature_cols = num_cols  # + cat_cols
-    label_col = cfg.data.label_col
+    label_col = "multi_" + cfg.data.label_col
 
     base_path = Path(cfg.path.processed_data)
     train_df, _, test_df = load_data_splits(
@@ -283,7 +283,7 @@ def main() -> None:
         config_name="config",
         overrides=sys.argv[1:],
     )
-    label_col = cfg.data.label_col
+    label_col = "multi_" + cfg.data.label_col
 
     # Load raw data
 
