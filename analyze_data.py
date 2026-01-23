@@ -15,7 +15,7 @@ from sklearn.model_selection import train_test_split
 from src.common.config import load_config
 from src.common.logging import setup_logger
 
-from src.data.io import load_data_splits, load_df
+from src.data.io import load_data_splits, load_df, save_df
 from src.data.preprocessing import (
     subsample_df,
     random_oversample_df,
@@ -33,8 +33,8 @@ def prepare_data(cfg, filter_query: str = None):
 
     num_cols = list(cfg.data.num_cols)
     cat_cols = list(cfg.data.cat_cols)
-    feature_cols = num_cols  # + cat_cols
-    label_col = "multi_" + cfg.data.label_col
+    feature_cols = num_cols + cat_cols
+    label_col = cfg.data.label_col
 
     base_path = Path(cfg.path.processed_data)
     train_df, _, test_df = load_data_splits(
@@ -276,6 +276,85 @@ def run_separability_analysis(df: pd.DataFrame, label_col: str):
     return separability_df, sil_score
 
 
+def class_feature_similarity(df, class_a, class_b, label_col, num_cols, cat_cols):
+    """
+    Compute feature similarity between two classes.
+
+    Returns similarity scores in [0, 1] where:
+    - 1 = identical distributions
+    - 0 = completely different distributions
+
+    For numerical features: uses Bhattacharyya coefficient (overlap between distributions)
+    For categorical features: uses Jaccard similarity
+    """
+    df_a = df[df[label_col] == class_a]
+    df_b = df[df[label_col] == class_b]
+
+    out = {}
+    global_similarity = 0.0
+    n_features = 0
+
+    # Numerical features: Bhattacharyya coefficient
+    # Assumes normal distributions and measures overlap
+    for col in num_cols:
+        mean_a = df_a[col].mean()
+        mean_b = df_b[col].mean()
+
+        std_a = df_a[col].std()
+        std_b = df_b[col].std()
+
+        # Bhattacharyya coefficient for normal distributions
+        # BC = exp(-0.25 * D_B) where D_B is Bhattacharyya distance
+        variance_a = std_a**2 + 1e-8
+        variance_b = std_b**2 + 1e-8
+
+        similarity = 1 - abs(mean_a - mean_b) / (std_a + std_b + 1e-8)
+        similarity = float(max(0.0, min(1.0, similarity)))
+
+        out[col] = {
+            "class_a_mean": float(mean_a),
+            "class_a_std": float(std_a),
+            "class_b_mean": float(mean_b),
+            "class_b_std": float(std_b),
+            "similarity": similarity,
+        }
+        global_similarity += similarity
+        n_features += 1
+
+    # Categorical features: Jaccard similarity
+    for col in cat_cols:
+        freq_a = df_a[col].value_counts(normalize=True)
+        freq_b = df_b[col].value_counts(normalize=True)
+
+        # Get all categories from both classes
+        all_categories = set(freq_a.index).union(set(freq_b.index))
+
+        # Compute intersection (minimum frequencies) and union (maximum frequencies)
+        intersection = sum(
+            min(freq_a.get(cat, 0), freq_b.get(cat, 0)) for cat in all_categories
+        )
+        union = sum(
+            max(freq_a.get(cat, 0), freq_b.get(cat, 0)) for cat in all_categories
+        )
+
+        # Jaccard similarity: |A ∩ B| / |A ∪ B|
+        similarity = float(intersection / union) if union > 0 else 0.0
+
+        out[col] = {
+            "class_a_top_5_freq": list(freq_a[:5].index),
+            "class_b_top_5_freq": list(freq_b[:5].index),
+            "similarity": similarity,
+        }
+        global_similarity += similarity
+        n_features += 1
+
+    # Global similarity: average across all features
+    out["global_similarity"] = (
+        float(global_similarity / n_features) if n_features > 0 else 0.0
+    )
+    return out
+
+
 def main() -> None:
     """Main entry point for data preparation."""
     cfg = load_config(
@@ -296,36 +375,67 @@ def main() -> None:
 
     filter_query = cfg.get("filter_query", None)
     train_df, test_df = prepare_data(cfg, filter_query=filter_query)
-    sep_df_train, sil_score_train = run_separability_analysis(
-        train_df, label_col=label_col
-    )
-    sep_df_test, sil_score_test = run_separability_analysis(
-        test_df, label_col=label_col
+    # sep_df_train, sil_score_train = run_separability_analysis(
+    #     train_df, label_col=label_col
+    # )
+    # sep_df_test, sil_score_test = run_separability_analysis(
+    #     test_df, label_col=label_col
+    # )
+
+    # logger.info("=== Separability (intra/inter) Train ===")
+    # logger.info(sep_df_train.head(11))
+    # logger.info("=== Separability (intra/inter) Test ===")
+    # logger.info(sep_df_test.head(11))
+
+    # json_path = Path(cfg.path.json_logs)
+    # json_path.mkdir(parents=True, exist_ok=True)
+    # sep_df_train.to_json(
+    #     json_path
+    #     / f"separability_train{'_run_' + str(cfg.get('run_id')) if cfg.get('run_id') is not None else ''}.json",
+    #     orient="records",
+    #     indent=2,
+    # )
+    # sep_df_test.to_json(
+    #     json_path
+    #     / f"separability_test{'_run_' + str(cfg.get('run_id')) if cfg.get('run_id') is not None else ''}.json",
+    #     orient="records",
+    #     indent=2,
+    # )
+
+    # logger.info("\n=== Silhouette Score ===")
+    # logger.info(sil_score_train)
+    # logger.info(sil_score_test)
+    out = class_feature_similarity(
+        train_df,
+        class_a="Benign",
+        class_b="Backdoor",
+        label_col=cfg.data.label_col,
+        num_cols=cfg.data.num_cols,
+        cat_cols=cfg.data.cat_cols,
     )
 
-    logger.info("=== Separability (intra/inter) Train ===")
-    logger.info(sep_df_train.head(11))
-    logger.info("=== Separability (intra/inter) Test ===")
-    logger.info(sep_df_test.head(11))
+    rows = []
+    for feature, stats in out.items():
+        if feature == "global_similarity":
+            continue
 
-    json_path = Path(cfg.path.json_logs)
-    json_path.mkdir(parents=True, exist_ok=True)
-    sep_df_train.to_json(
-        json_path
-        / f"separability_train{'_run_' + str(cfg.get('run_id')) if cfg.get('run_id') is not None else ''}.json",
-        orient="records",
-        indent=2,
-    )
-    sep_df_test.to_json(
-        json_path
-        / f"separability_test{'_run_' + str(cfg.get('run_id')) if cfg.get('run_id') is not None else ''}.json",
-        orient="records",
-        indent=2,
-    )
+        row = {
+            "feature": feature,
+            "similarity": stats["similarity"],
+            "class_a_mean": stats.get("class_a_mean", None),
+            "class_a_std": stats.get("class_a_std", None),
+            "class_b_mean": stats.get("class_b_mean", None),
+            "class_b_std": stats.get("class_b_std", None),
+            "class_a_top_5_freq": str(stats.get("class_a_top_5_freq", None)),
+            "class_b_top_5_freq": str(stats.get("class_b_top_5_freq", None)),
+        }
+        rows.append(row)
 
-    logger.info("\n=== Silhouette Score ===")
-    logger.info(sil_score_train)
-    logger.info(sil_score_test)
+    similarity_df = pd.DataFrame(rows)
+    similarity_df = similarity_df.sort_values("similarity", ascending=False)
+    logger.info(similarity_df)
+    logger.info(f"Global similarity: {out['global_similarity']}")
+    save_df(similarity_df, Path(cfg.path.json_logs) / "class_feature_similarity.csv")
 
 
 if __name__ == "__main__":
