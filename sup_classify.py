@@ -1,27 +1,19 @@
 import json
-from typing import Any, Optional, Tuple, List
-from pathlib import Path
+import shutil
 import logging
 import sys
-import shutil
+from pathlib import Path
 
 import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader
 from ignite.engine import Events
 from ignite.metrics import Accuracy, ConfusionMatrix, Average
 from ignite.handlers.tensorboard_logger import TensorboardLogger
 
 from src.common.config import load_config
 from src.common.logging import setup_logger
-
+from src.common.utils import save_to_json, load_from_json
 from src.data.io import load_data_splits
-from src.data.preprocessing import (
-    subsample_df,
-    random_oversample_df,
-    random_undersample_df,
-)
-
+from src.data.preprocessing import subsample_df
 from src.torch.module.checkpoint import load_latest_checkpoint
 from src.torch.engine import exclude_ignored_classes, train_step, eval_step, test_step
 from src.torch.builders import (
@@ -32,82 +24,64 @@ from src.torch.builders import (
     create_optimizer,
     create_scheduler,
 )
-
 from src.ignite.builders import EngineBuilder
 from src.ignite.metrics import F1, Precision, Recall
-
 from src.plot.array import confusion_matrix_to_plot
 from src.plot.dict import dict_to_bar_plot
 
 setup_logger()
 logger = logging.getLogger(__name__)
 
-# Constants
-EPSILON = 1e-8
-VISUALIZATION_SAMPLES = 3000
 
-
-def prepare_loader(cfg) -> Tuple[DataLoader, DataLoader, DataLoader]:
-    """Prepare train, validation, and test data loaders."""
-    logger.info("Preparing data for PyTorch...")
-
-    num_cols = list(cfg.data.num_cols)
-    cat_cols = list(cfg.data.cat_cols)
-    label_col = "multi_" + cfg.data.label_col
-
-    base_path = Path(cfg.path.processed_data)
+def load_data(
+    processed_data_path,
+    file_name,
+    extension,
+    num_cols,
+    cat_cols,
+    label_col,
+    n_samples,
+    random_state,
+    train_dataloader_cfg,
+    val_dataloader_cfg,
+    test_dataloader_cfg,
+):
+    """Load and prepare data loaders."""
     train_df, val_df, test_df = load_data_splits(
-        base_path, cfg.data.file_name, cfg.data.extension
+        processed_data_path, file_name, extension
     )
 
-    if cfg.n_samples is not None:
-        train_df = subsample_df(
-            train_df,
-            n_samples=cfg.n_samples,
-            random_state=cfg.seed,
-            label_col=label_col,
-        )
+    if n_samples is not None:
+        train_df = subsample_df(train_df, n_samples, random_state, label_col)
 
-    train_dataset = create_dataset(train_df, num_cols, cat_cols, label_col)
-    val_dataset = create_dataset(val_df, num_cols, cat_cols, label_col)
-    test_dataset = create_dataset(test_df, num_cols, cat_cols, label_col)
+    def make_loader(df, dataloader_cfg):
+        dataset = create_dataset(df, num_cols, cat_cols, label_col)
+        return create_dataloader(dataset, dataloader_cfg)
 
-    train_loader = create_dataloader(
-        train_dataset,
-        cfg.loops.training.dataloader,
+    return (
+        make_loader(train_df, train_dataloader_cfg),
+        make_loader(val_df, val_dataloader_cfg),
+        make_loader(test_df, test_dataloader_cfg),
     )
-    val_loader = create_dataloader(
-        val_dataset,
-        cfg.loops.validation.dataloader,
-    )
-
-    test_loader = create_dataloader(
-        test_dataset,
-        cfg.loops.test.dataloader,
-    )
-
-    logger.info("Data preparation for PyTorch completed.")
-    return train_loader, val_loader, test_loader
 
 
 def train(
-    cfg: Any,
-    train_loader: DataLoader,
-    val_loader: DataLoader,
-    model: nn.Module,
-    loss_fn: nn.Module,
-    optimizer: torch.optim.Optimizer,
-    scheduler: Optional[torch.optim.lr_scheduler._LRScheduler],
-    device: torch.device,
-    patience: int,
-    min_delta: float,
-    max_epochs: int = 50,
-    max_grad_norm: float = 1.0,
-) -> None:
+    train_loader,
+    val_loader,
+    model,
+    loss_fn,
+    optimizer,
+    scheduler,
+    device,
+    tb_logs_path,
+    models_path,
+    max_epochs,
+    max_grad_norm,
+    early_stopping_patience,
+    early_stopping_min_delta,
+):
     """Train the model with validation and checkpointing."""
-    checkpoint_dir = Path(cfg.path.models)
-
-    log_dir = Path(cfg.path.tb_logs) / "training"
+    log_dir = tb_logs_path / "training"
     if log_dir.exists():
         shutil.rmtree(log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -143,12 +117,12 @@ def train(
         .with_early_stopping(
             trainer=trainer,
             metric="loss",
-            patience=patience,
-            min_delta=min_delta,
+            patience=early_stopping_patience,
+            min_delta=early_stopping_min_delta,
         )
         .with_checkpointing(
             trainer=trainer,
-            checkpoint_dir=checkpoint_dir,
+            checkpoint_dir=models_path,
             objects_to_save={"model": model},
             metric="loss",
         )
@@ -163,12 +137,14 @@ def train(
     )
 
     @trainer.on(Events.EPOCH_COMPLETED)
-    def run_eval(engine):
-        train_loss = engine.state.metrics["loss"]
-        logger.info(f"Epoch [{engine.state.epoch}] Train Loss: {train_loss:.6f}")
+    def run_validation(engine):
+        logger.info(
+            f"Epoch [{engine.state.epoch}] Train Loss: {engine.state.metrics['loss']:.6f}"
+        )
         validator.run(val_loader)
-        val_loss = validator.state.metrics["loss"]
-        logger.info(f"Epoch [{engine.state.epoch}] Val Loss: {val_loss:.6f}")
+        logger.info(
+            f"Epoch [{engine.state.epoch}] Val Loss: {validator.state.metrics['loss']:.6f}"
+        )
 
     try:
         trainer.run(train_loader, max_epochs=max_epochs)
@@ -177,149 +153,110 @@ def train(
 
 
 def test(
-    cfg: Any,
-    test_loader: DataLoader,
-    model: nn.Module,
-    device: torch.device,
-    num_classes: int,
-    ignore_classes: Optional[List[int]] = None,
-    run_id: Optional[int] = None,
-) -> None:
-    """Test the model and log results to TensorBoard."""
-    logger.info(f"Running test evaluation...")
-
-    log_dir = Path(cfg.path.tb_logs) / "testing"
+    test_loader,
+    model,
+    device,
+    num_classes,
+    tb_logs_path,
+    json_logs_path,
+    run_id,
+    ignore_classes=None,
+):
+    """Test the model and log results."""
+    log_dir = tb_logs_path / "testing"
     if log_dir.exists():
         shutil.rmtree(log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
 
     tb_logger = TensorboardLogger(log_dir=log_dir)
 
-    # Setup output transform for metrics
-    if ignore_classes is not None:
+    if ignore_classes:
         prepare_output = lambda x: exclude_ignored_classes(
             x["output"]["logits"], x["y_true"], ignore_classes
         )
     else:
         prepare_output = lambda x: (x["output"]["logits"], x["y_true"])
 
-    tester = (
-        EngineBuilder(test_step)
-        .with_state(model=model, device=device)
-        .with_metric("accuracy", Accuracy(output_transform=prepare_output))
-        .with_metric(
-            "precision_macro",
+    tester = EngineBuilder(test_step).with_state(model=model, device=device)
+    tester.with_metric("accuracy", Accuracy(output_transform=prepare_output))
+
+    for avg_type in ["macro", "weighted"]:
+        tester.with_metric(
+            f"precision_{avg_type}",
             Precision(
-                average="macro",
+                average=avg_type,
                 output_transform=prepare_output,
                 num_classes=num_classes,
             ),
         )
-        .with_metric(
-            "recall_macro",
+        tester.with_metric(
+            f"recall_{avg_type}",
             Recall(
-                average="macro",
+                average=avg_type,
                 output_transform=prepare_output,
                 num_classes=num_classes,
             ),
         )
-        .with_metric(
-            "precision_weighted",
-            Precision(
-                average="weighted",
+        tester.with_metric(
+            f"f1_{avg_type}",
+            F1(
+                average=avg_type,
                 output_transform=prepare_output,
                 num_classes=num_classes,
             ),
         )
-        .with_metric(
-            "recall_weighted",
-            Recall(
-                average="weighted",
-                output_transform=prepare_output,
-                num_classes=num_classes,
-            ),
-        )
-        .with_metric(
-            "precision_per_class",
-            Precision(
+
+    for metric_name, metric_cls in [
+        ("precision", Precision),
+        ("recall", Recall),
+        ("f1", F1),
+    ]:
+        tester.with_metric(
+            f"{metric_name}_per_class",
+            metric_cls(
                 average=None, output_transform=prepare_output, num_classes=num_classes
             ),
         )
-        .with_metric(
-            "recall_per_class",
-            Recall(
-                average=None, output_transform=prepare_output, num_classes=num_classes
-            ),
-        )
-        .with_metric(
-            "f1_macro",
-            F1(
-                average="macro",
-                output_transform=prepare_output,
-                num_classes=num_classes,
-            ),
-        )
-        .with_metric(
-            "f1_weighted",
-            F1(
-                average="weighted",
-                output_transform=prepare_output,
-                num_classes=num_classes,
-            ),
-        )
-        .with_metric(
-            "f1_per_class",
-            F1(average=None, output_transform=prepare_output, num_classes=num_classes),
-        )
-        .with_metric(
-            "confusion_matrix",
-            ConfusionMatrix(num_classes=num_classes, output_transform=prepare_output),
-        )
-        .build()
+
+    tester.with_metric(
+        "confusion_matrix",
+        ConfusionMatrix(num_classes=num_classes, output_transform=prepare_output),
     )
 
-    @tester.on(Events.COMPLETED)
-    def log_to_console(engine):
-        """Log all metrics to console using a loop."""
-        logger.info(f"Test Results:")
-        metrics = engine.state.metrics
-
-        for metric_name, metric_value in metrics.items():
-            logger.info(f"{metric_name}: {metric_value}")
+    tester = tester.build()
 
     @tester.on(Events.COMPLETED)
-    def log_on_json(engine):
-        """Log all metrics to a JSON file."""
+    def log_results(engine):
+        """Log metrics to console, JSON, and TensorBoard."""
         metrics = engine.state.metrics
-        metrics_to_log = {}
 
-        for metric_name, metric_value in metrics.items():
-            if isinstance(metric_value, torch.Tensor):
-                metrics_to_log[metric_name] = (
-                    metric_value.cpu().numpy().tolist()
-                    if metric_value.numel() > 1
-                    else float(metric_value.cpu().numpy())
+        # Console logging
+        logger.info("Test Results:")
+        for name, value in metrics.items():
+            if name not in [
+                "confusion_matrix",
+                "precision_per_class",
+                "recall_per_class",
+                "f1_per_class",
+            ]:
+                logger.info(f"{name}: {value}")
+
+        # JSON logging
+        metrics_to_save = {}
+        for name, value in metrics.items():
+            if isinstance(value, torch.Tensor):
+                metrics_to_save[name] = (
+                    value.cpu().numpy().tolist() if value.numel() > 1 else float(value)
                 )
-            elif isinstance(metric_value, list):
-                metrics_to_log[metric_name] = metric_value
-            elif isinstance(metric_value, (int, float, str, bool, type(None))):
-                metrics_to_log[metric_name] = metric_value
             else:
-                metrics_to_log[metric_name] = str(metric_value)
+                metrics_to_save[name] = value
 
         json_path = (
-            Path(cfg.path.json_logs)
-            / f"test_summary{'_run_' + str(run_id) if run_id is not None else ''}.json"
+            json_logs_path / f"test_summary{f'_run_{run_id}' if run_id else ''}.json"
         )
-        with open(json_path, "w") as f:
-            json.dump(metrics_to_log, f, indent=4)
+        save_to_json(metrics_to_save, json_path)
 
-        logger.info(f"Test metrics saved to {json_path}")
-
-    @tester.on(Events.COMPLETED)
-    def log_to_tensorboard(engine):
-        """Log visualizations and metrics to TensorBoard."""
-        metrics = engine.state.metrics
+        # TensorBoard logging
         global_metrics = [
             "accuracy",
             "precision_macro",
@@ -330,38 +267,34 @@ def test(
             "f1_weighted",
         ]
 
-        for metric_name, metric_value in metrics.items():
-            if metric_name in global_metrics:
+        for name in global_metrics:
+            if name in metrics:
                 tb_logger.writer.add_scalar(
-                    f"test/metrics/{metric_name}", metric_value, run_id
+                    f"test/metrics/{name}", metrics[name], run_id
                 )
 
-            if metric_name == "confusion_matrix":
-                cm_figure = confusion_matrix_to_plot(
-                    cm=metric_value.cpu().numpy(),
-                    title="Confusion Matrix",
-                    normalize="true",
-                )
-                tb_logger.writer.add_figure(f"test/confusion_matrix", cm_figure, run_id)
+        if "confusion_matrix" in metrics:
+            cm_figure = confusion_matrix_to_plot(
+                metrics["confusion_matrix"].cpu().numpy(),
+                title="Confusion Matrix",
+                normalize="true",
+            )
+            tb_logger.writer.add_figure("test/confusion_matrix", cm_figure, run_id)
 
-            if metric_name == "f1_per_class":
-                f1_per_class = metric_value.cpu().numpy()
-                f1_per_class_dict = {
-                    f"class_{i}": float(f1_per_class[i])
-                    for i in range(len(f1_per_class))
-                }
-                tb_logger.writer.add_figure(
-                    f"test/f1_per_class",
-                    dict_to_bar_plot(f1_per_class_dict),
-                    run_id,
-                )
+        if "f1_per_class" in metrics:
+            f1_dict = {
+                f"class_{i}": float(v)
+                for i, v in enumerate(metrics["f1_per_class"].cpu().numpy())
+            }
+            tb_logger.writer.add_figure(
+                "test/f1_per_class", dict_to_bar_plot(f1_dict), run_id
+            )
 
         tb_logger.writer.add_figure(
-            f"test/global_metrics",
-            dict_to_bar_plot({k: v for k, v in metrics.items() if k in global_metrics}),
+            "test/global_metrics",
+            dict_to_bar_plot({k: metrics[k] for k in global_metrics if k in metrics}),
             run_id,
         )
-        logger.info("Test results logged to TensorBoard.")
 
     try:
         tester.run(test_loader)
@@ -369,101 +302,258 @@ def test(
         tb_logger.close()
 
 
-def run_training(cfg, device):
-    """Training the supervised classifier."""
-    logger.info("Performing training phase...")
+def run_training(
+    processed_data_path,
+    file_name,
+    extension,
+    num_cols,
+    cat_cols,
+    label_col,
+    n_samples,
+    random_state,
+    train_dataloader_cfg,
+    val_dataloader_cfg,
+    test_dataloader_cfg,
+    model_name,
+    model_params,
+    loss_name,
+    loss_params,
+    optimizer_name,
+    optimizer_params,
+    scheduler_name,
+    scheduler_params,
+    tb_logs_path,
+    models_path,
+    max_epochs,
+    max_grad_norm,
+    early_stopping_patience,
+    early_stopping_min_delta,
+    device,
+):
+    """Train the supervised classifier."""
+    logger.info("Starting training phase...")
 
-    train_loader, val_loader, _ = prepare_loader(cfg)
-
-    model = create_model(cfg.model.name, cfg.model.params, device)
-    loss_fn = create_loss(cfg.loss.name, cfg.loss.params, device)
-    optimizer = create_optimizer(
-        cfg.optimizer.name, cfg.optimizer.params, model, loss_fn
+    train_loader, val_loader, _ = load_data(
+        processed_data_path,
+        file_name,
+        extension,
+        num_cols,
+        cat_cols,
+        label_col,
+        n_samples,
+        random_state,
+        train_dataloader_cfg,
+        val_dataloader_cfg,
+        test_dataloader_cfg,
     )
+    model = create_model(model_name, model_params, device)
+    loss_fn = create_loss(loss_name, loss_params, device)
+    optimizer = create_optimizer(optimizer_name, optimizer_params, model, loss_fn)
     scheduler = create_scheduler(
-        cfg.scheduler.name, cfg.scheduler.params, optimizer, train_loader
+        scheduler_name, scheduler_params, optimizer, train_loader
     )
 
     train(
-        cfg,
-        train_loader=train_loader,
-        val_loader=val_loader,
-        model=model,
-        loss_fn=loss_fn,
-        optimizer=optimizer,
-        scheduler=scheduler,
-        device=device,
-        patience=cfg.loops.training.early_stopping.patience,
-        min_delta=cfg.loops.training.early_stopping.min_delta,
-        max_epochs=cfg.loops.training.epochs,
+        train_loader,
+        val_loader,
+        model,
+        loss_fn,
+        optimizer,
+        scheduler,
+        device,
+        tb_logs_path,
+        models_path,
+        max_epochs,
+        max_grad_norm,
+        early_stopping_patience,
+        early_stopping_min_delta,
     )
-
-    logger.info("Training phase completed successfully")
-    return model
+    logger.info("Training completed")
 
 
-def run_testing(cfg, device):
-    """Testing the trained classifier."""
-    logger.info("Performing testing phase...")
+def run_testing(
+    processed_data_path,
+    file_name,
+    extension,
+    num_cols,
+    cat_cols,
+    label_col,
+    n_samples,
+    random_state,
+    train_dataloader_cfg,
+    val_dataloader_cfg,
+    test_dataloader_cfg,
+    model_name,
+    model_params,
+    models_path,
+    tb_logs_path,
+    json_logs_path,
+    run_id,
+    ignore_classes,
+    device,
+):
+    """Test the trained classifier."""
+    logger.info("Starting testing phase...")
 
-    _, _, test_loader = prepare_loader(cfg)
-
-    model = create_model(cfg.model.name, cfg.model.params, device)
-    checkpoint_dir = Path(cfg.path.models)
-    load_latest_checkpoint(checkpoint_dir, model, device)
+    _, _, test_loader = load_data(
+        processed_data_path,
+        file_name,
+        extension,
+        num_cols,
+        cat_cols,
+        label_col,
+        n_samples,
+        random_state,
+        train_dataloader_cfg,
+        val_dataloader_cfg,
+        test_dataloader_cfg,
+    )
+    model = create_model(model_name, model_params, device)
+    load_latest_checkpoint(models_path, model, device)
 
     test(
-        cfg,
-        test_loader=test_loader,
-        model=model,
-        device=device,
-        num_classes=cfg.model.params.num_classes,
-        ignore_classes=list(cfg.ignore_classes) if cfg.ignore_classes else None,
-        run_id=cfg.get("run_id", None),
+        test_loader,
+        model,
+        device,
+        model_params.num_classes,
+        tb_logs_path,
+        json_logs_path,
+        run_id,
+        ignore_classes,
     )
-
-    logger.info("Testing phase completed successfully")
+    logger.info("Testing completed")
 
 
 def main():
-    """Main training pipeline for supervised learning.
-
-    Supported stages (controlled by cfg.stage):
-    - 'all': Run all stages (training → testing)
-    - 'training': Run only training
-    - 'testing': Run only testing
-    """
+    """Main training pipeline for supervised learning."""
     cfg = load_config(
         config_path=Path(__file__).parent / "configs",
         config_name="config",
         overrides=sys.argv[1:],
     )
 
-    df_meta = json.load(open(Path(cfg.path.json_logs) / "df_metadata.json", "r"))
+    json_logs_path = Path(cfg.path.json_logs)
+    df_meta = load_from_json(json_logs_path / "df_metadata.json")
     cfg.model.params.num_classes = df_meta["num_classes"]
     cfg.loss.params.class_weight = df_meta["class_weights"]
-
     device = torch.device(cfg.device)
     logger.info(f"Using device: {device}")
 
-    # Get the stage to run from config (default to 'all')
+    num_cols = list(cfg.data.num_cols)
+    cat_cols = list(cfg.data.cat_cols)
+    label_col = "multi_" + cfg.data.label_col
+
+    processed_data_path = Path(cfg.path.processed_data)
+    models_path = Path(cfg.path.models)
+    tb_logs_path = Path(cfg.path.tb_logs)
+    ignore_classes = list(cfg.ignore_classes) if cfg.get("ignore_classes") else None
+    run_id = cfg.get("run_id", None)
+
+    # Run pipeline based on stage
     stage = cfg.get("stage", "all")
-    logger.info(f"Running stage: {stage}")
-
-    # Execute the appropriate pipeline based on the stage
     if stage == "all":
-        run_training(cfg, device)
-        run_testing(cfg, device)
-
+        run_training(
+            processed_data_path,
+            cfg.data.file_name,
+            cfg.data.extension,
+            num_cols,
+            cat_cols,
+            label_col,
+            cfg.n_samples,
+            cfg.seed,
+            cfg.loops.training.dataloader,
+            cfg.loops.validation.dataloader,
+            cfg.loops.test.dataloader,
+            cfg.model.name,
+            cfg.model.params,
+            cfg.loss.name,
+            cfg.loss.params,
+            cfg.optimizer.name,
+            cfg.optimizer.params,
+            cfg.scheduler.name,
+            cfg.scheduler.params,
+            tb_logs_path,
+            models_path,
+            cfg.loops.training.epochs,
+            cfg.loops.training.get("max_grad_norm", 1.0),
+            cfg.loops.training.early_stopping.patience,
+            cfg.loops.training.early_stopping.min_delta,
+            device,
+        )
+        run_testing(
+            processed_data_path,
+            cfg.data.file_name,
+            cfg.data.extension,
+            num_cols,
+            cat_cols,
+            label_col,
+            cfg.n_samples,
+            cfg.seed,
+            cfg.loops.training.dataloader,
+            cfg.loops.validation.dataloader,
+            cfg.loops.test.dataloader,
+            cfg.model.name,
+            cfg.model.params,
+            models_path,
+            tb_logs_path,
+            json_logs_path,
+            run_id,
+            ignore_classes,
+            device,
+        )
     elif stage == "training":
-        run_training(cfg, device)
-
+        run_training(
+            processed_data_path,
+            cfg.data.file_name,
+            cfg.data.extension,
+            num_cols,
+            cat_cols,
+            label_col,
+            cfg.n_samples,
+            cfg.seed,
+            cfg.loops.training.dataloader,
+            cfg.loops.validation.dataloader,
+            cfg.loops.test.dataloader,
+            cfg.model.name,
+            cfg.model.params,
+            cfg.loss.name,
+            cfg.loss.params,
+            cfg.optimizer.name,
+            cfg.optimizer.params,
+            cfg.scheduler.name,
+            cfg.scheduler.params,
+            tb_logs_path,
+            models_path,
+            cfg.loops.training.epochs,
+            cfg.loops.training.get("max_grad_norm", 1.0),
+            cfg.loops.training.early_stopping.patience,
+            cfg.loops.training.early_stopping.min_delta,
+            device,
+        )
     elif stage == "testing":
-        run_testing(cfg, device)
-
+        run_testing(
+            processed_data_path,
+            cfg.data.file_name,
+            cfg.data.extension,
+            num_cols,
+            cat_cols,
+            label_col,
+            cfg.n_samples,
+            cfg.seed,
+            cfg.loops.training.dataloader,
+            cfg.loops.validation.dataloader,
+            cfg.loops.test.dataloader,
+            cfg.model.name,
+            cfg.model.params,
+            models_path,
+            tb_logs_path,
+            json_logs_path,
+            run_id,
+            ignore_classes,
+            device,
+        )
     else:
-        logger.error(f"Unknown stage: {stage}")
-        logger.info("Valid stages are: 'all', 'training', 'testing'")
+        logger.error(f"Unknown stage: {stage}. Valid: 'all', 'training', 'testing'")
         sys.exit(1)
 
 
