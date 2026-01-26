@@ -1,7 +1,5 @@
-import json
 import logging
 import sys
-import pickle
 from pathlib import Path
 
 import pandas as pd
@@ -9,17 +7,18 @@ import numpy as np
 from sklearn import set_config
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import LabelEncoder, RobustScaler
+from sklearn.preprocessing import RobustScaler
 
 from src.common.config import load_config
 from src.common.logging import setup_logger
-from src.common.utils import save_to_json, save_to_pickle
+from src.common.utils import save_to_json, save_to_pickle, load_from_pickle
 from src.data.io import load_df, save_df, load_data_splits
 from src.data.preprocessing import (
     QuantileClipper,
     LogTransformer,
     TopNHashEncoder,
     drop_nans,
+    encode_labels,
     ml_split,
     query_filter,
     rare_category_filter,
@@ -148,20 +147,9 @@ def preprocess_df(
     test_df = preprocessor.transform(test_df)
 
     # Encode labels
-    label_encoder = LabelEncoder()
-    multi_label_col = f"multi_{label_col}"
-    for df_split in [train_df, val_df, test_df]:
-        if df_split is train_df:
-            df_split[multi_label_col] = label_encoder.fit_transform(df_split[label_col])
-        else:
-            df_split[multi_label_col] = label_encoder.transform(df_split[label_col])
-
-        if benign_tag:
-            df_split[f"bin_{label_col}"] = (df_split[label_col] != benign_tag).astype(
-                int
-            )
-
-    label_mapping = {int(i): str(name) for i, name in enumerate(label_encoder.classes_)}
+    train_df, val_df, test_df, label_mapping = encode_labels(
+        train_df, val_df, test_df, label_col, benign_tag
+    )
     logger.info(f"Label mapping: {label_mapping}")
 
     return train_df, val_df, test_df, label_mapping
@@ -177,11 +165,25 @@ def expand_class_labels(
     train_idx=None,
     val_idx=None,
     test_idx=None,
+    min_samples=100,
 ):
-    """Expand target class into subclasses using clustering on false negatives."""
-    train_mask = train_df.index.isin(train_idx) & (train_df[label_col] == target_class)
-    val_mask = val_df.index.isin(val_idx) & (val_df[label_col] == target_class)
-    test_mask = test_df.index.isin(test_idx) & (test_df[label_col] == target_class)
+    """Expand target class into subclasses using clustering."""
+
+    train_mask = (
+        train_df.index.isin(train_idx)
+        if train_idx is not None
+        else pd.Series(True, index=train_df.index)
+    ) & (train_df[label_col] == target_class)
+    val_mask = (
+        val_df.index.isin(val_idx)
+        if val_idx is not None
+        else pd.Series(True, index=val_df.index)
+    ) & (val_df[label_col] == target_class)
+    test_mask = (
+        test_df.index.isin(test_idx)
+        if test_idx is not None
+        else pd.Series(True, index=test_df.index)
+    ) & (test_df[label_col] == target_class)
 
     clusterer, _ = kmeans_grid_search(
         train_df.loc[train_mask, feature_cols], n_clusters_range=range(2, 10)
@@ -190,56 +192,39 @@ def expand_class_labels(
     val_clusters = clusterer.predict(val_df.loc[val_mask, feature_cols])
     test_clusters = clusterer.predict(test_df.loc[test_mask, feature_cols])
 
-    train_df, cluster_map = _assign_cluster_labels(
-        train_df, train_mask, train_clusters, label_col
+    cluster_counts = pd.Series(train_clusters).value_counts()
+    valid_clusters = cluster_counts[cluster_counts >= min_samples].index.tolist()
+
+    cluster_to_label = {
+        cluster_id: f"{target_class}_{i}" for i, cluster_id in enumerate(valid_clusters)
+    }
+
+    train_df = _update_cluster_labels(
+        train_df, train_mask, train_clusters, cluster_to_label, label_col
     )
-    val_df, _ = _assign_cluster_labels(
-        val_df,
-        val_mask,
-        val_clusters,
-        label_col,
-        cluster_to_label_map=cluster_map,
+    val_df = _update_cluster_labels(
+        val_df, val_mask, val_clusters, cluster_to_label, label_col
     )
-    test_df, _ = _assign_cluster_labels(
-        test_df,
-        test_mask,
-        test_clusters,
-        label_col,
-        cluster_to_label_map=cluster_map,
+    test_df = _update_cluster_labels(
+        test_df, test_mask, test_clusters, cluster_to_label, label_col
+    )
+
+    logger.info(
+        f"Expanded class {target_class} into {len(valid_clusters)} subclasses: {list(cluster_to_label.values())}"
     )
 
     return train_df, val_df, test_df
 
 
-def _assign_cluster_labels(
-    df, mask, clusters, label_col, min_samples=100, cluster_to_label_map=None
-):
-    """Assign new class labels based on cluster assignments."""
+def _update_cluster_labels(df, mask, clusters, cluster_to_label, label_col):
+    """Update labels based on cluster assignments."""
     indices = df[mask].index
 
-    if cluster_to_label_map is None:
-        # Training: create mapping
-        cluster_to_label_map = {}
-        new_label = df[label_col].max() + 1
+    for cluster_id, new_label in cluster_to_label.items():
+        cluster_mask = clusters == cluster_id
+        df.loc[indices[cluster_mask], label_col] = new_label
 
-        for cluster_id in np.unique(clusters):
-            cluster_mask = clusters == cluster_id
-            if cluster_mask.sum() < min_samples:
-                continue
-
-            cluster_to_label_map[cluster_id] = new_label
-            df.loc[indices[cluster_mask], label_col] = new_label
-            new_label += 1
-    else:
-        # Test: use existing mapping
-        for cluster_id in np.unique(clusters):
-            if cluster_id in cluster_to_label_map:
-                cluster_mask = clusters == cluster_id
-                df.loc[indices[cluster_mask], label_col] = cluster_to_label_map[
-                    cluster_id
-                ]
-
-    return df, cluster_to_label_map
+    return df
 
 
 def main():
@@ -279,17 +264,22 @@ def main():
     )
 
     # Optional: expand classes based on false negatives
-    # train_df, val_df, test_df = load_data_splits(
-    #     processed_data_path, cfg.data.file_name, cfg.data.extension
-    # )
-    # train_df, val_df, test_df = expand_class_labels(
-    #     train_df,
-    #     val_df,
-    #     test_df,
-    #     target_class=3,
-    #     feature_cols=num_cols + cat_cols,
-    #     label_col=label_col,
-    # )
+    train_df, val_df, test_df = load_data_splits(
+        processed_data_path, cfg.data.file_name, cfg.data.extension
+    )
+
+    train_df, val_df, test_df = expand_class_labels(
+        train_df,
+        val_df,
+        test_df,
+        target_class="DoS",
+        feature_cols=num_cols + cat_cols,
+        label_col=label_col,
+    )
+
+    train_df, val_df, test_df, label_mapping = encode_labels(
+        train_df, val_df, test_df, label_col, cfg.data.benign_tag
+    )
 
     # Save processed data
     logger.info("Saving processed data...")

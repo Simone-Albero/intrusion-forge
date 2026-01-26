@@ -6,6 +6,7 @@ import numpy as np
 
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
 
 
 def drop_nans(df: pd.DataFrame, cols: list) -> pd.DataFrame:
@@ -277,3 +278,34 @@ class TopNHashEncoder(BaseEstimator, TransformerMixin):
                 out[f"{col}__log_freq"] = np.asarray(log_freqs, dtype=np.float32)
 
         return pd.DataFrame(out, index=X.index)
+
+
+def encode_labels(
+    train_df: pd.DataFrame,
+    val_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    label_col: str,
+    benign_tag: Optional[str] = None,
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict]:
+    """Encode labels for multi-class and binary classification.
+
+    Returns:
+        tuple: (train_df, val_df, test_df, label_mapping)
+    """
+    label_encoder = LabelEncoder()
+    multi_label_col = f"multi_{label_col}"
+
+    for df_split in [train_df, val_df, test_df]:
+        if df_split is train_df:
+            df_split[multi_label_col] = label_encoder.fit_transform(df_split[label_col])
+        else:
+            df_split[multi_label_col] = label_encoder.transform(df_split[label_col])
+
+        if benign_tag:
+            df_split[f"bin_{label_col}"] = (df_split[label_col] != benign_tag).astype(
+                int
+            )
+
+    label_mapping = {int(i): str(name) for i, name in enumerate(label_encoder.classes_)}
+
+    return train_df, val_df, test_df, label_mapping

@@ -9,7 +9,7 @@ from sklearn.metrics.pairwise import paired_distances
 
 from src.common.config import load_config
 from src.common.logging import setup_logger
-from src.common.utils import save_to_json
+from src.common.utils import save_to_json, load_from_pickle
 from src.data.io import load_data_splits
 
 setup_logger()
@@ -90,10 +90,20 @@ def run_separability_analysis(df, label_col, feature_cols):
     return results
 
 
-def compute_class_similarity(df, class_a, class_b, label_col, num_cols, cat_cols):
+def compute_class_similarity(
+    df, class_a, class_b, label_col, num_cols, cat_cols, idx_a=None, idx_b=None
+):
     """Compute feature-wise similarity between two classes."""
-    df_a = df[df[label_col] == class_a]
-    df_b = df[df[label_col] == class_b]
+    df_a = (
+        df.loc[idx_a][df.loc[idx_a, label_col] == class_a]
+        if idx_a is not None
+        else df[df[label_col] == class_a]
+    )
+    df_b = (
+        df.loc[idx_b][df.loc[idx_b, label_col] == class_b]
+        if idx_b is not None
+        else df[df[label_col] == class_b]
+    )
 
     results = []
     total_sim = 0.0
@@ -103,16 +113,29 @@ def compute_class_similarity(df, class_a, class_b, label_col, num_cols, cat_cols
         mean_a, std_a = df_a[col].mean(), df_a[col].std()
         mean_b, std_b = df_b[col].mean(), df_b[col].std()
 
-        similarity = 1 - abs(mean_a - mean_b) / (std_a + std_b + 1e-8)
-        similarity = float(max(0.0, min(1.0, similarity)))
+        # Bhattacharyya coefficient for normal distributions
+        # 0 (completely different) to 1 (identical)
+        var_a, var_b = std_a**2, std_b**2
+        var_sum = var_a + var_b
+
+        if var_sum < 1e-10:  # Both distributions have zero variance
+            similarity = 1.0 if abs(mean_a - mean_b) < 1e-10 else 0.0
+        else:
+            # Bhattacharyya distance
+            db = 0.25 * np.log((var_sum) / (2 * std_a * std_b + 1e-10)) + 0.25 * (
+                mean_a - mean_b
+            ) ** 2 / (var_sum)
+            similarity = float(np.exp(-db))
 
         results.append(
             {
                 "feature": col,
                 "class_a_mean": float(mean_a),
                 "class_b_mean": float(mean_b),
-                "class_a_top_category": None,
-                "class_b_top_category": None,
+                "class_a_std": float(std_a),
+                "class_b_std": float(std_b),
+                "class_a_top_categories": None,
+                "class_b_top_categories": None,
                 "similarity": similarity,
             }
         )
@@ -134,8 +157,10 @@ def compute_class_similarity(df, class_a, class_b, label_col, num_cols, cat_cols
                 "feature": col,
                 "class_a_mean": None,
                 "class_b_mean": None,
-                "class_a_top_category": freq_a.idxmax() if not freq_a.empty else None,
-                "class_b_top_category": freq_b.idxmax() if not freq_b.empty else None,
+                "class_a_std": None,
+                "class_b_std": None,
+                "class_a_top_categories": freq_a.index.tolist()[:5],
+                "class_b_top_categories": freq_b.index.tolist()[:5],
                 "similarity": similarity,
             }
         )
@@ -173,7 +198,8 @@ def main():
         separability_df = pd.DataFrame(separability_results)
         save_to_json(
             separability_results,
-            Path(cfg.path.json_logs) / f"{split_name}_separability.json",
+            Path(cfg.path.json_logs)
+            / f"separability/{split_name}{'_' + str(cfg.run_id) if cfg.run_id else ''}.json",
         )
 
         logger.info(f"\n{separability_df}")
@@ -186,23 +212,37 @@ def main():
         )
         logger.info(f"Global silhouette score: {global_silhouette:.4f}")
 
-    # logger.info("Computing class similarity...")
-    # similarity_results, global_similarity = compute_class_similarity(
-    #     df,
-    #     class_a="Benign",
-    #     class_b="Backdoor",
-    #     label_col=label_col,
-    #     num_cols=num_cols,
-    #     cat_cols=cat_cols,
-    # )
-    # similarity_df = pd.DataFrame(similarity_results)
-    # save_to_json(
-    #     similarity_results,
-    #     Path(cfg.path.json_logs) / f"{split_name}_similarity.json",
-    # )
+    # class_a = "DoS_0"
+    # class_b = "Exploits"
 
-    # logger.info(f"\n{similarity_df}")
-    # logger.info(f"Global similarity: {global_similarity:.4f}")
+    # for split_name, df in zip(["train", "val", "test"], [train_df, val_df, test_df]):
+    #     class_indices = load_from_pickle(
+    #         Path(cfg.path.pickles)
+    #         / f"class_indices/{split_name}{'_' + str(cfg.run_id) if cfg.run_id else ''}.pkl"
+    #     )
+    #     idx_a = class_indices[3]["fn"]
+    #     idx_b = class_indices[6]["tp"]
+
+    #     logger.info(f"Computing similarity on {split_name} set...")
+    #     similarity_results, global_similarity = compute_class_similarity(
+    #         df,
+    #         class_a=class_a,
+    #         class_b=class_b,
+    #         label_col=label_col,
+    #         num_cols=num_cols,
+    #         cat_cols=cat_cols,
+    #         idx_a=idx_a,
+    #         idx_b=idx_b,
+    #     )
+    #     similarity_df = pd.DataFrame(similarity_results)
+    #     save_to_json(
+    #         similarity_results,
+    #         Path(cfg.path.json_logs)
+    #         / f"similarity/{split_name}_{class_a}_vs_{class_b}{'_' + str(cfg.run_id) if cfg.run_id else ''}.json",
+    #     )
+
+    #     logger.info(f"\n{similarity_df}")
+    #     logger.info(f"Global similarity: {global_similarity:.4f}")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,4 @@
-import json
 import shutil
-import pickle
 import logging
 import sys
 from pathlib import Path
@@ -11,10 +9,11 @@ import torch
 from ignite.handlers.tensorboard_logger import TensorboardLogger
 from sklearn.metrics.pairwise import paired_distances
 from sklearn.metrics import confusion_matrix
+import matplotlib.pyplot as plt
 
 from src.common.config import load_config
 from src.common.logging import setup_logger
-from src.common.utils import save_to_json, save_to_pickle
+from src.common.utils import save_to_json, save_to_pickle, load_from_json
 from src.data.io import load_data_splits
 from src.torch.module.checkpoint import load_latest_checkpoint
 from src.torch.builders import create_model
@@ -76,6 +75,10 @@ def sample_paired_distances(X, idx_pool, n_pairs):
     i = np.random.choice(idx_pool, size=n_pairs, replace=False)
     j = np.random.choice(idx_pool, size=n_pairs, replace=False)
     mask = i != j
+
+    if mask.sum() == 0:
+        return np.array([])
+
     return paired_distances(X[i[mask]], X[j[mask]])
 
 
@@ -182,16 +185,13 @@ def visualize_class(X, z, y_true, y_pred, label, max_samples=3000):
 
 
 def visualize_classes(X, z, y_true, y_pred, labels):
-    """Create visualizations for all classes."""
+    """Generate visualizations for all classes one at a time."""
     if z is None:
         return
 
-    visuals = {}
     for label in labels:
         logger.info(f"Visualizing class {label}...")
-        visuals[label] = visualize_class(X, z, y_true, y_pred, label)
-
-    return visuals
+        yield label, visualize_class(X, z, y_true, y_pred, label)
 
 
 def visualize_overall(X, z, y_true, exclude_classes=[], n_samples=3000):
@@ -228,8 +228,7 @@ def main():
         overrides=sys.argv[1:],
     )
 
-    with open(Path(cfg.path.json_logs) / "df_metadata.json", "r") as f:
-        df_meta = json.load(f)
+    df_meta = load_from_json(Path(cfg.path.processed_data) / "data_metadata.json")
     cfg.model.params.num_classes = df_meta["num_classes"]
     cfg.loss.params.class_weight = df_meta["class_weights"]
     device = torch.device(cfg.device)
@@ -238,15 +237,17 @@ def main():
     cat_cols = list(cfg.data.cat_cols)
     label_col = "multi_" + cfg.data.label_col
 
-    (x_num_train, x_cat_train, y_train), _, (x_num_test, x_cat_test, y_test) = (
-        load_data(
-            Path(cfg.path.processed_data),
-            cfg.data.file_name,
-            cfg.data.extension,
-            num_cols,
-            cat_cols,
-            label_col,
-        )
+    (
+        (x_num_train, x_cat_train, y_train),
+        (x_num_val, x_cat_val, y_val),
+        (x_num_test, x_cat_test, y_test),
+    ) = load_data(
+        Path(cfg.path.processed_data),
+        cfg.data.file_name,
+        cfg.data.extension,
+        num_cols,
+        cat_cols,
+        label_col,
     )
 
     pickles_path = Path(cfg.path.pickles)
@@ -258,6 +259,7 @@ def main():
     # Run inference
     for suffix, (x_num, x_cat, y) in [
         ("train", (x_num_train, x_cat_train, y_train)),
+        ("val", (x_num_val, x_cat_val, y_val)),
         ("test", (x_num_test, x_cat_test, y_test)),
     ]:
         log_dir = Path(cfg.path.tb_logs) / "inference" / suffix
@@ -269,35 +271,53 @@ def main():
         y_true, y_pred, z, X = get_predictions(model, x_num, x_cat, y, device)
         unique_classes = np.unique(y_true)
 
+        cm_fig = visualize_cm(y_true, y_pred, normalize="true")
         tb_logger.writer.add_figure(
             "confusion_matrix",
-            visualize_cm(y_true, y_pred, normalize="true"),
+            cm_fig,
+            global_step=cfg.run_id or 0,
         )
+        plt.close(cm_fig)
 
         logger.info("Computing class visualizations...")
-        classes_visual = visualize_classes(X, z, y_true, y_pred, unique_classes)
-        for label, (fig_x, fig_z) in classes_visual.items():
-            tb_logger.writer.add_figure(f"raw/{label}", fig_x)
-            tb_logger.writer.add_figure(f"latent/{label}", fig_z)
+        for label, (fig_x, fig_z) in visualize_classes(
+            X, z, y_true, y_pred, unique_classes
+        ):
+            tb_logger.writer.add_figure(
+                f"raw/{label}", fig_x, global_step=cfg.run_id or 0
+            )
+            plt.close(fig_x)
+            tb_logger.writer.add_figure(
+                f"latent/{label}", fig_z, global_step=cfg.run_id or 0
+            )
+            plt.close(fig_z)
 
         logger.info("Computing overall visualizations...")
         overall_visual = visualize_overall(X, z, y_true)
-        tb_logger.writer.add_figure("raw/overall", overall_visual[0])
-        tb_logger.writer.add_figure("latent/overall", overall_visual[1])
+        tb_logger.writer.add_figure(
+            "raw/overall", overall_visual[0], global_step=cfg.run_id or 0
+        )
+        plt.close(overall_visual[0])
+        tb_logger.writer.add_figure(
+            "latent/overall", overall_visual[1], global_step=cfg.run_id or 0
+        )
+        plt.close(overall_visual[1])
         tb_logger.close()
 
         logger.info("Analyzing class failures...")
         classes_failures = analyze_classes_failures(X, y_true, y_pred)
         save_to_json(
             classes_failures,
-            json_logs_path / f"class_failures_{suffix}.json",
+            json_logs_path
+            / f"class_failures/{suffix}{'_' + str(cfg.run_id) if cfg.run_id else ''}.json",
         )
 
         logger.info("Saving per-class predictions...")
         classes_indices = per_classes_predictions(y_true, y_pred)
         save_to_pickle(
             classes_indices,
-            pickles_path / f"class_indices_{suffix}.pkl",
+            pickles_path
+            / f"class_indices/{suffix}{'_' + str(cfg.run_id) if cfg.run_id else ''}.pkl",
         )
 
 
