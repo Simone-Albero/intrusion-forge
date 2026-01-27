@@ -52,7 +52,7 @@ def run_separability_analysis(df, label_col, feature_cols):
 
     results = []
     for class_name in np.unique(y):
-        logger.info(f"Analyzing class {class_name}...")
+        logger.info(f"Analyzing class {class_name} ...")
 
         idx_class = np.where(y == class_name)[0]
         idx_other = np.where(y != class_name)[0]
@@ -172,6 +172,61 @@ def compute_class_similarity(
     return results, global_similarity
 
 
+def compute_separability_analysis(
+    train_df, val_df, test_df, label_col, feature_cols, cfg
+):
+    """Compute separability analysis for the dataset."""
+    for split_name, df in zip(["train", "val", "test"], [train_df, val_df, test_df]):
+        logger.info(f"Running analysis on {split_name} set ...")
+
+        logger.info("Computing class separability ...")
+        separability_results = run_separability_analysis(df, label_col, feature_cols)
+        separability_df = pd.DataFrame(separability_results)
+
+        logger.info(f"\n{separability_df}")
+        global_silhouette = np.nanmean(
+            [
+                r["silhouette_score"]
+                for r in separability_results
+                if np.isfinite(r["silhouette_score"])
+            ]
+        )
+        logger.info(f"Global silhouette score: {global_silhouette:.4f}")
+
+        separability_results.append({"global_silhouette": global_silhouette})
+        save_to_json(
+            separability_results,
+            Path(cfg.path.json_logs)
+            / f"separability/{split_name}{'_' + str(cfg.run_id) if cfg.run_id else ''}.json",
+        )
+
+
+def compute_similarity_analysis(
+    train_df, val_df, test_df, label_col, num_cols, cat_cols, class_a, class_b, cfg
+):
+    """Compute similarity analysis between specified classes."""
+    for split_name, df in zip(["train", "val", "test"], [train_df, val_df, test_df]):
+        logger.info(f"Computing similarity on {split_name} set ...")
+        similarity_results, global_similarity = compute_class_similarity(
+            df,
+            class_a,
+            class_b,
+            label_col,
+            num_cols,
+            cat_cols,
+        )
+        similarity_df = pd.DataFrame(similarity_results)
+        logger.info(f"\n{similarity_df}")
+        logger.info(f"Global similarity: {global_similarity:.4f}")
+
+        similarity_results.append({"global_similarity": global_similarity})
+        save_to_json(
+            similarity_results,
+            Path(cfg.path.json_logs)
+            / f"similarity/{split_name}_{class_a}_vs_{class_b}{'_' + str(cfg.run_id) if cfg.run_id else ''}.json",
+        )
+
+
 def main():
     """Main entry point for data analysis."""
     cfg = load_config(
@@ -190,59 +245,11 @@ def main():
         Path(cfg.path.processed_data), cfg.data.file_name, cfg.data.extension
     )
 
-    for split_name, df in zip(["train", "val", "test"], [train_df, val_df, test_df]):
-        logger.info(f"Running analysis on {split_name} set...")
-
-        logger.info("Computing class separability...")
-        separability_results = run_separability_analysis(df, label_col, feature_cols)
-        separability_df = pd.DataFrame(separability_results)
-        save_to_json(
-            separability_results,
-            Path(cfg.path.json_logs)
-            / f"separability/{split_name}{'_' + str(cfg.run_id) if cfg.run_id else ''}.json",
-        )
-
-        logger.info(f"\n{separability_df}")
-        global_silhouette = np.nanmean(
-            [
-                r["silhouette_score"]
-                for r in separability_results
-                if np.isfinite(r["silhouette_score"])
-            ]
-        )
-        logger.info(f"Global silhouette score: {global_silhouette:.4f}")
-
-    # class_a = "DoS_0"
-    # class_b = "Exploits"
-
-    # for split_name, df in zip(["train", "val", "test"], [train_df, val_df, test_df]):
-    #     class_indices = load_from_pickle(
-    #         Path(cfg.path.pickles)
-    #         / f"class_indices/{split_name}{'_' + str(cfg.run_id) if cfg.run_id else ''}.pkl"
-    #     )
-    #     idx_a = class_indices[3]["fn"]
-    #     idx_b = class_indices[6]["tp"]
-
-    #     logger.info(f"Computing similarity on {split_name} set...")
-    #     similarity_results, global_similarity = compute_class_similarity(
-    #         df,
-    #         class_a=class_a,
-    #         class_b=class_b,
-    #         label_col=label_col,
-    #         num_cols=num_cols,
-    #         cat_cols=cat_cols,
-    #         idx_a=idx_a,
-    #         idx_b=idx_b,
-    #     )
-    #     similarity_df = pd.DataFrame(similarity_results)
-    #     save_to_json(
-    #         similarity_results,
-    #         Path(cfg.path.json_logs)
-    #         / f"similarity/{split_name}_{class_a}_vs_{class_b}{'_' + str(cfg.run_id) if cfg.run_id else ''}.json",
-    #     )
-
-    #     logger.info(f"\n{similarity_df}")
-    #     logger.info(f"Global similarity: {global_similarity:.4f}")
+    # Compute separability analysis
+    logger.info("Starting separability analysis ...")
+    compute_separability_analysis(
+        train_df, val_df, test_df, label_col, feature_cols, cfg
+    )
 
 
 if __name__ == "__main__":

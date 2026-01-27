@@ -82,8 +82,8 @@ def train(
 ):
     """Train the model with validation and checkpointing."""
     log_dir = tb_logs_path / "training"
-    if log_dir.exists():
-        shutil.rmtree(log_dir)
+    # if log_dir.exists():
+    #     shutil.rmtree(log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
 
     tb_logger = TensorboardLogger(log_dir=log_dir)
@@ -164,8 +164,8 @@ def test(
 ):
     """Test the model and log results."""
     log_dir = tb_logs_path / "testing"
-    if log_dir.exists():
-        shutil.rmtree(log_dir)
+    # if log_dir.exists():
+    #     shutil.rmtree(log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
 
     tb_logger = TensorboardLogger(log_dir=log_dir)
@@ -252,7 +252,7 @@ def test(
                 metrics_to_save[name] = value
 
         json_path = (
-            json_logs_path / f"test_summary{f'_run_{run_id}' if run_id else ''}.json"
+            json_logs_path / f"test_summary{f'_{run_id}' if run_id else ''}.json"
         )
         save_to_json(metrics_to_save, json_path)
 

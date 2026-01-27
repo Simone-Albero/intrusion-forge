@@ -6,6 +6,6 @@ params:
   max_emb_dim: 384
 
   # Architecture
-  hidden_dims: [128, 64, 32]
+  hidden_dims: [128, 64, 32, 16]
   dropout: 0.1
   num_classes: 11 # 10 attack + 1 benign

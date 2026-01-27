@@ -1,5 +1,6 @@
 from typing import Callable, Optional, Dict, Any
 from pathlib import Path
+import shutil
 
 import torch.nn as nn
 from torch.optim import Optimizer
@@ -111,7 +112,7 @@ class EngineBuilder:
         metric: str = "loss",
         maximize: bool = False,
         n_saved: int = 1,
-        filename_prefix: str = "best",
+        filename_prefix: str = "checkpoint",
     ) -> "EngineBuilder":
         """Add model checkpointing handler (for validator engines).
 
@@ -125,6 +126,10 @@ class EngineBuilder:
             filename_prefix: Prefix for checkpoint filenames
         """
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        # pulisci la cartella prima di salvare i nuovi checkpoint
+        if checkpoint_dir.exists():
+            shutil.rmtree(checkpoint_dir)
+
         score_sign = 1 if maximize else -1
 
         handler = ModelCheckpoint(

@@ -108,15 +108,24 @@ def get_predictions(model, x_numerical, x_categorical, y, device):
     return y_true, y_pred, z, x_numerical.cpu().numpy()
 
 
+def fix_predictions(y_pred, mapping):
+    """Map predictions back to original class labels."""
+    return np.array([mapping[pred] if pred in mapping else pred for pred in y_pred])
+
+
 def per_classes_predictions(y_true, y_pred):
-    """Get indices of true positives and false negatives per class."""
+    """Get indices for all combinations of true and predicted classes (confusion matrix cells)."""
     unique_classes = unique_labels(y_true, y_pred)
     class_indices = {}
-    for cls in unique_classes:
-        mask_cls = y_true == cls
-        idx_tp = np.where(mask_cls & (y_pred == cls))[0]
-        idx_fn = np.where(mask_cls & (y_pred != cls))[0]
-        class_indices[cls] = {"tp": idx_tp, "fn": idx_fn}
+
+    for true_cls in unique_classes:
+        class_indices[true_cls] = {}
+        mask_true_cls = y_true == true_cls
+
+        for pred_cls in unique_classes:
+            idx = np.where(mask_true_cls & (y_pred == pred_cls))[0]
+            class_indices[true_cls][pred_cls] = idx
+
     return class_indices
 
 
@@ -153,7 +162,7 @@ def analyze_classes_failures(X, y_true, y_pred, max_samples=1000):
     unique_classes = np.unique(y_true)
     all_stats = []
     for target_class in unique_classes:
-        logger.info(f"Analyzing class {target_class}...")
+        logger.info(f"Analyzing class {target_class} ...")
         stats = analyze_class_failures(
             X, y_true, y_pred, target_class, max_samples=max_samples
         )
@@ -190,7 +199,7 @@ def visualize_classes(X, z, y_true, y_pred, labels):
         return
 
     for label in labels:
-        logger.info(f"Visualizing class {label}...")
+        logger.info(f"Visualizing class {label} ...")
         yield label, visualize_class(X, z, y_true, y_pred, label)
 
 
@@ -228,7 +237,7 @@ def main():
         overrides=sys.argv[1:],
     )
 
-    df_meta = load_from_json(Path(cfg.path.processed_data) / "data_metadata.json")
+    df_meta = load_from_json(Path(cfg.path.json_logs) / "df_metadata.json")
     cfg.model.params.num_classes = df_meta["num_classes"]
     cfg.loss.params.class_weight = df_meta["class_weights"]
     device = torch.device(cfg.device)
@@ -263,12 +272,13 @@ def main():
         ("test", (x_num_test, x_cat_test, y_test)),
     ]:
         log_dir = Path(cfg.path.tb_logs) / "inference" / suffix
-        if log_dir.exists():
-            shutil.rmtree(log_dir)
+        # if log_dir.exists():
+        #     shutil.rmtree(log_dir)
         log_dir.mkdir(parents=True, exist_ok=True)
         tb_logger = TensorboardLogger(log_dir=log_dir)
 
         y_true, y_pred, z, X = get_predictions(model, x_num, x_cat, y, device)
+        # y_pred = fix_predictions(y_pred, {3: 3, 4: 3, 5: 3})
         unique_classes = np.unique(y_true)
 
         cm_fig = visualize_cm(y_true, y_pred, normalize="true")
@@ -279,7 +289,7 @@ def main():
         )
         plt.close(cm_fig)
 
-        logger.info("Computing class visualizations...")
+        logger.info("Computing class visualizations ...")
         for label, (fig_x, fig_z) in visualize_classes(
             X, z, y_true, y_pred, unique_classes
         ):
@@ -292,7 +302,7 @@ def main():
             )
             plt.close(fig_z)
 
-        logger.info("Computing overall visualizations...")
+        logger.info("Computing overall visualizations ...")
         overall_visual = visualize_overall(X, z, y_true)
         tb_logger.writer.add_figure(
             "raw/overall", overall_visual[0], global_step=cfg.run_id or 0
@@ -304,7 +314,7 @@ def main():
         plt.close(overall_visual[1])
         tb_logger.close()
 
-        logger.info("Analyzing class failures...")
+        logger.info("Analyzing class failures ...")
         classes_failures = analyze_classes_failures(X, y_true, y_pred)
         save_to_json(
             classes_failures,
@@ -312,7 +322,7 @@ def main():
             / f"class_failures/{suffix}{'_' + str(cfg.run_id) if cfg.run_id else ''}.json",
         )
 
-        logger.info("Saving per-class predictions...")
+        logger.info("Saving per-class predictions ...")
         classes_indices = per_classes_predictions(y_true, y_pred)
         save_to_pickle(
             classes_indices,

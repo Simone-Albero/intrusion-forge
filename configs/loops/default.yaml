@@ -1,5 +1,5 @@
 training:
-  epochs: 10
+  epochs: 30
 
   dataloader:
     batch_size: 1024

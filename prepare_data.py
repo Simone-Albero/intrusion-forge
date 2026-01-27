@@ -150,12 +150,11 @@ def preprocess_df(
     train_df, val_df, test_df, label_mapping = encode_labels(
         train_df, val_df, test_df, label_col, benign_tag
     )
-    logger.info(f"Label mapping: {label_mapping}")
 
     return train_df, val_df, test_df, label_mapping
 
 
-def expand_class_labels(
+def kmeans_to_new_labels(
     train_df,
     val_df,
     test_df,
@@ -216,6 +215,39 @@ def expand_class_labels(
     return train_df, val_df, test_df
 
 
+def fn_to_new_labels(
+    train_df,
+    val_df,
+    test_df,
+    target_class,
+    feature_cols,
+    label_col,
+    label_mapping,
+    cfg,
+):
+    class_label = label_mapping.get(target_class, str(target_class))
+
+    for split_name, split_df in [
+        ("train", train_df),
+        ("val", val_df),
+        ("test", test_df),
+    ]:
+        class_indices = load_from_pickle(
+            Path(cfg.path.pickles) / f"class_indices/{split_name}.pkl"
+        )
+        fn_idx_1 = class_indices[target_class][0]
+        fn_idx_2 = class_indices[target_class][4]
+
+        split_df.loc[fn_idx_1, label_col] = f"{class_label}_1"
+        split_df.loc[fn_idx_2, label_col] = f"{class_label}_2"
+
+    train_df, val_df, test_df, label_mapping = encode_labels(
+        train_df, val_df, test_df, label_col, cfg.data.benign_tag
+    )
+
+    return train_df, val_df, test_df, label_mapping
+
+
 def _update_cluster_labels(df, mask, clusters, cluster_to_label, label_col):
     """Update labels based on cluster assignments."""
     indices = df[mask].index
@@ -263,26 +295,14 @@ def main():
         cfg.data.benign_tag,
     )
 
-    # Optional: expand classes based on false negatives
-    train_df, val_df, test_df = load_data_splits(
-        processed_data_path, cfg.data.file_name, cfg.data.extension
-    )
-
-    train_df, val_df, test_df = expand_class_labels(
-        train_df,
-        val_df,
-        test_df,
-        target_class="DoS",
-        feature_cols=num_cols + cat_cols,
-        label_col=label_col,
-    )
-
-    train_df, val_df, test_df, label_mapping = encode_labels(
-        train_df, val_df, test_df, label_col, cfg.data.benign_tag
-    )
+    # Reset indices to ensure alignment with positional indices
+    train_df = train_df.reset_index(drop=True)
+    val_df = val_df.reset_index(drop=True)
+    test_df = test_df.reset_index(drop=True)
 
     # Save processed data
     logger.info("Saving processed data...")
+    processed_data_path.mkdir(parents=True, exist_ok=True)
     save_df(
         train_df,
         processed_data_path / f"{cfg.data.file_name}_train.{cfg.data.extension}",
