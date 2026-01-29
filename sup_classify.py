@@ -13,7 +13,7 @@ from src.common.config import load_config
 from src.common.logging import setup_logger
 from src.common.utils import save_to_json, load_from_json
 from src.data.io import load_data_splits
-from src.data.preprocessing import subsample_df
+from src.data.preprocessing import subsample_df, random_undersample_df
 from src.torch.module.checkpoint import load_latest_checkpoint
 from src.torch.engine import exclude_ignored_classes, train_step, eval_step, test_step
 from src.torch.builders import (
@@ -50,6 +50,8 @@ def load_data(
     train_df, val_df, test_df = load_data_splits(
         processed_data_path, file_name, extension
     )
+
+    train_df = random_undersample_df(train_df, label_col, random_state)
 
     if n_samples is not None:
         train_df = subsample_df(train_df, n_samples, random_state, label_col)
@@ -433,7 +435,9 @@ def main():
     )
 
     json_logs_path = Path(cfg.path.json_logs)
-    df_meta = load_from_json(json_logs_path / "df_metadata.json")
+    df_meta = load_from_json(
+        json_logs_path / "metadata" / f"df_{cfg.run_id}.json",
+    )
     cfg.model.params.num_classes = df_meta["num_classes"]
     cfg.loss.params.class_weight = df_meta["class_weights"]
     device = torch.device(cfg.device)
@@ -443,7 +447,7 @@ def main():
     cat_cols = list(cfg.data.cat_cols)
     label_col = "multi_" + cfg.data.label_col
 
-    processed_data_path = Path(cfg.path.processed_data)
+    processed_data_path = Path(cfg.path.processed_data) / cfg.data.name
     models_path = Path(cfg.path.models)
     tb_logs_path = Path(cfg.path.tb_logs)
     ignore_classes = list(cfg.ignore_classes) if cfg.get("ignore_classes") else None

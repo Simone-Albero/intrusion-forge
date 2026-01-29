@@ -1,4 +1,4 @@
-name: cic_2018_v2
+name: dataset_v2
 file_name: cic_2018_v2
 extension: parquet
 
@@ -55,8 +55,8 @@ train_frac: 0.8
 val_frac: 0.1
 test_frac: 0.1
 
-filter_query: null # ${data.label_col} != '${data.benign_tag}'
-min_cat_count: 1000
+filter_query: # ${data.label_col} != 'DDOS attack-LOIC-UDP' and ${data.label_col} != 'Brute Force -Web'
+min_cat_count: 7000
 top_n: 128
 hash_buckets: 256
 add_log_freq: false

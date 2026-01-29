@@ -242,7 +242,9 @@ def main():
 
     # Load data
     train_df, val_df, test_df = load_data(
-        Path(cfg.path.processed_data), cfg.data.file_name, cfg.data.extension
+        Path(cfg.path.processed_data) / cfg.data.name,
+        cfg.data.file_name,
+        cfg.data.extension,
     )
 
     # Compute separability analysis

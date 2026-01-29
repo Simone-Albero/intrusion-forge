@@ -1,6 +1,6 @@
-out_base_path: resources/outputs/${data.name}/${name}
+out_base_path: resources/outputs/${data.file_name}/${name}
 
-raw_data: resources/raw_data/dataset_v2
+raw_data: resources/raw_data
 processed_data: ${path.out_base_path}/processed_data
 models: ${path.out_base_path}/models
 pickles: ${path.out_base_path}/pickles

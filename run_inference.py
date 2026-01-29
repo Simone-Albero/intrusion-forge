@@ -113,7 +113,7 @@ def fix_predictions(y_pred, mapping):
     return np.array([mapping[pred] if pred in mapping else pred for pred in y_pred])
 
 
-def per_classes_predictions(y_true, y_pred):
+def cm_indices(y_true, y_pred):
     """Get indices for all combinations of true and predicted classes (confusion matrix cells)."""
     unique_classes = unique_labels(y_true, y_pred)
     class_indices = {}
@@ -237,7 +237,9 @@ def main():
         overrides=sys.argv[1:],
     )
 
-    df_meta = load_from_json(Path(cfg.path.json_logs) / "df_metadata.json")
+    df_meta = load_from_json(
+        Path(cfg.path.json_logs) / "metadata" / f"df_{cfg.run_id}.json"
+    )
     cfg.model.params.num_classes = df_meta["num_classes"]
     cfg.loss.params.class_weight = df_meta["class_weights"]
     device = torch.device(cfg.device)
@@ -251,7 +253,7 @@ def main():
         (x_num_val, x_cat_val, y_val),
         (x_num_test, x_cat_test, y_test),
     ) = load_data(
-        Path(cfg.path.processed_data),
+        Path(cfg.path.processed_data) / cfg.data.name,
         cfg.data.file_name,
         cfg.data.extension,
         num_cols,
@@ -281,7 +283,7 @@ def main():
         # y_pred = fix_predictions(y_pred, {3: 3, 4: 3, 5: 3})
         unique_classes = np.unique(y_true)
 
-        cm_fig = visualize_cm(y_true, y_pred, normalize="true")
+        cm_fig = visualize_cm(y_true, y_pred, normalize=None)
         tb_logger.writer.add_figure(
             "confusion_matrix",
             cm_fig,
@@ -323,7 +325,7 @@ def main():
         )
 
         logger.info("Saving per-class predictions ...")
-        classes_indices = per_classes_predictions(y_true, y_pred)
+        classes_indices = cm_indices(y_true, y_pred)
         save_to_pickle(
             classes_indices,
             pickles_path

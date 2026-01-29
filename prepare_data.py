@@ -22,11 +22,28 @@ from src.data.preprocessing import (
     ml_split,
     query_filter,
     rare_category_filter,
+    random_undersample_df,
 )
 from src.ml.clustering import kmeans_grid_search
 
 setup_logger()
 logger = logging.getLogger(__name__)
+
+
+def df_info(df):
+    """Print basic information about the dataframe."""
+    logger.info(f"DataFrame shape: {df.shape}")
+    logger.info("DataFrame info:")
+    logger.info(df.info())
+    logger.info("DataFrame description:")
+    logger.info(df.describe(include="all"))
+
+    for col in df.columns:
+        logger.info(f"Column '{col}' info:")
+        num_unique = df[col].nunique()
+        logger.info(f"Unique values: {num_unique}")
+        logger.info(f"Dtype: {df[col].dtype}")
+        logger.info(f"Top 5 frequent values:\n{df[col].value_counts().head()}")
 
 
 def compute_df_metadata(
@@ -106,6 +123,8 @@ def preprocess_df(
         random_state=random_state,
         label_col=label_col,
     )
+
+    train_df = random_undersample_df(train_df, label_col, random_state)
 
     set_config(transform_output="pandas")
 
@@ -270,7 +289,9 @@ def main():
     num_cols = list(cfg.data.num_cols)
     cat_cols = list(cfg.data.cat_cols)
     label_col = cfg.data.label_col
-    raw_data_path = Path(cfg.path.raw_data) / f"{cfg.data.file_name}.csv"
+    raw_data_path = (
+        Path(cfg.path.raw_data) / cfg.data.name / f"{cfg.data.file_name}.csv"
+    )
     processed_data_path = Path(cfg.path.processed_data)
     json_logs_path = Path(cfg.path.json_logs)
 
@@ -300,20 +321,42 @@ def main():
     val_df = val_df.reset_index(drop=True)
     test_df = test_df.reset_index(drop=True)
 
+    # train_df.loc[
+    #     train_df[label_col].str.contains("DOS", case=False, na=False),
+    #     label_col,
+    # ] = "Class_A"
+    # val_df.loc[
+    #     val_df[label_col].str.contains("DOS", case=False, na=False),
+    #     label_col,
+    # ] = "Class_A"
+    # test_df.loc[
+    #     test_df[label_col].str.contains("DOS", case=False, na=False),
+    #     label_col,
+    # ] = "Class_A"
+
+    # train_df, val_df, test_df, label_mapping = encode_labels(
+    #     train_df, val_df, test_df, label_col, cfg.data.benign_tag
+    # )
+
     # Save processed data
     logger.info("Saving processed data...")
-    processed_data_path.mkdir(parents=True, exist_ok=True)
     save_df(
         train_df,
-        processed_data_path / f"{cfg.data.file_name}_train.{cfg.data.extension}",
+        processed_data_path
+        / cfg.data.name
+        / f"{cfg.data.file_name}_train.{cfg.data.extension}",
     )
     save_df(
         val_df,
-        processed_data_path / f"{cfg.data.file_name}_val.{cfg.data.extension}",
+        processed_data_path
+        / cfg.data.name
+        / f"{cfg.data.file_name}_val.{cfg.data.extension}",
     )
     save_df(
         test_df,
-        processed_data_path / f"{cfg.data.file_name}_test.{cfg.data.extension}",
+        processed_data_path
+        / cfg.data.name
+        / f"{cfg.data.file_name}_test.{cfg.data.extension}",
     )
     # Compute and save metadata
     logger.info("Computing and saving metadata...")
@@ -331,7 +374,7 @@ def main():
     )
     save_to_json(
         metadata,
-        json_logs_path / "df_metadata.json",
+        json_logs_path / "metadata" / f"df_{cfg.run_id}.json",
     )
 
 

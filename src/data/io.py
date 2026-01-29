@@ -25,7 +25,10 @@ def save_df(
     index: bool = False,
     **kwargs,
 ) -> None:
-    ext = Path(file_path).suffix.lower()
+    file_path = Path(file_path)
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+
+    ext = file_path.suffix.lower()
     if ext == ".parquet":
         df.to_parquet(file_path, index=index, **kwargs)
     elif ext == ".csv":
