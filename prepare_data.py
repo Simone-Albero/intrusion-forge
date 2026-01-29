@@ -183,7 +183,7 @@ def kmeans_to_new_labels(
     train_idx=None,
     val_idx=None,
     test_idx=None,
-    min_samples=100,
+    min_samples=1000,
 ):
     """Expand target class into subclasses using clustering."""
 
@@ -234,12 +234,22 @@ def kmeans_to_new_labels(
     return train_df, val_df, test_df
 
 
+def _update_cluster_labels(df, mask, clusters, cluster_to_label, label_col):
+    """Update labels based on cluster assignments."""
+    indices = df[mask].index
+
+    for cluster_id, new_label in cluster_to_label.items():
+        cluster_mask = clusters == cluster_id
+        df.loc[indices[cluster_mask], label_col] = new_label
+
+    return df
+
+
 def fn_to_new_labels(
     train_df,
     val_df,
     test_df,
     target_class,
-    feature_cols,
     label_col,
     label_mapping,
     cfg,
@@ -267,17 +277,6 @@ def fn_to_new_labels(
     return train_df, val_df, test_df, label_mapping
 
 
-def _update_cluster_labels(df, mask, clusters, cluster_to_label, label_col):
-    """Update labels based on cluster assignments."""
-    indices = df[mask].index
-
-    for cluster_id, new_label in cluster_to_label.items():
-        cluster_mask = clusters == cluster_id
-        df.loc[indices[cluster_mask], label_col] = new_label
-
-    return df
-
-
 def main():
     """Main entry point for data preparation."""
     cfg = load_config(
@@ -289,9 +288,8 @@ def main():
     num_cols = list(cfg.data.num_cols)
     cat_cols = list(cfg.data.cat_cols)
     label_col = cfg.data.label_col
-    raw_data_path = (
-        Path(cfg.path.raw_data) / cfg.data.name / f"{cfg.data.file_name}.csv"
-    )
+
+    raw_data_path = Path(cfg.path.raw_data)
     processed_data_path = Path(cfg.path.processed_data)
     json_logs_path = Path(cfg.path.json_logs)
 
@@ -324,39 +322,42 @@ def main():
     # train_df.loc[
     #     train_df[label_col].str.contains("DOS", case=False, na=False),
     #     label_col,
-    # ] = "Class_A"
+    # ] = "DOS"
     # val_df.loc[
     #     val_df[label_col].str.contains("DOS", case=False, na=False),
     #     label_col,
-    # ] = "Class_A"
+    # ] = "DOS"
     # test_df.loc[
     #     test_df[label_col].str.contains("DOS", case=False, na=False),
     #     label_col,
-    # ] = "Class_A"
+    # ] = "DOS"
 
-    # train_df, val_df, test_df, label_mapping = encode_labels(
-    #     train_df, val_df, test_df, label_col, cfg.data.benign_tag
+    # train_df, val_df, test_df = kmeans_to_new_labels(
+    #     train_df,
+    #     val_df,
+    #     test_df,
+    #     target_class="DoS",
+    #     feature_cols=num_cols + cat_cols,
+    #     label_col=label_col,
     # )
+
+    train_df, val_df, test_df, label_mapping = encode_labels(
+        train_df, val_df, test_df, label_col, cfg.data.benign_tag
+    )
 
     # Save processed data
     logger.info("Saving processed data...")
     save_df(
         train_df,
-        processed_data_path
-        / cfg.data.name
-        / f"{cfg.data.file_name}_train.{cfg.data.extension}",
+        processed_data_path / f"{cfg.data.file_name}_train.{cfg.data.extension}",
     )
     save_df(
         val_df,
-        processed_data_path
-        / cfg.data.name
-        / f"{cfg.data.file_name}_val.{cfg.data.extension}",
+        processed_data_path / f"{cfg.data.file_name}_val.{cfg.data.extension}",
     )
     save_df(
         test_df,
-        processed_data_path
-        / cfg.data.name
-        / f"{cfg.data.file_name}_test.{cfg.data.extension}",
+        processed_data_path / f"{cfg.data.file_name}_test.{cfg.data.extension}",
     )
     # Compute and save metadata
     logger.info("Computing and saving metadata...")
@@ -374,7 +375,7 @@ def main():
     )
     save_to_json(
         metadata,
-        json_logs_path / "metadata" / f"df_{cfg.run_id}.json",
+        json_logs_path / "metadata" / f"df.json",
     )
 
 

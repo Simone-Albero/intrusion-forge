@@ -253,9 +253,7 @@ def test(
             else:
                 metrics_to_save[name] = value
 
-        json_path = (
-            json_logs_path / f"test_summary{f'_{run_id}' if run_id else ''}.json"
-        )
+        json_path = json_logs_path / "test" / f"summary.json"
         save_to_json(metrics_to_save, json_path)
 
         # TensorBoard logging
@@ -436,10 +434,10 @@ def main():
 
     json_logs_path = Path(cfg.path.json_logs)
     df_meta = load_from_json(
-        json_logs_path / "metadata" / f"df_{cfg.run_id}.json",
+        json_logs_path / "metadata" / f"df.json",
     )
     cfg.model.params.num_classes = df_meta["num_classes"]
-    cfg.loss.params.class_weight = df_meta["class_weights"]
+    # cfg.loss.params.class_weight = df_meta["class_weights"]
     device = torch.device(cfg.device)
     logger.info(f"Using device: {device}")
 
@@ -447,11 +445,11 @@ def main():
     cat_cols = list(cfg.data.cat_cols)
     label_col = "multi_" + cfg.data.label_col
 
-    processed_data_path = Path(cfg.path.processed_data) / cfg.data.name
+    processed_data_path = Path(cfg.path.processed_data)
     models_path = Path(cfg.path.models)
     tb_logs_path = Path(cfg.path.tb_logs)
     ignore_classes = list(cfg.ignore_classes) if cfg.get("ignore_classes") else None
-    run_id = cfg.get("run_id", None)
+    run_id = cfg.run_id
 
     # Run pipeline based on stage
     stage = cfg.get("stage", "all")

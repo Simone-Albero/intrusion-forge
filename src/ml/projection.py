@@ -13,6 +13,9 @@ def create_subsample_mask(
     Generate a boolean mask for subsampling data based on labels.
     If n_samples is None or greater than the dataset size, return a mask with all True values.
 
+    If stratify is True, samples proportionally to class distribution.
+    If stratify is False, samples the same number of samples per class.
+
     Returns:
         np.ndarray: Boolean mask indicating which samples to keep.
     """
@@ -25,22 +28,16 @@ def create_subsample_mask(
     if stratify:
         unique_labels, label_counts = np.unique(labels, return_counts=True)
         label_proportions = label_counts / len(labels)
-
-        # Calculate samples per class
         samples_per_class = np.round(label_proportions * n_samples).astype(int)
 
-        # Adjust to ensure we get exactly n_samples
         diff = n_samples - samples_per_class.sum()
         if diff != 0:
-            # Add/remove samples from the largest class
             largest_class_idx = np.argmax(samples_per_class)
             samples_per_class[largest_class_idx] += diff
 
-        # Sample from each class
         for label, n_class_samples in zip(unique_labels, samples_per_class):
             class_indices = np.where(labels == label)[0]
             if n_class_samples > len(class_indices):
-                # If requesting more samples than available, take all
                 selected = class_indices
             else:
                 selected = np.random.choice(
@@ -48,8 +45,17 @@ def create_subsample_mask(
                 )
             mask[selected] = True
     else:
-        indices = np.random.choice(len(labels), size=n_samples, replace=False)
-        mask[indices] = True
+        unique_labels, label_counts = np.unique(labels, return_counts=True)
+        n_classes = len(unique_labels)
+        samples_per_class = n_samples // n_classes
+
+        for label in unique_labels:
+            class_indices = np.where(labels == label)[0]
+            n_class_samples = min(samples_per_class, len(class_indices))
+            selected = np.random.choice(
+                class_indices, size=n_class_samples, replace=False
+            )
+            mask[selected] = True
 
     return mask
 
@@ -61,6 +67,9 @@ def tsne_projection(data, perplexity=None):
     if perplexity is None:
         perplexity = min(30, (n_samples - 1) // 3)
         perplexity = max(5, perplexity)
+
+    if perplexity >= n_samples:
+        perplexity = max(5, n_samples - 1)
 
     tsne = TSNE(n_components=2, perplexity=perplexity, random_state=42)
     projected_data = tsne.fit_transform(data)

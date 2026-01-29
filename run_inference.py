@@ -172,20 +172,35 @@ def analyze_classes_failures(X, y_true, y_pred, max_samples=1000):
 
 def visualize_class(X, z, y_true, y_pred, label, max_samples=3000):
     """Create visualizations for a specific class."""
-    if z is None:
-        return
-
     class_mask = y_true == label
-    if class_mask.sum() > max_samples:
-        class_mask_indices = np.where(class_mask)[0]
-        selected_indices = np.random.choice(
-            class_mask_indices, size=max_samples, replace=False
-        )
-        new_mask = np.zeros_like(class_mask, dtype=bool)
-        new_mask[selected_indices] = True
-        class_mask = new_mask
 
-    is_correct = (y_true[class_mask] == y_pred[class_mask]).astype(int)
+    idx_tp = np.where(class_mask & (y_pred == label))[0]
+    idx_fn = np.where(class_mask & (y_pred != label))[0]
+
+    n_tp = len(idx_tp)
+    n_fn = len(idx_fn)
+
+    if n_fn == 0 or n_tp == 0:
+        return None, None
+
+    if n_tp + n_fn > max_samples:
+        prop_tp = n_tp / (n_tp + n_fn)
+        prop_tp = min(0.5, prop_tp)
+        n_tp_sample = int(max_samples * prop_tp)
+        n_fn_sample = max_samples - n_tp_sample
+
+        if n_tp > n_tp_sample:
+            idx_tp = np.random.choice(idx_tp, size=n_tp_sample, replace=False)
+        if n_fn > n_fn_sample:
+            idx_fn = np.random.choice(idx_fn, size=n_fn_sample, replace=False)
+
+    selected_indices = np.concatenate([idx_tp, idx_fn])
+    class_mask = np.zeros_like(y_true, dtype=bool)
+    class_mask[selected_indices] = True
+
+    is_correct = y_true[
+        class_mask
+    ]  # (y_true[class_mask] == y_pred[class_mask]).astype(int)
 
     reduced_x = tsne_projection(X[class_mask])
     reduced_z = tsne_projection(z[class_mask])
@@ -209,7 +224,7 @@ def visualize_overall(X, z, y_true, exclude_classes=[], n_samples=3000):
         return
 
     mask = ~np.isin(y_true, exclude_classes)
-    vis_mask = create_subsample_mask(y_true[mask], n_samples=n_samples, stratify=True)
+    vis_mask = create_subsample_mask(y_true[mask], n_samples=n_samples, stratify=False)
 
     reduced_x = tsne_projection(X[mask][vis_mask])
     reduced_z = tsne_projection(z[mask][vis_mask])
@@ -237,9 +252,7 @@ def main():
         overrides=sys.argv[1:],
     )
 
-    df_meta = load_from_json(
-        Path(cfg.path.json_logs) / "metadata" / f"df_{cfg.run_id}.json"
-    )
+    df_meta = load_from_json(Path(cfg.path.json_logs) / "metadata" / f"df.json")
     cfg.model.params.num_classes = df_meta["num_classes"]
     cfg.loss.params.class_weight = df_meta["class_weights"]
     device = torch.device(cfg.device)
@@ -253,7 +266,7 @@ def main():
         (x_num_val, x_cat_val, y_val),
         (x_num_test, x_cat_test, y_test),
     ) = load_data(
-        Path(cfg.path.processed_data) / cfg.data.name,
+        Path(cfg.path.processed_data),
         cfg.data.file_name,
         cfg.data.extension,
         num_cols,
@@ -283,7 +296,7 @@ def main():
         # y_pred = fix_predictions(y_pred, {3: 3, 4: 3, 5: 3})
         unique_classes = np.unique(y_true)
 
-        cm_fig = visualize_cm(y_true, y_pred, normalize=None)
+        cm_fig = visualize_cm(y_true, y_pred, normalize="true")
         tb_logger.writer.add_figure(
             "confusion_matrix",
             cm_fig,
@@ -291,18 +304,21 @@ def main():
         )
         plt.close(cm_fig)
 
-        logger.info("Computing class visualizations ...")
-        for label, (fig_x, fig_z) in visualize_classes(
-            X, z, y_true, y_pred, unique_classes
-        ):
-            tb_logger.writer.add_figure(
-                f"raw/{label}", fig_x, global_step=cfg.run_id or 0
-            )
-            plt.close(fig_x)
-            tb_logger.writer.add_figure(
-                f"latent/{label}", fig_z, global_step=cfg.run_id or 0
-            )
-            plt.close(fig_z)
+        # logger.info("Computing class visualizations ...")
+        # for label, (fig_x, fig_z) in visualize_classes(
+        #     X, z, y_true, y_pred, unique_classes
+        # ):
+        #     if fig_x is None or fig_z is None:
+        #         continue
+
+        #     tb_logger.writer.add_figure(
+        #         f"raw/{label}", fig_x, global_step=cfg.run_id or 0
+        #     )
+        #     plt.close(fig_x)
+        #     tb_logger.writer.add_figure(
+        #         f"latent/{label}", fig_z, global_step=cfg.run_id or 0
+        #     )
+        #     plt.close(fig_z)
 
         logger.info("Computing overall visualizations ...")
         overall_visual = visualize_overall(X, z, y_true)
@@ -320,16 +336,14 @@ def main():
         classes_failures = analyze_classes_failures(X, y_true, y_pred)
         save_to_json(
             classes_failures,
-            json_logs_path
-            / f"class_failures/{suffix}{'_' + str(cfg.run_id) if cfg.run_id else ''}.json",
+            json_logs_path / f"class_failures/{suffix}.json",
         )
 
         logger.info("Saving per-class predictions ...")
         classes_indices = cm_indices(y_true, y_pred)
         save_to_pickle(
             classes_indices,
-            pickles_path
-            / f"class_indices/{suffix}{'_' + str(cfg.run_id) if cfg.run_id else ''}.pkl",
+            pickles_path / f"class_indices/{suffix}.pkl",
         )
 
 

@@ -6,11 +6,14 @@ import pandas as pd
 import numpy as np
 from sklearn.metrics import silhouette_score
 from sklearn.metrics.pairwise import paired_distances
+from ignite.handlers.tensorboard_logger import TensorboardLogger
 
 from src.common.config import load_config
 from src.common.logging import setup_logger
 from src.common.utils import save_to_json, load_from_pickle
 from src.data.io import load_data_splits
+from src.ml.projection import tsne_projection, create_subsample_mask
+from src.plot.array import vectors_plot
 
 setup_logger()
 logger = logging.getLogger(__name__)
@@ -196,8 +199,7 @@ def compute_separability_analysis(
         separability_results.append({"global_silhouette": global_silhouette})
         save_to_json(
             separability_results,
-            Path(cfg.path.json_logs)
-            / f"separability/{split_name}{'_' + str(cfg.run_id) if cfg.run_id else ''}.json",
+            Path(cfg.path.json_logs) / f"separability/{split_name}.json",
         )
 
 
@@ -223,8 +225,17 @@ def compute_similarity_analysis(
         save_to_json(
             similarity_results,
             Path(cfg.path.json_logs)
-            / f"similarity/{split_name}_{class_a}_vs_{class_b}{'_' + str(cfg.run_id) if cfg.run_id else ''}.json",
+            / f"similarity/{split_name}_{class_a}_vs_{class_b}.json",
         )
+
+
+def visualize_overall(X, y, exclude_classes=[], n_samples=3000):
+    """Create overall visualizations excluding specific class."""
+    mask = ~np.isin(y, exclude_classes)
+    # vis_mask = create_subsample_mask(y[mask], n_samples=n_samples, stratify=False)
+    reduced_x = tsne_projection(X[mask])
+
+    return vectors_plot(reduced_x, y[mask])
 
 
 def main():
@@ -241,17 +252,33 @@ def main():
     label_col = cfg.data.label_col
 
     # Load data
+    logger.info("Loading data ...")
     train_df, val_df, test_df = load_data(
-        Path(cfg.path.processed_data) / cfg.data.name,
+        Path(cfg.path.processed_data),
         cfg.data.file_name,
         cfg.data.extension,
     )
 
+    for suffix, X, y in [
+        ("train", train_df[feature_cols].values, train_df["multi_" + label_col].values),
+        ("val", val_df[feature_cols].values, val_df["multi_" + label_col].values),
+        ("test", test_df[feature_cols].values, test_df["multi_" + label_col].values),
+    ]:
+        log_dir = Path(cfg.path.tb_logs) / "visualize" / suffix
+        log_dir.mkdir(parents=True, exist_ok=True)
+        tb_logger = TensorboardLogger(log_dir=log_dir)
+
+        fig = visualize_overall(
+            X,
+            y,
+        )
+        tb_logger.writer.add_figure("overall_projection", fig, global_step=0)
+
     # Compute separability analysis
-    logger.info("Starting separability analysis ...")
-    compute_separability_analysis(
-        train_df, val_df, test_df, label_col, feature_cols, cfg
-    )
+    # logger.info("Starting separability analysis ...")
+    # compute_separability_analysis(
+    #     train_df, val_df, test_df, label_col, feature_cols, cfg
+    # )
 
 
 if __name__ == "__main__":
