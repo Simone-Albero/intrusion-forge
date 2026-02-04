@@ -17,7 +17,6 @@ class NumericalDecoderModule(nn.Module):
         dropout: float = 0.0,
         activation: Callable[[], nn.Module] = nn.ReLU,
         norm_layer: Optional[Callable[[int], nn.Module]] = None,
-        bias: bool = True,
     ) -> None:
         super().__init__()
         hidden_dims = list(hidden_dims)
@@ -29,7 +28,6 @@ class NumericalDecoderModule(nn.Module):
             activation=activation,
             norm_layer=norm_layer,
             dropout=dropout,
-            bias=bias,
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -57,7 +55,6 @@ class CategoricalDecoderModule(nn.Module):
         dropout: float = 0.0,
         activation: Callable[[], nn.Module] = nn.ReLU,
         norm_layer: Optional[Callable[[int], nn.Module]] = None,
-        bias: bool = True,
     ) -> None:
         super().__init__()
 
@@ -73,7 +70,6 @@ class CategoricalDecoderModule(nn.Module):
                 activation=activation,
                 norm_layer=norm_layer,
                 dropout=dropout,
-                bias=bias,
             )
             trunk_out_features = hidden_dims[-1]
         else:
@@ -134,7 +130,6 @@ class TabularDecoderModule(nn.Module):
         dropout: float = 0.0,
         activation: Callable[[], nn.Module] = nn.ReLU,
         norm_layer: Optional[Callable[[int], nn.Module]] = None,
-        bias: bool = True,
     ) -> None:
         super().__init__()
         self.num_numerical_features = num_numerical_features
@@ -151,7 +146,6 @@ class TabularDecoderModule(nn.Module):
                 activation=activation,
                 norm_layer=norm_layer,
                 dropout=dropout,
-                bias=bias,
             )
             trunk_out_features = hidden_dims[-1]
         else:

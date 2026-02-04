@@ -137,7 +137,6 @@ class NumericalAutoencoder(ComposableAutoencoder):
         dropout: float = 0.0,
         activation: Callable[[], nn.Module] = nn.ReLU,
         norm_layer: Optional[Callable[[int], nn.Module]] = None,
-        bias: bool = True,
     ) -> None:
         hidden_dims = list(hidden_dims)
 
@@ -148,7 +147,6 @@ class NumericalAutoencoder(ComposableAutoencoder):
             dropout=dropout,
             activation=activation,
             norm_layer=norm_layer,
-            bias=bias,
         )
 
         decoder_module = NumericalDecoderModule(
@@ -158,7 +156,6 @@ class NumericalAutoencoder(ComposableAutoencoder):
             dropout=dropout,
             activation=activation,
             norm_layer=norm_layer,
-            bias=bias,
         )
 
         super().__init__(encoder_module=encoder_module, decoder_module=decoder_module)
@@ -176,7 +173,6 @@ class CategoricalAutoencoder(ComposableAutoencoder):
         dropout: float = 0.0,
         activation: Callable[[], nn.Module] = nn.ReLU,
         norm_layer: Optional[Callable[[int], nn.Module]] = None,
-        bias: bool = True,
     ) -> None:
         hidden_dims = list(hidden_dims)
 
@@ -189,7 +185,6 @@ class CategoricalAutoencoder(ComposableAutoencoder):
             dropout=dropout,
             activation=activation,
             norm_layer=norm_layer,
-            bias=bias,
         )
 
         decoder_module = CategoricalDecoderModule(
@@ -201,7 +196,6 @@ class CategoricalAutoencoder(ComposableAutoencoder):
             dropout=dropout,
             activation=activation,
             norm_layer=norm_layer,
-            bias=bias,
         )
 
         super().__init__(encoder_module=encoder_module, decoder_module=decoder_module)
@@ -221,7 +215,6 @@ class TabularAutoencoder(ComposableTabularAutoencoder):
         dropout: float = 0.0,
         activation: Callable[[], nn.Module] = nn.ReLU,
         norm_layer: Optional[Callable[[int], nn.Module]] = None,
-        bias: bool = True,
         noise_factor: float = 0.0,
     ) -> None:
         hidden_dims = list(hidden_dims)
@@ -236,7 +229,6 @@ class TabularAutoencoder(ComposableTabularAutoencoder):
             dropout=dropout,
             activation=activation,
             norm_layer=norm_layer,
-            bias=bias,
         )
 
         decoder_module = TabularDecoderModule(
@@ -249,7 +241,6 @@ class TabularAutoencoder(ComposableTabularAutoencoder):
             dropout=dropout,
             activation=activation,
             norm_layer=norm_layer,
-            bias=bias,
         )
 
         super().__init__(
@@ -273,7 +264,6 @@ class ContrastiveTabularAutoencoder(ComposableTabularAutoencoder):
         dropout: float = 0.0,
         activation: Callable[[], nn.Module] = nn.ReLU,
         norm_layer: Optional[Callable[[int], nn.Module]] = None,
-        bias: bool = True,
         noise_factor: float = 0.1,
     ) -> None:
         hidden_dims = list(hidden_dims)
@@ -288,7 +278,6 @@ class ContrastiveTabularAutoencoder(ComposableTabularAutoencoder):
             dropout=dropout,
             activation=activation,
             norm_layer=norm_layer,
-            bias=bias,
         )
 
         decoder_module = TabularDecoderModule(
@@ -301,7 +290,6 @@ class ContrastiveTabularAutoencoder(ComposableTabularAutoencoder):
             dropout=dropout,
             activation=activation,
             norm_layer=norm_layer,
-            bias=bias,
         )
 
         super().__init__(

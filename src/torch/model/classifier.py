@@ -73,7 +73,6 @@ class TabularClassifier(ComposableTabularClassifier):
             dropout=dropout,
             activation=activation,
             norm_layer=norm_layer,
-            bias=bias,
         )
         head_module = nn.Linear(hidden_dims[-1], num_classes, bias=bias)
 

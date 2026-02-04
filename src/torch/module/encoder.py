@@ -18,7 +18,6 @@ class NumericalEncoderModule(nn.Module):
         dropout: float = 0.0,
         activation: Callable[[], nn.Module] = nn.ReLU,
         norm_layer: Optional[Callable[[int], nn.Module]] = None,
-        bias: bool = True,
     ) -> None:
         super().__init__()
         hidden_dims = list(hidden_dims)
@@ -30,7 +29,6 @@ class NumericalEncoderModule(nn.Module):
             activation=activation,
             norm_layer=norm_layer,
             dropout=dropout,
-            bias=bias,
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -57,7 +55,6 @@ class CategoricalEncoderModule(nn.Module):
         dropout: float = 0.0,
         activation: Callable[[], nn.Module] = nn.ReLU,
         norm_layer: Optional[Callable[[int], nn.Module]] = None,
-        bias: bool = True,
     ) -> None:
         super().__init__()
         hidden_dims = list(hidden_dims)
@@ -75,7 +72,6 @@ class CategoricalEncoderModule(nn.Module):
             activation=activation,
             norm_layer=norm_layer,
             dropout=dropout,
-            bias=bias,
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -105,7 +101,6 @@ class TabularEncoderModule(nn.Module):
         dropout: float = 0.0,
         activation: Callable[[], nn.Module] = nn.ReLU,
         norm_layer: Optional[Callable[[int], nn.Module]] = None,
-        bias: bool = True,
     ) -> None:
         super().__init__()
 
@@ -125,7 +120,6 @@ class TabularEncoderModule(nn.Module):
             activation=activation,
             norm_layer=norm_layer,
             dropout=dropout,
-            bias=bias,
         )
 
     def forward(

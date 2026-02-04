@@ -51,7 +51,7 @@ def load_data(
         processed_data_path, file_name, extension
     )
 
-    train_df = random_undersample_df(train_df, label_col, random_state)
+    # train_df = random_undersample_df(train_df, label_col, random_state)
 
     if n_samples is not None:
         train_df = subsample_df(train_df, n_samples, random_state, label_col)
@@ -177,7 +177,10 @@ def test(
             x["output"]["logits"], x["y_true"], ignore_classes
         )
     else:
-        prepare_output = lambda x: (x["output"]["logits"], x["y_true"])
+        prepare_output = lambda x: (
+            torch.softmax(x["output"]["logits"], dim=1),
+            x["y_true"],
+        )
 
     tester = EngineBuilder(test_step).with_state(model=model, device=device)
     tester.with_metric("accuracy", Accuracy(output_transform=prepare_output))

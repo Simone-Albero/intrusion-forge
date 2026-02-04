@@ -69,7 +69,6 @@ class CategoricalEncoder(BaseModel):
         dropout: float = 0.0,
         activation: Callable[[], nn.Module] = nn.ReLU,
         norm_layer: Optional[Callable[[int], nn.Module]] = None,
-        bias: bool = True,
     ) -> None:
         super().__init__()
         hidden_dims = list(hidden_dims)
@@ -83,7 +82,6 @@ class CategoricalEncoder(BaseModel):
             dropout=dropout,
             activation=activation,
             norm_layer=norm_layer,
-            bias=bias,
         )
 
     def forward(self, x: torch.Tensor) -> ModelOutput:
@@ -119,7 +117,6 @@ class TabularEncoder(BaseModel):
         dropout: float = 0.0,
         activation: Callable[[], nn.Module] = nn.ReLU,
         norm_layer: Optional[Callable[[int], nn.Module]] = None,
-        bias: bool = True,
     ) -> None:
         super().__init__()
         hidden_dims = list(hidden_dims)
@@ -134,7 +131,6 @@ class TabularEncoder(BaseModel):
             dropout=dropout,
             activation=activation,
             norm_layer=norm_layer,
-            bias=bias,
         )
 
     def forward(
@@ -173,7 +169,6 @@ class ContrastiveTabularEncoder(BaseModel):
         dropout: float = 0.0,
         activation: Callable[[], nn.Module] = nn.ReLU,
         norm_layer: Optional[Callable[[int], nn.Module]] = None,
-        bias: bool = True,
         noise_factor: float = 0.1,
     ) -> None:
         super().__init__()
@@ -189,7 +184,6 @@ class ContrastiveTabularEncoder(BaseModel):
             dropout=dropout,
             activation=activation,
             norm_layer=norm_layer,
-            bias=bias,
         )
         self.noise_factor = noise_factor
 

@@ -13,9 +13,8 @@ class MLPModule(nn.Module):
         out_features: int,
         hidden_dims: Sequence[int] = (),
         activation: Callable[[], nn.Module] = nn.ReLU,
-        norm_layer: Optional[Callable[[int], nn.Module]] = None,
+        norm_layer: Optional[Callable[[int], nn.Module]] = nn.BatchNorm1d,
         dropout: float = 0.0,
-        bias: bool = True,
     ) -> None:
         """Initialize an MLP module.
 
@@ -35,7 +34,7 @@ class MLPModule(nn.Module):
 
         # Hidden layers
         for dim in hidden_dims:
-            layers.append(nn.Linear(prev_dim, dim, bias=bias))
+            layers.append(nn.Linear(prev_dim, dim, bias=norm_layer is None))
             if norm_layer is not None:
                 layers.append(norm_layer(dim))
             layers.append(activation())
@@ -44,7 +43,7 @@ class MLPModule(nn.Module):
             prev_dim = dim
 
         # Output layer
-        layers.append(nn.Linear(prev_dim, out_features, bias=bias))
+        layers.append(nn.Linear(prev_dim, out_features, bias=norm_layer is None))
 
         self.net = nn.Sequential(*layers)
         self._init_weights()
