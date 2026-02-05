@@ -1,5 +1,0 @@
-name: supervised_contrastive_loss
-
-params:
-  reduction: mean
-  temperature: 0.07

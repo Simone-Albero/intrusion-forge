@@ -1,5 +1,3 @@
-import json
-import shutil
 import logging
 import sys
 from pathlib import Path
@@ -68,21 +66,55 @@ def load_data(
 
 
 def train(
-    train_loader,
-    val_loader,
-    model,
-    loss_fn,
-    optimizer,
-    scheduler,
-    device,
+    processed_data_path,
+    file_name,
+    extension,
+    num_cols,
+    cat_cols,
+    label_col,
+    n_samples,
+    random_state,
+    train_dataloader_cfg,
+    val_dataloader_cfg,
+    test_dataloader_cfg,
+    model_name,
+    model_params,
+    loss_name,
+    loss_params,
+    optimizer_name,
+    optimizer_params,
+    scheduler_name,
+    scheduler_params,
     tb_logs_path,
     models_path,
     max_epochs,
     max_grad_norm,
     early_stopping_patience,
     early_stopping_min_delta,
+    device,
 ):
-    """Train the model with validation and checkpointing."""
+    """Train the supervised classifier."""
+    logger.info("Starting training phase...")
+
+    train_loader, val_loader, _ = load_data(
+        processed_data_path,
+        file_name,
+        extension,
+        num_cols,
+        cat_cols,
+        label_col,
+        n_samples,
+        random_state,
+        train_dataloader_cfg,
+        val_dataloader_cfg,
+        test_dataloader_cfg,
+    )
+    model = create_model(model_name, model_params, device)
+    loss_fn = create_loss(loss_name, loss_params, device)
+    optimizer = create_optimizer(optimizer_name, optimizer_params, model, loss_fn)
+    scheduler = create_scheduler(
+        scheduler_name, scheduler_params, optimizer, train_loader
+    )
     log_dir = tb_logs_path / "training"
     # if log_dir.exists():
     #     shutil.rmtree(log_dir)
@@ -153,18 +185,50 @@ def train(
     finally:
         tb_logger.close()
 
+    logger.info("Training completed")
+
 
 def test(
-    test_loader,
-    model,
-    device,
-    num_classes,
+    processed_data_path,
+    file_name,
+    extension,
+    num_cols,
+    cat_cols,
+    label_col,
+    n_samples,
+    random_state,
+    train_dataloader_cfg,
+    val_dataloader_cfg,
+    test_dataloader_cfg,
+    model_name,
+    model_params,
+    models_path,
     tb_logs_path,
     json_logs_path,
     run_id,
-    ignore_classes=None,
+    ignore_classes,
+    device,
 ):
-    """Test the model and log results."""
+    """Test the trained classifier."""
+    logger.info("Starting testing phase...")
+
+    _, _, test_loader = load_data(
+        processed_data_path,
+        file_name,
+        extension,
+        num_cols,
+        cat_cols,
+        label_col,
+        n_samples,
+        random_state,
+        train_dataloader_cfg,
+        val_dataloader_cfg,
+        test_dataloader_cfg,
+    )
+    model = create_model(model_name, model_params, device)
+    load_latest_checkpoint(models_path, model, device)
+
+    num_classes = model_params.num_classes
     log_dir = tb_logs_path / "testing"
     # if log_dir.exists():
     #     shutil.rmtree(log_dir)
@@ -172,15 +236,15 @@ def test(
 
     tb_logger = TensorboardLogger(log_dir=log_dir)
 
-    if ignore_classes:
-        prepare_output = lambda x: exclude_ignored_classes(
-            x["output"]["logits"], x["y_true"], ignore_classes
-        )
-    else:
-        prepare_output = lambda x: (
-            torch.softmax(x["output"]["logits"], dim=1),
-            x["y_true"],
-        )
+    # if ignore_classes:
+    #     prepare_output = lambda x: exclude_ignored_classes(
+    #         x["output"]["logits"], x["y_true"], ignore_classes
+    #     )
+    # else:
+    prepare_output = lambda x: (
+        torch.softmax(x["output"]["logits"], dim=1),
+        x["y_true"],
+    )
 
     tester = EngineBuilder(test_step).with_state(model=model, device=device)
     tester.with_metric("accuracy", Accuracy(output_transform=prepare_output))
@@ -304,126 +368,6 @@ def test(
     finally:
         tb_logger.close()
 
-
-def run_training(
-    processed_data_path,
-    file_name,
-    extension,
-    num_cols,
-    cat_cols,
-    label_col,
-    n_samples,
-    random_state,
-    train_dataloader_cfg,
-    val_dataloader_cfg,
-    test_dataloader_cfg,
-    model_name,
-    model_params,
-    loss_name,
-    loss_params,
-    optimizer_name,
-    optimizer_params,
-    scheduler_name,
-    scheduler_params,
-    tb_logs_path,
-    models_path,
-    max_epochs,
-    max_grad_norm,
-    early_stopping_patience,
-    early_stopping_min_delta,
-    device,
-):
-    """Train the supervised classifier."""
-    logger.info("Starting training phase...")
-
-    train_loader, val_loader, _ = load_data(
-        processed_data_path,
-        file_name,
-        extension,
-        num_cols,
-        cat_cols,
-        label_col,
-        n_samples,
-        random_state,
-        train_dataloader_cfg,
-        val_dataloader_cfg,
-        test_dataloader_cfg,
-    )
-    model = create_model(model_name, model_params, device)
-    loss_fn = create_loss(loss_name, loss_params, device)
-    optimizer = create_optimizer(optimizer_name, optimizer_params, model, loss_fn)
-    scheduler = create_scheduler(
-        scheduler_name, scheduler_params, optimizer, train_loader
-    )
-
-    train(
-        train_loader,
-        val_loader,
-        model,
-        loss_fn,
-        optimizer,
-        scheduler,
-        device,
-        tb_logs_path,
-        models_path,
-        max_epochs,
-        max_grad_norm,
-        early_stopping_patience,
-        early_stopping_min_delta,
-    )
-    logger.info("Training completed")
-
-
-def run_testing(
-    processed_data_path,
-    file_name,
-    extension,
-    num_cols,
-    cat_cols,
-    label_col,
-    n_samples,
-    random_state,
-    train_dataloader_cfg,
-    val_dataloader_cfg,
-    test_dataloader_cfg,
-    model_name,
-    model_params,
-    models_path,
-    tb_logs_path,
-    json_logs_path,
-    run_id,
-    ignore_classes,
-    device,
-):
-    """Test the trained classifier."""
-    logger.info("Starting testing phase...")
-
-    _, _, test_loader = load_data(
-        processed_data_path,
-        file_name,
-        extension,
-        num_cols,
-        cat_cols,
-        label_col,
-        n_samples,
-        random_state,
-        train_dataloader_cfg,
-        val_dataloader_cfg,
-        test_dataloader_cfg,
-    )
-    model = create_model(model_name, model_params, device)
-    load_latest_checkpoint(models_path, model, device)
-
-    test(
-        test_loader,
-        model,
-        device,
-        model_params.num_classes,
-        tb_logs_path,
-        json_logs_path,
-        run_id,
-        ignore_classes,
-    )
     logger.info("Testing completed")
 
 
@@ -457,7 +401,7 @@ def main():
     # Run pipeline based on stage
     stage = cfg.get("stage", "all")
     if stage == "all":
-        run_training(
+        train(
             processed_data_path,
             cfg.data.file_name,
             cfg.data.extension,
@@ -485,7 +429,7 @@ def main():
             cfg.loops.training.early_stopping.min_delta,
             device,
         )
-        run_testing(
+        test(
             processed_data_path,
             cfg.data.file_name,
             cfg.data.extension,
@@ -507,7 +451,7 @@ def main():
             device,
         )
     elif stage == "training":
-        run_training(
+        train(
             processed_data_path,
             cfg.data.file_name,
             cfg.data.extension,
@@ -536,7 +480,7 @@ def main():
             device,
         )
     elif stage == "testing":
-        run_testing(
+        test(
             processed_data_path,
             cfg.data.file_name,
             cfg.data.extension,

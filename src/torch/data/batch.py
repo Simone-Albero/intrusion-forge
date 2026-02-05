@@ -22,11 +22,11 @@ def _map_tensors(x: Any, fn) -> Any:
 class Batch:
     """
     Container for model features and ground truth.
-    Features and Targets are always lists of tensors.
+    Features and Labels are always lists of tensors.
     """
 
     features: List[torch.Tensor]
-    targets: Optional[List[torch.Tensor]] = None
+    labels: List[torch.Tensor]
 
     def to(self, device: torch.device, non_blocking: bool = True) -> "Batch":
         """
@@ -34,11 +34,7 @@ class Batch:
         """
         return Batch(
             features=[t.to(device, non_blocking=non_blocking) for t in self.features],
-            targets=(
-                None
-                if self.targets is None
-                else [t.to(device, non_blocking=non_blocking) for t in self.targets]
-            ),
+            labels=[t.to(device, non_blocking=non_blocking) for t in self.labels],
         )
 
     def detach(self) -> "Batch":
@@ -47,33 +43,31 @@ class Batch:
         """
         return Batch(
             features=[t.detach() for t in self.features],
-            targets=(
-                None if self.targets is None else [t.detach() for t in self.targets]
-            ),
+            labels=[t.detach() for t in self.labels],
         )
 
     def as_dict(self) -> Dict[str, Any]:
         """
         Return the batch as a dictionary.
         """
-        return {"samples": self.features, "ground_truth": self.targets}
+        return {"features": self.features, "labels": self.labels}
 
     def __getitem__(self, key: str) -> Any:
         """
-        Get an item from the batch by key ('samples' or 'ground_truth').
+        Get an item from the batch by key ('features' or 'labels').
         """
-        if key == "samples":
+        if key == "features":
             return self.features
-        if key == "ground_truth":
-            return self.targets
+        if key == "labels":
+            return self.labels
         raise KeyError(key)
 
     def __iter__(self):
         """
-        Iterate over batch keys ('samples', 'ground_truth').
+        Iterate over batch keys ('features', 'labels').
         """
-        yield "samples"
-        yield "ground_truth"
+        yield "features"
+        yield "labels"
 
 
 def ensure_batch(x: Batch | Sample) -> Batch:
@@ -86,29 +80,19 @@ def ensure_batch(x: Batch | Sample) -> Batch:
     return default_collate(x)
 
 
-def _stack_samples(samples_list: List[Sample], index: int) -> List[torch.Tensor]:
+def _stack_samples(samples_list: List[Sample]) -> List[torch.Tensor]:
     """
-    Stack a group of tensors from samples.
-
+    Stack features or labels from a list of samples.
     Args:
         samples_list: List of samples from the dataset
-        index: Index to extract (0 for features, 1 for labels)
-
     Returns:
         List of stacked tensors, one per feature/label group
     """
-    first_group = samples_list[0][index]
 
-    # Case 1: Group is a list of tensors (e.g., MixedTabularDataset)
-    if isinstance(first_group, list):
-        num_groups = len(first_group)
-        return [
-            torch.stack([s[index][i] for s in samples_list], dim=0)
-            for i in range(num_groups)
-        ]
-
-    # Case 2: Group is a single tensor (e.g., TensorDataset)
-    return [torch.stack([s[index] for s in samples_list], dim=0)]
+    features, labels = zip(*samples_list)
+    stacked_features = [torch.stack(tensors, dim=0) for tensors in zip(*features)]
+    stacked_labels = [torch.stack(tensors, dim=0) for tensors in zip(*labels)]
+    return stacked_features, stacked_labels
 
 
 def default_collate(samples_list: List[Sample]) -> Batch:
@@ -116,15 +100,9 @@ def default_collate(samples_list: List[Sample]) -> Batch:
     Collate a list of samples into a Batch.
     Handles both single-tensor and multi-tensor features.
     """
-    # Stack features
-    samples = _stack_samples(samples_list, index=0)
-
-    # Stack targets if present
-    targets = None
-    if samples_list[0][1] is not None:
-        targets = _stack_samples(samples_list, index=1)
+    features, labels = _stack_samples(samples_list)
 
     return Batch(
-        features=samples,
-        targets=targets,
+        features=features,
+        labels=labels,
     )

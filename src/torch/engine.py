@@ -18,10 +18,10 @@ def _forward_and_loss(
     """Forward pass with optional loss computation."""
     outputs = model(*batch.features)
 
-    if loss_fn is None or batch.targets is None:
+    if loss_fn is None or batch.labels is None:
         return outputs, None
 
-    loss = loss_fn(*model.for_loss(outputs, *batch.targets))
+    loss = loss_fn(*model.for_loss(outputs, *batch.labels))
     return outputs, loss
 
 
@@ -86,13 +86,16 @@ def test_step(engine: Engine, batch: Batch) -> Dict[str, torch.Tensor]:
     with torch.no_grad():
         output = model(*batch.features)
         if loss_fn is not None:
-            loss = loss_fn(*model.for_loss(output, *batch.targets))
+            loss = loss_fn(*model.for_loss(output, *batch.labels))
 
     return {
-        "input": torch.cat(batch.features, dim=1),
         "output": output,
         "loss": loss if loss_fn is not None else torch.tensor(0.0),
-        "y_true": batch.targets[0] if len(batch.targets) == 1 else torch.tensor([]),
+        "y_true": (
+            batch.labels[0]
+            if isinstance(batch.labels, list) and len(batch.labels) == 1
+            else batch.labels
+        ),
     }
 
 

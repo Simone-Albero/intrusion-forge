@@ -6,8 +6,7 @@ import torch
 from torch.utils.data import Dataset
 
 
-TensorGroup = Union[List[torch.Tensor], torch.Tensor]
-Sample = Tuple[TensorGroup, Optional[TensorGroup]]
+Sample = Tuple[List[torch.Tensor], List[torch.Tensor]]
 
 
 class TensorDataset(Dataset):
@@ -39,81 +38,74 @@ class TensorDataset(Dataset):
         return self.features.size(0)
 
     def __getitem__(self, index: int) -> Sample:
-        features = self.features[index]
-        labels = self.labels[index] if self.labels is not None else features
+        features = [self.features[index]]
+        labels = [self.labels[index]] if self.labels is not None else features
         return features, labels
 
 
-class NumericalTensorDataset(TensorDataset):
+class TabularDataset(Dataset):
     """
-    Dataset wrapper for numerical features in a DataFrame.
-    """
+    Dataset for tabular data supporting numerical, categorical, or mixed features.
 
-    def __init__(
-        self,
-        df: pd.DataFrame,
-        num_cols: Sequence[str],
-        label_col: Optional[str] = None,
-    ) -> None:
-        features = df[num_cols]
-        labels = df[label_col] if label_col else None
-        super().__init__(
-            features,
-            labels,
-            feature_dtype=torch.float32,
-            label_dtype=torch.long,
-        )
+    Args:
+        df: DataFrame containing the data
+        num_cols: List of numerical column names (optional)
+        cat_cols: List of categorical column names (optional)
+        label_col: Name of the label column (optional)
 
-
-class CategoricalTensorDataset(TensorDataset):
-    """
-    Dataset wrapper for categorical features in a DataFrame.
+    Returns:
+        Sample tuple where:
+        - features is a list of tensors [numerical, categorical] or single tensor
+        - labels is a tensor or None
     """
 
     def __init__(
         self,
         df: pd.DataFrame,
-        cat_cols: Sequence[str],
+        num_cols: Optional[Sequence[str]] = None,
+        cat_cols: Optional[Sequence[str]] = None,
         label_col: Optional[str] = None,
     ) -> None:
-        features = df[cat_cols]
-        labels = df[label_col] if label_col else None
+        self.has_numerical = num_cols is not None and len(num_cols) > 0
+        self.has_categorical = cat_cols is not None and len(cat_cols) > 0
 
-        super().__init__(
-            features,
-            labels,
-            feature_dtype=torch.long,
-            label_dtype=torch.long,
-        )
+        if not self.has_numerical and not self.has_categorical:
+            raise ValueError("At least one of num_cols or cat_cols must be provided")
 
+        self.numerical_features: Optional[torch.Tensor] = None
+        self.categorical_features: Optional[torch.Tensor] = None
 
-class MixedTabularDataset(Dataset):
-    """
-    Combines numerical and categorical datasets into a single dataset yielding TabularSample.
-    """
+        if self.has_numerical:
+            self.numerical_features = torch.as_tensor(
+                df[num_cols].values, dtype=torch.float32
+            )
 
-    def __init__(
-        self,
-        df: pd.DataFrame,
-        num_cols: Sequence[str],
-        cat_cols: Sequence[str],
-        label_col: Optional[str] = None,
-    ) -> None:
-        self.numerical_ds = NumericalTensorDataset(df, num_cols, label_col=None)
-        self.categorical_ds = CategoricalTensorDataset(df, cat_cols, label_col=None)
+        if self.has_categorical:
+            self.categorical_features = torch.as_tensor(
+                df[cat_cols].values, dtype=torch.long
+            )
 
         self.labels: Optional[torch.Tensor] = (
             torch.as_tensor(df[label_col].values, dtype=torch.long)
-            if label_col
+            if label_col is not None
             else None
         )
 
+        self._length = len(df)
+
     def __len__(self) -> int:
-        return len(self.numerical_ds)
+        return self._length
 
     def __getitem__(self, index: int) -> Sample:
-        num_sample = self.numerical_ds[index][0]
-        cat_sample = self.categorical_ds[index][0]
-        features = [num_sample, cat_sample]
-        labels = self.labels[index] if self.labels is not None else features
+        if self.has_numerical and self.has_categorical:
+            features = [
+                self.numerical_features[index],
+                self.categorical_features[index],
+            ]
+        elif self.has_numerical:
+            features = [self.numerical_features[index]]
+        else:
+            features = [self.categorical_features[index]]
+
+        labels = [self.labels[index]] if self.labels is not None else features
         return features, labels

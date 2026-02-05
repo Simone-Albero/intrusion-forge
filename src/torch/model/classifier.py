@@ -8,6 +8,41 @@ from ..module.encoder import TabularEncoderModule
 from . import ModelFactory
 
 
+class ComposableClassifier(BaseModel):
+    """Composable classifier with encoder and head modules."""
+
+    def __init__(
+        self,
+        encoder_module: nn.Module,
+        head_module: nn.Module,
+    ) -> None:
+        super().__init__()
+        self.encoder_module = encoder_module
+        self.head_module = head_module
+
+    def forward(self, x: torch.Tensor) -> ModelOutput:
+        """Forward pass.
+
+        Args:
+            x: Input tensor
+
+        Returns:
+            Model output with 'logits' and 'z'
+        """
+        z = self.encoder_module(x)
+        logits = self.head_module(z)
+
+        return ModelOutput(logits=logits, z=z)
+
+    def for_loss(
+        self,
+        output: ModelOutput,
+        target: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Returns logits and target for loss computation."""
+        return output["logits"], target
+
+
 class ComposableTabularClassifier(BaseModel):
     """Composable classifier for tabular data with encoder and head modules."""
 
@@ -44,6 +79,74 @@ class ComposableTabularClassifier(BaseModel):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Returns logits and target for loss computation."""
         return output["logits"], target
+
+
+@ModelFactory.register()
+class NumericalClassifier(ComposableClassifier):
+    """Classifier for numerical features."""
+
+    def __init__(
+        self,
+        in_features: int,
+        num_classes: int,
+        hidden_dims: Sequence[int],
+        dropout: float = 0.0,
+        activation: Callable[[], nn.Module] = nn.ReLU,
+        norm_layer: Optional[Callable[[int], nn.Module]] = None,
+        bias: bool = True,
+    ) -> None:
+        from ..module.encoder import NumericalEncoderModule
+
+        encoder_module = NumericalEncoderModule(
+            in_features=in_features,
+            out_features=hidden_dims[-1],
+            hidden_dims=hidden_dims[:-1],
+            dropout=dropout,
+            activation=activation,
+            norm_layer=norm_layer,
+        )
+        head_module = nn.Linear(hidden_dims[-1], num_classes, bias=bias)
+
+        super().__init__(
+            encoder_module=encoder_module,
+            head_module=head_module,
+        )
+
+
+@ModelFactory.register()
+class CategoricalClassifier(ComposableClassifier):
+    """Classifier for categorical features."""
+
+    def __init__(
+        self,
+        num_classes: int,
+        hidden_dims: Sequence[int],
+        num_features: Optional[int] = None,
+        cardinalities: Optional[Sequence[int]] = None,
+        max_emb_dim: int = 50,
+        dropout: float = 0.0,
+        activation: Callable[[], nn.Module] = nn.ReLU,
+        norm_layer: Optional[Callable[[int], nn.Module]] = None,
+        bias: bool = True,
+    ) -> None:
+        from ..module.encoder import CategoricalEncoderModule
+
+        encoder_module = CategoricalEncoderModule(
+            out_features=hidden_dims[-1],
+            num_features=num_features,
+            cardinalities=cardinalities,
+            max_emb_dim=max_emb_dim,
+            hidden_dims=hidden_dims[:-1],
+            dropout=dropout,
+            activation=activation,
+            norm_layer=norm_layer,
+        )
+        head_module = nn.Linear(hidden_dims[-1], num_classes, bias=bias)
+
+        super().__init__(
+            encoder_module=encoder_module,
+            head_module=head_module,
+        )
 
 
 @ModelFactory.register()

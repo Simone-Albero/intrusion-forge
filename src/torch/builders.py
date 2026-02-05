@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 
-from .data.dataset import MixedTabularDataset
+from .data.dataset import TabularDataset
 from .data.batch import default_collate
 from .model import ModelFactory
 from .loss import LossFactory
@@ -16,8 +16,8 @@ def create_dataset(
     num_cols: list,
     cat_cols: list,
     label_col: Optional[str] = None,
-) -> MixedTabularDataset:
-    return MixedTabularDataset(
+) -> TabularDataset:
+    return TabularDataset(
         df,
         num_cols=num_cols,
         cat_cols=cat_cols,
