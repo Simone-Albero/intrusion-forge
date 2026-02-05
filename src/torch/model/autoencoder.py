@@ -136,7 +136,7 @@ class NumericalAutoencoder(ComposableAutoencoder):
         hidden_dims: Sequence[int] = (),
         dropout: float = 0.0,
         activation: Callable[[], nn.Module] = nn.ReLU,
-        norm_layer: Optional[Callable[[int], nn.Module]] = None,
+        norm_layer: Optional[Callable[[int], nn.Module]] = nn.BatchNorm1d,
     ) -> None:
         hidden_dims = list(hidden_dims)
 
@@ -172,7 +172,7 @@ class CategoricalAutoencoder(ComposableAutoencoder):
         hidden_dims: Sequence[int] = (),
         dropout: float = 0.0,
         activation: Callable[[], nn.Module] = nn.ReLU,
-        norm_layer: Optional[Callable[[int], nn.Module]] = None,
+        norm_layer: Optional[Callable[[int], nn.Module]] = nn.BatchNorm1d,
     ) -> None:
         hidden_dims = list(hidden_dims)
 
@@ -214,7 +214,7 @@ class TabularAutoencoder(ComposableTabularAutoencoder):
         hidden_dims: Sequence[int] = (),
         dropout: float = 0.0,
         activation: Callable[[], nn.Module] = nn.ReLU,
-        norm_layer: Optional[Callable[[int], nn.Module]] = None,
+        norm_layer: Optional[Callable[[int], nn.Module]] = nn.BatchNorm1d,
         noise_factor: float = 0.0,
     ) -> None:
         hidden_dims = list(hidden_dims)

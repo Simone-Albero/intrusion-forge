@@ -92,7 +92,7 @@ class NumericalClassifier(ComposableClassifier):
         hidden_dims: Sequence[int],
         dropout: float = 0.0,
         activation: Callable[[], nn.Module] = nn.ReLU,
-        norm_layer: Optional[Callable[[int], nn.Module]] = None,
+        norm_layer: Optional[Callable[[int], nn.Module]] = nn.BatchNorm1d,
         bias: bool = True,
     ) -> None:
         from ..module.encoder import NumericalEncoderModule
@@ -126,7 +126,7 @@ class CategoricalClassifier(ComposableClassifier):
         max_emb_dim: int = 50,
         dropout: float = 0.0,
         activation: Callable[[], nn.Module] = nn.ReLU,
-        norm_layer: Optional[Callable[[int], nn.Module]] = None,
+        norm_layer: Optional[Callable[[int], nn.Module]] = nn.BatchNorm1d,
         bias: bool = True,
     ) -> None:
         from ..module.encoder import CategoricalEncoderModule
@@ -163,7 +163,7 @@ class TabularClassifier(ComposableTabularClassifier):
         max_emb_dim: int = 50,
         dropout: float = 0.0,
         activation: Callable[[], nn.Module] = nn.ReLU,
-        norm_layer: Optional[Callable[[int], nn.Module]] = None,
+        norm_layer: Optional[Callable[[int], nn.Module]] = nn.BatchNorm1d,
         bias: bool = True,
     ) -> None:
         encoder_module = TabularEncoderModule(

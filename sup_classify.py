@@ -388,8 +388,8 @@ def main():
     device = torch.device(cfg.device)
     logger.info(f"Using device: {device}")
 
-    num_cols = list(cfg.data.num_cols)
-    cat_cols = list(cfg.data.cat_cols)
+    num_cols = list(cfg.data.num_cols) if cfg.data.num_cols else []
+    cat_cols = list(cfg.data.cat_cols) if cfg.data.cat_cols else []
     label_col = "multi_" + cfg.data.label_col
 
     processed_data_path = Path(cfg.path.processed_data)

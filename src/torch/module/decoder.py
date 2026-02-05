@@ -16,7 +16,7 @@ class NumericalDecoderModule(nn.Module):
         hidden_dims: Sequence[int] = (),
         dropout: float = 0.0,
         activation: Callable[[], nn.Module] = nn.ReLU,
-        norm_layer: Optional[Callable[[int], nn.Module]] = None,
+        norm_layer: Optional[Callable[[int], nn.Module]] = nn.BatchNorm1d,
     ) -> None:
         super().__init__()
         hidden_dims = list(hidden_dims)
@@ -54,7 +54,7 @@ class CategoricalDecoderModule(nn.Module):
         hidden_dims: Sequence[int] = (),
         dropout: float = 0.0,
         activation: Callable[[], nn.Module] = nn.ReLU,
-        norm_layer: Optional[Callable[[int], nn.Module]] = None,
+        norm_layer: Optional[Callable[[int], nn.Module]] = nn.BatchNorm1d,
     ) -> None:
         super().__init__()
 
@@ -129,7 +129,7 @@ class TabularDecoderModule(nn.Module):
         hidden_dims: Sequence[int] = (),
         dropout: float = 0.0,
         activation: Callable[[], nn.Module] = nn.ReLU,
-        norm_layer: Optional[Callable[[int], nn.Module]] = None,
+        norm_layer: Optional[Callable[[int], nn.Module]] = nn.BatchNorm1d,
     ) -> None:
         super().__init__()
         self.num_numerical_features = num_numerical_features

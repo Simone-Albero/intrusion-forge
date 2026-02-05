@@ -129,33 +129,43 @@ def preprocess_df(
     set_config(transform_output="pandas")
 
     # Build preprocessing pipelines
-    num_pipeline = Pipeline(
-        [
-            ("quantile_clipper", QuantileClipper()),
-            ("log_transformer", LogTransformer()),
-            ("scaler", RobustScaler()),
-        ]
-    )
+    num_pipeline = None
+    if num_cols and len(num_cols) > 0:
+        num_pipeline = Pipeline(
+            [
+                ("quantile_clipper", QuantileClipper()),
+                ("log_transformer", LogTransformer()),
+                ("scaler", RobustScaler()),
+            ]
+        )
 
-    cat_pipeline = Pipeline(
-        [
-            (
-                "top_n_encoder",
-                TopNHashEncoder(
-                    top_n=top_n,
-                    hash_buckets=hash_buckets,
-                    add_log_freq=add_log_freq,
-                    add_is_unk=add_is_unk,
+    cat_pipeline = None
+    if cat_cols and len(cat_cols) > 0:
+        cat_pipeline = Pipeline(
+            [
+                (
+                    "top_n_encoder",
+                    TopNHashEncoder(
+                        top_n=top_n,
+                        hash_buckets=hash_buckets,
+                        add_log_freq=add_log_freq,
+                        add_is_unk=add_is_unk,
+                    ),
                 ),
-            ),
-        ]
-    )
+            ]
+        )
+
+    # Build transformers list, excluding None pipelines
+    transformers = []
+    if num_pipeline is not None:
+        logger.info(f"Numerical pipeline steps: {num_pipeline.steps}")
+        transformers.append(("num", num_pipeline, num_cols))
+    if cat_pipeline is not None:
+        logger.info(f"Categorical pipeline steps: {cat_pipeline.steps}")
+        transformers.append(("cat", cat_pipeline, cat_cols))
 
     preprocessor = ColumnTransformer(
-        transformers=[
-            ("num", num_pipeline, num_cols),
-            ("cat", cat_pipeline, cat_cols),
-        ],
+        transformers=transformers,
         remainder="passthrough",
         verbose_feature_names_out=False,
     )
@@ -285,8 +295,8 @@ def main():
         overrides=sys.argv[1:],
     )
 
-    num_cols = list(cfg.data.num_cols)
-    cat_cols = list(cfg.data.cat_cols)
+    num_cols = list(cfg.data.num_cols) if cfg.data.num_cols else []
+    cat_cols = list(cfg.data.cat_cols) if cfg.data.cat_cols else []
     label_col = cfg.data.label_col
 
     raw_data_path = Path(cfg.path.raw_data)

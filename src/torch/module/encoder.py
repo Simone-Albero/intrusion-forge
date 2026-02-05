@@ -17,7 +17,7 @@ class NumericalEncoderModule(nn.Module):
         hidden_dims: Sequence[int] = (),
         dropout: float = 0.0,
         activation: Callable[[], nn.Module] = nn.ReLU,
-        norm_layer: Optional[Callable[[int], nn.Module]] = None,
+        norm_layer: Optional[Callable[[int], nn.Module]] = nn.BatchNorm1d,
     ) -> None:
         super().__init__()
         hidden_dims = list(hidden_dims)
@@ -54,7 +54,7 @@ class CategoricalEncoderModule(nn.Module):
         hidden_dims: Sequence[int] = (),
         dropout: float = 0.0,
         activation: Callable[[], nn.Module] = nn.ReLU,
-        norm_layer: Optional[Callable[[int], nn.Module]] = None,
+        norm_layer: Optional[Callable[[int], nn.Module]] = nn.BatchNorm1d,
     ) -> None:
         super().__init__()
         hidden_dims = list(hidden_dims)
@@ -100,7 +100,7 @@ class TabularEncoderModule(nn.Module):
         hidden_dims: Sequence[int] = (),
         dropout: float = 0.0,
         activation: Callable[[], nn.Module] = nn.ReLU,
-        norm_layer: Optional[Callable[[int], nn.Module]] = None,
+        norm_layer: Optional[Callable[[int], nn.Module]] = nn.BatchNorm1d,
     ) -> None:
         super().__init__()
 
