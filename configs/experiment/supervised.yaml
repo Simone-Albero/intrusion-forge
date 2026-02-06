@@ -1,6 +1,6 @@
 # @package _global_
 defaults:
-  - override /model: tabular_classifier
+  - override /model: numerical_classifier
   - override /loss: focal
   - override /loops: default
   - override /optimizer: adamw

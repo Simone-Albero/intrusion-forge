@@ -68,9 +68,6 @@ def tsne_projection(data, perplexity=None):
         perplexity = min(30, (n_samples - 1) // 3)
         perplexity = max(5, perplexity)
 
-    if perplexity >= n_samples:
-        perplexity = max(5, n_samples - 1)
-
     tsne = TSNE(n_components=2, perplexity=perplexity, random_state=42)
     projected_data = tsne.fit_transform(data)
     return projected_data
