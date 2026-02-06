@@ -24,7 +24,7 @@ from src.data.preprocessing import (
     rare_category_filter,
     random_undersample_df,
 )
-from src.ml.clustering import kmeans_grid_search
+from src.ml.clustering import hdbscan_grid_search
 
 setup_logger()
 logger = logging.getLogger(__name__)
@@ -183,108 +183,25 @@ def preprocess_df(
     return train_df, val_df, test_df, label_mapping
 
 
-def kmeans_to_new_labels(
-    train_df,
-    val_df,
-    test_df,
-    target_class,
-    feature_cols,
-    label_col,
-    train_idx=None,
-    val_idx=None,
-    test_idx=None,
-    min_samples=1000,
-):
-    """Expand target class into subclasses using clustering."""
+def compute_clusters(df, feature_cols, label_col):
+    df["cluster"] = -1
+    offset = 0
+    for cls in df[label_col].unique():
+        cls_mask = df[label_col] == cls
+        model, labels, proba, info = hdbscan_grid_search(
+            df.loc[cls_mask, feature_cols].values
+        )
+        core_mask = (labels != -1) & (proba >= 0.7)
+        # ambiguous_mask = ~core_mask
 
-    train_mask = (
-        train_df.index.isin(train_idx)
-        if train_idx is not None
-        else pd.Series(True, index=train_df.index)
-    ) & (train_df[label_col] == target_class)
-    val_mask = (
-        val_df.index.isin(val_idx)
-        if val_idx is not None
-        else pd.Series(True, index=val_df.index)
-    ) & (val_df[label_col] == target_class)
-    test_mask = (
-        test_df.index.isin(test_idx)
-        if test_idx is not None
-        else pd.Series(True, index=test_df.index)
-    ) & (test_df[label_col] == target_class)
-
-    clusterer, _ = kmeans_grid_search(
-        train_df.loc[train_mask, feature_cols], n_clusters_range=range(2, 10)
-    )
-    train_clusters = clusterer.predict(train_df.loc[train_mask, feature_cols])
-    val_clusters = clusterer.predict(val_df.loc[val_mask, feature_cols])
-    test_clusters = clusterer.predict(test_df.loc[test_mask, feature_cols])
-
-    cluster_counts = pd.Series(train_clusters).value_counts()
-    valid_clusters = cluster_counts[cluster_counts >= min_samples].index.tolist()
-
-    cluster_to_label = {
-        cluster_id: f"{target_class}_{i}" for i, cluster_id in enumerate(valid_clusters)
-    }
-
-    train_df = _update_cluster_labels(
-        train_df, train_mask, train_clusters, cluster_to_label, label_col
-    )
-    val_df = _update_cluster_labels(
-        val_df, val_mask, val_clusters, cluster_to_label, label_col
-    )
-    test_df = _update_cluster_labels(
-        test_df, test_mask, test_clusters, cluster_to_label, label_col
-    )
-
-    logger.info(
-        f"Expanded class {target_class} into {len(valid_clusters)} subclasses: {list(cluster_to_label.values())}"
-    )
-
-    return train_df, val_df, test_df
-
-
-def _update_cluster_labels(df, mask, clusters, cluster_to_label, label_col):
-    """Update labels based on cluster assignments."""
-    indices = df[mask].index
-
-    for cluster_id, new_label in cluster_to_label.items():
-        cluster_mask = clusters == cluster_id
-        df.loc[indices[cluster_mask], label_col] = new_label
+        # Get indices of the class subset, then filter by core_mask
+        cls_indices = df[cls_mask].index
+        core_indices = cls_indices[core_mask]
+        df.loc[core_indices, "cluster"] = labels[core_mask] + offset
+        offset += labels.max() + 1
+        logger.info(f"Class '{cls}': {info}")
 
     return df
-
-
-def fn_to_new_labels(
-    train_df,
-    val_df,
-    test_df,
-    target_class,
-    label_col,
-    label_mapping,
-    cfg,
-):
-    class_label = label_mapping.get(target_class, str(target_class))
-
-    for split_name, split_df in [
-        ("train", train_df),
-        ("val", val_df),
-        ("test", test_df),
-    ]:
-        class_indices = load_from_pickle(
-            Path(cfg.path.pickles) / f"class_indices/{split_name}.pkl"
-        )
-        fn_idx_1 = class_indices[target_class][0]
-        fn_idx_2 = class_indices[target_class][4]
-
-        split_df.loc[fn_idx_1, label_col] = f"{class_label}_1"
-        split_df.loc[fn_idx_2, label_col] = f"{class_label}_2"
-
-    train_df, val_df, test_df, label_mapping = encode_labels(
-        train_df, val_df, test_df, label_col, cfg.data.benign_tag
-    )
-
-    return train_df, val_df, test_df, label_mapping
 
 
 def main():
@@ -329,27 +246,9 @@ def main():
     val_df = val_df.reset_index(drop=True)
     test_df = test_df.reset_index(drop=True)
 
-    # train_df.loc[
-    #     train_df[label_col].str.contains("DOS", case=False, na=False),
-    #     label_col,
-    # ] = "DOS"
-    # val_df.loc[
-    #     val_df[label_col].str.contains("DOS", case=False, na=False),
-    #     label_col,
-    # ] = "DOS"
-    # test_df.loc[
-    #     test_df[label_col].str.contains("DOS", case=False, na=False),
-    #     label_col,
-    # ] = "DOS"
-
-    # train_df, val_df, test_df = kmeans_to_new_labels(
-    #     train_df,
-    #     val_df,
-    #     test_df,
-    #     target_class="DoS",
-    #     feature_cols=num_cols + cat_cols,
-    #     label_col=label_col,
-    # )
+    train_df = compute_clusters(train_df, num_cols + cat_cols, label_col)
+    val_df = compute_clusters(val_df, num_cols + cat_cols, label_col)
+    test_df = compute_clusters(test_df, num_cols + cat_cols, label_col)
 
     train_df, val_df, test_df, label_mapping = encode_labels(
         train_df, val_df, test_df, label_col, cfg.data.benign_tag

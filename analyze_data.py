@@ -297,18 +297,19 @@ def main():
 
     logger.info("Starting separability analysis ...")
     compute_separability_analysis(
-        train_df, val_df, test_df, label_col, feature_cols, cfg
+        train_df, val_df, test_df, "cluster", feature_cols, cfg
     )
 
-    logger.info("Starting similarity analysis ...")
-    compute_similarity_analysis(
-        train_df, val_df, test_df, label_col, feature_cols, "DoS", "Exploits", cfg
-    )
+    # logger.info("Starting similarity analysis ...")
+    # compute_similarity_analysis(
+    #     train_df, val_df, test_df, label_col, feature_cols, "DoS", "Exploits", cfg
+    # )
 
+    label_col = "cluster"
     for suffix, X, y in [
-        ("train", train_df[num_cols].values, train_df["multi_" + label_col].values),
-        ("val", val_df[num_cols].values, val_df["multi_" + label_col].values),
-        ("test", test_df[num_cols].values, test_df["multi_" + label_col].values),
+        ("train", train_df[num_cols].values, train_df[label_col].values),
+        ("val", val_df[num_cols].values, val_df[label_col].values),
+        ("test", test_df[num_cols].values, test_df[label_col].values),
     ]:
         logger.info(f"Visualizing {suffix} set ...")
         log_dir = Path(cfg.path.tb_logs) / "visualize" / suffix
@@ -320,6 +321,7 @@ def main():
             y,
         )
         tb_logger.writer.add_figure("projection", fig, global_step=0)
+        tb_logger.close()
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 import numpy as np
-from typing import Dict, Any, Tuple, List
+from typing import Dict, Any, Iterable, Optional, Tuple, List
 from sklearn.cluster import KMeans
 from sklearn.metrics import (
     silhouette_score,
@@ -12,203 +12,155 @@ import hdbscan
 
 def kmeans_grid_search(
     X: np.ndarray,
-    n_clusters_range: List[int] = None,
-    init_methods: List[str] = None,
+    n_clusters: Iterable[int] = range(2, 21),
     n_init: int = 10,
     max_iter: int = 300,
     random_state: int = 42,
-    metric: str = "silhouette",
-) -> Tuple[KMeans, Dict[str, Any]]:
+    metric: str = "euclidean",
+    penalize_k: bool = True,
+) -> Tuple[KMeans, np.ndarray, Dict[str, Any]]:
     """
-    Perform grid search for K-means clustering to find optimal parameters.
-
-    Args:
-        X: Input data of shape (n_samples, n_features)
-        n_clusters_range: List of number of clusters to try. Default: range(6, 32, 2)
-        init_methods: List of initialization methods. Default: ['k-means++', 'random']
-        n_init: Number of time the k-means algorithm will be run with different centroid seeds
-        max_iter: Maximum number of iterations
-        random_state: Random state for reproducibility
-        metric: Metric to optimize ('silhouette', 'calinski_harabasz', 'davies_bouldin')
-
     Returns:
-        best_model: Best K-means model found
-        best_params: Dictionary containing best parameters and scores
+      best_model, best_labels, best_info
+
+    Scoring:
+      silhouette(X, labels) - 0.01 * k  (if penalize_k=True)
     """
-    if n_clusters_range is None:
-        n_clusters_range = list(range(6, 32, 2))
+    X = np.asarray(X)
+    if X.shape[0] < 3:
+        raise ValueError("Need at least 3 samples.")
 
-    if init_methods is None:
-        init_methods = ["k-means++", "random"]
-
-    best_score = -np.inf if metric != "davies_bouldin" else np.inf
     best_model = None
-    best_params = {}
-    results = []
+    best_labels = None
+    best_score = -np.inf
+    best_info: Dict[str, Any] = {}
 
-    for n_clusters in n_clusters_range:
-        for init_method in init_methods:
-            # Fit K-means
-            kmeans = KMeans(
-                n_clusters=n_clusters,
-                init=init_method,
-                n_init=n_init,
-                max_iter=max_iter,
-                random_state=random_state,
-            )
-            labels = kmeans.fit_predict(X)
+    for k in n_clusters:
+        k = int(k)
+        if k < 2 or k >= X.shape[0]:
+            continue
 
-            # Skip if only one cluster was found
-            if len(np.unique(labels)) < 2:
-                continue
+        model = KMeans(
+            n_clusters=k,
+            init="k-means++",
+            n_init=n_init,
+            max_iter=max_iter,
+            random_state=random_state,
+        )
 
-            # Compute scores
-            sil_score = silhouette_score(X, labels)
-            db_score = davies_bouldin_score(X, labels)
-            ch_score = calinski_harabasz_score(X, labels)
+        labels = model.fit_predict(X)
+        if np.unique(labels).size < 2:
+            continue
 
-            result = {
-                "n_clusters": n_clusters,
-                "init": init_method,
-                "silhouette": sil_score,
-                "davies_bouldin": db_score,
-                "calinski_harabasz": ch_score,
-                "inertia": kmeans.inertia_,
+        try:
+            sil = float(silhouette_score(X, labels, metric=metric))
+        except Exception:
+            continue
+
+        score = sil - (0.01 * k if penalize_k else 0.0)
+
+        if score > best_score:
+            best_score = score
+            best_model = model
+            best_labels = labels
+            best_info = {
+                "n_clusters": k,
+                "silhouette": sil,
+                "score": score,
             }
-            results.append(result)
 
-            # Update best model based on metric
-            if metric == "silhouette":
-                current_score = sil_score
-                is_better = current_score > best_score
-            elif metric == "calinski_harabasz":
-                current_score = ch_score
-                is_better = current_score > best_score
-            elif metric == "davies_bouldin":
-                current_score = db_score
-                is_better = current_score < best_score  # Lower is better
-            else:
-                raise ValueError(f"Unknown metric: {metric}")
+    if best_model is None:
+        raise RuntimeError("No valid KMeans solution found.")
 
-            if is_better:
-                best_score = current_score
-                best_model = kmeans
-                best_params = result.copy()
-
-    best_params["all_results"] = results
-    best_params["optimization_metric"] = metric
-
-    return best_model, best_params
+    return best_model, best_labels, best_info
 
 
 def hdbscan_grid_search(
     X: np.ndarray,
-    min_cluster_size_range: List[int] = None,
-    min_samples_range: List[int] = None,
-    cluster_selection_epsilon_range: List[float] = None,
+    min_cluster_size: Iterable[int] = (30, 50, 100, 150),
+    min_samples: Iterable[Optional[int]] = (None, 5, 10),
     metric: str = "euclidean",
     cluster_selection_method: str = "eom",
-    optimization_metric: str = "silhouette",
-) -> Tuple[hdbscan.HDBSCAN, Dict[str, Any]]:
+    cluster_selection_epsilon: float = 0.0,
+    min_clusters: int = 2,
+    max_noise_ratio: float = 0.60,
+    min_clustered_ratio: float = 0.20,
+    penalize: bool = True,
+) -> Tuple[hdbscan.HDBSCAN, np.ndarray, np.ndarray, Dict[str, Any]]:
     """
-    Perform grid search for HDBSCAN clustering to find optimal parameters.
-
-    Args:
-        X: Input data of shape (n_samples, n_features)
-        min_cluster_size_range: List of min_cluster_size values to try. Default: [5, 10, 15, 20, 30]
-        min_samples_range: List of min_samples values to try. Default: [None, 1, 3, 5, 10]
-        cluster_selection_epsilon_range: List of epsilon values. Default: [0.0, 0.1, 0.3, 0.5]
-        metric: Distance metric to use
-        cluster_selection_method: Method to select clusters ('eom' or 'leaf')
-        optimization_metric: Metric to optimize ('silhouette', 'calinski_harabasz', 'davies_bouldin')
-
-    Returns:
-        best_model: Best HDBSCAN model found
-        best_params: Dictionary containing best parameters and scores
+    Returns: (best_model, labels, probabilities, best_info)
+    labels: shape (n_samples,), noise = -1
+    probabilities: shape (n_samples,), in [0,1]
     """
-    if min_cluster_size_range is None:
-        min_cluster_size_range = [20, 30, 50, 100, 150]
+    X = np.asarray(X)
+    n = X.shape[0]
+    if n < 5:
+        raise ValueError("Need at least 5 samples.")
 
-    if min_samples_range is None:
-        min_samples_range = [None, 1, 3, 5, 10]
-
-    if cluster_selection_epsilon_range is None:
-        cluster_selection_epsilon_range = [0.0, 0.1, 0.3, 0.5]
-
-    best_score = -np.inf if optimization_metric != "davies_bouldin" else np.inf
     best_model = None
-    best_params = {}
-    results = []
+    best_labels = None
+    best_proba = None
+    best_info: Dict[str, Any] = {}
+    best_score = -np.inf
 
-    for min_cluster_size in min_cluster_size_range:
-        for min_samples in min_samples_range:
-            for epsilon in cluster_selection_epsilon_range:
-                # Fit HDBSCAN
-                clusterer = hdbscan.HDBSCAN(
-                    min_cluster_size=min_cluster_size,
-                    min_samples=min_samples,
-                    cluster_selection_epsilon=epsilon,
-                    metric=metric,
-                    cluster_selection_method=cluster_selection_method,
-                )
-                labels = clusterer.fit_predict(X)
+    for mcs in min_cluster_size:
+        for ms in min_samples:
+            model = hdbscan.HDBSCAN(
+                min_cluster_size=int(mcs),
+                min_samples=None if ms is None else int(ms),
+                metric=metric,
+                cluster_selection_method=cluster_selection_method,
+                cluster_selection_epsilon=float(cluster_selection_epsilon),
+                prediction_data=True,
+                core_dist_n_jobs=-1,
+            )
 
-                # Filter out noise points (label = -1) for quality metrics
-                mask = labels != -1
-                n_noise = np.sum(~mask)
-                n_clusters = len(np.unique(labels[mask])) if np.any(mask) else 0
+            labels = model.fit_predict(X)
+            proba = getattr(model, "probabilities_", np.zeros(n, dtype=float))
 
-                # Skip if less than 2 clusters or too many noise points
-                if n_clusters < 2 or n_noise > len(labels) * 0.5:
-                    continue
+            mask = labels != -1
+            noise_ratio = float((~mask).mean())
+            clustered_ratio = float(mask.mean())
+            n_clusters = int(np.unique(labels[mask]).size) if mask.any() else 0
 
-                # Compute scores only on non-noise points
-                X_filtered = X[mask]
-                labels_filtered = labels[mask]
+            # reject degenerate solutions
+            if n_clusters < min_clusters:
+                continue
+            if noise_ratio > max_noise_ratio:
+                continue
+            if clustered_ratio < min_clustered_ratio:
+                continue
 
-                try:
-                    sil_score = silhouette_score(X_filtered, labels_filtered)
-                    db_score = davies_bouldin_score(X_filtered, labels_filtered)
-                    ch_score = calinski_harabasz_score(X_filtered, labels_filtered)
-                except:
-                    # Skip if scoring fails
-                    continue
+            try:
+                sil = float(silhouette_score(X[mask], labels[mask], metric=metric))
+            except Exception:
+                continue
 
-                result = {
-                    "min_cluster_size": min_cluster_size,
-                    "min_samples": min_samples,
-                    "cluster_selection_epsilon": epsilon,
+            score = sil
+            if penalize:
+                score = sil - 0.5 * noise_ratio - 0.02 * n_clusters
+
+            if score > best_score:
+                best_score = score
+                best_model = model
+                best_labels = labels
+                best_proba = proba
+                best_info = {
+                    "min_cluster_size": int(mcs),
+                    "min_samples": None if ms is None else int(ms),
                     "n_clusters": n_clusters,
-                    "n_noise": n_noise,
-                    "noise_ratio": n_noise / len(labels),
-                    "silhouette": sil_score,
-                    "davies_bouldin": db_score,
-                    "calinski_harabasz": ch_score,
+                    "noise_ratio": noise_ratio,
+                    "clustered_ratio": clustered_ratio,
+                    "silhouette": sil,
+                    "score": score,
                 }
-                results.append(result)
 
-                # Update best model based on metric
-                if optimization_metric == "silhouette":
-                    current_score = sil_score
-                    is_better = current_score > best_score
-                elif optimization_metric == "calinski_harabasz":
-                    current_score = ch_score
-                    is_better = current_score > best_score
-                elif optimization_metric == "davies_bouldin":
-                    current_score = db_score
-                    is_better = current_score < best_score  # Lower is better
-                else:
-                    raise ValueError(f"Unknown metric: {optimization_metric}")
+    if best_model is None:
+        raise RuntimeError(
+            "No valid clustering found. Try expanding the grid or relaxing filters."
+        )
 
-                if is_better:
-                    best_score = current_score
-                    best_model = clusterer
-                    best_params = result.copy()
-
-    best_params["all_results"] = results
-    best_params["optimization_metric"] = optimization_metric
-
-    return best_model, best_params
+    return best_model, best_labels, best_proba, best_info
 
 
 def hopkins_statistic(
@@ -288,8 +240,6 @@ def compute_cluster_quality_measures(
         X: Input data of shape (n_samples, n_features)
         labels: Cluster labels for each sample
         filter_noise: If True, filter out noise points (label = -1) before computing metrics
-        compute_hopkins: If True, compute Hopkins statistic for clustering tendency
-        random_state: Random state for Hopkins statistic computation
 
     Returns:
         Dictionary containing various quality measures:
