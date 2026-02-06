@@ -27,25 +27,73 @@ def load_data(processed_data_path, file_name, extension):
     return train_df, val_df, test_df
 
 
-def sample_distances(X, idx_a, idx_b=None, n_pairs=200_000):
-    """Sample pairwise distances between points."""
+def sample_distances(X, idx_a, idx_b=None, n_pairs=200_000, metric="euclidean"):
+    """Sample pairwise distances between points.
+
+    Args:
+        X: Feature matrix (n_samples, n_features)
+        idx_a: Indices for first set of points
+        idx_b: Indices for second set (None for intra-class distances)
+        n_pairs: Maximum number of distance pairs to compute
+
+    Returns:
+        Array of pairwise distances between sampled pairs
+    """
     idx_a = np.asarray(idx_a)
 
     if idx_b is None:  # Intra-class distances
         if len(idx_a) < 2:
             return np.array([])
-        i = np.random.randint(0, len(idx_a), size=n_pairs)
-        j = np.random.randint(0, len(idx_a), size=n_pairs)
-        mask = i != j
-        return paired_distances(X[idx_a[i[mask]]], X[idx_a[j[mask]]])
+
+        max_possible_pairs = len(idx_a) * (len(idx_a) - 1) // 2
+        n_samples = min(n_pairs, max_possible_pairs)
+
+        if n_samples < max_possible_pairs:
+            i = np.random.randint(0, len(idx_a), size=n_samples)
+            j = np.random.randint(0, len(idx_a), size=n_samples)
+            # Ensure i != j by incrementing j and wrapping
+            j = (
+                j
+                + 1
+                + (j >= i).astype(int)
+                * (np.random.randint(0, len(idx_a) - 1, size=n_samples))
+            ) % len(idx_a)
+
+            mask = i != j
+            attempts = 0
+            while np.sum(~mask) > 0 and attempts < 10:
+                n_resample = np.sum(~mask)
+                i[~mask] = np.random.randint(0, len(idx_a), size=n_resample)
+                j[~mask] = np.random.randint(0, len(idx_a), size=n_resample)
+                mask = i != j
+                attempts += 1
+
+            i, j = i[mask], j[mask]
+        else:
+            # compute all pairs
+            from itertools import combinations
+
+            pairs = list(combinations(range(len(idx_a)), 2))
+            np.random.shuffle(pairs)
+            pairs_array = np.array(pairs[:n_samples])
+            i, j = pairs_array[:, 0], pairs_array[:, 1]
+
+        return paired_distances(X[idx_a[i]], X[idx_a[j]], metric=metric)
+
     else:  # Inter-class distances
         idx_b = np.asarray(idx_b)
         if len(idx_a) == 0 or len(idx_b) == 0:
             return np.array([])
-        n_samples = min(n_pairs, len(idx_a), len(idx_b))
-        i = np.random.choice(idx_a, size=n_samples, replace=False)
-        j = np.random.choice(idx_b, size=n_samples, replace=False)
-        return paired_distances(X[i], X[j])
+
+        max_possible_pairs = len(idx_a) * len(idx_b)
+        n_samples = min(n_pairs, max_possible_pairs)
+
+        need_replacement = n_samples > min(len(idx_a), len(idx_b))
+
+        i = np.random.choice(len(idx_a), size=n_samples, replace=need_replacement)
+        j = np.random.choice(len(idx_b), size=n_samples, replace=need_replacement)
+
+        return paired_distances(X[idx_a[i]], X[idx_b[j]], metric=metric)
 
 
 def run_separability_analysis(df, label_col, feature_cols):
@@ -65,6 +113,12 @@ def run_separability_analysis(df, label_col, feature_cols):
 
         intra_mean = np.mean(intra_dist) if len(intra_dist) > 0 else np.nan
         inter_mean = np.mean(inter_dist) if len(inter_dist) > 0 else np.nan
+
+        gap = (
+            inter_mean - intra_mean
+            if np.isfinite(intra_mean) and np.isfinite(inter_mean)
+            else np.nan
+        )
         ratio = (
             intra_mean / inter_mean
             if np.isfinite(intra_mean) and np.isfinite(inter_mean)
@@ -72,20 +126,20 @@ def run_separability_analysis(df, label_col, feature_cols):
         )
 
         try:
-            silhouette_score_value = silhouette_score(
-                X, y == class_name, sample_size=min(50_000, len(X))
-            )
+            sample_size = min(50_000, X.shape[0])
+            sil = silhouette_score(X, (y == class_name), sample_size=sample_size)
         except ValueError:
-            silhouette_score_value = np.nan
+            sil = np.nan
 
         results.append(
             {
                 "class": class_name,
-                "n_samples": len(idx_class),
+                "n_samples": int(idx_class.size),
                 "intra_mean": float(intra_mean),
                 "inter_mean": float(inter_mean),
+                "gap": float(gap),
                 "ratio": float(ratio),
-                "silhouette_score": float(silhouette_score_value),
+                "silhouette_score": float(sil),
             }
         )
 
@@ -93,86 +147,75 @@ def run_separability_analysis(df, label_col, feature_cols):
     return results
 
 
-def compute_class_similarity(
-    df, class_a, class_b, label_col, num_cols, cat_cols, idx_a=None, idx_b=None
-):
-    """Compute feature-wise similarity between two classes."""
-    df_a = (
-        df.loc[idx_a][df.loc[idx_a, label_col] == class_a]
-        if idx_a is not None
-        else df[df[label_col] == class_a]
+def compute_distance_roc_auc(intra_a, intra_b, inter_ab):
+    """
+    Compute ROC-AUC where:
+    - Label 1 (positive): inter-class pairs
+    - Label 0 (negative): intra-class pairs
+    - Score: distance (higher distance should predict inter-class)
+    """
+
+    from sklearn.metrics import roc_auc_score
+
+    y_true = np.concatenate(
+        [np.zeros(len(intra_a) + len(intra_b)), np.ones(len(inter_ab))]
     )
-    df_b = (
-        df.loc[idx_b][df.loc[idx_b, label_col] == class_b]
-        if idx_b is not None
-        else df[df[label_col] == class_b]
+    y_scores = np.concatenate([intra_a, intra_b, inter_ab])
+
+    if len(np.unique(y_true)) < 2:
+        return np.nan
+    # intra-class pairs should have lower distance than inter-class pairs
+    # AUC 1 means all inter-class pairs have higher distance than intra-class pairs
+    auc = roc_auc_score(y_true, y_scores)
+    return auc
+
+
+def compute_class_similarity(X, idx_a, idx_b, n_pairs=200_000):
+    """Compute similarity between two classes based on distance distributions."""
+    intra_a = sample_distances(X, idx_a, n_pairs=n_pairs)
+    intra_b = sample_distances(X, idx_b, n_pairs=n_pairs)
+    inter_ab = sample_distances(X, idx_a, idx_b, n_pairs=n_pairs)
+
+    intra_a_mean = np.mean(intra_a) if len(intra_a) > 0 else np.nan
+    intra_b_mean = np.mean(intra_b) if len(intra_b) > 0 else np.nan
+    inter_ab_mean = np.mean(inter_ab) if len(inter_ab) > 0 else np.nan
+
+    gap = (
+        inter_ab_mean - (intra_a_mean + intra_b_mean) / 2
+        if np.isfinite(intra_a_mean)
+        and np.isfinite(intra_b_mean)
+        and np.isfinite(inter_ab_mean)
+        else np.nan
+    )
+    ratio = (
+        (intra_a_mean + intra_b_mean) / 2 / inter_ab_mean
+        if np.isfinite(intra_a_mean)
+        and np.isfinite(intra_b_mean)
+        and np.isfinite(inter_ab_mean)
+        else np.nan
     )
 
-    results = []
-    total_sim = 0.0
-    n_features = 0
+    # probability that an inter-class pair is smaller than an intra-class pair
+    p = np.mean(inter_ab[:, None] < intra_a[None, :])
+    q = np.mean(inter_ab[:, None] < intra_b[None, :])
+    roc_auc = compute_distance_roc_auc(intra_a, intra_b, inter_ab)
 
-    for col in num_cols:
-        mean_a, std_a = df_a[col].mean(), df_a[col].std()
-        mean_b, std_b = df_b[col].mean(), df_b[col].std()
-
-        # Bhattacharyya coefficient for normal distributions
-        # 0 (completely different) to 1 (identical)
-        var_a, var_b = std_a**2, std_b**2
-        var_sum = var_a + var_b
-
-        if var_sum < 1e-10:  # Both distributions have zero variance
-            similarity = 1.0 if abs(mean_a - mean_b) < 1e-10 else 0.0
-        else:
-            # Bhattacharyya distance
-            db = 0.25 * np.log((var_sum) / (2 * std_a * std_b + 1e-10)) + 0.25 * (
-                mean_a - mean_b
-            ) ** 2 / (var_sum)
-            similarity = float(np.exp(-db))
-
-        results.append(
-            {
-                "feature": col,
-                "class_a_mean": float(mean_a),
-                "class_b_mean": float(mean_b),
-                "class_a_std": float(std_a),
-                "class_b_std": float(std_b),
-                "class_a_top_categories": None,
-                "class_b_top_categories": None,
-                "similarity": similarity,
-            }
-        )
-        total_sim += similarity
-        n_features += 1
-
-    for col in cat_cols:
-        freq_a = df_a[col].value_counts(normalize=True)
-        freq_b = df_b[col].value_counts(normalize=True)
-
-        all_cats = set(freq_a.index).union(set(freq_b.index))
-        intersection = sum(min(freq_a.get(c, 0), freq_b.get(c, 0)) for c in all_cats)
-        union = sum(max(freq_a.get(c, 0), freq_b.get(c, 0)) for c in all_cats)
-
-        similarity = float(intersection / union) if union > 0 else 0.0
-
-        results.append(
-            {
-                "feature": col,
-                "class_a_mean": None,
-                "class_b_mean": None,
-                "class_a_std": None,
-                "class_b_std": None,
-                "class_a_top_categories": freq_a.index.tolist()[:5],
-                "class_b_top_categories": freq_b.index.tolist()[:5],
-                "similarity": similarity,
-            }
-        )
-        total_sim += similarity
-        n_features += 1
-
-    results.sort(key=lambda x: x["similarity"], reverse=True)
-    global_similarity = float(total_sim / n_features) if n_features > 0 else 0.0
-    return results, global_similarity
+    return (
+        {
+            "intra_a_mean": float(intra_a_mean),  # low value means class A is compact
+            "intra_b_mean": float(intra_b_mean),  # low value means class B is compact
+            "inter_ab_mean": float(
+                inter_ab_mean
+            ),  # high value means classes are well separated
+            "gap": float(
+                gap
+            ),  # negative gap means classes are closer to each other than they are internally
+            "ratio": float(ratio),  # low ratio means good separation
+            "overlap_a": float(p),  # high value means class A overlaps with class B
+            "overlap_b": float(q),  # high value means class B overlaps with class A
+            "roc_auc": float(roc_auc),  # high value means good separation
+        },
+    )
 
 
 def compute_separability_analysis(
@@ -204,26 +247,20 @@ def compute_separability_analysis(
 
 
 def compute_similarity_analysis(
-    train_df, val_df, test_df, label_col, num_cols, cat_cols, class_a, class_b, cfg
+    train_df, val_df, test_df, label_col, feature_cols, class_a, class_b, cfg
 ):
     """Compute similarity analysis between specified classes."""
     for split_name, df in zip(["train", "val", "test"], [train_df, val_df, test_df]):
         logger.info(f"Computing similarity on {split_name} set ...")
-        similarity_results, global_similarity = compute_class_similarity(
-            df,
-            class_a,
-            class_b,
-            label_col,
-            num_cols,
-            cat_cols,
-        )
-        similarity_df = pd.DataFrame(similarity_results)
+        X = df[feature_cols].values
+        idx_a = np.where(df[label_col].values == class_a)[0]
+        idx_b = np.where(df[label_col].values == class_b)[0]
+        similarity_result = compute_class_similarity(X, idx_a, idx_b)
+        similarity_df = pd.DataFrame(similarity_result)
         logger.info(f"\n{similarity_df}")
-        logger.info(f"Global similarity: {global_similarity:.4f}")
 
-        similarity_results.append({"global_similarity": global_similarity})
         save_to_json(
-            similarity_results,
+            similarity_result,
             Path(cfg.path.json_logs)
             / f"similarity/{split_name}_{class_a}_vs_{class_b}.json",
         )
@@ -232,10 +269,9 @@ def compute_similarity_analysis(
 def visualize_overall(X, y, exclude_classes=[], n_samples=3000):
     """Create overall visualizations excluding specific class."""
     mask = ~np.isin(y, exclude_classes)
-    # vis_mask = create_subsample_mask(y[mask], n_samples=n_samples, stratify=False)
-    reduced_x = tsne_projection(X[mask])
-
-    return vectors_plot(reduced_x, y[mask])
+    vis_mask = create_subsample_mask(y[mask], n_samples=n_samples, stratify=False)
+    reduced_x = tsne_projection(X[mask][vis_mask])
+    return vectors_plot(reduced_x, y[mask][vis_mask])
 
 
 def main():
@@ -246,9 +282,9 @@ def main():
         overrides=sys.argv[1:],
     )
 
-    num_cols = list(cfg.data.num_cols)
-    cat_cols = list(cfg.data.cat_cols)
-    feature_cols = num_cols + cat_cols
+    num_cols = list(cfg.data.num_cols) if cfg.data.num_cols else []
+    cat_cols = list(cfg.data.cat_cols) if cfg.data.cat_cols else []
+    feature_cols = num_cols  # + cat_cols
     label_col = cfg.data.label_col
 
     # Load data
@@ -259,11 +295,22 @@ def main():
         cfg.data.extension,
     )
 
+    logger.info("Starting separability analysis ...")
+    compute_separability_analysis(
+        train_df, val_df, test_df, label_col, feature_cols, cfg
+    )
+
+    logger.info("Starting similarity analysis ...")
+    compute_similarity_analysis(
+        train_df, val_df, test_df, label_col, feature_cols, "DoS", "Exploits", cfg
+    )
+
     for suffix, X, y in [
-        ("train", train_df[feature_cols].values, train_df["multi_" + label_col].values),
-        ("val", val_df[feature_cols].values, val_df["multi_" + label_col].values),
-        ("test", test_df[feature_cols].values, test_df["multi_" + label_col].values),
+        ("train", train_df[num_cols].values, train_df["multi_" + label_col].values),
+        ("val", val_df[num_cols].values, val_df["multi_" + label_col].values),
+        ("test", test_df[num_cols].values, test_df["multi_" + label_col].values),
     ]:
+        logger.info(f"Visualizing {suffix} set ...")
         log_dir = Path(cfg.path.tb_logs) / "visualize" / suffix
         log_dir.mkdir(parents=True, exist_ok=True)
         tb_logger = TensorboardLogger(log_dir=log_dir)
@@ -272,13 +319,7 @@ def main():
             X,
             y,
         )
-        tb_logger.writer.add_figure("overall_projection", fig, global_step=0)
-
-    # Compute separability analysis
-    # logger.info("Starting separability analysis ...")
-    # compute_separability_analysis(
-    #     train_df, val_df, test_df, label_col, feature_cols, cfg
-    # )
+        tb_logger.writer.add_figure("projection", fig, global_step=0)
 
 
 if __name__ == "__main__":
