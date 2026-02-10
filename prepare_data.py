@@ -191,7 +191,7 @@ def compute_clusters(df, feature_cols, label_col):
         model, labels, proba, info = hdbscan_grid_search(
             df.loc[cls_mask, feature_cols].values
         )
-        core_mask = (labels != -1) & (proba >= 0.7)
+        core_mask = (labels != -1) & (proba >= 0.6)
         # ambiguous_mask = ~core_mask
 
         # Get indices of the class subset, then filter by core_mask
@@ -268,6 +268,17 @@ def main():
         test_df,
         processed_data_path / f"{cfg.data.file_name}_test.{cfg.data.extension}",
     )
+
+    # save_df(
+    #     train_df[train_df["cluster"] == -1].sample(frac=1, random_state=cfg.seed),
+    #     processed_data_path / f"{cfg.data.file_name}_ambiguous.csv",
+    # )
+
+    # save_df(
+    #     train_df[train_df["cluster"] != -1].sample(frac=1, random_state=cfg.seed),
+    #     processed_data_path / f"{cfg.data.file_name}_core.csv",
+    # )
+
     # Compute and save metadata
     logger.info("Computing and saving metadata...")
     metadata = compute_df_metadata(

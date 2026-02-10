@@ -2,9 +2,7 @@ training:
   epochs: 30
 
   dataloader:
-    batch_size: 512
     num_workers: 8
-    shuffle: true
     pin_memory: false
 
   early_stopping:
@@ -13,9 +11,7 @@ training:
 
 validation:
   dataloader:
-    batch_size: 512
     num_workers: 8
-    shuffle: false
     pin_memory: false
 
 test:

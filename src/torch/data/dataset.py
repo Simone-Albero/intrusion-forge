@@ -51,12 +51,12 @@ class TabularDataset(Dataset):
         df: DataFrame containing the data
         num_cols: List of numerical column names (optional)
         cat_cols: List of categorical column names (optional)
-        label_col: Name of the label column (optional)
+        label_col: Name or list of label column names (optional)
 
     Returns:
         Sample tuple where:
         - features is a list of tensors [numerical, categorical] or single tensor
-        - labels is a tensor or None
+        - labels is a list of tensors (one per label column) or same as features if no labels
     """
 
     def __init__(
@@ -64,7 +64,7 @@ class TabularDataset(Dataset):
         df: pd.DataFrame,
         num_cols: Optional[Sequence[str]] = None,
         cat_cols: Optional[Sequence[str]] = None,
-        label_col: Optional[str] = None,
+        label_col: Optional[Union[str, Sequence[str]]] = None,
     ) -> None:
         self.has_numerical = num_cols is not None and len(num_cols) > 0
         self.has_categorical = cat_cols is not None and len(cat_cols) > 0
@@ -85,11 +85,13 @@ class TabularDataset(Dataset):
                 df[cat_cols].values, dtype=torch.long
             )
 
-        self.labels: Optional[torch.Tensor] = (
-            torch.as_tensor(df[label_col].values, dtype=torch.long)
-            if label_col is not None
-            else None
-        )
+        # Support single or multiple label columns
+        self.labels: Optional[List[torch.Tensor]] = None
+        if label_col is not None:
+            label_cols = [label_col] if isinstance(label_col, str) else list(label_col)
+            self.labels = [
+                torch.as_tensor(df[col].values, dtype=torch.long) for col in label_cols
+            ]
 
         self._length = len(df)
 
@@ -107,5 +109,9 @@ class TabularDataset(Dataset):
         else:
             features = [self.categorical_features[index]]
 
-        labels = [self.labels[index]] if self.labels is not None else features
+        labels = (
+            [label_tensor[index] for label_tensor in self.labels]
+            if self.labels is not None
+            else features
+        )
         return features, labels

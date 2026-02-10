@@ -24,33 +24,35 @@ setup_logger()
 logger = logging.getLogger(__name__)
 
 
+def to_tensors(df, num_cols, cat_cols, label_col):
+    return (
+        torch.tensor(df[num_cols].to_numpy(dtype=np.float32)),
+        torch.tensor(df[cat_cols].to_numpy(dtype=np.int64)),
+        torch.tensor(df[label_col].to_numpy(dtype=np.int64)),
+    )
+
+
 def load_data(
     processed_data_path,
     file_name,
     extension,
-    num_cols,
-    cat_cols,
-    label_col,
 ):
     """Load and convert data to PyTorch tensors."""
     train_df, val_df, test_df = load_data_splits(
         processed_data_path, file_name, extension
     )
 
-    def to_tensors(df):
-        return (
-            torch.tensor(df[num_cols].to_numpy(dtype=np.float32)),
-            torch.tensor(df[cat_cols].to_numpy(dtype=np.int64)),
-            torch.tensor(df[label_col].to_numpy(dtype=np.int64)),
-        )
-
-    return to_tensors(train_df), to_tensors(val_df), to_tensors(test_df)
+    return train_df, val_df, test_df
 
 
 def run_inference(model, x_numerical, x_categorical, device):
     """Run model inference."""
     model.eval()
     with torch.no_grad():
+        if x_categorical.size(1) == 0:
+            return model(x_numerical.to(device))
+        elif x_numerical.size(1) == 0:
+            return model(x_categorical.to(device))
         return model(x_numerical.to(device), x_categorical.to(device))
 
 
@@ -257,22 +259,21 @@ def main():
     cfg.loss.params.class_weight = df_meta["class_weights"]
     device = torch.device(cfg.device)
 
-    num_cols = list(cfg.data.num_cols)
-    cat_cols = list(cfg.data.cat_cols)
+    num_cols = list(cfg.data.num_cols) if cfg.data.num_cols else []
+    cat_cols = list(cfg.data.cat_cols) if cfg.data.cat_cols else []
     label_col = "multi_" + cfg.data.label_col
 
-    (
-        (x_num_train, x_cat_train, y_train),
-        (x_num_val, x_cat_val, y_val),
-        (x_num_test, x_cat_test, y_test),
-    ) = load_data(
+    train_df, val_df, test_df = load_data(
         Path(cfg.path.processed_data),
         cfg.data.file_name,
         cfg.data.extension,
-        num_cols,
-        cat_cols,
-        label_col,
     )
+
+    x_num_train, x_cat_train, y_train = to_tensors(
+        train_df, num_cols, cat_cols, label_col
+    )
+    x_num_val, x_cat_val, y_val = to_tensors(val_df, num_cols, cat_cols, label_col)
+    x_num_test, x_cat_test, y_test = to_tensors(test_df, num_cols, cat_cols, label_col)
 
     pickles_path = Path(cfg.path.pickles)
     json_logs_path = Path(cfg.path.json_logs)
@@ -293,7 +294,6 @@ def main():
         tb_logger = TensorboardLogger(log_dir=log_dir)
 
         y_true, y_pred, z, X = get_predictions(model, x_num, x_cat, y, device)
-        # y_pred = fix_predictions(y_pred, {3: 3, 4: 3, 5: 3})
         unique_classes = np.unique(y_true)
 
         cm_fig = visualize_cm(y_true, y_pred, normalize="true")

@@ -21,6 +21,7 @@ from src.torch.builders import (
     create_loss,
     create_optimizer,
     create_scheduler,
+    create_sampler,
 )
 from src.ignite.builders import EngineBuilder
 from src.ignite.metrics import F1, Precision, Recall
@@ -35,14 +36,9 @@ def load_data(
     processed_data_path,
     file_name,
     extension,
-    num_cols,
-    cat_cols,
     label_col,
     n_samples,
     random_state,
-    train_dataloader_cfg,
-    val_dataloader_cfg,
-    test_dataloader_cfg,
 ):
     """Load and prepare data loaders."""
     train_df, val_df, test_df = load_data_splits(
@@ -54,15 +50,14 @@ def load_data(
     if n_samples is not None:
         train_df = subsample_df(train_df, n_samples, random_state, label_col)
 
-    def make_loader(df, dataloader_cfg):
-        dataset = create_dataset(df, num_cols, cat_cols, label_col)
-        return create_dataloader(dataset, dataloader_cfg)
+    return train_df, val_df, test_df
 
-    return (
-        make_loader(train_df, train_dataloader_cfg),
-        make_loader(val_df, val_dataloader_cfg),
-        make_loader(test_df, test_dataloader_cfg),
-    )
+
+def make_loader(df, num_cols, cat_cols, label_cols, dataloader_cfg, **kwargs):
+    # Pass both class labels and cluster labels
+    dataset = create_dataset(df, num_cols, cat_cols, label_cols)
+    kwargs.update(dataloader_cfg)
+    return create_dataloader(dataset, kwargs)
 
 
 def train(
@@ -76,7 +71,6 @@ def train(
     random_state,
     train_dataloader_cfg,
     val_dataloader_cfg,
-    test_dataloader_cfg,
     model_name,
     model_params,
     loss_name,
@@ -85,6 +79,8 @@ def train(
     optimizer_params,
     scheduler_name,
     scheduler_params,
+    sampler_name,
+    sampler_params,
     tb_logs_path,
     models_path,
     max_epochs,
@@ -96,25 +92,53 @@ def train(
     """Train the supervised classifier."""
     logger.info("Starting training phase...")
 
-    train_loader, val_loader, _ = load_data(
+    train_df, val_df, _ = load_data(
         processed_data_path,
         file_name,
         extension,
-        num_cols,
-        cat_cols,
         label_col,
         n_samples,
         random_state,
-        train_dataloader_cfg,
-        val_dataloader_cfg,
-        test_dataloader_cfg,
     )
+
+    train_sampler = create_sampler(
+        name=sampler_name,
+        params=sampler_params,
+        clusters=train_df["cluster"].values,
+        labels=train_df[label_col].values,
+    )
+
+    val_sampler = create_sampler(
+        name=sampler_name,
+        params=sampler_params,
+        clusters=val_df["cluster"].values,
+        labels=val_df[label_col].values,
+    )
+
+    train_loader = make_loader(
+        train_df,
+        num_cols,
+        cat_cols,
+        [label_col, "cluster"],
+        train_dataloader_cfg,
+        batch_sampler=train_sampler,
+    )
+    val_loader = make_loader(
+        val_df,
+        num_cols,
+        cat_cols,
+        [label_col, "cluster"],
+        val_dataloader_cfg,
+        batch_sampler=val_sampler,
+    )
+
     model = create_model(model_name, model_params, device)
     loss_fn = create_loss(loss_name, loss_params, device)
     optimizer = create_optimizer(optimizer_name, optimizer_params, model, loss_fn)
     scheduler = create_scheduler(
         scheduler_name, scheduler_params, optimizer, train_loader
     )
+
     log_dir = tb_logs_path / "training"
     # if log_dir.exists():
     #     shutil.rmtree(log_dir)
@@ -197,8 +221,6 @@ def test(
     label_col,
     n_samples,
     random_state,
-    train_dataloader_cfg,
-    val_dataloader_cfg,
     test_dataloader_cfg,
     model_name,
     model_params,
@@ -212,18 +234,16 @@ def test(
     """Test the trained classifier."""
     logger.info("Starting testing phase...")
 
-    _, _, test_loader = load_data(
+    _, _, test_df = load_data(
         processed_data_path,
         file_name,
         extension,
-        num_cols,
-        cat_cols,
         label_col,
         n_samples,
         random_state,
-        train_dataloader_cfg,
-        val_dataloader_cfg,
-        test_dataloader_cfg,
+    )
+    test_loader = make_loader(
+        test_df, num_cols, cat_cols, [label_col], test_dataloader_cfg
     )
     model = create_model(model_name, model_params, device)
     load_latest_checkpoint(models_path, model, device)
@@ -398,109 +418,65 @@ def main():
     ignore_classes = list(cfg.ignore_classes) if cfg.get("ignore_classes") else None
     run_id = cfg.run_id
 
+    train_kwargs = {
+        "processed_data_path": processed_data_path,
+        "file_name": cfg.data.file_name,
+        "extension": cfg.data.extension,
+        "num_cols": num_cols,
+        "cat_cols": cat_cols,
+        "label_col": label_col,
+        "n_samples": cfg.n_samples,
+        "random_state": cfg.seed,
+        "train_dataloader_cfg": cfg.loops.training.dataloader,
+        "val_dataloader_cfg": cfg.loops.validation.dataloader,
+        "model_name": cfg.model.name,
+        "model_params": cfg.model.params,
+        "loss_name": cfg.loss.name,
+        "loss_params": cfg.loss.params,
+        "optimizer_name": cfg.optimizer.name,
+        "optimizer_params": cfg.optimizer.params,
+        "scheduler_name": cfg.scheduler.name,
+        "scheduler_params": cfg.scheduler.params,
+        "sampler_name": cfg.sampler.name,
+        "sampler_params": cfg.sampler.params,
+        "tb_logs_path": tb_logs_path,
+        "models_path": models_path,
+        "max_epochs": cfg.loops.training.epochs,
+        "max_grad_norm": cfg.loops.training.get("max_grad_norm", 1.0),
+        "early_stopping_patience": cfg.loops.training.early_stopping.patience,
+        "early_stopping_min_delta": cfg.loops.training.early_stopping.min_delta,
+        "device": device,
+    }
+
+    test_kwargs = {
+        "processed_data_path": processed_data_path,
+        "file_name": cfg.data.file_name,
+        "extension": cfg.data.extension,
+        "num_cols": num_cols,
+        "cat_cols": cat_cols,
+        "label_col": label_col,
+        "n_samples": cfg.n_samples,
+        "random_state": cfg.seed,
+        "test_dataloader_cfg": cfg.loops.test.dataloader,
+        "model_name": cfg.model.name,
+        "model_params": cfg.model.params,
+        "models_path": models_path,
+        "tb_logs_path": tb_logs_path,
+        "json_logs_path": json_logs_path,
+        "run_id": run_id,
+        "ignore_classes": ignore_classes,
+        "device": device,
+    }
+
     # Run pipeline based on stage
     stage = cfg.get("stage", "all")
     if stage == "all":
-        train(
-            processed_data_path,
-            cfg.data.file_name,
-            cfg.data.extension,
-            num_cols,
-            cat_cols,
-            label_col,
-            cfg.n_samples,
-            cfg.seed,
-            cfg.loops.training.dataloader,
-            cfg.loops.validation.dataloader,
-            cfg.loops.test.dataloader,
-            cfg.model.name,
-            cfg.model.params,
-            cfg.loss.name,
-            cfg.loss.params,
-            cfg.optimizer.name,
-            cfg.optimizer.params,
-            cfg.scheduler.name,
-            cfg.scheduler.params,
-            tb_logs_path,
-            models_path,
-            cfg.loops.training.epochs,
-            cfg.loops.training.get("max_grad_norm", 1.0),
-            cfg.loops.training.early_stopping.patience,
-            cfg.loops.training.early_stopping.min_delta,
-            device,
-        )
-        test(
-            processed_data_path,
-            cfg.data.file_name,
-            cfg.data.extension,
-            num_cols,
-            cat_cols,
-            label_col,
-            cfg.n_samples,
-            cfg.seed,
-            cfg.loops.training.dataloader,
-            cfg.loops.validation.dataloader,
-            cfg.loops.test.dataloader,
-            cfg.model.name,
-            cfg.model.params,
-            models_path,
-            tb_logs_path,
-            json_logs_path,
-            run_id,
-            ignore_classes,
-            device,
-        )
+        train(**train_kwargs)
+        test(**test_kwargs)
     elif stage == "training":
-        train(
-            processed_data_path,
-            cfg.data.file_name,
-            cfg.data.extension,
-            num_cols,
-            cat_cols,
-            label_col,
-            cfg.n_samples,
-            cfg.seed,
-            cfg.loops.training.dataloader,
-            cfg.loops.validation.dataloader,
-            cfg.loops.test.dataloader,
-            cfg.model.name,
-            cfg.model.params,
-            cfg.loss.name,
-            cfg.loss.params,
-            cfg.optimizer.name,
-            cfg.optimizer.params,
-            cfg.scheduler.name,
-            cfg.scheduler.params,
-            tb_logs_path,
-            models_path,
-            cfg.loops.training.epochs,
-            cfg.loops.training.get("max_grad_norm", 1.0),
-            cfg.loops.training.early_stopping.patience,
-            cfg.loops.training.early_stopping.min_delta,
-            device,
-        )
+        train(**train_kwargs)
     elif stage == "testing":
-        test(
-            processed_data_path,
-            cfg.data.file_name,
-            cfg.data.extension,
-            num_cols,
-            cat_cols,
-            label_col,
-            cfg.n_samples,
-            cfg.seed,
-            cfg.loops.training.dataloader,
-            cfg.loops.validation.dataloader,
-            cfg.loops.test.dataloader,
-            cfg.model.name,
-            cfg.model.params,
-            models_path,
-            tb_logs_path,
-            json_logs_path,
-            run_id,
-            ignore_classes,
-            device,
-        )
+        test(**test_kwargs)
     else:
         logger.error(f"Unknown stage: {stage}. Valid: 'all', 'training', 'testing'")
         sys.exit(1)

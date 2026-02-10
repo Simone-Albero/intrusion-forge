@@ -1,0 +1,11 @@
+name: cluster_batch_sampler
+
+params:
+  batch_size: 512
+  clusters_per_batch: 6
+  samples_per_cluster: 80
+  include_ambiguous: 32
+  ambiguous_tag: -1
+  drop_last: True
+  min_cluster_size: 2
+  seed: ${seed}

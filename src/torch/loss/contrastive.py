@@ -5,6 +5,7 @@ from torch import Tensor
 import torch.nn.functional as F
 
 from .base import BaseLoss
+from .classification import CrossEntropyLoss
 from . import LossFactory
 
 
@@ -16,6 +17,7 @@ class SupervisedContrastiveLoss(BaseLoss):
         reduction: str = "mean",
         ignore_index: int = -1,
         temperature: float = 0.07,
+        device: Optional[torch.device] = torch.device("cpu"),
     ) -> None:
         """Initialize supervised contrastive loss.
 
@@ -27,125 +29,87 @@ class SupervisedContrastiveLoss(BaseLoss):
         super().__init__(reduction)
         self.ignore_index = ignore_index
         self.temperature = temperature
+        self.device = device
 
-    def forward(
-        self,
-        z: Tensor,
-        target: Tensor,
-    ) -> Tensor:
-        """Compute supervised contrastive loss.
+    def forward(self, z: Tensor, target: Tensor, clusters: Tensor) -> Tensor:
+        batch_size = z.size(0)
 
-        Args:
-            z: Embedding tensor [batch_size, embedding_dim]
-            target: Target class indices [batch_size]
+        # keep only valid samples
+        valid = clusters != self.ignore_index
+        if valid.sum() < 2:
+            return z.sum() * 0.0  # preserves graph
 
-        Returns:
-            Loss tensor (scalar or per-sample based on reduction)
-        """
-        # Normalize embeddings (with epsilon to avoid division by zero)
-        z = F.normalize(z, dim=1, eps=1e-8)
-        batch_size = z.shape[0]
+        z_valid = F.normalize(z[valid], dim=1, eps=1e-8)
+        target_valid = target[valid]
+        n = z_valid.size(0)
 
-        # Compute similarity matrix
-        similarity = (z @ z.T) / self.temperature
+        # cosine sim via dot product
+        sim = (z_valid @ z_valid.T) / self.temperature
 
-        # Mask self-similarities to large negative value (not -inf to avoid log issues)
-        self_mask = torch.eye(batch_size, dtype=torch.bool, device=z.device)
-        similarity = similarity.masked_fill(self_mask, -1e9)
+        # mask self similarities
+        self_mask = torch.eye(n, dtype=torch.bool, device=self.device)
+        sim = sim.masked_fill(self_mask, -1e9)
 
-        # Create positive mask based on target labels
-        positive_mask = target.unsqueeze(0) == target.unsqueeze(1)
-        positive_mask = positive_mask.masked_fill(self_mask, False)
+        # positives: same target, excluding self
+        pos_mask = (target_valid[:, None] == target_valid[None, :]) & (~self_mask)
 
-        # Filter out ignored indices
-        valid_mask = target != self.ignore_index
-        positive_mask = (
-            positive_mask & valid_mask.unsqueeze(0) & valid_mask.unsqueeze(1)
-        )
+        # anchors with at least one positive
+        pos_count = pos_mask.sum(dim=1)
+        valid_anchors = pos_count > 0
+        if valid_anchors.sum() == 0:
+            return z.sum() * 0.0
 
-        # Count the number of positive pairs for each sample
-        num_positives = positive_mask.sum(dim=1)
+        log_probs = F.log_softmax(sim, dim=1)
 
-        # Only compute loss for samples with at least one positive pair
-        valid_samples = num_positives > 0
-        if not valid_samples.any():
-            return torch.tensor(0.0, device=z.device, requires_grad=True)
+        loss_per_valid = -(log_probs * pos_mask).sum(dim=1) / pos_count.clamp_min(1)
+        loss_per_valid = loss_per_valid[valid_anchors]
 
-        # Compute log probabilities
-        log_probs = F.log_softmax(similarity, dim=1)
+        # If reduction is 'none', pad back to original batch size
+        if self.reduction == "none":
+            loss_per_sample = torch.zeros(batch_size, device=z.device, dtype=z.dtype)
+            valid_indices = torch.where(valid)[0]
+            anchor_indices = valid_indices[valid_anchors]
+            loss_per_sample[anchor_indices] = loss_per_valid
+            return loss_per_sample
 
-        # Sum log probabilities over positive pairs
-        log_probs_positive = (log_probs * positive_mask).sum(dim=1)
-
-        # Average over positive pairs (add epsilon to avoid division by zero)
-        loss = -log_probs_positive[valid_samples] / (
-            num_positives[valid_samples] + 1e-8
-        )
-
-        return self._reduce(loss)
+        return self._reduce(loss_per_valid)
 
 
 @LossFactory.register()
-class NtXentLoss(BaseLoss):
+class JointSupConCELoss(BaseLoss):
+    """Joint supervised contrastive and cross-entropy loss."""
 
     def __init__(
         self,
+        lam: float = 1.0,
         reduction: str = "mean",
+        ignore_index: int = -1,
         temperature: float = 0.07,
+        label_smoothing: float = 0.0,
+        class_weight: Optional[Tensor | list[float]] = None,
+        device: Optional[torch.device] = torch.device("cpu"),
     ) -> None:
-        """Initialize NT-Xent (Normalized Temperature-scaled Cross Entropy) loss.
-
-        An unsupervised contrastive loss for self-supervised learning.
-
-        Args:
-            reduction: How to reduce the loss ('mean', 'sum', 'none')
-            temperature: Temperature scaling factor
-        """
         super().__init__(reduction)
-        self.temperature = temperature
+        self.supcon_loss = SupervisedContrastiveLoss(
+            reduction="none",
+            ignore_index=ignore_index,
+            temperature=temperature,
+            device=device,
+        )
+        self.ce_loss = CrossEntropyLoss(
+            reduction="none",
+            ignore_index=ignore_index,
+            label_smoothing=label_smoothing,
+            class_weight=class_weight,
+            device=device,
+        )
+        self.lam = lam
 
     def forward(
-        self,
-        z1: Tensor,
-        z2: Tensor,
-        *args,
+        self, z: Tensor, logits: Tensor, target: Tensor, clusters: Tensor
     ) -> Tensor:
-        """Compute NT-Xent loss.
+        supcon_loss = self.supcon_loss(z, target, clusters)
+        ce_loss = self.ce_loss(logits, target)
 
-        Args:
-            z1: First set of embeddings [batch_size, embedding_dim]
-            z2: Second set of embeddings [batch_size, embedding_dim]
-
-        Returns:
-            Loss tensor (scalar or per-sample based on reduction)
-        """
-        # Normalize embeddings (with epsilon to avoid division by zero)
-        z1 = F.normalize(z1, dim=1, eps=1e-8)
-        z2 = F.normalize(z2, dim=1, eps=1e-8)
-
-        batch_size = z1.shape[0]
-
-        # Concatenate both views
-        z = torch.cat([z1, z2], dim=0)  # [2*batch_size, embedding_dim]
-
-        # Compute similarity matrix
-        similarity = (z @ z.T) / self.temperature
-
-        # Mask self-similarities to large negative value (not -inf to avoid log issues)
-        self_mask = torch.eye(2 * batch_size, dtype=torch.bool, device=z.device)
-        similarity = similarity.masked_fill(self_mask, -1e9)
-
-        # Create positive mask for augmented pairs
-        positive_mask = torch.zeros_like(similarity, dtype=torch.bool)
-        for i in range(batch_size):
-            positive_mask[i, i + batch_size] = True
-            positive_mask[i + batch_size, i] = True
-
-        # Compute log probabilities and sum over positives
-        log_probs = F.log_softmax(similarity, dim=1)
-        log_probs_positive = (log_probs * positive_mask).sum(dim=1)
-
-        # Each sample has exactly one positive pair
-        loss = -log_probs_positive
-
+        loss = self.lam * supcon_loss + (1 - self.lam) * ce_loss
         return self._reduce(loss)

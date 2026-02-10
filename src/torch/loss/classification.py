@@ -9,7 +9,7 @@ from . import LossFactory
 
 
 @LossFactory.register()
-class ClassificationLoss(BaseLoss):
+class CrossEntropyLoss(BaseLoss):
     """Cross-entropy loss for classification with hard labels."""
 
     def __init__(
@@ -20,7 +20,7 @@ class ClassificationLoss(BaseLoss):
         class_weight: Optional[Tensor | list[float]] = None,
         device: Optional[torch.device] = torch.device("cpu"),
     ) -> None:
-        """Initialize classification loss.
+        """Initialize cross-entropy loss.
 
         Args:
             reduction: How to reduce the loss ('mean', 'sum', 'none')

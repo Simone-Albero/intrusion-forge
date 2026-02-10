@@ -5,6 +5,7 @@ defaults:
   - loss: classification
   - optimizer: adamw
   - scheduler: one_cycle
+  - sampler: null
   - _self_
   - experiment: supervised
   - path: default

@@ -38,9 +38,16 @@ class ComposableClassifier(BaseModel):
         self,
         output: ModelOutput,
         target: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Returns logits and target for loss computation."""
-        return output["logits"], target
+        *args,
+    ) -> Tuple[torch.Tensor, ...]:
+        """Returns data for loss computation.
+
+        For standard losses: returns (logits, target)
+        For contrastive losses: returns (z, target, clusters, ...)
+        """
+        if args:
+            return (output["z"], output["logits"], target, *args)
+        return (output["logits"], target)
 
 
 class ComposableTabularClassifier(BaseModel):
@@ -76,9 +83,16 @@ class ComposableTabularClassifier(BaseModel):
         self,
         output: ModelOutput,
         target: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Returns logits and target for loss computation."""
-        return output["logits"], target
+        *args,
+    ) -> Tuple[torch.Tensor, ...]:
+        """Returns data for loss computation.
+
+        For standard losses: returns (logits, target)
+        For contrastive losses: returns (z, target, clusters, ...)
+        """
+        if args:
+            return (output["z"], output["logits"], target, *args)
+        return (output["logits"], target)
 
 
 @ModelFactory.register()

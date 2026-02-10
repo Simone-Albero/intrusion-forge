@@ -9,6 +9,7 @@ from .data.dataset import TabularDataset
 from .data.batch import default_collate
 from .model import ModelFactory
 from .loss import LossFactory
+from .data.sampler import SamplerFactory
 
 
 def create_dataset(
@@ -62,3 +63,11 @@ def create_scheduler(
     scheduler = torch.optim.lr_scheduler.__dict__[name](optimizer, **params)
 
     return scheduler
+
+
+def create_sampler(name: str, params: dict, **kwargs) -> torch.utils.data.Sampler:
+    if name is None:
+        return None
+    kwargs.update(params)
+    sampler = SamplerFactory.create(name, kwargs)
+    return sampler
