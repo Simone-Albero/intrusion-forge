@@ -242,7 +242,7 @@ def compute_separability_analysis(
         separability_results.append({"global_silhouette": global_silhouette})
         save_to_json(
             separability_results,
-            Path(cfg.path.json_logs) / f"separability/{split_name}.json",
+            Path(cfg.path.json_logs) / f"separability/{split_name}_{label_col}.json",
         )
 
 
@@ -284,7 +284,7 @@ def main():
 
     num_cols = list(cfg.data.num_cols) if cfg.data.num_cols else []
     cat_cols = list(cfg.data.cat_cols) if cfg.data.cat_cols else []
-    feature_cols = num_cols  # + cat_cols
+    feature_cols = num_cols + cat_cols
     label_col = cfg.data.label_col
 
     # Load data
@@ -297,6 +297,9 @@ def main():
 
     logger.info("Starting separability analysis ...")
     compute_separability_analysis(
+        train_df, val_df, test_df, label_col, feature_cols, cfg
+    )
+    compute_separability_analysis(
         train_df, val_df, test_df, "cluster", feature_cols, cfg
     )
 
@@ -305,11 +308,10 @@ def main():
     #     train_df, val_df, test_df, label_col, feature_cols, "DoS", "Exploits", cfg
     # )
 
-    label_col = "cluster"
-    for suffix, X, y in [
-        ("train", train_df[num_cols].values, train_df[label_col].values),
-        ("val", val_df[num_cols].values, val_df[label_col].values),
-        ("test", test_df[num_cols].values, test_df[label_col].values),
+    for suffix, df in [
+        ("train", train_df),
+        ("val", val_df),
+        ("test", test_df),
     ]:
         logger.info(f"Visualizing {suffix} set ...")
         log_dir = Path(cfg.path.tb_logs) / "visualize" / suffix
@@ -317,10 +319,17 @@ def main():
         tb_logger = TensorboardLogger(log_dir=log_dir)
 
         fig = visualize_overall(
-            X,
-            y,
+            df[feature_cols].to_numpy(),
+            df["multi_" + label_col].to_numpy(),
         )
-        tb_logger.writer.add_figure("projection", fig, global_step=0)
+        tb_logger.writer.add_figure("label_projection", fig, global_step=0)
+        tb_logger.close()
+
+        fig = visualize_overall(
+            df[feature_cols].to_numpy(),
+            df["cluster"].to_numpy(),
+        )
+        tb_logger.writer.add_figure("cluster_projection", fig, global_step=0)
         tb_logger.close()
 
 

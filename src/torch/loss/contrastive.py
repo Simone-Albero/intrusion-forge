@@ -11,68 +11,70 @@ from . import LossFactory
 
 @LossFactory.register()
 class SupervisedContrastiveLoss(BaseLoss):
-
     def __init__(
         self,
         reduction: str = "mean",
         ignore_index: int = -1,
         temperature: float = 0.07,
-        device: Optional[torch.device] = torch.device("cpu"),
+        device: torch.device = torch.device("cpu"),
     ) -> None:
-        """Initialize supervised contrastive loss.
-
-        Args:
-            reduction: How to reduce the loss ('mean', 'sum', 'none')
-            ignore_index: Index to ignore in loss calculation
-            temperature: Temperature scaling factor
-        """
         super().__init__(reduction)
         self.ignore_index = ignore_index
         self.temperature = temperature
         self.device = device
 
     def forward(self, z: Tensor, target: Tensor, clusters: Tensor) -> Tensor:
-        batch_size = z.size(0)
+        """
+        Returns:
+          - reduction='none': per-original-sample vector [B], zeros for invalid samples and for anchors w/ no positives
+          - otherwise: reduced scalar
+        """
+        B = z.size(0)
+        device = self.device if self.device is not None else z.device
 
-        # keep only valid samples
         valid = clusters != self.ignore_index
         if valid.sum() < 2:
-            return z.sum() * 0.0  # preserves graph
+            out = z.sum() * 0.0
+            if self.reduction == "none":
+                return torch.zeros(B, device=device, dtype=z.dtype) + out
+            return out
 
-        z_valid = F.normalize(z[valid], dim=1, eps=1e-8)
-        target_valid = target[valid]
-        n = z_valid.size(0)
+        z_v = F.normalize(z[valid], dim=1, eps=1e-8)
+        t_v = target[valid]
+        n = z_v.size(0)
 
-        # cosine sim via dot product
-        sim = (z_valid @ z_valid.T) / self.temperature
+        sim = (z_v @ z_v.T) / self.temperature
 
-        # mask self similarities
-        self_mask = torch.eye(n, dtype=torch.bool, device=self.device)
-        sim = sim.masked_fill(self_mask, -1e9)
+        self_mask = torch.eye(n, dtype=torch.bool, device=device)
+        sim = sim.masked_fill(self_mask, torch.finfo(sim.dtype).min)
 
-        # positives: same target, excluding self
-        pos_mask = (target_valid[:, None] == target_valid[None, :]) & (~self_mask)
-
-        # anchors with at least one positive
-        pos_count = pos_mask.sum(dim=1)
+        pos_mask = (t_v[:, None] == t_v[None, :]) & (~self_mask)
+        pos_count = pos_mask.sum(dim=1)  # [n]
         valid_anchors = pos_count > 0
+
         if valid_anchors.sum() == 0:
-            return z.sum() * 0.0
+            out = z.sum() * 0.0
+            if self.reduction == "none":
+                return torch.zeros(B, device=device, dtype=z.dtype) + out
+            return out
 
-        log_probs = F.log_softmax(sim, dim=1)
+        log_probs = F.log_softmax(sim, dim=1)  # [n, n]
 
-        loss_per_valid = -(log_probs * pos_mask).sum(dim=1) / pos_count.clamp_min(1)
-        loss_per_valid = loss_per_valid[valid_anchors]
+        # per anchor loss
+        loss_v = torch.zeros(n, device=device, dtype=z.dtype)
+        loss_v[valid_anchors] = -(
+            (log_probs * pos_mask).sum(dim=1)[valid_anchors]
+            / pos_count[valid_anchors].to(z.dtype)
+        )
 
-        # If reduction is 'none', pad back to original batch size
         if self.reduction == "none":
-            loss_per_sample = torch.zeros(batch_size, device=z.device, dtype=z.dtype)
-            valid_indices = torch.where(valid)[0]
-            anchor_indices = valid_indices[valid_anchors]
-            loss_per_sample[anchor_indices] = loss_per_valid
-            return loss_per_sample
+            out = torch.zeros(B, device=device, dtype=z.dtype)
+            valid_idx = torch.where(valid)[0]  # indices into original batch
+            out[valid_idx] = loss_v
+            return out
 
-        return self._reduce(loss_per_valid)
+        # reduce only over valid anchors (ignore zeros from anchors w/ no positives)
+        return self._reduce(loss_v[valid_anchors])
 
 
 @LossFactory.register()
@@ -90,13 +92,13 @@ class JointSupConCELoss(BaseLoss):
         device: Optional[torch.device] = torch.device("cpu"),
     ) -> None:
         super().__init__(reduction)
-        self.supcon_loss = SupervisedContrastiveLoss(
+        self.supcon = SupervisedContrastiveLoss(
             reduction="none",
             ignore_index=ignore_index,
             temperature=temperature,
             device=device,
         )
-        self.ce_loss = CrossEntropyLoss(
+        self.ce = CrossEntropyLoss(
             reduction="none",
             ignore_index=ignore_index,
             label_smoothing=label_smoothing,
@@ -104,12 +106,22 @@ class JointSupConCELoss(BaseLoss):
             device=device,
         )
         self.lam = lam
+        self.ignore_index = ignore_index
 
     def forward(
-        self, z: Tensor, logits: Tensor, target: Tensor, clusters: Tensor
+        self,
+        z: Tensor,
+        logits: Tensor,
+        target: Tensor,
+        clusters: Tensor,
     ) -> Tensor:
-        supcon_loss = self.supcon_loss(z, target, clusters)
-        ce_loss = self.ce_loss(logits, target)
+        valid = clusters != self.ignore_index
 
-        loss = self.lam * supcon_loss + (1 - self.lam) * ce_loss
+        supcon = self.supcon(z, target, clusters)  # [B]
+        ce = self.ce(logits, target)  # [B]
+
+        supcon_norm = supcon / supcon.detach()[valid].mean().clamp_min(1e-6)
+
+        loss = ce + self.lam * supcon_norm
+
         return self._reduce(loss)

@@ -203,6 +203,7 @@ def train(
         logger.info(
             f"Epoch [{engine.state.epoch}] Val Loss: {validator.state.metrics['loss']:.6f}"
         )
+        engine.state.loss_fn.lam = engine.state.loss_fn.lam * 0.8
 
     try:
         trainer.run(train_loader, max_epochs=max_epochs)

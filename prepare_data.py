@@ -269,15 +269,15 @@ def main():
         processed_data_path / f"{cfg.data.file_name}_test.{cfg.data.extension}",
     )
 
-    # save_df(
-    #     train_df[train_df["cluster"] == -1].sample(frac=1, random_state=cfg.seed),
-    #     processed_data_path / f"{cfg.data.file_name}_ambiguous.csv",
-    # )
+    save_df(
+        train_df[train_df["cluster"] == -1].sample(frac=1, random_state=cfg.seed),
+        processed_data_path / f"{cfg.data.file_name}_ambiguous.csv",
+    )
 
-    # save_df(
-    #     train_df[train_df["cluster"] != -1].sample(frac=1, random_state=cfg.seed),
-    #     processed_data_path / f"{cfg.data.file_name}_core.csv",
-    # )
+    save_df(
+        train_df[train_df["cluster"] != -1].sample(frac=1, random_state=cfg.seed),
+        processed_data_path / f"{cfg.data.file_name}_core.csv",
+    )
 
     # Compute and save metadata
     logger.info("Computing and saving metadata...")

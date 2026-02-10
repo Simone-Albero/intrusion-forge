@@ -269,12 +269,6 @@ def main():
         cfg.data.extension,
     )
 
-    x_num_train, x_cat_train, y_train = to_tensors(
-        train_df, num_cols, cat_cols, label_col
-    )
-    x_num_val, x_cat_val, y_val = to_tensors(val_df, num_cols, cat_cols, label_col)
-    x_num_test, x_cat_test, y_test = to_tensors(test_df, num_cols, cat_cols, label_col)
-
     pickles_path = Path(cfg.path.pickles)
     json_logs_path = Path(cfg.path.json_logs)
 
@@ -282,10 +276,10 @@ def main():
     load_latest_checkpoint(Path(cfg.path.models), model, device)
 
     # Run inference
-    for suffix, (x_num, x_cat, y) in [
-        ("train", (x_num_train, x_cat_train, y_train)),
-        ("val", (x_num_val, x_cat_val, y_val)),
-        ("test", (x_num_test, x_cat_test, y_test)),
+    for suffix, df in [
+        ("train", train_df),
+        ("val", val_df),
+        ("test", test_df),
     ]:
         log_dir = Path(cfg.path.tb_logs) / "inference" / suffix
         # if log_dir.exists():
@@ -293,8 +287,8 @@ def main():
         log_dir.mkdir(parents=True, exist_ok=True)
         tb_logger = TensorboardLogger(log_dir=log_dir)
 
+        x_num, x_cat, y = to_tensors(df, num_cols, cat_cols, label_col)
         y_true, y_pred, z, X = get_predictions(model, x_num, x_cat, y, device)
-        unique_classes = np.unique(y_true)
 
         cm_fig = visualize_cm(y_true, y_pred, normalize="true")
         tb_logger.writer.add_figure(
@@ -304,7 +298,53 @@ def main():
         )
         plt.close(cm_fig)
 
+        logger.info("Computing overall visualizations ...")
+        overall_visual = visualize_overall(X, z, y_true)
+        tb_logger.writer.add_figure(
+            "raw/overall", overall_visual[0], global_step=cfg.run_id or 0
+        )
+        plt.close(overall_visual[0])
+        tb_logger.writer.add_figure(
+            "latent/overall", overall_visual[1], global_step=cfg.run_id or 0
+        )
+        plt.close(overall_visual[1])
+
+        overall_visual = visualize_overall(X, z, df["cluster"].to_numpy())
+        tb_logger.writer.add_figure(
+            "raw/cluster", overall_visual[0], global_step=cfg.run_id or 0
+        )
+        plt.close(overall_visual[0])
+        tb_logger.writer.add_figure(
+            "latent/cluster", overall_visual[1], global_step=cfg.run_id or 0
+        )
+        plt.close(overall_visual[1])
+        tb_logger.close()
+
+        logger.info("Analyzing class failures ...")
+        classes_failures = analyze_classes_failures(X, y_true, y_pred)
+
+        for c_label in df["cluster"].unique():
+            cluster_mask = df["cluster"] == c_label
+            cluster_failures = (y_true[cluster_mask] != y_pred[cluster_mask]).sum()
+            total_in_cluster = cluster_mask.sum()
+            logger.info(
+                f"Cluster {c_label}: {cluster_failures} failures over {total_in_cluster} samples"
+            )
+
+        save_to_json(
+            classes_failures,
+            json_logs_path / f"class_failures/{suffix}.json",
+        )
+
+        logger.info("Saving per-class predictions ...")
+        classes_indices = cm_indices(y_true, y_pred)
+        save_to_pickle(
+            classes_indices,
+            pickles_path / f"class_indices/{suffix}.pkl",
+        )
+
         # logger.info("Computing class visualizations ...")
+        # unique_classes = np.unique(y_true)
         # for label, (fig_x, fig_z) in visualize_classes(
         #     X, z, y_true, y_pred, unique_classes
         # ):
@@ -319,32 +359,6 @@ def main():
         #         f"latent/{label}", fig_z, global_step=cfg.run_id or 0
         #     )
         #     plt.close(fig_z)
-
-        logger.info("Computing overall visualizations ...")
-        overall_visual = visualize_overall(X, z, y_true)
-        tb_logger.writer.add_figure(
-            "raw/overall", overall_visual[0], global_step=cfg.run_id or 0
-        )
-        plt.close(overall_visual[0])
-        tb_logger.writer.add_figure(
-            "latent/overall", overall_visual[1], global_step=cfg.run_id or 0
-        )
-        plt.close(overall_visual[1])
-        tb_logger.close()
-
-        logger.info("Analyzing class failures ...")
-        classes_failures = analyze_classes_failures(X, y_true, y_pred)
-        save_to_json(
-            classes_failures,
-            json_logs_path / f"class_failures/{suffix}.json",
-        )
-
-        logger.info("Saving per-class predictions ...")
-        classes_indices = cm_indices(y_true, y_pred)
-        save_to_pickle(
-            classes_indices,
-            pickles_path / f"class_indices/{suffix}.pkl",
-        )
 
 
 if __name__ == "__main__":
