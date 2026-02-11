@@ -322,14 +322,14 @@ def main():
             df[feature_cols].to_numpy(),
             df["multi_" + label_col].to_numpy(),
         )
-        tb_logger.writer.add_figure("label_projection", fig, global_step=0)
+        tb_logger.writer.add_figure("label_projection", fig, global_step=cfg.run_id)
         tb_logger.close()
 
         fig = visualize_overall(
             df[feature_cols].to_numpy(),
             df["cluster"].to_numpy(),
         )
-        tb_logger.writer.add_figure("cluster_projection", fig, global_step=0)
+        tb_logger.writer.add_figure("cluster_projection", fig, global_step=cfg.run_id)
         tb_logger.close()
 
 

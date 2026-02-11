@@ -119,7 +119,7 @@ def train(
         train_df,
         num_cols,
         cat_cols,
-        [label_col, "cluster"],
+        [label_col],  # [label_col, "cluster"],
         train_dataloader_cfg,
         batch_sampler=train_sampler,
     )
@@ -127,7 +127,7 @@ def train(
         val_df,
         num_cols,
         cat_cols,
-        [label_col, "cluster"],
+        [label_col],  # [label_col, "cluster"],
         val_dataloader_cfg,
         batch_sampler=val_sampler,
     )
@@ -203,7 +203,6 @@ def train(
         logger.info(
             f"Epoch [{engine.state.epoch}] Val Loss: {validator.state.metrics['loss']:.6f}"
         )
-        engine.state.loss_fn.lam = engine.state.loss_fn.lam * 0.8
 
     try:
         trainer.run(train_loader, max_epochs=max_epochs)
@@ -438,8 +437,8 @@ def main():
         "optimizer_params": cfg.optimizer.params,
         "scheduler_name": cfg.scheduler.name,
         "scheduler_params": cfg.scheduler.params,
-        "sampler_name": cfg.sampler.name,
-        "sampler_params": cfg.sampler.params,
+        "sampler_name": cfg.sampler.name if "sampler" in cfg else None,
+        "sampler_params": cfg.sampler.params if "sampler" in cfg else None,
         "tb_logs_path": tb_logs_path,
         "models_path": models_path,
         "max_epochs": cfg.loops.training.epochs,

@@ -3,7 +3,9 @@ import logging
 import sys
 from pathlib import Path
 
+import pandas as pd
 import numpy as np
+from scipy.special import softmax
 from sklearn.discriminant_analysis import unique_labels
 import torch
 from ignite.handlers.tensorboard_logger import TensorboardLogger
@@ -104,10 +106,12 @@ def get_predictions(model, x_numerical, x_categorical, y, device):
     if z is not None:
         z = z.cpu().numpy()
 
-    y_pred = logits.argmax(axis=1)
+    probs = softmax(logits, axis=1)
+    y_pred = probs.argmax(axis=1)
     y_true = y.numpy()
+    confidences = np.max(probs, axis=1)
 
-    return y_true, y_pred, z, x_numerical.cpu().numpy()
+    return y_true, y_pred, z, confidences
 
 
 def fix_predictions(y_pred, mapping):
@@ -172,54 +176,6 @@ def analyze_classes_failures(X, y_true, y_pred, max_samples=1000):
     return all_stats
 
 
-def visualize_class(X, z, y_true, y_pred, label, max_samples=3000):
-    """Create visualizations for a specific class."""
-    class_mask = y_true == label
-
-    idx_tp = np.where(class_mask & (y_pred == label))[0]
-    idx_fn = np.where(class_mask & (y_pred != label))[0]
-
-    n_tp = len(idx_tp)
-    n_fn = len(idx_fn)
-
-    if n_fn == 0 or n_tp == 0:
-        return None, None
-
-    if n_tp + n_fn > max_samples:
-        prop_tp = n_tp / (n_tp + n_fn)
-        prop_tp = min(0.5, prop_tp)
-        n_tp_sample = int(max_samples * prop_tp)
-        n_fn_sample = max_samples - n_tp_sample
-
-        if n_tp > n_tp_sample:
-            idx_tp = np.random.choice(idx_tp, size=n_tp_sample, replace=False)
-        if n_fn > n_fn_sample:
-            idx_fn = np.random.choice(idx_fn, size=n_fn_sample, replace=False)
-
-    selected_indices = np.concatenate([idx_tp, idx_fn])
-    class_mask = np.zeros_like(y_true, dtype=bool)
-    class_mask[selected_indices] = True
-
-    is_correct = y_true[
-        class_mask
-    ]  # (y_true[class_mask] == y_pred[class_mask]).astype(int)
-
-    reduced_x = tsne_projection(X[class_mask])
-    reduced_z = tsne_projection(z[class_mask])
-
-    return vectors_plot(reduced_x, is_correct), vectors_plot(reduced_z, is_correct)
-
-
-def visualize_classes(X, z, y_true, y_pred, labels):
-    """Generate visualizations for all classes one at a time."""
-    if z is None:
-        return
-
-    for label in labels:
-        logger.info(f"Visualizing class {label} ...")
-        yield label, visualize_class(X, z, y_true, y_pred, label)
-
-
 def visualize_overall(X, z, y_true, exclude_classes=[], n_samples=3000):
     """Create overall visualizations excluding specific class."""
     if z is None:
@@ -281,6 +237,7 @@ def main():
         ("val", val_df),
         ("test", test_df),
     ]:
+        logger.info(f"Running inference on {suffix} set ...")
         log_dir = Path(cfg.path.tb_logs) / "inference" / suffix
         # if log_dir.exists():
         #     shutil.rmtree(log_dir)
@@ -288,8 +245,14 @@ def main():
         tb_logger = TensorboardLogger(log_dir=log_dir)
 
         x_num, x_cat, y = to_tensors(df, num_cols, cat_cols, label_col)
-        y_true, y_pred, z, X = get_predictions(model, x_num, x_cat, y, device)
+        y_true, y_pred, z, confidences = get_predictions(model, x_num, x_cat, y, device)
 
+        for cls in np.unique(y_true):
+            cls_mask = y_true == cls
+            cls_mean_confidence = confidences[cls_mask].mean()
+            logger.info(f"Class {cls}: Mean Confidence {cls_mean_confidence:.4f}")
+
+        logger.info(f"Computing confusion matrix.")
         cm_fig = visualize_cm(y_true, y_pred, normalize="true")
         tb_logger.writer.add_figure(
             "confusion_matrix",
@@ -299,7 +262,9 @@ def main():
         plt.close(cm_fig)
 
         logger.info("Computing overall visualizations ...")
-        overall_visual = visualize_overall(X, z, y_true)
+        overall_visual = visualize_overall(
+            df[num_cols + cat_cols].to_numpy(), z, y_true
+        )
         tb_logger.writer.add_figure(
             "raw/overall", overall_visual[0], global_step=cfg.run_id or 0
         )
@@ -309,7 +274,9 @@ def main():
         )
         plt.close(overall_visual[1])
 
-        overall_visual = visualize_overall(X, z, df["cluster"].to_numpy())
+        overall_visual = visualize_overall(
+            df[num_cols + cat_cols].to_numpy(), z, df["cluster"].to_numpy()
+        )
         tb_logger.writer.add_figure(
             "raw/cluster", overall_visual[0], global_step=cfg.run_id or 0
         )
@@ -321,19 +288,45 @@ def main():
         tb_logger.close()
 
         logger.info("Analyzing class failures ...")
-        classes_failures = analyze_classes_failures(X, y_true, y_pred)
-
-        for c_label in df["cluster"].unique():
-            cluster_mask = df["cluster"] == c_label
-            cluster_failures = (y_true[cluster_mask] != y_pred[cluster_mask]).sum()
-            total_in_cluster = cluster_mask.sum()
-            logger.info(
-                f"Cluster {c_label}: {cluster_failures} failures over {total_in_cluster} samples"
-            )
-
+        classes_failures = analyze_classes_failures(
+            df[num_cols + cat_cols].to_numpy(), y_true, y_pred
+        )
+        classes_failures_df = pd.DataFrame(classes_failures)
+        logger.info(f"\n{classes_failures_df}")
         save_to_json(
             classes_failures,
             json_logs_path / f"class_failures/{suffix}.json",
+        )
+
+        logger.info("Counting failures per cluster ...")
+        cluster_failures = []
+        for c_label in df["cluster"].unique():
+            cluster_mask = df["cluster"] == c_label
+            failures = (y_true[cluster_mask] != y_pred[cluster_mask]).sum()
+            mean_confidence = confidences[cluster_mask].mean()
+            total_in_cluster = cluster_mask.sum()
+            cluster_failures.append(
+                {
+                    "cluster": int(c_label),
+                    "failures": int(failures),
+                    "total": int(total_in_cluster),
+                    "failure_rate": (
+                        float(failures / total_in_cluster)
+                        if total_in_cluster > 0
+                        else None
+                    ),
+                    "mean_confidence": (
+                        float(mean_confidence) if total_in_cluster > 0 else None
+                    ),
+                }
+            )
+        cluster_failures.sort(key=lambda x: x["failure_rate"])
+
+        cluster_failures_df = pd.DataFrame(cluster_failures)
+        logger.info(f"\n{cluster_failures_df}")
+        save_to_json(
+            cluster_failures,
+            json_logs_path / f"cluster_failures/{suffix}.json",
         )
 
         logger.info("Saving per-class predictions ...")
@@ -342,23 +335,6 @@ def main():
             classes_indices,
             pickles_path / f"class_indices/{suffix}.pkl",
         )
-
-        # logger.info("Computing class visualizations ...")
-        # unique_classes = np.unique(y_true)
-        # for label, (fig_x, fig_z) in visualize_classes(
-        #     X, z, y_true, y_pred, unique_classes
-        # ):
-        #     if fig_x is None or fig_z is None:
-        #         continue
-
-        #     tb_logger.writer.add_figure(
-        #         f"raw/{label}", fig_x, global_step=cfg.run_id or 0
-        #     )
-        #     plt.close(fig_x)
-        #     tb_logger.writer.add_figure(
-        #         f"latent/{label}", fig_z, global_step=cfg.run_id or 0
-        #     )
-        #     plt.close(fig_z)
 
 
 if __name__ == "__main__":

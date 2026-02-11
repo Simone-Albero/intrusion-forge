@@ -183,15 +183,18 @@ def preprocess_df(
     return train_df, val_df, test_df, label_mapping
 
 
-def compute_clusters(df, feature_cols, label_col):
+def compute_clusters(df, feature_cols, label_col, classes, thresholds):
     df["cluster"] = -1
     offset = 0
-    for cls in df[label_col].unique():
+    for cls, threshold in zip(classes, thresholds):
+        logger.info(
+            f"Computing clusters for class '{cls}' with threshold {threshold}..."
+        )
         cls_mask = df[label_col] == cls
         model, labels, proba, info = hdbscan_grid_search(
             df.loc[cls_mask, feature_cols].values
         )
-        core_mask = (labels != -1) & (proba >= 0.6)
+        core_mask = (labels != -1) & (proba >= threshold)
         # ambiguous_mask = ~core_mask
 
         # Get indices of the class subset, then filter by core_mask
@@ -246,9 +249,40 @@ def main():
     val_df = val_df.reset_index(drop=True)
     test_df = test_df.reset_index(drop=True)
 
-    train_df = compute_clusters(train_df, num_cols + cat_cols, label_col)
-    val_df = compute_clusters(val_df, num_cols + cat_cols, label_col)
-    test_df = compute_clusters(test_df, num_cols + cat_cols, label_col)
+    train_df["_split"] = "train"
+    val_df["_split"] = "val"
+    test_df["_split"] = "test"
+
+    processed_df = pd.concat([train_df, val_df, test_df], ignore_index=True)
+    processed_df = compute_clusters(
+        processed_df,
+        num_cols + cat_cols,
+        label_col,
+        classes=["DoS", "Exploits"],
+        thresholds=[0.9, 0.4],
+    )
+
+    # # Filter ambiguous samples
+    # ambigous_mask = processed_df["cluster"] == -1
+    # processed_df = processed_df[~ambigous_mask].reset_index(drop=True)
+
+    # Split based on the split identifier
+    train_df = (
+        processed_df[processed_df["_split"] == "train"]
+        .drop("_split", axis=1)
+        .reset_index(drop=True)
+    )
+
+    val_df = (
+        processed_df[processed_df["_split"] == "val"]
+        .drop("_split", axis=1)
+        .reset_index(drop=True)
+    )
+    test_df = (
+        processed_df[processed_df["_split"] == "test"]
+        .drop("_split", axis=1)
+        .reset_index(drop=True)
+    )
 
     train_df, val_df, test_df, label_mapping = encode_labels(
         train_df, val_df, test_df, label_col, cfg.data.benign_tag
@@ -267,16 +301,6 @@ def main():
     save_df(
         test_df,
         processed_data_path / f"{cfg.data.file_name}_test.{cfg.data.extension}",
-    )
-
-    save_df(
-        train_df[train_df["cluster"] == -1].sample(frac=1, random_state=cfg.seed),
-        processed_data_path / f"{cfg.data.file_name}_ambiguous.csv",
-    )
-
-    save_df(
-        train_df[train_df["cluster"] != -1].sample(frac=1, random_state=cfg.seed),
-        processed_data_path / f"{cfg.data.file_name}_core.csv",
     )
 
     # Compute and save metadata
