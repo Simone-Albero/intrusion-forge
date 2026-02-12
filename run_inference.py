@@ -176,7 +176,9 @@ def analyze_classes_failures(X, y_true, y_pred, max_samples=1000):
     return all_stats
 
 
-def visualize_overall(X, z, y_true, exclude_classes=[], n_samples=3000):
+def visualize_overall(
+    X, z, y_true, outline_colors=None, exclude_classes=[], n_samples=3000
+):
     """Create overall visualizations excluding specific class."""
     if z is None:
         return
@@ -186,10 +188,13 @@ def visualize_overall(X, z, y_true, exclude_classes=[], n_samples=3000):
 
     reduced_x = tsne_projection(X[mask][vis_mask])
     reduced_z = tsne_projection(z[mask][vis_mask])
-
-    return vectors_plot(reduced_x, y_true[mask][vis_mask]), vectors_plot(
-        reduced_z, y_true[mask][vis_mask]
+    outline_colors = (
+        outline_colors[mask][vis_mask] if outline_colors is not None else None
     )
+
+    return vectors_plot(
+        reduced_x, y_true[mask][vis_mask], outline_colors=outline_colors
+    ), vectors_plot(reduced_z, y_true[mask][vis_mask], outline_colors=outline_colors)
 
 
 def visualize_cm(y_true, y_pred, normalize=None):
@@ -275,7 +280,10 @@ def main():
         plt.close(overall_visual[1])
 
         overall_visual = visualize_overall(
-            df[num_cols + cat_cols].to_numpy(), z, df["cluster"].to_numpy()
+            df[num_cols + cat_cols].to_numpy(),
+            z,
+            df["cluster"].to_numpy(),
+            outline_colors=y_true,
         )
         tb_logger.writer.add_figure(
             "raw/cluster", overall_visual[0], global_step=cfg.run_id or 0

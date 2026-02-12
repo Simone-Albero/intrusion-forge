@@ -1,11 +1,11 @@
 # @package _global_
 defaults:
   - override /model: numerical_classifier
-  - override /loss: joint_sup_con_ce # cross_entropy
-  - override /loops: batch_sampler # default
+  - override /loss: joint_sup_con_ce
+  - override /loops: batch_sampler
   - override /optimizer: adamw
   - override /scheduler: one_cycle
-  - override /sampler: cluster_batch # null
+  - override /sampler: cluster_batch
 
 name: supervised
 ignore_classes: null # [0]

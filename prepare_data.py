@@ -253,35 +253,57 @@ def main():
     val_df["_split"] = "val"
     test_df["_split"] = "test"
 
-    processed_df = pd.concat([train_df, val_df, test_df], ignore_index=True)
-    processed_df = compute_clusters(
-        processed_df,
-        num_cols + cat_cols,
-        label_col,
-        classes=["DoS", "Exploits"],
-        thresholds=[0.9, 0.4],
-    )
+    # processed_df = pd.concat([train_df, val_df, test_df], ignore_index=True)
+    # processed_df = compute_clusters(
+    #     processed_df,
+    #     num_cols + cat_cols,
+    #     label_col,
+    #     classes=["DoS", "Exploits"],
+    #     thresholds=[0.9, 0.4],
+    # )
 
     # # Filter ambiguous samples
     # ambigous_mask = processed_df["cluster"] == -1
     # processed_df = processed_df[~ambigous_mask].reset_index(drop=True)
 
     # Split based on the split identifier
-    train_df = (
-        processed_df[processed_df["_split"] == "train"]
-        .drop("_split", axis=1)
-        .reset_index(drop=True)
-    )
+    # train_df = (
+    #     processed_df[processed_df["_split"] == "train"]
+    #     .drop("_split", axis=1)
+    #     .reset_index(drop=True)
+    # )
 
-    val_df = (
-        processed_df[processed_df["_split"] == "val"]
-        .drop("_split", axis=1)
-        .reset_index(drop=True)
+    # val_df = (
+    #     processed_df[processed_df["_split"] == "val"]
+    #     .drop("_split", axis=1)
+    #     .reset_index(drop=True)
+    # )
+    # test_df = (
+    #     processed_df[processed_df["_split"] == "test"]
+    #     .drop("_split", axis=1)
+    #     .reset_index(drop=True)
+    # )
+
+    train_df = compute_clusters(
+        train_df,
+        num_cols + cat_cols,
+        label_col,
+        classes=["DoS", "Exploits"],
+        thresholds=[0.9, 0.4],
     )
-    test_df = (
-        processed_df[processed_df["_split"] == "test"]
-        .drop("_split", axis=1)
-        .reset_index(drop=True)
+    val_df = compute_clusters(
+        val_df,
+        num_cols + cat_cols,
+        label_col,
+        classes=["DoS", "Exploits"],
+        thresholds=[0.9, 0.4],
+    )
+    test_df = compute_clusters(
+        test_df,
+        num_cols + cat_cols,
+        label_col,
+        classes=["DoS", "Exploits"],
+        thresholds=[0.9, 0.4],
     )
 
     train_df, val_df, test_df, label_mapping = encode_labels(

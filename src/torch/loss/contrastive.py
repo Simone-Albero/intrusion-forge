@@ -23,7 +23,7 @@ class SupervisedContrastiveLoss(BaseLoss):
         self.temperature = temperature
         self.device = device
 
-    def forward(self, z: Tensor, target: Tensor, clusters: Tensor) -> Tensor:
+    def forward(self, z: Tensor, target: Tensor) -> Tensor:
         """
         Returns:
           - reduction='none': per-original-sample vector [B], zeros for invalid samples and for anchors w/ no positives
@@ -32,7 +32,7 @@ class SupervisedContrastiveLoss(BaseLoss):
         B = z.size(0)
         device = self.device if self.device is not None else z.device
 
-        valid = clusters != self.ignore_index
+        valid = target != self.ignore_index
         if valid.sum() < 2:
             out = z.sum() * 0.0
             if self.reduction == "none":
@@ -115,13 +115,17 @@ class JointSupConCELoss(BaseLoss):
         target: Tensor,
         clusters: Tensor,
     ) -> Tensor:
-        valid = clusters != self.ignore_index
-
-        supcon = self.supcon(z, target, clusters)  # [B]
+        supcon_c = self.supcon(z, clusters)  # [B]
+        supcon_l = self.supcon(z, target)
         ce = self.ce(logits, target)  # [B]
 
-        supcon_norm = supcon / supcon.detach()[valid].mean().clamp_min(1e-6)
+        active_mask = supcon_c.detach() > 0
+        if active_mask.any():
+            denom = supcon_c.detach()[active_mask].mean().clamp_min(1e-6)
+        else:
+            denom = supcon_c.detach().new_tensor(1.0)
+        supcon_norm = supcon_c / denom
 
-        loss = ce + self.lam * supcon_norm
+        loss = self.lam * ce + supcon_norm
 
         return self._reduce(loss)

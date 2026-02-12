@@ -119,7 +119,7 @@ def train(
         train_df,
         num_cols,
         cat_cols,
-        [label_col],  # [label_col, "cluster"],
+        [label_col, "cluster"],
         train_dataloader_cfg,
         batch_sampler=train_sampler,
     )
@@ -127,7 +127,7 @@ def train(
         val_df,
         num_cols,
         cat_cols,
-        [label_col],  # [label_col, "cluster"],
+        [label_col, "cluster"],
         val_dataloader_cfg,
         batch_sampler=val_sampler,
     )
