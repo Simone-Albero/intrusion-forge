@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 
 import torch
+import numpy as np
 from ignite.engine import Events
 from ignite.metrics import Accuracy, ConfusionMatrix, Average
 from ignite.handlers.tensorboard_logger import TensorboardLogger
@@ -27,6 +28,8 @@ from src.ignite.builders import EngineBuilder
 from src.ignite.metrics import F1, Precision, Recall
 from src.plot.array import confusion_matrix_to_plot
 from src.plot.dict import dict_to_bar_plot
+
+from src.torch.data.batch import ensure_batch
 
 setup_logger()
 logger = logging.getLogger(__name__)
@@ -203,6 +206,154 @@ def train(
         logger.info(
             f"Epoch [{engine.state.epoch}] Val Loss: {validator.state.metrics['loss']:.6f}"
         )
+
+    @trainer.on(Events.EPOCH_COMPLETED)
+    def update_cluster_rivals(engine):
+        model.eval()
+
+        all_z = []
+        all_y = []
+        all_c = []
+
+        with torch.no_grad():
+            for batch in train_loader:
+                batch = ensure_batch(batch).to(device, non_blocking=True)
+                out = model(*batch.features)
+
+                y = batch.labels[0]
+                c = batch.labels[1]
+                z = out["z"]
+
+                # Normalize embeddings for stable cosine geometry
+                z = torch.nn.functional.normalize(z, dim=1, eps=1e-8)
+
+                all_z.append(z.cpu())
+                all_y.append(y.cpu())
+                all_c.append(c.cpu())
+
+        all_z = torch.cat(all_z, dim=0).numpy()
+        all_y = torch.cat(all_y, dim=0).numpy()
+        all_c = torch.cat(all_c, dim=0).numpy()
+
+        ambiguous_tag = -1
+        valid_mask = all_c != ambiguous_tag
+        if valid_mask.sum() == 0:
+            logger.warning("No valid clusters found, skipping rival update")
+            return
+
+        z_v = all_z[valid_mask]
+        y_v = all_y[valid_mask]
+        c_v = all_c[valid_mask]
+
+        unique_clusters = np.unique(c_v)
+
+        # ---- centroids + class + purity ----
+        cluster_centroids = {}
+        cluster_to_class = {}
+        cluster_purity = {}
+
+        for cid in unique_clusters:
+            cid = int(cid)
+            m = c_v == cid
+            z_c = z_v[m]
+            y_c = y_v[m]
+            if z_c.shape[0] == 0:
+                continue
+
+            centroid = z_c.mean(axis=0)
+            centroid = centroid / (np.linalg.norm(centroid) + 1e-12)
+            cluster_centroids[cid] = centroid
+
+            counts = np.bincount(y_c.astype(int))
+            maj = int(counts.argmax())
+            purity = float(counts.max() / max(1, counts.sum()))
+            cluster_to_class[cid] = maj
+            cluster_purity[cid] = purity
+
+        purity_thr = 0.90
+        anchor_clusters = [
+            c
+            for c in cluster_centroids.keys()
+            if cluster_purity.get(c, 0.0) >= purity_thr
+        ]
+
+        if len(anchor_clusters) == 0:
+            logger.warning("No clusters above purity threshold, skipping rival update")
+            return
+
+        # ---- cosine matrix ----
+        centroid_ids = list(cluster_centroids.keys())
+        C = np.stack([cluster_centroids[c] for c in centroid_ids], axis=0)  # [K, D]
+        S = C @ C.T  # cosine similarity since normalized
+        idx_of = {cid: i for i, cid in enumerate(centroid_ids)}
+
+        # ---- rival filtering params ----
+        max_rivals = 5
+
+        min_cos_sim = 0.7
+
+        # relative threshold: keep only rivals close to the best one
+        delta_from_best = 0.10  # <-- keep candidates with sim >= best - delta
+
+        # optional: ensure at least N rivals if possible (fallback)
+        min_keep_if_any = 0
+
+        cluster_rivals = {}
+        cluster_to_similarity = {}
+
+        for cid in anchor_clusters:
+            i = idx_of[cid]
+            cls = cluster_to_class[cid]
+
+            # cross-class candidates
+            candidates = []
+            for ocid in centroid_ids:
+                if ocid == cid:
+                    continue
+                if cluster_to_class.get(ocid) == cls:
+                    continue
+                candidates.append(ocid)
+
+            if not candidates:
+                continue
+
+            scored = []
+            for ocid in candidates:
+                j = idx_of[ocid]
+                scored.append((float(S[i, j]), int(ocid)))
+
+            # sort by similarity descending (closest first)
+            scored.sort(key=lambda x: x[0], reverse=True)
+
+            best_score = scored[0][0]
+
+            # filter by absolute + relative thresholds
+            filtered = [
+                (s, ocid)
+                for (s, ocid) in scored
+                if (s >= min_cos_sim) and (s >= best_score - delta_from_best)
+            ]
+
+            # If too strict, keep at least the best one (or a small minimum)
+            if not filtered and scored:
+                filtered = scored[:min_keep_if_any]
+
+            rivals = [ocid for (s, ocid) in filtered[:max_rivals]]
+
+            if rivals:
+                cluster_rivals[int(cid)] = rivals
+                # Compute mean similarity score with rivals
+                rival_sims = [s for (s, ocid) in filtered[:max_rivals]]
+                cluster_to_similarity[int(cid)] = float(np.mean(rival_sims))
+
+        print(f"Cluster to similarity: {cluster_to_similarity}")
+
+        if hasattr(train_loader.batch_sampler, "cluster_rivals"):
+            train_loader.batch_sampler.cluster_rivals = cluster_rivals
+            logger.info(
+                f"Epoch [{engine.state.epoch}] Updated cluster rivals: {len(cluster_rivals)} clusters "
+                f"(max_rivals={max_rivals}, min_cos_sim={min_cos_sim}, delta={delta_from_best}, purity_thr={purity_thr})"
+            )
 
     try:
         trainer.run(train_loader, max_epochs=max_epochs)

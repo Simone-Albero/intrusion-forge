@@ -325,6 +325,11 @@ def main():
         processed_data_path / f"{cfg.data.file_name}_test.{cfg.data.extension}",
     )
 
+    save_df(
+        train_df,
+        processed_data_path / f"{cfg.data.file_name}_train.csv",
+    )
+
     # Compute and save metadata
     logger.info("Computing and saving metadata...")
     metadata = compute_df_metadata(

@@ -6,7 +6,7 @@ training:
     pin_memory: false
 
   early_stopping:
-    patience: 5
+    patience: 10
     min_delta: 0.001
 
 validation:

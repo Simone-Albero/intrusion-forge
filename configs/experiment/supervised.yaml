@@ -1,11 +1,11 @@
 # @package _global_
 defaults:
-  - override /model: numerical_classifier
+  - override /model: numerical_contrastive_classifier # numerical_classifier
   - override /loss: joint_sup_con_ce
   - override /loops: batch_sampler
   - override /optimizer: adamw
   - override /scheduler: one_cycle
-  - override /sampler: cluster_batch
+  - override /sampler: rival_batch
 
 name: supervised
 ignore_classes: null # [0]

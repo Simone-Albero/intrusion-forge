@@ -83,10 +83,11 @@ class JointSupConCELoss(BaseLoss):
 
     def __init__(
         self,
-        lam: float = 1.0,
+        lam_supcon: float = 0.2,
         reduction: str = "mean",
         ignore_index: int = -1,
         temperature: float = 0.07,
+        margin: float = 0.2,
         label_smoothing: float = 0.0,
         class_weight: Optional[Tensor | list[float]] = None,
         device: Optional[torch.device] = torch.device("cpu"),
@@ -105,27 +106,35 @@ class JointSupConCELoss(BaseLoss):
             class_weight=class_weight,
             device=device,
         )
-        self.lam = lam
+        self.lam_supcon = lam_supcon
         self.ignore_index = ignore_index
 
     def forward(
         self,
-        z: Tensor,
+        contrastive_logits: Tensor,
         logits: Tensor,
         target: Tensor,
         clusters: Tensor,
     ) -> Tensor:
-        supcon_c = self.supcon(z, clusters)  # [B]
-        supcon_l = self.supcon(z, target)
+        """
+        Compute joint loss: CE + λ_supcon * SupCon
+
+        Note: Embeddings are normalized inside individual loss functions.
+        Separate lambda values allow balancing losses with different scales.
+        Typical ranges: CE ~0.5-2.0, SupCon ~2.0-6.0
+        """
+        # All losses return [B] with reduction="none"
+        supcon_c = self.supcon(
+            contrastive_logits, clusters
+        )  # [B], internally normalizes
         ce = self.ce(logits, target)  # [B]
 
-        active_mask = supcon_c.detach() > 0
-        if active_mask.any():
-            denom = supcon_c.detach()[active_mask].mean().clamp_min(1e-6)
-        else:
-            denom = supcon_c.detach().new_tensor(1.0)
-        supcon_norm = supcon_c / denom
+        # Debug: monitor individual loss scales
+        # print(
+        #     f"CE: {ce.mean().item():.4f}, SupCon: {supcon_c.mean().item():.4f} -> {supcon_c.mean().item() * self.lam_supcon:.4f}"
+        # )
 
-        loss = self.lam * ce + supcon_norm
+        # Combine with separate weights for each contrastive loss
+        loss = ce + self.lam_supcon * supcon_c  # + self.lam_margin * margin_c
 
         return self._reduce(loss)
