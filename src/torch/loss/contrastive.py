@@ -121,7 +121,6 @@ class JointSupConCELoss(BaseLoss):
 
         Note: Embeddings are normalized inside individual loss functions.
         Separate lambda values allow balancing losses with different scales.
-        Typical ranges: CE ~0.5-2.0, SupCon ~2.0-6.0
         """
         # All losses return [B] with reduction="none"
         supcon_c = self.supcon(
@@ -130,11 +129,11 @@ class JointSupConCELoss(BaseLoss):
         ce = self.ce(logits, target)  # [B]
 
         # Debug: monitor individual loss scales
-        # print(
-        #     f"CE: {ce.mean().item():.4f}, SupCon: {supcon_c.mean().item():.4f} -> {supcon_c.mean().item() * self.lam_supcon:.4f}"
-        # )
+        print(
+            f"CE: {ce.mean().item():.4f}, SupCon: {supcon_c.mean().item():.4f} -> {supcon_c.mean().item() * self.lam_supcon:.4f}"
+        )
 
         # Combine with separate weights for each contrastive loss
-        loss = ce + self.lam_supcon * supcon_c  # + self.lam_margin * margin_c
+        loss = ce + self.lam_supcon * supcon_c
 
         return self._reduce(loss)

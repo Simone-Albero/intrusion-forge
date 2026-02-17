@@ -4,6 +4,6 @@ params:
   lam_supcon: 0.5
   reduction: mean
   ignore_index: -1
-  temperature: 0.09
+  temperature: 0.25
   label_smoothing: 0.1
   class_weight: null

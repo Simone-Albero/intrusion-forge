@@ -77,12 +77,12 @@ class TabularDataset(Dataset):
 
         if self.has_numerical:
             self.numerical_features = torch.as_tensor(
-                df[num_cols].values, dtype=torch.float32
+                df[num_cols].values.copy(), dtype=torch.float32
             )
 
         if self.has_categorical:
             self.categorical_features = torch.as_tensor(
-                df[cat_cols].values, dtype=torch.long
+                df[cat_cols].values.copy(), dtype=torch.long
             )
 
         # Support single or multiple label columns
@@ -90,7 +90,8 @@ class TabularDataset(Dataset):
         if label_col is not None:
             label_cols = [label_col] if isinstance(label_col, str) else list(label_col)
             self.labels = [
-                torch.as_tensor(df[col].values, dtype=torch.long) for col in label_cols
+                torch.as_tensor(df[col].values.copy(), dtype=torch.long)
+                for col in label_cols
             ]
 
         self._length = len(df)

@@ -78,7 +78,7 @@ def kmeans_grid_search(
 def hdbscan_grid_search(
     X: np.ndarray,
     min_cluster_size: Iterable[int] = (30, 50, 100, 150),
-    min_samples: Iterable[Optional[int]] = (None, 5, 10),
+    min_samples: Iterable[Optional[int]] = (30, 50, 75, 100, 150),
     metric: str = "euclidean",
     cluster_selection_method: str = "eom",
     cluster_selection_epsilon: float = 0.0,

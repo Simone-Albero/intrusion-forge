@@ -216,17 +216,18 @@ class ClusterBatchSampler(Sampler[List[int]]):
 @SamplerFactory.register()
 class RivalClusterBatchSampler(Sampler[List[int]]):
     """
-    Cluster sampler that forces rival clusters to appear in the same batch.
+    Cluster sampler that prioritizes rival clusters in the same batch.
 
     Batch composition (no leftover):
       core_size = clusters_per_batch * samples_per_cluster
       + include_ambiguous
 
     - Samples are drawn WITHOUT replacement inside each cluster.
-    - Clusters are filtered to have at least min_cluster_size >= samples_per_cluster.
-    - If cluster_rivals is provided, we deterministically add rivals for some anchors.
+    - Clusters must have at least samples_per_cluster samples.
+    - If cluster_rivals is provided, rival pairs (opposite classes) are prioritized.
+    - Maintains class balance across batches.
 
-    cluster_rivals: dict {cluster_id: [rival1, rival2, ...]} (preferred: cross-class rivals)
+    cluster_rivals: dict {cluster_id: [rival1, rival2, ...]} (cross-class rivals)
     """
 
     def __init__(
@@ -239,9 +240,7 @@ class RivalClusterBatchSampler(Sampler[List[int]]):
         include_ambiguous: int = 0,
         ambiguous_tag: int = -1,
         drop_last: bool = True,
-        min_cluster_size: Optional[int] = None,
         cluster_rivals: Optional[Dict[int, Sequence[int]]] = None,
-        rival_pairs_per_batch: int = 2,
         seed: int = 0,
     ):
         self.clusters = np.asarray(clusters)
@@ -256,17 +255,9 @@ class RivalClusterBatchSampler(Sampler[List[int]]):
         self._iter_count = 0
 
         self.cluster_rivals = cluster_rivals if cluster_rivals is not None else {}
-        self.rival_pairs_per_batch = int(rival_pairs_per_batch)
 
-        # Ensure we can sample without replacement inside clusters
-        self.min_cluster_size = (
-            samples_per_cluster if min_cluster_size is None else int(min_cluster_size)
-        )
-        if self.min_cluster_size < self.samples_per_cluster:
-            raise ValueError(
-                f"min_cluster_size ({self.min_cluster_size}) must be >= "
-                f"samples_per_cluster ({self.samples_per_cluster}) to avoid replacement."
-            )
+        # Min cluster size is always samples_per_cluster
+        self.min_cluster_size = self.samples_per_cluster
 
         # Validate batch size: core + ambiguous must exactly fit (no leftover)
         self.core_size = self.clusters_per_batch * self.samples_per_cluster
@@ -276,16 +267,6 @@ class RivalClusterBatchSampler(Sampler[List[int]]):
                 "This sampler uses no leftover. "
                 f"Set batch_size = clusters_per_batch*samples_per_cluster + include_ambiguous = {expected}. "
                 f"Got batch_size={self.batch_size}."
-            )
-
-        # Only validate rival_pairs_per_batch if we have rivals to work with
-        if (
-            self.cluster_rivals
-            and self.rival_pairs_per_batch * 2 > self.clusters_per_batch
-        ):
-            raise ValueError(
-                f"rival_pairs_per_batch={self.rival_pairs_per_batch} implies "
-                f"{2*self.rival_pairs_per_batch} clusters reserved, but clusters_per_batch={self.clusters_per_batch}."
             )
 
         # Build cluster index
@@ -405,91 +386,118 @@ class RivalClusterBatchSampler(Sampler[List[int]]):
 
     def __iter__(self) -> Iterator[List[int]]:
         rng = random.Random(self.seed + self._iter_count)
-        if self.cluster_rivals:
-            print(f"current rival pairs: {self.cluster_rivals}")
         self._iter_count += 1
+
+        # Initialize per-cluster available index pools (exhaustive sampling)
+        cluster_available: Dict[int, List[int]] = {}
+        for c, idxs in self.cluster_to_idx.items():
+            pool = list(idxs)
+            rng.shuffle(pool)
+            cluster_available[c] = pool
+
+        # Initialize ambiguous available pool
+        ambiguous_available = list(self.ambiguous_idx)
+        rng.shuffle(ambiguous_available)
 
         for _ in range(len(self)):
             chosen_clusters: List[int] = []
             chosen_set: set[int] = set()
 
-            # Use rival pairing logic only if cluster_rivals is provided
-            if self.cluster_rivals and self.rival_pairs_per_batch > 0:
-                # Prioritize clusters that have rivals defined
-                # Get all anchor clusters that have rivals
+            # Prioritize rival clusters if available
+            if self.cluster_rivals:
+                # Get all anchor clusters that have rivals and are eligible
                 anchors_with_rivals = [
                     c for c in self.cluster_rivals.keys() if c in self.cluster_to_idx
                 ]
-
-                # Shuffle for randomness
                 rng.shuffle(anchors_with_rivals)
 
-                n_pairs = min(self.rival_pairs_per_batch, self.clusters_per_batch // 2)
-                n_pairs = min(
-                    n_pairs, len(anchors_with_rivals)
-                )  # Can't exceed available anchors with rivals
-
-                # Select anchors from those with rivals
-                selected_anchors = anchors_with_rivals[:n_pairs]
-
-                # Add each anchor + its rival
-                for a in selected_anchors:
-                    if a in chosen_set:
+                # Try to fill batch with anchor-rival pairs
+                for anchor in anchors_with_rivals:
+                    if len(chosen_clusters) >= self.clusters_per_batch:
+                        break
+                    if anchor in chosen_set:
                         continue
-                    chosen_clusters.append(a)
-                    chosen_set.add(a)
 
-                    r = self._pick_rival_for(rng, a, chosen_set)
-                    if r is not None:
-                        chosen_clusters.append(r)
-                        chosen_set.add(r)
+                    # Try to add rival (should be opposite class)
+                    rival = self._pick_rival_for(rng, anchor, chosen_set)
 
-            # Fill remaining cluster slots with additional anchors (balanced if possible)
+                    # Add anchor
+                    chosen_clusters.append(anchor)
+                    chosen_set.add(anchor)
+
+                    # Add rival if available and space permits
+                    if (
+                        rival is not None
+                        and len(chosen_clusters) < self.clusters_per_batch
+                    ):
+                        chosen_clusters.append(rival)
+                        chosen_set.add(rival)
+
+            # Fill remaining slots with class-balanced random selection
             remaining = self.clusters_per_batch - len(chosen_clusters)
             if remaining > 0:
                 fillers = self._pick_anchor_clusters(rng, remaining)
                 for c in fillers:
+                    if c not in chosen_set:
+                        chosen_clusters.append(c)
+                        chosen_set.add(c)
                     if len(chosen_clusters) >= self.clusters_per_batch:
                         break
-                    if c not in chosen_set:
-                        chosen_clusters.append(c)
-                        chosen_set.add(c)
 
-            if len(chosen_clusters) < self.clusters_per_batch:
-                # Fill from global pool if needed
-                pool = self.cluster_ids[:]
-                rng.shuffle(pool)
-                for c in pool:
-                    if c not in chosen_set:
-                        chosen_clusters.append(c)
-                        chosen_set.add(c)
-                    if len(chosen_clusters) == self.clusters_per_batch:
-                        break
-
+            # Ensure we have exactly clusters_per_batch clusters
             chosen_clusters = chosen_clusters[: self.clusters_per_batch]
+            # print(f"Chosen clusters for batch [{self._iter_count}]: {chosen_clusters}")
 
-            # 4) Sample indices from each chosen cluster WITHOUT replacement
+            # Sample indices from each chosen cluster WITHOUT replacement from available pool
             batch: List[int] = []
             used: set[int] = set()
             for c in chosen_clusters:
-                idxs = self.cluster_to_idx[c]
-                samples = rng.sample(idxs, k=self.samples_per_cluster)
+                # Refill cluster pool if exhausted
+                if len(cluster_available[c]) < self.samples_per_cluster:
+                    pool = list(self.cluster_to_idx[c])
+                    rng.shuffle(pool)
+                    cluster_available[c] = pool
+
+                # Sample from available pool
+                samples = cluster_available[c][: self.samples_per_cluster]
+                cluster_available[c] = cluster_available[c][self.samples_per_cluster :]
                 batch.extend(samples)
                 used.update(samples)
 
-            # 5) Add ambiguous samples (optional), avoiding duplicates
+            # Add ambiguous samples (optional), avoiding duplicates
             if self.include_ambiguous > 0:
                 if not self.ambiguous_idx:
                     raise ValueError(
                         "include_ambiguous > 0 but no ambiguous samples found."
                     )
-                amb_pool = [i for i in self.ambiguous_idx if i not in used]
-                if len(amb_pool) < self.include_ambiguous:
+
+                # Refill ambiguous pool if needed
+                if len(ambiguous_available) < self.include_ambiguous:
+                    pool = list(self.ambiguous_idx)
+                    rng.shuffle(pool)
+                    ambiguous_available = pool
+
+                # Sample from available pool, avoiding already used indices in this batch
+                amb_samples = []
+                temp_pool = []
+                for idx in ambiguous_available:
+                    if idx not in used:
+                        if len(amb_samples) < self.include_ambiguous:
+                            amb_samples.append(idx)
+                        else:
+                            temp_pool.append(idx)
+                    else:
+                        temp_pool.append(idx)
+
+                if len(amb_samples) < self.include_ambiguous:
                     raise ValueError(
                         f"Not enough unique ambiguous samples to draw {self.include_ambiguous} "
-                        f"(available={len(amb_pool)}). Reduce include_ambiguous or increase data."
+                        f"(available={len([i for i in ambiguous_available if i not in used])}). "
+                        f"Reduce include_ambiguous or increase data."
                     )
-                batch.extend(rng.sample(amb_pool, k=self.include_ambiguous))
+
+                batch.extend(amb_samples)
+                ambiguous_available = temp_pool
 
             if len(batch) != self.batch_size:
                 raise RuntimeError(

@@ -1,5 +1,6 @@
-import matplotlib.pyplot as plt
+from typing import Union
 
+import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.metrics import ConfusionMatrixDisplay
 
@@ -83,45 +84,49 @@ def confusion_matrix_to_plot(
     return fig
 
 
-def vectors_plot(
-    vectors: np.ndarray,
-    colors: list | np.ndarray,
-    outline_colors: list | np.ndarray | None = None,
-    use_shapes: bool = True,
+def samples_plot(
+    X: np.ndarray,
+    y_1: Union[list, np.ndarray],
+    y_2: Union[list, np.ndarray, None] = None,
 ) -> plt.Figure:
-    """Plot 2D vectors with color coding for fill and optional shape/edge encoding.
+    """Plot 2D samples with color coding and optional shape encoding.
 
     Args:
-        vectors (np.ndarray): Array of shape (n_samples, 2) for 2D plotting.
-        colors (list | np.ndarray): Integer labels for fill color coding.
-        outline_colors (list | np.ndarray | None): Optional integer labels for shape or edge encoding.
-            If None, all points use circles with black edges.
-        use_shapes (bool): If True and outline_colors provided, uses different marker shapes.
-            If False, uses edge colors instead. Shapes provide better visual distinction.
+        X: Array of shape (n_samples, 2) for 2D plotting.
+        y_1: Integer labels for fill color coding.
+        y_2: Optional integer labels for marker shape encoding.
+
+    Returns:
+        Matplotlib Figure object.
     """
-    if vectors.ndim != 2 or vectors.shape[1] != 2:
-        raise ValueError("`vectors` must be a 2D array with shape (n_samples, 2).")
+    X = np.asarray(X)
+    y_1 = np.asarray(y_1)
+
+    if X.shape[1] != 2:
+        raise ValueError("X must have shape (n_samples, 2).")
+
+    if len(X) != len(y_1):
+        raise ValueError("X and y_1 must have the same length.")
+
+    if y_2 is not None:
+        y_2 = np.asarray(y_2)
+        if len(X) != len(y_2):
+            raise ValueError("X and y_2 must have the same length.")
 
     fig, ax = plt.subplots(figsize=(10, 8))
 
-    # Process fill colors - use colorblind-friendly colormap
-    colors_array = np.asarray(colors)
-    unique_labels = np.unique(colors_array)
-    n_classes = len(unique_labels)
+    # Unique labels
+    unique_y1 = np.unique(y_1)
 
-    # Use colorblind-friendly colormaps
-    if n_classes <= 10:
-        cmap = plt.cm.tab10
-    elif n_classes <= 20:
-        cmap = plt.cm.tab20
+    # Use a colormap that supports many distinct colors
+    if len(unique_y1) <= 10:
+        cmap = plt.cm.get_cmap("tab10", len(unique_y1))
+    elif len(unique_y1) <= 20:
+        cmap = plt.cm.get_cmap("tab20", len(unique_y1))
     else:
-        cmap = plt.cm.rainbow  # For many classes
+        cmap = plt.cm.get_cmap("gist_ncar", len(unique_y1))
 
-    label_to_idx = {label: idx for idx, label in enumerate(unique_labels)}
-    color_indices = np.array([label_to_idx[c] for c in colors_array])
-    color_values = color_indices / max(n_classes - 1, 1)
-
-    # Define distinct marker shapes
+    # Define marker shapes for y_2
     marker_shapes = [
         "o",
         "s",
@@ -132,182 +137,128 @@ def vectors_plot(
         ">",
         "p",
         "*",
+        "h",
         "H",
         "X",
-        "P",
         "d",
-        "8",
+        "P",
     ]
 
-    # Process outline colors
-    if outline_colors is not None:
-        outline_array = np.asarray(outline_colors)
-        unique_outline = np.unique(outline_array)
-        n_outline = len(unique_outline)
+    # Keep track of legend entries to avoid duplicates
+    legend_handles = []
+    legend_labels = []
 
-        if use_shapes and n_outline <= len(marker_shapes):
-            # Use different shapes for better distinction
-            outline_to_shape = {
-                label: marker_shapes[idx % len(marker_shapes)]
-                for idx, label in enumerate(unique_outline)
-            }
-
-            # Plot each shape group separately
-            for outline_label in unique_outline:
-                mask = outline_array == outline_label
-                shape = outline_to_shape[outline_label]
-
-                ax.scatter(
-                    vectors[mask, 0],
-                    vectors[mask, 1],
-                    c=color_values[mask],
-                    cmap=cmap,
-                    s=100,
-                    alpha=0.8,
-                    marker=shape,
-                    edgecolors="black",
-                    linewidths=1.0,
-                    vmin=0,
-                    vmax=1,
-                    label=f"Shape: {int(outline_label)}",
-                )
-        else:
-            # Fall back to edge colors
-            if n_outline <= 8:
-                outline_cmap = plt.cm.Dark2
-            elif n_outline <= 12:
-                outline_cmap = plt.cm.Paired
-            else:
-                outline_cmap = plt.cm.tab20
-
-            outline_to_idx = {label: idx for idx, label in enumerate(unique_outline)}
-            outline_indices = np.array([outline_to_idx[c] for c in outline_array])
-            outline_values = outline_indices / max(n_outline - 1, 1)
-            edge_colors = outline_cmap(outline_values)
-
-            ax.scatter(
-                vectors[:, 0],
-                vectors[:, 1],
-                c=color_values,
-                cmap=cmap,
+    if y_2 is None:
+        # Simple case: only color coding
+        for idx, label in enumerate(unique_y1):
+            mask = y_1 == label
+            scatter = ax.scatter(
+                X[mask, 0],
+                X[mask, 1],
+                c=[cmap(idx)],
+                label=f"Class {label}",
+                edgecolors="black",
                 s=80,
-                alpha=0.8,
-                edgecolors=edge_colors,
-                linewidths=2.0,
-                vmin=0,
-                vmax=1,
+                alpha=0.7,
+                linewidths=1.5,
             )
+            legend_handles.append(scatter)
+            legend_labels.append(f"Class {label}")
     else:
-        # Simple plot without outline encoding
-        ax.scatter(
-            vectors[:, 0],
-            vectors[:, 1],
-            c=color_values,
-            cmap=cmap,
-            s=50,
-            alpha=0.8,
-            edgecolors="black",
-            linewidths=0.5,
-            vmin=0,
-            vmax=1,
+        # Complex case: color for y_1, shape for y_2
+        unique_y2 = np.unique(y_2)
+
+        if len(unique_y2) > len(marker_shapes):
+            raise ValueError(
+                f"Too many unique values in y_2 ({len(unique_y2)}). Maximum supported: {len(marker_shapes)}"
+            )
+
+        # Create a mapping for shapes
+        shape_map = {
+            label: marker_shapes[i % len(marker_shapes)]
+            for i, label in enumerate(unique_y2)
+        }
+
+        # Plot all combinations
+        plotted_combinations = set()
+
+        for idx, color_label in enumerate(unique_y1):
+            for jdx, shape_label in enumerate(unique_y2):
+                combined_mask = (y_1 == color_label) & (y_2 == shape_label)
+
+                if np.any(combined_mask):
+                    scatter = ax.scatter(
+                        X[combined_mask, 0],
+                        X[combined_mask, 1],
+                        c=[cmap(idx)],
+                        marker=shape_map[shape_label],
+                        edgecolors="black",
+                        s=100,
+                        alpha=0.7,
+                        linewidths=1.5,
+                    )
+
+                    # Add to legend only if not already added
+                    combo_key = (color_label, shape_label)
+                    if combo_key not in plotted_combinations:
+                        plotted_combinations.add(combo_key)
+                        legend_handles.append(scatter)
+                        legend_labels.append(f"C{color_label}·S{shape_label}")
+
+        # Add separate legend for shapes if y_2 is used
+        # Create dummy scatter plots for shape legend
+        shape_legend_elements = []
+        for shape_label in unique_y2:
+            shape_legend_elements.append(
+                plt.Line2D(
+                    [0],
+                    [0],
+                    marker=shape_map[shape_label],
+                    color="gray",
+                    linestyle="",
+                    markersize=8,
+                    label=f"Shape {shape_label}",
+                    markeredgecolor="black",
+                    markeredgewidth=1.5,
+                )
+            )
+
+    ax.set_xlabel("D1", fontsize=12)
+    ax.set_ylabel("D2", fontsize=12)
+
+    if y_2 is None:
+        ax.legend(
+            handles=legend_handles,
+            labels=legend_labels,
+            loc="best",
+            framealpha=0.9,
+            fontsize=10,
+        )
+    else:
+        # Create two legends: one for color+shape combinations, one for shape reference
+        leg1 = ax.legend(
+            handles=legend_handles,
+            labels=legend_labels,
+            loc="upper left",
+            framealpha=0.9,
+            fontsize=9,
+            title="Color·Shape",
+            ncol=max(1, len(legend_labels) // 10),
+        )
+        ax.add_artist(leg1)
+
+        ax.legend(
+            handles=shape_legend_elements,
+            loc="upper right",
+            framealpha=0.9,
+            fontsize=9,
+            title="Shape Reference",
         )
 
-    ax.set_xlabel("X", fontsize=12)
-    ax.set_ylabel("Y", fontsize=12)
-    ax.set_title("2D Vector Plot", fontsize=14, pad=16)
-
-    # Add legend for fill colors
-    if n_classes <= 20:
-        color_handles = [
-            plt.Line2D(
-                [0],
-                [0],
-                marker="o",
-                color="w",
-                markerfacecolor=cmap(i / max(n_classes - 1, 1)),
-                markersize=8,
-                markeredgecolor="black",
-                markeredgewidth=0.5,
-                label=f"Color: {int(label)}",
-            )
-            for i, label in enumerate(unique_labels)
-        ]
-
-        # Add legend for shapes or edge colors if provided
-        if outline_colors is not None:
-            if use_shapes and n_outline <= len(marker_shapes):
-                # Shape legend
-                shape_handles = [
-                    plt.Line2D(
-                        [0],
-                        [0],
-                        marker=marker_shapes[i % len(marker_shapes)],
-                        color="w",
-                        markerfacecolor="gray",
-                        markersize=8,
-                        markeredgecolor="black",
-                        markeredgewidth=1.0,
-                        label=f"Shape: {int(label)}",
-                    )
-                    for i, label in enumerate(unique_outline)
-                ]
-
-                # Combine both legends
-                all_handles = (
-                    color_handles
-                    + [plt.Line2D([0], [0], visible=False)]
-                    + shape_handles
-                )
-                ncol = 2 if len(all_handles) > 12 else 1
-                ax.legend(
-                    handles=all_handles,
-                    loc="best",
-                    framealpha=0.9,
-                    ncol=ncol,
-                    fontsize=9,
-                )
-            elif n_outline <= 20:
-                # Edge color legend
-                edge_handles = [
-                    plt.Line2D(
-                        [0],
-                        [0],
-                        marker="o",
-                        color="w",
-                        markerfacecolor="white",
-                        markersize=8,
-                        markeredgecolor=outline_cmap(i / max(n_outline - 1, 1)),
-                        markeredgewidth=2.0,
-                        label=f"Edge: {int(label)}",
-                    )
-                    for i, label in enumerate(unique_outline)
-                ]
-                all_handles = color_handles + edge_handles
-                ncol = 2 if len(all_handles) > 10 else 1
-                ax.legend(
-                    handles=all_handles,
-                    loc="best",
-                    framealpha=0.9,
-                    ncol=ncol,
-                    fontsize=9,
-                )
-            else:
-                ax.legend(handles=color_handles, loc="best", framealpha=0.9, fontsize=9)
-        else:
-            ncol = 2 if n_classes > 10 else 1
-            ax.legend(
-                handles=color_handles, loc="best", framealpha=0.9, ncol=ncol, fontsize=9
-            )
-    else:
-        # For many classes, use a colorbar
-        scatter = ax.collections[0] if ax.collections else None
-        if scatter:
-            cbar = plt.colorbar(scatter, ax=ax, pad=0.1)
-            cbar.set_label("Class", rotation=270, labelpad=20)
-
+    ax.set_title("2D Sample Plot", fontsize=14, pad=10)
     ax.grid(True, alpha=0.3)
-    plt.tight_layout()
 
+    fig.tight_layout()
     return fig
 
 

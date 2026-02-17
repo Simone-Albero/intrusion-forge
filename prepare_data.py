@@ -1,6 +1,7 @@
 import logging
 import sys
 from pathlib import Path
+import warnings
 
 import pandas as pd
 import numpy as np
@@ -9,9 +10,14 @@ from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import RobustScaler
 
+# Suppress sklearn deprecation warnings from hdbscan
+# warnings.filterwarnings(
+#     "ignore", message=".*force_all_finite.*", category=FutureWarning
+# )
+
 from src.common.config import load_config
 from src.common.logging import setup_logger
-from src.common.utils import save_to_json, save_to_pickle, load_from_pickle
+from src.common.utils import save_to_json
 from src.data.io import load_df, save_df, load_data_splits
 from src.data.preprocessing import (
     QuantileClipper,
@@ -195,7 +201,6 @@ def compute_clusters(df, feature_cols, label_col, classes, thresholds):
             df.loc[cls_mask, feature_cols].values
         )
         core_mask = (labels != -1) & (proba >= threshold)
-        # ambiguous_mask = ~core_mask
 
         # Get indices of the class subset, then filter by core_mask
         cls_indices = df[cls_mask].index
@@ -205,6 +210,48 @@ def compute_clusters(df, feature_cols, label_col, classes, thresholds):
         logger.info(f"Class '{cls}': {info}")
 
     return df
+
+
+def clusters_over_splits(
+    train_df, val_df, test_df, feature_cols, label_col, classes, thresholds
+):
+    train_df = compute_clusters(train_df, feature_cols, label_col, classes, thresholds)
+    val_df = compute_clusters(val_df, feature_cols, label_col, classes, thresholds)
+    test_df = compute_clusters(test_df, feature_cols, label_col, classes, thresholds)
+
+    return train_df, val_df, test_df
+
+
+def clusters_over_all(
+    train_df, val_df, test_df, feature_cols, label_col, classes, thresholds
+):
+    train_df["_split"] = "train"
+    val_df["_split"] = "val"
+    test_df["_split"] = "test"
+
+    combined_df = pd.concat([train_df, val_df, test_df], ignore_index=True)
+    combined_df = compute_clusters(
+        combined_df, feature_cols, label_col, classes, thresholds
+    )
+
+    train_df = (
+        combined_df[combined_df["_split"] == "train"]
+        .drop("_split", axis=1)
+        .reset_index(drop=True)
+    )
+
+    val_df = (
+        combined_df[combined_df["_split"] == "val"]
+        .drop("_split", axis=1)
+        .reset_index(drop=True)
+    )
+    test_df = (
+        combined_df[combined_df["_split"] == "test"]
+        .drop("_split", axis=1)
+        .reset_index(drop=True)
+    )
+
+    return train_df, val_df, test_df
 
 
 def main():
@@ -249,62 +296,55 @@ def main():
     val_df = val_df.reset_index(drop=True)
     test_df = test_df.reset_index(drop=True)
 
-    train_df["_split"] = "train"
-    val_df["_split"] = "val"
-    test_df["_split"] = "test"
+    if cfg.clustering_type is not None and cfg.clustering_type == "over_splits":
+        train_df, val_df, test_df = clusters_over_splits(
+            train_df,
+            val_df,
+            test_df,
+            feature_cols=num_cols + cat_cols,
+            label_col=label_col,
+            classes=cfg.cluster_classes,
+            thresholds=cfg.cluster_thresholds,
+        )
+    elif cfg.clustering_type is not None and cfg.clustering_type == "over_all":
+        train_df, val_df, test_df = clusters_over_all(
+            train_df,
+            val_df,
+            test_df,
+            feature_cols=num_cols + cat_cols,
+            label_col=label_col,
+            classes=cfg.cluster_classes,
+            thresholds=cfg.cluster_thresholds,
+        )
 
-    # processed_df = pd.concat([train_df, val_df, test_df], ignore_index=True)
-    # processed_df = compute_clusters(
-    #     processed_df,
-    #     num_cols + cat_cols,
-    #     label_col,
-    #     classes=["DoS", "Exploits"],
-    #     thresholds=[0.9, 0.4],
-    # )
+    if "cluster" in train_df.columns:
+        splits = {"train": train_df, "val": val_df, "test": test_df}
 
-    # # Filter ambiguous samples
-    # ambigous_mask = processed_df["cluster"] == -1
-    # processed_df = processed_df[~ambigous_mask].reset_index(drop=True)
+        cluster_info = {}
+        for split, df in splits.items():
+            cluster_info[split] = df["cluster"].value_counts().to_dict()
 
-    # Split based on the split identifier
-    # train_df = (
-    #     processed_df[processed_df["_split"] == "train"]
-    #     .drop("_split", axis=1)
-    #     .reset_index(drop=True)
-    # )
+            for cls in cfg.cluster_classes:
+                cls_mask = df[label_col] == cls
+                cluster_info[f"class_{cls}_{split}"] = (
+                    df.loc[cls_mask, "cluster"].value_counts().to_dict()
+                )
 
-    # val_df = (
-    #     processed_df[processed_df["_split"] == "val"]
-    #     .drop("_split", axis=1)
-    #     .reset_index(drop=True)
-    # )
-    # test_df = (
-    #     processed_df[processed_df["_split"] == "test"]
-    #     .drop("_split", axis=1)
-    #     .reset_index(drop=True)
-    # )
+        logger.info(f"Cluster info: {cluster_info}")
+        save_to_json(
+            cluster_info,
+            json_logs_path / "metadata" / f"clusters_info.json",
+        )
 
-    train_df = compute_clusters(
-        train_df,
-        num_cols + cat_cols,
-        label_col,
-        classes=["DoS", "Exploits"],
-        thresholds=[0.9, 0.4],
-    )
-    val_df = compute_clusters(
-        val_df,
-        num_cols + cat_cols,
-        label_col,
-        classes=["DoS", "Exploits"],
-        thresholds=[0.9, 0.4],
-    )
-    test_df = compute_clusters(
-        test_df,
-        num_cols + cat_cols,
-        label_col,
-        classes=["DoS", "Exploits"],
-        thresholds=[0.9, 0.4],
-    )
+    if cfg.ignore_clusters:
+        ignore_clusters = set(cfg.ignore_clusters)
+        train_df = train_df[~train_df["cluster"].isin(ignore_clusters)].reset_index(
+            drop=True
+        )
+        val_df = val_df[~val_df["cluster"].isin(ignore_clusters)].reset_index(drop=True)
+        test_df = test_df[~test_df["cluster"].isin(ignore_clusters)].reset_index(
+            drop=True
+        )
 
     train_df, val_df, test_df, label_mapping = encode_labels(
         train_df, val_df, test_df, label_col, cfg.data.benign_tag
@@ -323,11 +363,6 @@ def main():
     save_df(
         test_df,
         processed_data_path / f"{cfg.data.file_name}_test.{cfg.data.extension}",
-    )
-
-    save_df(
-        train_df,
-        processed_data_path / f"{cfg.data.file_name}_train.csv",
     )
 
     # Compute and save metadata

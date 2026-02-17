@@ -20,7 +20,7 @@ from src.data.io import load_data_splits
 from src.torch.module.checkpoint import load_latest_checkpoint
 from src.torch.builders import create_model
 from src.ml.projection import tsne_projection, create_subsample_mask
-from src.plot.array import vectors_plot, confusion_matrix_to_plot
+from src.plot.array import samples_plot, confusion_matrix_to_plot
 
 setup_logger()
 logger = logging.getLogger(__name__)
@@ -176,25 +176,21 @@ def analyze_classes_failures(X, y_true, y_pred, max_samples=1000):
     return all_stats
 
 
-def visualize_overall(
-    X, z, y_true, outline_colors=None, exclude_classes=[], n_samples=3000
-):
+def visualize_samples(X, z, y_1, y_2, exclude_classes=[], n_samples=3000):
     """Create overall visualizations excluding specific class."""
     if z is None:
         return
 
-    mask = ~np.isin(y_true, exclude_classes)
-    vis_mask = create_subsample_mask(y_true[mask], n_samples=n_samples, stratify=False)
+    mask = ~np.isin(y_1, exclude_classes)
+    vis_mask = create_subsample_mask(y_1[mask], n_samples=n_samples, stratify=False)
 
     reduced_x = tsne_projection(X[mask][vis_mask])
     reduced_z = tsne_projection(z[mask][vis_mask])
-    outline_colors = (
-        outline_colors[mask][vis_mask] if outline_colors is not None else None
-    )
+    y_2 = y_2[mask][vis_mask] if y_2 is not None else None
 
-    return vectors_plot(
-        reduced_x, y_true[mask][vis_mask], outline_colors=outline_colors
-    ), vectors_plot(reduced_z, y_true[mask][vis_mask], outline_colors=outline_colors)
+    return samples_plot(reduced_x, y_1[mask][vis_mask], y_2), samples_plot(
+        reduced_z, y_1[mask][vis_mask], y_2
+    )
 
 
 def visualize_cm(y_true, y_pred, normalize=None):
@@ -244,8 +240,6 @@ def main():
     ]:
         logger.info(f"Running inference on {suffix} set ...")
         log_dir = Path(cfg.path.tb_logs) / "inference" / suffix
-        # if log_dir.exists():
-        #     shutil.rmtree(log_dir)
         log_dir.mkdir(parents=True, exist_ok=True)
         tb_logger = TensorboardLogger(log_dir=log_dir)
 
@@ -258,7 +252,7 @@ def main():
             logger.info(f"Class {cls}: Mean Confidence {cls_mean_confidence:.4f}")
 
         logger.info(f"Computing confusion matrix.")
-        cm_fig = visualize_cm(y_true, y_pred, normalize="true")
+        cm_fig = visualize_cm(y_true, y_pred, normalize=None)
         tb_logger.writer.add_figure(
             "confusion_matrix",
             cm_fig,
@@ -266,33 +260,33 @@ def main():
         )
         plt.close(cm_fig)
 
-        logger.info("Computing overall visualizations ...")
-        overall_visual = visualize_overall(
-            df[num_cols + cat_cols].to_numpy(), z, y_true
+        logger.info("Computing visualizations ...")
+        visual = visualize_samples(
+            df[num_cols + cat_cols].to_numpy(), z, y_pred, y_true
         )
         tb_logger.writer.add_figure(
-            "raw/overall", overall_visual[0], global_step=cfg.run_id or 0
+            "raw/classes", visual[0], global_step=cfg.run_id or 0
         )
-        plt.close(overall_visual[0])
+        plt.close(visual[0])
         tb_logger.writer.add_figure(
-            "latent/overall", overall_visual[1], global_step=cfg.run_id or 0
+            "latent/classes", visual[1], global_step=cfg.run_id or 0
         )
-        plt.close(overall_visual[1])
+        plt.close(visual[1])
 
-        overall_visual = visualize_overall(
+        visual = visualize_samples(
             df[num_cols + cat_cols].to_numpy(),
             z,
             df["cluster"].to_numpy(),
-            outline_colors=y_true,
+            y_true,
         )
         tb_logger.writer.add_figure(
-            "raw/cluster", overall_visual[0], global_step=cfg.run_id or 0
+            "raw/clusters", visual[0], global_step=cfg.run_id or 0
         )
-        plt.close(overall_visual[0])
+        plt.close(visual[0])
         tb_logger.writer.add_figure(
-            "latent/cluster", overall_visual[1], global_step=cfg.run_id or 0
+            "latent/clusters", visual[1], global_step=cfg.run_id or 0
         )
-        plt.close(overall_visual[1])
+        plt.close(visual[1])
         tb_logger.close()
 
         logger.info("Analyzing class failures ...")

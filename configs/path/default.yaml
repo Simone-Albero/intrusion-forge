@@ -7,3 +7,4 @@ pickles: ${path.out_base_path}/pickles/${run_id}
 tb_logs: ${path.out_base_path}/tb/${seed}
 json_logs: ${path.out_base_path}/json/${seed}/${run_id}
 checkpoints: ${path.out_base_path}/checkpoints/${run_id}
+configs: ${path.out_base_path}/configs/${run_id}

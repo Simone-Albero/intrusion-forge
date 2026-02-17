@@ -1,8 +1,13 @@
 import os
 from pathlib import Path
 from typing import List, Optional
+
 from hydra import initialize, compose, initialize_config_dir
 from omegaconf import DictConfig
+from omegaconf import OmegaConf
+
+
+from src.common.utils import save_to_json
 
 
 def load_config(
@@ -43,11 +48,15 @@ def load_config(
         )
 
     # Use initialize_config_dir for absolute paths
-    with initialize_config_dir(
-        version_base=None, config_dir=str(config_dir)  # Recommended for Hydra 1.2+
-    ):
+    with initialize_config_dir(version_base=None, config_dir=str(config_dir)):
         cfg = compose(config_name=config_name, overrides=overrides)
 
+    save_to_json(
+        OmegaConf.to_container(cfg, resolve=True),
+        Path(cfg.path.configs) / f"{config_name}_composed.json",
+    )
+
+    cfg = DictConfig(cfg)  # Ensure it's a DictConfig for type consistency
     return cfg
 
 

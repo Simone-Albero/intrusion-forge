@@ -1,11 +1,10 @@
 name: rival_cluster_batch_sampler
 
 params:
-  batch_size: 256
-  clusters_per_batch: 6
-  samples_per_cluster: 40
+  batch_size: 128
+  clusters_per_batch: 4
+  samples_per_cluster: 28
   include_ambiguous: 16
   ambiguous_tag: -1
   drop_last: True
-  rival_pairs_per_batch: 3
   seed: ${seed}
