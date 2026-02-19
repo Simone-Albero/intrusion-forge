@@ -1,7 +1,6 @@
 import logging
 import sys
 from pathlib import Path
-import warnings
 
 import pandas as pd
 import numpy as np
@@ -10,17 +9,11 @@ from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import RobustScaler
 
-# Suppress sklearn deprecation warnings from hdbscan
-# warnings.filterwarnings(
-#     "ignore", message=".*force_all_finite.*", category=FutureWarning
-# )
-
 from src.common.config import load_config
 from src.common.logging import setup_logger
 from src.common.utils import save_to_json
-from src.data.io import load_df, save_df, load_data_splits
+from src.data.io import load_df, save_df
 from src.data.preprocessing import (
-    QuantileClipper,
     LogTransformer,
     TopNHashEncoder,
     drop_nans,
@@ -36,43 +29,43 @@ setup_logger()
 logger = logging.getLogger(__name__)
 
 
-def df_info(df):
-    """Print basic information about the dataframe."""
-    logger.info(f"DataFrame shape: {df.shape}")
-    logger.info("DataFrame info:")
-    logger.info(df.info())
-    logger.info("DataFrame description:")
-    logger.info(df.describe(include="all"))
+def get_df_info(df):
+    """Return basic information about the dataframe."""
+    info = {
+        "shape": df.shape,
+        "columns": list(df.columns),
+        "dtypes": df.dtypes.to_dict(),
+        "memory_usage": df.memory_usage(deep=True).sum(),
+        "feature_info": {},
+    }
 
     for col in df.columns:
-        logger.info(f"Column '{col}' info:")
-        num_unique = df[col].nunique()
-        logger.info(f"Unique values: {num_unique}")
-        logger.info(f"Dtype: {df[col].dtype}")
-        logger.info(f"Top 5 frequent values:\n{df[col].value_counts().head()}")
+        info["feature_info"][col] = {
+            "dtype": df[col].dtype,
+            "unique_count": df[col].nunique(),
+        }
+
+    return info
 
 
-def compute_df_metadata(
+def compute_splits_metadata(
     train_df,
     val_df,
     test_df,
     label_col,
     num_cols,
     cat_cols,
-    add_is_unk,
-    add_log_freq,
     benign_tag,
     label_mapping=None,
 ):
     """Compute and return metadata dictionary for the dataset."""
-    # Compute class weights
     class_counts = train_df[label_col].value_counts().sort_index()
     class_weights = len(train_df) / (len(class_counts) * class_counts)
     class_weights = np.log1p(class_weights) / np.log1p(class_weights).max()
     class_weights_list = class_weights.tolist()
 
     metadata = {
-        "label_mapping": label_mapping if label_mapping else {},
+        "label_mapping": label_mapping or {},
         "dataset_sizes": {
             split: len(df_split)
             for split, df_split in zip(
@@ -85,9 +78,7 @@ def compute_df_metadata(
                 ["train", "val", "test"], [train_df, val_df, test_df]
             )
         },
-        "numerical_columns": num_cols
-        + ([f"{col}__is_unk" for col in cat_cols] if add_is_unk else [])
-        + ([f"{col}__log_freq" for col in cat_cols] if add_log_freq else []),
+        "numerical_columns": num_cols,
         "categorical_columns": cat_cols,
         "benign_tag": benign_tag,
         "num_classes": train_df[label_col].nunique(),
@@ -95,6 +86,41 @@ def compute_df_metadata(
     }
 
     return metadata
+
+
+def build_preprocessor(num_cols, cat_cols, top_n, hash_buckets):
+    """Build a ColumnTransformer for numerical and categorical features."""
+    set_config(transform_output="pandas")
+    transformers = []
+
+    if num_cols:
+        num_pipeline = Pipeline(
+            [
+                # ("quantile_clipper", QuantileClipper()),
+                ("log_transformer", LogTransformer()),
+                ("scaler", RobustScaler()),
+            ]
+        )
+        logger.info(f"Numerical pipeline steps: {num_pipeline.steps}")
+        transformers.append(("num", num_pipeline, num_cols))
+
+    if cat_cols:
+        cat_pipeline = Pipeline(
+            [
+                (
+                    "top_n_encoder",
+                    TopNHashEncoder(top_n=top_n, hash_buckets=hash_buckets),
+                ),
+            ]
+        )
+        logger.info(f"Categorical pipeline steps: {cat_pipeline.steps}")
+        transformers.append(("cat", cat_pipeline, cat_cols))
+
+    return ColumnTransformer(
+        transformers=transformers,
+        remainder="passthrough",
+        verbose_feature_names_out=False,
+    )
 
 
 def preprocess_df(
@@ -110,17 +136,12 @@ def preprocess_df(
     random_state,
     top_n,
     hash_buckets,
-    add_log_freq,
-    add_is_unk,
-    benign_tag,
 ):
     """Preprocess dataframe: filter, encode, scale, and split."""
-    # Filter and clean data
     df = drop_nans(df, num_cols + cat_cols + [label_col])
     df = query_filter(df, filter_query)
     df = rare_category_filter(df, [label_col], min_count=min_cat_count)
 
-    # Split data
     train_df, val_df, test_df = ml_split(
         df,
         train_frac=train_frac,
@@ -129,109 +150,85 @@ def preprocess_df(
         random_state=random_state,
         label_col=label_col,
     )
-
     train_df = random_undersample_df(train_df, label_col, random_state)
 
-    set_config(transform_output="pandas")
-
-    # Build preprocessing pipelines
-    num_pipeline = None
-    if num_cols and len(num_cols) > 0:
-        num_pipeline = Pipeline(
-            [
-                ("quantile_clipper", QuantileClipper()),
-                ("log_transformer", LogTransformer()),
-                ("scaler", RobustScaler()),
-            ]
-        )
-
-    cat_pipeline = None
-    if cat_cols and len(cat_cols) > 0:
-        cat_pipeline = Pipeline(
-            [
-                (
-                    "top_n_encoder",
-                    TopNHashEncoder(
-                        top_n=top_n,
-                        hash_buckets=hash_buckets,
-                        add_log_freq=add_log_freq,
-                        add_is_unk=add_is_unk,
-                    ),
-                ),
-            ]
-        )
-
-    # Build transformers list, excluding None pipelines
-    transformers = []
-    if num_pipeline is not None:
-        logger.info(f"Numerical pipeline steps: {num_pipeline.steps}")
-        transformers.append(("num", num_pipeline, num_cols))
-    if cat_pipeline is not None:
-        logger.info(f"Categorical pipeline steps: {cat_pipeline.steps}")
-        transformers.append(("cat", cat_pipeline, cat_cols))
-
-    preprocessor = ColumnTransformer(
-        transformers=transformers,
-        remainder="passthrough",
-        verbose_feature_names_out=False,
+    preprocessor = build_preprocessor(num_cols, cat_cols, top_n, hash_buckets)
+    preprocessor.fit(train_df)
+    train_df, val_df, test_df = (
+        preprocessor.transform(split) for split in [train_df, val_df, test_df]
     )
 
-    preprocessor.fit(train_df)
-    train_df = preprocessor.transform(train_df)
-    val_df = preprocessor.transform(val_df)
-    test_df = preprocessor.transform(test_df)
-
-    # Encode labels
     train_df, val_df, test_df, label_mapping = encode_labels(
-        train_df, val_df, test_df, label_col, benign_tag
+        train_df,
+        val_df,
+        test_df,
+        label_col,
+        dst_label_col=f"encoded_{label_col}",
     )
 
     return train_df, val_df, test_df, label_mapping
 
 
-def compute_clusters(df, feature_cols, label_col, classes, thresholds):
-    df["cluster"] = -1
+def compute_clusters(
+    df, feature_cols, label_col, classes=None, thresholds=None, dst_col="cluster"
+):
+    """Compute HDBSCAN clusters for specified classes and thresholds."""
+    df[dst_col] = -1
     offset = 0
+    if classes is None:
+        logger.info("Computing clusters for all data...")
+        _, labels, proba, info = hdbscan_grid_search(df[feature_cols].values)
+        core_mask = (labels != -1) & (proba >= thresholds[0] if thresholds else 0.0)
+        df[dst_col] = labels
+        return df, info
+
+    if len(classes) > len(thresholds):
+        thresholds = thresholds + [0.0] * (len(classes) - len(thresholds))
+
+    infos = {}
     for cls, threshold in zip(classes, thresholds):
         logger.info(
             f"Computing clusters for class '{cls}' with threshold {threshold}..."
         )
         cls_mask = df[label_col] == cls
-        model, labels, proba, info = hdbscan_grid_search(
+        _, labels, proba, info = hdbscan_grid_search(
             df.loc[cls_mask, feature_cols].values
         )
         core_mask = (labels != -1) & (proba >= threshold)
 
-        # Get indices of the class subset, then filter by core_mask
-        cls_indices = df[cls_mask].index
-        core_indices = cls_indices[core_mask]
-        df.loc[core_indices, "cluster"] = labels[core_mask] + offset
+        cls_indices = df[cls_mask & core_mask].index
+        df.loc[cls_indices, dst_col] = labels[core_mask] + offset
         offset += labels.max() + 1
-        logger.info(f"Class '{cls}': {info}")
-
-    return df
+        infos[cls] = info
+    return df, infos
 
 
 def clusters_over_splits(
-    train_df, val_df, test_df, feature_cols, label_col, classes, thresholds
+    train_df, val_df, test_df, feature_cols, label_col, dst_col, classes, thresholds
 ):
-    train_df = compute_clusters(train_df, feature_cols, label_col, classes, thresholds)
-    val_df = compute_clusters(val_df, feature_cols, label_col, classes, thresholds)
-    test_df = compute_clusters(test_df, feature_cols, label_col, classes, thresholds)
+    train_df, _ = compute_clusters(
+        train_df, feature_cols, label_col, classes, thresholds, dst_col=dst_col
+    )
+    val_df, _ = compute_clusters(
+        val_df, feature_cols, label_col, classes, thresholds, dst_col=dst_col
+    )
+    test_df, _ = compute_clusters(
+        test_df, feature_cols, label_col, classes, thresholds, dst_col=dst_col
+    )
 
     return train_df, val_df, test_df
 
 
 def clusters_over_all(
-    train_df, val_df, test_df, feature_cols, label_col, classes, thresholds
+    train_df, val_df, test_df, feature_cols, label_col, dst_col, classes, thresholds
 ):
     train_df["_split"] = "train"
     val_df["_split"] = "val"
     test_df["_split"] = "test"
 
     combined_df = pd.concat([train_df, val_df, test_df], ignore_index=True)
-    combined_df = compute_clusters(
-        combined_df, feature_cols, label_col, classes, thresholds
+    combined_df, _ = compute_clusters(
+        combined_df, feature_cols, label_col, classes, thresholds, dst_col=dst_col
     )
 
     train_df = (
@@ -254,14 +251,66 @@ def clusters_over_all(
     return train_df, val_df, test_df
 
 
-def main():
-    """Main entry point for data preparation."""
-    cfg = load_config(
-        config_path=Path(__file__).parent / "configs",
-        config_name="config",
-        overrides=sys.argv[1:],
+def run_clustering(
+    train_df,
+    val_df,
+    test_df,
+    feature_cols,
+    label_col,
+    clustering_type,
+    cluster_classes,
+    cluster_thresholds,
+    ignore_clusters,
+    seed,
+    cluster_col="cluster",
+):
+    """Apply the requested clustering strategy and return updated splits with metadata."""
+    cluster_fn = {
+        "over_splits": clusters_over_splits,
+        "over_all": clusters_over_all,
+    }.get(clustering_type)
+
+    if cluster_fn is None:
+        raise ValueError(f"Unknown clustering_type: '{clustering_type}'")
+
+    train_df, val_df, test_df = cluster_fn(
+        train_df,
+        val_df,
+        test_df,
+        feature_cols=feature_cols,
+        label_col=label_col,
+        dst_col=cluster_col,
+        classes=cluster_classes,
+        thresholds=cluster_thresholds,
     )
 
+    if ignore_clusters:
+        for df in [val_df, test_df]:
+            df.drop(
+                df[df[cluster_col].isin(ignore_clusters)].index,
+                inplace=True,
+            )
+            df.reset_index(drop=True, inplace=True)
+        train_df = train_df[~train_df[cluster_col].isin(ignore_clusters)].reset_index(
+            drop=True
+        )
+        train_df = random_undersample_df(train_df, label_col, seed)
+
+    clusters_metadata = {
+        "num_clusters": int(train_df[cluster_col].nunique()),
+        "cluster_counts": train_df[cluster_col].value_counts().to_dict(),
+    }
+    for cls in cluster_classes:
+        cls_mask = train_df[label_col] == cls
+        clusters_metadata[f"clusters_in_class_{cls}"] = (
+            train_df.loc[cls_mask, cluster_col].value_counts().to_dict()
+        )
+
+    return train_df, val_df, test_df, clusters_metadata
+
+
+def prepare(cfg):
+    """Prepare data given a configuration object."""
     num_cols = list(cfg.data.num_cols) if cfg.data.num_cols else []
     cat_cols = list(cfg.data.cat_cols) if cfg.data.cat_cols else []
     label_col = cfg.data.label_col
@@ -270,7 +319,6 @@ def main():
     processed_data_path = Path(cfg.path.processed_data)
     json_logs_path = Path(cfg.path.json_logs)
 
-    # Load and preprocess raw data
     logger.info("Loading and preprocessing data...")
     df = load_df(str(raw_data_path))
     train_df, val_df, test_df, label_mapping = preprocess_df(
@@ -286,108 +334,61 @@ def main():
         cfg.seed,
         cfg.data.top_n,
         cfg.data.hash_buckets,
-        cfg.data.add_log_freq,
-        cfg.data.add_is_unk,
-        cfg.data.benign_tag,
     )
 
-    # Reset indices to ensure alignment with positional indices
-    train_df = train_df.reset_index(drop=True)
-    val_df = val_df.reset_index(drop=True)
-    test_df = test_df.reset_index(drop=True)
+    train_df, val_df, test_df = (
+        df.reset_index(drop=True) for df in [train_df, val_df, test_df]
+    )
 
-    if cfg.clustering_type is not None and cfg.clustering_type == "over_splits":
-        train_df, val_df, test_df = clusters_over_splits(
+    if cfg.clustering_type is not None:
+        train_df, val_df, test_df, clusters_metadata = run_clustering(
             train_df,
             val_df,
             test_df,
             feature_cols=num_cols + cat_cols,
             label_col=label_col,
-            classes=cfg.cluster_classes,
-            thresholds=cfg.cluster_thresholds,
+            clustering_type=cfg.clustering_type,
+            cluster_classes=cfg.cluster_classes,
+            cluster_thresholds=cfg.cluster_thresholds,
+            ignore_clusters=cfg.ignore_clusters,
+            seed=cfg.seed,
         )
-    elif cfg.clustering_type is not None and cfg.clustering_type == "over_all":
-        train_df, val_df, test_df = clusters_over_all(
-            train_df,
-            val_df,
-            test_df,
-            feature_cols=num_cols + cat_cols,
-            label_col=label_col,
-            classes=cfg.cluster_classes,
-            thresholds=cfg.cluster_thresholds,
-        )
-
-    if "cluster" in train_df.columns:
-        splits = {"train": train_df, "val": val_df, "test": test_df}
-
-        cluster_info = {}
-        for split, df in splits.items():
-            cluster_info[split] = df["cluster"].value_counts().to_dict()
-
-            for cls in cfg.cluster_classes:
-                cls_mask = df[label_col] == cls
-                cluster_info[f"class_{cls}_{split}"] = (
-                    df.loc[cls_mask, "cluster"].value_counts().to_dict()
-                )
-
-        logger.info(f"Cluster info: {cluster_info}")
-        save_to_json(
-            cluster_info,
-            json_logs_path / "metadata" / f"clusters_info.json",
-        )
-
-    if cfg.ignore_clusters:
-        ignore_clusters = set(cfg.ignore_clusters)
-        ambigous_mask = train_df["cluster"].isin(ignore_clusters)
-        label_mask = train_df[label_col].isin(["DoS"])
-        mask = ambigous_mask & label_mask
-        train_df = train_df[~mask].reset_index(drop=True)
-
-        # train_df = train_df[~train_df["cluster"].isin(ignore_clusters)].reset_index(
-        #     drop=True
-        # )
-        # val_df = val_df[~val_df["cluster"].isin(ignore_clusters)].reset_index(drop=True)
-        # test_df = test_df[~test_df["cluster"].isin(ignore_clusters)].reset_index(
-        #     drop=True
-        # )
+        save_to_json(clusters_metadata, json_logs_path / "clusters.json")
 
     train_df, val_df, test_df, label_mapping = encode_labels(
         train_df, val_df, test_df, label_col, cfg.data.benign_tag
     )
 
-    # Save processed data
     logger.info("Saving processed data...")
-    save_df(
-        train_df,
-        processed_data_path / f"{cfg.data.file_name}_train.{cfg.data.extension}",
-    )
-    save_df(
-        val_df,
-        processed_data_path / f"{cfg.data.file_name}_val.{cfg.data.extension}",
-    )
-    save_df(
-        test_df,
-        processed_data_path / f"{cfg.data.file_name}_test.{cfg.data.extension}",
-    )
+    for split_name, split_df in [
+        ("train", train_df),
+        ("val", val_df),
+        ("test", test_df),
+    ]:
+        save_df(split_df, processed_data_path / f"{split_name}.{cfg.data.extension}")
 
-    # Compute and save metadata
     logger.info("Computing and saving metadata...")
-    metadata = compute_df_metadata(
+    metadata = compute_splits_metadata(
         train_df,
         val_df,
         test_df,
         label_col,
         num_cols,
         cat_cols,
-        cfg.data.add_is_unk,
-        cfg.data.add_log_freq,
         cfg.data.benign_tag,
         label_mapping,
     )
-    save_to_json(
-        metadata,
-        json_logs_path / "metadata" / f"df.json",
+    save_to_json(metadata, json_logs_path / "df.json")
+
+
+def main():
+    """Main entry point for data preparation."""
+    cfg = load_config(
+        config_path=Path(__file__).parent / "configs",
+        config_name="config",
+        overrides=sys.argv[1:],
     )
+    prepare(cfg)
 
 
 if __name__ == "__main__":

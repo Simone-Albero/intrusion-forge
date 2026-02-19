@@ -10,10 +10,12 @@ from sklearn.preprocessing import LabelEncoder
 
 
 def drop_nans(df: pd.DataFrame, cols: list) -> pd.DataFrame:
+    """Drop rows with NaN or infinite values in specified columns."""
     return df.replace([np.inf, -np.inf], np.nan).dropna(subset=cols)
 
 
 def query_filter(df: pd.DataFrame, query: Optional[str] = None) -> pd.DataFrame:
+    """Filter DataFrame using a query string."""
     if query:
         return df.query(query)
     return df
@@ -22,6 +24,7 @@ def query_filter(df: pd.DataFrame, query: Optional[str] = None) -> pd.DataFrame:
 def rare_category_filter(
     df: pd.DataFrame, cat_cols: list, min_count: int = 3000
 ) -> pd.DataFrame:
+    """Remove rows with rare categories in specified categorical columns."""
     df = df.copy()
 
     if min_count is None or min_count <= 0:
@@ -40,6 +43,7 @@ def subsample_df(
     random_state: Optional[int] = None,
     label_col: Optional[str] = None,
 ) -> pd.DataFrame:
+    """Subsample a DataFrame with optional stratification by label column."""
     if label_col is None:
         if n_samples > len(df):
             return df.sample(n=len(df), random_state=random_state)
@@ -60,10 +64,11 @@ def subsample_df(
 def random_undersample_df(
     df: pd.DataFrame, label_col: str, random_state: Optional[int] = None
 ) -> pd.DataFrame:
+    """Undersample a DataFrame to balance classes based on the label column."""
     counts = df[label_col].value_counts()
     min_count = counts.min()
     sampled_groups = []
-    for label, group in df.groupby(label_col):
+    for _, group in df.groupby(label_col):
         sampled = group.sample(n=min_count, random_state=random_state)
         sampled_groups.append(sampled)
     return pd.concat(sampled_groups, ignore_index=True)
@@ -72,10 +77,11 @@ def random_undersample_df(
 def random_oversample_df(
     df: pd.DataFrame, label_col: str, random_state: Optional[int] = None
 ) -> pd.DataFrame:
+    """Oversample a DataFrame to balance classes based on the label column."""
     counts = df[label_col].value_counts()
     max_count = counts.max()
     sampled_groups = []
-    for label, group in df.groupby(label_col):
+    for _, group in df.groupby(label_col):
         n_samples = max_count - len(group)
         if n_samples > 0:
             sampled = group.sample(n=n_samples, replace=True, random_state=random_state)
@@ -92,6 +98,7 @@ def ml_split(
     random_state: Optional[int] = None,
     label_col: Optional[str] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Split a DataFrame into train, validation, and test sets with optional stratification."""
     if not np.isclose(train_frac + val_frac + test_frac, 1.0):
         raise ValueError("train_frac, val_frac, and test_frac must sum to 1.0")
 
@@ -111,6 +118,8 @@ def ml_split(
 
 
 class QuantileClipper(BaseEstimator, TransformerMixin):
+    """Clip numerical features to specified quantiles to reduce the impact of outliers."""
+
     def __init__(self, lower_quantile: float = 0.01, upper_quantile: float = 0.99):
         self.lower_quantile = lower_quantile
         self.upper_quantile = upper_quantile
@@ -146,6 +155,8 @@ class LogTransformer(BaseEstimator, TransformerMixin):
 
 
 class TopNCategoryEncoder(BaseEstimator, TransformerMixin):
+    """Encode categorical features by mapping top-N frequent categories to integers."""
+
     def __init__(self, top_n: int = 256, default_value: int = 0):
         self.top_n = top_n
         self.default_value = default_value
@@ -179,26 +190,18 @@ class TopNHashEncoder(BaseEstimator, TransformerMixin):
       - 0: Missing/NaN values (padding_idx compatible)
       - 1 to top_n: Top-N most frequent categories
       - (top_n + 1) onwards: Hashed buckets for rare/OOV categories
-
-    Optional features:
-      - log_freq: log1p of category frequency from training
-      - is_unk: binary flag indicating unknown/hashed category
     """
 
     def __init__(
         self,
         top_n: int = 256,
         hash_buckets: int = 1024,
-        add_log_freq: bool = True,
-        add_is_unk: bool = True,
-        missing_token: int = 0,  # Changed from 1 to 0
+        missing_token: int = 0,
         hash_key: str = "cat-encoder-v1",
         dtype: type = np.int32,
     ):
         self.top_n = top_n
         self.hash_buckets = hash_buckets
-        self.add_log_freq = add_log_freq
-        self.add_is_unk = add_is_unk
         self.missing_token = missing_token
         self.hash_key = hash_key
         self.dtype = dtype
@@ -219,17 +222,14 @@ class TopNHashEncoder(BaseEstimator, TransformerMixin):
         X = pd.DataFrame(X)
         self.columns_ = list(X.columns)
         self.category_maps_ = {}
-        self.freq_maps_ = {}
 
         for col in self.columns_:
             counts = X[col].value_counts(dropna=True)
-            self.freq_maps_[col] = counts.to_dict()
 
             # Map top-N categories to contiguous IDs starting at 1 (0 reserved for missing)
             top_categories = counts.nlargest(self.top_n).index if self.top_n > 0 else []
             self.category_maps_[col] = {
-                cat: 1 + idx  # Start from 1, reserve 0 for missing
-                for idx, cat in enumerate(top_categories)
+                cat: 1 + idx for idx, cat in enumerate(top_categories)
             }
 
         return self
@@ -242,20 +242,14 @@ class TopNHashEncoder(BaseEstimator, TransformerMixin):
 
         for col in cols:
             category_map = self.category_maps_[col]
-            freq_map = self.freq_maps_[col]
             values = X[col].values
-
-            # Encode IDs and track unknown categories
             ids = []
-            is_unk = []
 
             for val in values:
                 if pd.isna(val):
                     ids.append(self.missing_token)  # 0 for missing
-                    is_unk.append(1)
                 elif val in category_map:
                     ids.append(category_map[val])  # 1 to top_n
-                    is_unk.append(0)
                 else:
                     # Unknown category: use hash bucket or default to missing
                     if self.hash_buckets > 0:
@@ -263,19 +257,8 @@ class TopNHashEncoder(BaseEstimator, TransformerMixin):
                         ids.append(hashed_start + bucket)  # top_n+1 onwards
                     else:
                         ids.append(self.missing_token)
-                    is_unk.append(1)
 
             out[col] = np.asarray(ids, dtype=self.dtype)
-
-            if self.add_is_unk:
-                out[f"{col}__is_unk"] = np.asarray(is_unk, dtype=np.int8)
-
-            if self.add_log_freq:
-                log_freqs = [
-                    np.log1p(1.0) if pd.isna(val) else np.log1p(freq_map.get(val, 1.0))
-                    for val in values
-                ]
-                out[f"{col}__log_freq"] = np.asarray(log_freqs, dtype=np.float32)
 
         return pd.DataFrame(out, index=X.index)
 
@@ -284,27 +267,24 @@ def encode_labels(
     train_df: pd.DataFrame,
     val_df: pd.DataFrame,
     test_df: pd.DataFrame,
-    label_col: str,
-    benign_tag: Optional[str] = None,
+    src_label_col: str,
+    dst_label_col: Optional[str] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict]:
-    """Encode labels for multi-class and binary classification.
+    """Encode labels for ML classification.
 
     Returns:
         tuple: (train_df, val_df, test_df, label_mapping)
     """
     label_encoder = LabelEncoder()
-    multi_label_col = f"multi_{label_col}"
+    dst_label_col = dst_label_col or f"encoded_{src_label_col}"
 
     for df_split in [train_df, val_df, test_df]:
         if df_split is train_df:
-            df_split[multi_label_col] = label_encoder.fit_transform(df_split[label_col])
-        else:
-            df_split[multi_label_col] = label_encoder.transform(df_split[label_col])
-
-        if benign_tag:
-            df_split[f"bin_{label_col}"] = (df_split[label_col] != benign_tag).astype(
-                int
+            df_split[dst_label_col] = label_encoder.fit_transform(
+                df_split[src_label_col]
             )
+        else:
+            df_split[dst_label_col] = label_encoder.transform(df_split[src_label_col])
 
     label_mapping = {int(i): str(name) for i, name in enumerate(label_encoder.classes_)}
 

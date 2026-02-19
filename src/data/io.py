@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import Tuple, List
 from pathlib import Path
 import pickle
 import logging
@@ -7,6 +7,7 @@ import pandas as pd
 
 
 def load_df(file_path: str, **kwargs) -> pd.DataFrame:
+    """Load a DataFrame from a file based on its extension."""
     ext = Path(file_path).suffix.lower()
     if ext == ".parquet":
         return pd.read_parquet(file_path, **kwargs)
@@ -25,6 +26,7 @@ def save_df(
     index: bool = False,
     **kwargs,
 ) -> None:
+    """Save a DataFrame to a file based on its extension."""
     file_path = Path(file_path)
     file_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -71,3 +73,27 @@ def load_data_splits(
     except Exception as e:
         logger.error(f"Error loading data files: {e}")
         raise
+
+
+def load_listed_df(base_dir: Path, file_names: List[str]) -> List[pd.DataFrame]:
+    """Load a list of DataFrames from a base directory.
+
+    Args:
+        base_dir: Path to the directory containing data files
+        file_names: List of file names (without extension)
+
+    Returns:
+        List of DataFrames
+    """
+    dfs = []
+    for file_name in file_names:
+        try:
+            df = load_df(base_dir / f"{file_name}.parquet")
+            dfs.append(df)
+        except FileNotFoundError as e:
+            logger.error(f"Data file not found: {base_dir / f'{file_name}.parquet'}")
+            raise
+        except Exception as e:
+            logger.error(f"Error loading data file {file_name}: {e}")
+            raise
+    return dfs

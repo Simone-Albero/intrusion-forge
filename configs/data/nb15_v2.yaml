@@ -59,5 +59,3 @@ filter_query: ${data.label_col} == 'DoS' or ${data.label_col} == 'Exploits'
 min_cat_count: 3000
 top_n: 128
 hash_buckets: 256
-add_log_freq: false
-add_is_unk: false

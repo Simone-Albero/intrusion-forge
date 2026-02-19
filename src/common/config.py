@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 from typing import List, Optional
 
-from hydra import initialize, compose, initialize_config_dir
+from hydra import compose, initialize_config_dir
 from omegaconf import DictConfig
 from omegaconf import OmegaConf
 
@@ -56,64 +56,5 @@ def load_config(
         Path(cfg.path.configs) / f"{config_name}_composed.json",
     )
 
-    cfg = DictConfig(cfg)  # Ensure it's a DictConfig for type consistency
-    return cfg
-
-
-def load_config_from_dir(
-    config_dir: str,
-    config_name: str = "config",
-    overrides: Optional[List[str]] = None,
-) -> DictConfig:
-    """
-    Load configuration from an absolute directory path.
-
-    Args:
-        config_dir: Absolute path to configuration directory
-        config_name: Name of the main configuration file
-        overrides: List of configuration overrides
-
-    Returns:
-        DictConfig: The composed configuration
-    """
-    overrides = overrides or []
-
-    config_path = Path(config_dir).resolve()
-
-    if not config_path.exists():
-        raise ValueError(f"Configuration directory does not exist: {config_path}")
-
-    if not config_path.is_absolute():
-        raise ValueError(f"config_dir must be an absolute path, got: {config_dir}")
-
-    with initialize_config_dir(version_base=None, config_dir=str(config_path)):
-        cfg = compose(config_name=config_name, overrides=overrides)
-
-    return cfg
-
-
-def load_config_relative(
-    config_path: str = "configs",
-    config_name: str = "config",
-    overrides: Optional[List[str]] = None,
-) -> DictConfig:
-    """
-    Load configuration using relative path from project root.
-
-    This is useful when your config folder is at a known relative location
-    from your Python package.
-
-    Args:
-        config_path: Relative path from project root (e.g., "configs", "conf")
-        config_name: Name of the main configuration file
-        overrides: List of configuration overrides
-
-    Returns:
-        DictConfig: The composed configuration
-    """
-    overrides = overrides or []
-
-    with initialize(version_base=None, config_path=config_path):
-        cfg = compose(config_name=config_name, overrides=overrides)
-
+    cfg = DictConfig(cfg)
     return cfg
