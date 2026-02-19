@@ -338,13 +338,18 @@ def main():
 
     if cfg.ignore_clusters:
         ignore_clusters = set(cfg.ignore_clusters)
-        train_df = train_df[~train_df["cluster"].isin(ignore_clusters)].reset_index(
-            drop=True
-        )
-        val_df = val_df[~val_df["cluster"].isin(ignore_clusters)].reset_index(drop=True)
-        test_df = test_df[~test_df["cluster"].isin(ignore_clusters)].reset_index(
-            drop=True
-        )
+        ambigous_mask = train_df["cluster"].isin(ignore_clusters)
+        label_mask = train_df[label_col].isin(["DoS"])
+        mask = ambigous_mask & label_mask
+        train_df = train_df[~mask].reset_index(drop=True)
+
+        # train_df = train_df[~train_df["cluster"].isin(ignore_clusters)].reset_index(
+        #     drop=True
+        # )
+        # val_df = val_df[~val_df["cluster"].isin(ignore_clusters)].reset_index(drop=True)
+        # test_df = test_df[~test_df["cluster"].isin(ignore_clusters)].reset_index(
+        #     drop=True
+        # )
 
     train_df, val_df, test_df, label_mapping = encode_labels(
         train_df, val_df, test_df, label_col, cfg.data.benign_tag

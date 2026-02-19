@@ -4,7 +4,7 @@ import torch
 from torch import nn
 
 from .base import BaseModel, ModelOutput
-from ..module.encoder import TabularEncoderModule
+from ..module.mlp import MLPModule
 from . import ModelFactory
 
 
@@ -122,7 +122,7 @@ class NumericalContrastiveClassifier(ComposableContrastiveClassifier):
         hidden_dims: Sequence[int],
         dropout: float = 0.0,
         activation: Callable[[], nn.Module] = nn.ReLU,
-        norm_layer: Optional[Callable[[int], nn.Module]] = nn.BatchNorm1d,
+        norm_layer: Optional[Callable[[int], nn.Module]] = nn.LayerNorm,
         bias: bool = True,
     ) -> None:
         from ..module.encoder import NumericalEncoderModule
@@ -135,9 +135,19 @@ class NumericalContrastiveClassifier(ComposableContrastiveClassifier):
             activation=activation,
             norm_layer=norm_layer,
         )
-        classification_head_module = nn.Linear(hidden_dims[-1], num_classes, bias=bias)
-        contrastive_head_module = nn.Linear(
-            hidden_dims[-1], hidden_dims[-1] // 2, bias=bias
+        bottleneck_dim = hidden_dims[-1]
+
+        classification_head_module = MLPModule(
+            in_features=bottleneck_dim,
+            out_features=num_classes,
+            hidden_dims=[bottleneck_dim, bottleneck_dim // 2, bottleneck_dim // 2],
+            dropout=dropout,
+            activation=activation,
+            norm_layer=norm_layer,
+        )
+        contrastive_head_module = nn.Sequential(
+            nn.Linear(bottleneck_dim, bottleneck_dim // 2, bias=bias),
+            nn.LayerNorm(bottleneck_dim // 2),
         )
 
         super().__init__(

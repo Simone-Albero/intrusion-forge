@@ -13,7 +13,7 @@ from src.common.logging import setup_logger
 from src.common.utils import save_to_json, load_from_pickle
 from src.data.io import load_data_splits
 from src.ml.projection import tsne_projection, create_subsample_mask
-from src.plot.array import vectors_plot
+from src.plot.array import samples_plot
 
 setup_logger()
 logger = logging.getLogger(__name__)
@@ -271,7 +271,7 @@ def visualize_overall(X, y, exclude_classes=[], n_samples=3000):
     mask = ~np.isin(y, exclude_classes)
     vis_mask = create_subsample_mask(y[mask], n_samples=n_samples, stratify=False)
     reduced_x = tsne_projection(X[mask][vis_mask])
-    return vectors_plot(reduced_x, y[mask][vis_mask])
+    return samples_plot(reduced_x, y[mask][vis_mask])
 
 
 def main():
@@ -308,29 +308,29 @@ def main():
     #     train_df, val_df, test_df, label_col, feature_cols, "DoS", "Exploits", cfg
     # )
 
-    for suffix, df in [
-        ("train", train_df),
-        ("val", val_df),
-        ("test", test_df),
-    ]:
-        logger.info(f"Visualizing {suffix} set ...")
-        log_dir = Path(cfg.path.tb_logs) / "visualize" / suffix
-        log_dir.mkdir(parents=True, exist_ok=True)
-        tb_logger = TensorboardLogger(log_dir=log_dir)
+    # for suffix, df in [
+    #     ("train", train_df),
+    #     ("val", val_df),
+    #     ("test", test_df),
+    # ]:
+    #     logger.info(f"Visualizing {suffix} set ...")
+    #     log_dir = Path(cfg.path.tb_logs) / "visualize" / suffix
+    #     log_dir.mkdir(parents=True, exist_ok=True)
+    #     tb_logger = TensorboardLogger(log_dir=log_dir)
 
-        fig = visualize_overall(
-            df[feature_cols].to_numpy(),
-            df["multi_" + label_col].to_numpy(),
-        )
-        tb_logger.writer.add_figure("label_projection", fig, global_step=cfg.run_id)
-        tb_logger.close()
+    #     fig = visualize_overall(
+    #         df[feature_cols].to_numpy(),
+    #         df["multi_" + label_col].to_numpy(),
+    #     )
+    #     tb_logger.writer.add_figure("label_projection", fig, global_step=cfg.run_id)
+    #     tb_logger.close()
 
-        fig = visualize_overall(
-            df[feature_cols].to_numpy(),
-            df["cluster"].to_numpy(),
-        )
-        tb_logger.writer.add_figure("cluster_projection", fig, global_step=cfg.run_id)
-        tb_logger.close()
+    #     fig = visualize_overall(
+    #         df[feature_cols].to_numpy(),
+    #         df["cluster"].to_numpy(),
+    #     )
+    #     tb_logger.writer.add_figure("cluster_projection", fig, global_step=cfg.run_id)
+    #     tb_logger.close()
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 name: joint_sup_con_ce_loss
 
 params:
-  lam_supcon: 0.5
+  lam_supcon: 0.1
   reduction: mean
   ignore_index: -1
   temperature: 0.25

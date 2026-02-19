@@ -313,6 +313,7 @@ def train(
                 )
 
         train_loader.batch_sampler.cluster_rivals = cluster_rivals
+        loss_fn.update_cluster_rivals(cluster_rivals)
         logger.info(f"Current cluster rivals: {cluster_rivals}")
         logger.info(f"Cluster to similarity: {cluster_to_similarity}")
 

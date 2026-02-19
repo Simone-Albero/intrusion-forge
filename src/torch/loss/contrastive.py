@@ -78,6 +78,117 @@ class SupervisedContrastiveLoss(BaseLoss):
 
 
 @LossFactory.register()
+class RivalRepulsionLoss(BaseLoss):
+    """
+    Centroid-based rival repulsion:
+    - compute centroids per cluster present in batch (excluding ignore_index)
+    - penalize rival pairs with a margin on cosine similarity
+
+    Loss per pair: softplus(beta * (cos - margin))
+    (strong gradients when cos is high; stable; no exp explosion)
+    """
+
+    def __init__(
+        self,
+        cluster_rivals: Optional[dict[int, list[int]]] = None,
+        reduction: str = "mean",
+        device: Optional[torch.device] = None,
+        ignore_index: int = -1,
+        margin: float = 0.7,
+        beta: float = 20.0,
+        detach_centroids: bool = False,  # if True: centroids are stop-grad targets
+    ) -> None:
+        super().__init__(reduction)
+        self.cluster_rivals = cluster_rivals if cluster_rivals is not None else {}
+        self.device = device if device is not None else torch.device("cpu")
+        self.ignore_index = ignore_index
+        self.margin = margin
+        self.beta = beta
+        self.detach_centroids = detach_centroids
+
+    def forward(self, z: Tensor, clusters: Tensor) -> Tensor:
+        B = z.size(0)
+        device = self.device if self.device is not None else z.device
+
+        if not self.cluster_rivals:
+            out = z.sum() * 0.0
+            if self.reduction == "none":
+                return torch.zeros(B, device=device, dtype=z.dtype) + out
+            return out
+
+        # valid mask (ignore ambiguous/unlabeled)
+        valid = clusters != self.ignore_index
+        if valid.sum() < 2:
+            out = z.sum() * 0.0
+            if self.reduction == "none":
+                return torch.zeros(B, device=device, dtype=z.dtype) + out
+            return out
+
+        z_v = F.normalize(z[valid], dim=1, eps=1e-8)
+        c_v = clusters[valid].to(device)
+
+        # unique clusters in batch
+        uniq = torch.unique(c_v)
+        if uniq.numel() < 2:
+            out = z.sum() * 0.0
+            if self.reduction == "none":
+                return torch.zeros(B, device=device, dtype=z.dtype) + out
+            return out
+
+        # centroids [K, D]
+        centroids = []
+        for cid in uniq.tolist():
+            m = c_v == cid
+            mu = z_v[m].mean(dim=0)
+            mu = F.normalize(mu, dim=0, eps=1e-8)
+            centroids.append(mu)
+        centroids = torch.stack(centroids, dim=0)  # [K, D]
+
+        if self.detach_centroids:
+            centroids = centroids.detach()
+
+        idx = {int(cid): i for i, cid in enumerate(uniq.tolist())}
+
+        # build rival pair indices (only pairs present in this batch)
+        pi, pj = [], []
+        for a, rivals in self.cluster_rivals.items():
+            if a not in idx:
+                continue
+            ia = idx[a]
+            for b in rivals:
+                b = int(b)
+                if b in idx:
+                    ib = idx[b]
+                    pi.append(ia)
+                    pj.append(ib)
+
+        if len(pi) == 0:
+            out = z.sum() * 0.0
+            if self.reduction == "none":
+                return torch.zeros(B, device=device, dtype=z.dtype) + out
+            return out
+
+        pi = torch.tensor(pi, device=device, dtype=torch.long)
+        pj = torch.tensor(pj, device=device, dtype=torch.long)
+
+        # cosine similarity between centroid pairs
+        cos = (centroids[pi] * centroids[pj]).sum(dim=1)  # [P]
+
+        # softplus margin penalty: always stable, strong near high cos
+        loss_pairs = F.softplus(self.beta * (cos - self.margin)) / self.beta  # [P]
+
+        # reduction
+        if self.reduction == "none":
+            # return [B] vector: distribute pair-loss to samples of involved clusters (optional)
+            # simplest: return per-sample zeros except valid, with avg pair loss broadcast
+            out = torch.zeros(B, device=device, dtype=z.dtype)
+            out[valid] = loss_pairs.mean()
+            return out
+
+        return loss_pairs.mean() if self.reduction == "mean" else loss_pairs.sum()
+
+
+@LossFactory.register()
 class JointSupConCELoss(BaseLoss):
     """Joint supervised contrastive and cross-entropy loss."""
 
@@ -87,7 +198,6 @@ class JointSupConCELoss(BaseLoss):
         reduction: str = "mean",
         ignore_index: int = -1,
         temperature: float = 0.07,
-        margin: float = 0.2,
         label_smoothing: float = 0.0,
         class_weight: Optional[Tensor | list[float]] = None,
         device: Optional[torch.device] = torch.device("cpu"),
@@ -106,8 +216,14 @@ class JointSupConCELoss(BaseLoss):
             class_weight=class_weight,
             device=device,
         )
+        self.rival_repulsion = RivalRepulsionLoss(reduction="mean", device=device)
+
         self.lam_supcon = lam_supcon
         self.ignore_index = ignore_index
+
+    def update_cluster_rivals(self, cluster_rivals: dict[int, list[int]]) -> None:
+        """Update rival clusters for the RivalRepulsionLoss."""
+        self.rival_repulsion.cluster_rivals = cluster_rivals
 
     def forward(
         self,
@@ -127,13 +243,14 @@ class JointSupConCELoss(BaseLoss):
             contrastive_logits, clusters
         )  # [B], internally normalizes
         ce = self.ce(logits, target)  # [B]
+        rival_loss = self.rival_repulsion(contrastive_logits, clusters)  # [B]
 
         # Debug: monitor individual loss scales
         print(
-            f"CE: {ce.mean().item():.4f}, SupCon: {supcon_c.mean().item():.4f} -> {supcon_c.mean().item() * self.lam_supcon:.4f}"
+            f"CE: {ce.mean().item():.4f}, SupCon: {supcon_c.mean().item():.4f} -> {supcon_c.mean().item() * self.lam_supcon:.4f}, Rival: {rival_loss.mean().item():.4f}"
         )
 
         # Combine with separate weights for each contrastive loss
-        loss = ce + self.lam_supcon * supcon_c
+        loss = ce + self.lam_supcon * supcon_c + 3 * rival_loss
 
         return self._reduce(loss)

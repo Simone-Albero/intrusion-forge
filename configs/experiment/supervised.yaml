@@ -1,21 +1,21 @@
 # @package _global_
 defaults:
-  - override /model: numerical_contrastive_classifier
-  - override /loss: joint_sup_con_ce
-  - override /loops: batch_sampler
-  - override /optimizer: adamw
-  - override /scheduler: one_cycle
-  - override /sampler: rival_batch
-
-  # - override /model: numerical_classifier
-  # - override /loss: cross_entropy
-  # - override /loops: default
+  # - override /model: numerical_contrastive_classifier
+  # - override /loss: joint_sup_con_ce
+  # - override /loops: batch_sampler
   # - override /optimizer: adamw
   # - override /scheduler: one_cycle
-  # - override /sampler: null
+  # - override /sampler: rival_batch
+
+  - override /model: numerical_classifier
+  - override /loss: cross_entropy
+  - override /loops: default
+  - override /optimizer: adamw
+  - override /scheduler: one_cycle
+  - override /sampler: null
 
 clustering_type: over_splits
-cluster_thresholds: [0.9, 0.4]
+cluster_thresholds: [0.4, 0.4]
 cluster_classes: ["DoS", "Exploits"]
 ignore_clusters: # [-1]
 
