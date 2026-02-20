@@ -1,11 +1,11 @@
-from typing import Callable, Optional, Sequence
+from collections.abc import Callable, Sequence
 
-import torch
-from torch import nn
+
+from torch import Tensor, nn
 
 
 class MLPModule(nn.Module):
-    """Reusable MLP module (feedforward network)."""
+    """Reusable MLP feedforward network."""
 
     def __init__(
         self,
@@ -13,26 +13,12 @@ class MLPModule(nn.Module):
         out_features: int,
         hidden_dims: Sequence[int] = (),
         activation: Callable[[], nn.Module] = nn.ReLU,
-        norm_layer: Optional[Callable[[int], nn.Module]] = nn.BatchNorm1d,
+        norm_layer: Callable[[int], nn.Module] | None = nn.BatchNorm1d,
         dropout: float = 0.0,
     ) -> None:
-        """Initialize an MLP module.
-
-        Args:
-            in_features: Number of input features.
-            out_features: Number of output features.
-            hidden_dims: Sizes of hidden layers (empty = single linear).
-            activation: Activation constructor (e.g. nn.ReLU).
-            norm_layer: Optional normalization layer constructor (e.g. nn.BatchNorm1d).
-            dropout: Dropout probability applied after activations.
-            bias: Whether to include bias in linear layers.
-        """
         super().__init__()
-
         layers: list[nn.Module] = []
         prev_dim = in_features
-
-        # Hidden layers
         for dim in hidden_dims:
             layers.append(nn.Linear(prev_dim, dim, bias=norm_layer is None))
             if norm_layer is not None:
@@ -41,33 +27,16 @@ class MLPModule(nn.Module):
             if dropout > 0:
                 layers.append(nn.Dropout(dropout))
             prev_dim = dim
-
-        # Output layer
         layers.append(nn.Linear(prev_dim, out_features, bias=norm_layer is None))
-
         self.net = nn.Sequential(*layers)
         self._init_weights()
 
     def _init_weights(self) -> None:
-        """Xavier init for Linear layers."""
-        for module in self.modules():
-            if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass.
-
-        Args:
-            x: Input tensor of shape [batch_size, features].
-
-        Returns:
-            Output tensor of shape [batch_size, out_features].
-        """
-        if not torch.is_tensor(x):
-            raise TypeError("Expected input as torch.Tensor")
-        if x.dim() != 2:
-            raise ValueError("Expected 2D tensor [batch_size, features]")
-
+    def forward(self, x: Tensor) -> Tensor:
         return self.net(x)

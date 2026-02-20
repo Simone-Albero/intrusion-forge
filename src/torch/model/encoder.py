@@ -1,15 +1,14 @@
-from typing import Sequence, Optional, Callable, Tuple
+from collections.abc import Callable, Sequence
 
-import torch
-from torch import nn
+from torch import Tensor, nn
 
+from . import ModelFactory
 from .base import BaseModel, ModelOutput
 from ..module.encoder import (
-    NumericalEncoderModule,
     CategoricalEncoderModule,
+    NumericalEncoderModule,
     TabularEncoderModule,
 )
-from . import ModelFactory
 
 
 @ModelFactory.register()
@@ -22,84 +21,50 @@ class NumericalEncoder(BaseModel):
         hidden_dims: Sequence[int] = (),
         dropout: float = 0.0,
         activation: Callable[[], nn.Module] = nn.ReLU,
-        norm_layer: Optional[Callable[[int], nn.Module]] = nn.BatchNorm1d,
-        bias: bool = True,
+        norm_layer: Callable[[int], nn.Module] | None = nn.BatchNorm1d,
     ) -> None:
         super().__init__()
-        hidden_dims = list(hidden_dims)
-
         self.encoder_module = NumericalEncoderModule(
-            in_features=in_features,
-            out_features=out_features,
-            hidden_dims=hidden_dims,
-            dropout=dropout,
-            activation=activation,
-            norm_layer=norm_layer,
-            bias=bias,
+            in_features, out_features, hidden_dims, dropout, activation, norm_layer
         )
 
-    def forward(self, x: torch.Tensor) -> ModelOutput:
-        """Forward pass.
-        Args:
-            x: Input tensor
-        Returns:
-            Model output with 'z'
-        """
-        z = self.encoder_module(x)
-        return ModelOutput(z=z)
+    def forward(self, x: Tensor) -> ModelOutput:
+        return ModelOutput(z=self.encoder_module(x))
 
-    def for_loss(
-        self,
-        output: ModelOutput,
-        target: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Returns z and target for loss computation."""
+    def for_loss(self, output: ModelOutput, target: Tensor) -> tuple[Tensor, Tensor]:
         return output["z"], target
 
 
 @ModelFactory.register()
 class CategoricalEncoder(BaseModel):
+
     def __init__(
         self,
         out_features: int,
-        num_features: Optional[int] = None,
-        cardinalities: Optional[Sequence[int]] = None,
+        num_features: int | None = None,
+        cardinalities: Sequence[int] | None = None,
         max_emb_dim: int = 50,
         hidden_dims: Sequence[int] = (),
         dropout: float = 0.0,
         activation: Callable[[], nn.Module] = nn.ReLU,
-        norm_layer: Optional[Callable[[int], nn.Module]] = nn.BatchNorm1d,
+        norm_layer: Callable[[int], nn.Module] | None = nn.BatchNorm1d,
     ) -> None:
         super().__init__()
-        hidden_dims = list(hidden_dims)
-
         self.encoder_module = CategoricalEncoderModule(
-            out_features=out_features,
-            num_features=num_features,
-            cardinalities=cardinalities,
-            max_emb_dim=max_emb_dim,
-            hidden_dims=hidden_dims,
-            dropout=dropout,
-            activation=activation,
-            norm_layer=norm_layer,
+            out_features,
+            num_features,
+            cardinalities,
+            max_emb_dim,
+            hidden_dims,
+            dropout,
+            activation,
+            norm_layer,
         )
 
-    def forward(self, x: torch.Tensor) -> ModelOutput:
-        """Forward pass.
-        Args:
-            x: Input tensor
-        Returns:
-            Model output with 'z'
-        """
-        z = self.encoder_module(x)
-        return ModelOutput(z=z)
+    def forward(self, x: Tensor) -> ModelOutput:
+        return ModelOutput(z=self.encoder_module(x))
 
-    def for_loss(
-        self,
-        output: ModelOutput,
-        target: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Returns z and target for loss computation."""
+    def for_loss(self, output: ModelOutput, target: Tensor) -> tuple[Tensor, Tensor]:
         return output["z"], target
 
 
@@ -110,46 +75,29 @@ class TabularEncoder(BaseModel):
         self,
         num_numerical_features: int,
         out_features: int,
-        num_categorical_features: Optional[int] = None,
-        cardinalities: Optional[Sequence[int]] = None,
+        num_categorical_features: int | None = None,
+        cardinalities: Sequence[int] | None = None,
         max_emb_dim: int = 50,
         hidden_dims: Sequence[int] = (),
         dropout: float = 0.0,
         activation: Callable[[], nn.Module] = nn.ReLU,
-        norm_layer: Optional[Callable[[int], nn.Module]] = nn.BatchNorm1d,
+        norm_layer: Callable[[int], nn.Module] | None = nn.BatchNorm1d,
     ) -> None:
         super().__init__()
-        hidden_dims = list(hidden_dims)
-
         self.encoder_module = TabularEncoderModule(
-            num_numerical_features=num_numerical_features,
-            out_features=out_features,
-            num_categorical_features=num_categorical_features,
-            cardinalities=cardinalities,
-            max_emb_dim=max_emb_dim,
-            hidden_dims=hidden_dims,
-            dropout=dropout,
-            activation=activation,
-            norm_layer=norm_layer,
+            num_numerical_features,
+            out_features,
+            num_categorical_features,
+            cardinalities,
+            max_emb_dim,
+            hidden_dims,
+            dropout,
+            activation,
+            norm_layer,
         )
 
-    def forward(
-        self, x_numerical: torch.Tensor, x_categorical: torch.Tensor
-    ) -> ModelOutput:
-        """Forward pass.
-        Args:
-            x_numerical: Tensor of shape [batch_size, num_numerical_features]
-            x_categorical: Tensor of shape [batch_size, num_categorical_features]
-        Returns:
-            Model output with 'z'
-        """
-        z = self.encoder_module(x_numerical, x_categorical)
-        return ModelOutput(z=z)
+    def forward(self, x_numerical: Tensor, x_categorical: Tensor) -> ModelOutput:
+        return ModelOutput(z=self.encoder_module(x_numerical, x_categorical))
 
-    def for_loss(
-        self,
-        output: ModelOutput,
-        target: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Returns z and target for loss computation."""
+    def for_loss(self, output: ModelOutput, target: Tensor) -> tuple[Tensor, Tensor]:
         return output["z"], target

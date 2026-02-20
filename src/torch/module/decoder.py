@@ -1,9 +1,49 @@
-from typing import Sequence, Optional, Callable, Tuple
+from collections.abc import Callable, Sequence
 
 import torch
-from torch import nn
+from torch import Tensor, nn
 
 from ..module.mlp import MLPModule
+
+
+def _build_trunk(
+    in_features: int,
+    hidden_dims: Sequence[int],
+    activation: Callable[[], nn.Module],
+    norm_layer: Callable[[int], nn.Module] | None,
+    dropout: float,
+) -> tuple[nn.Module, int]:
+    """Return (trunk, trunk_out_features)."""
+    if hidden_dims:
+        return (
+            MLPModule(
+                in_features,
+                hidden_dims[-1],
+                hidden_dims[:-1],
+                activation,
+                norm_layer,
+                dropout,
+            ),
+            hidden_dims[-1],
+        )
+    return nn.Identity(), in_features
+
+
+def _pad_cat_logits(logits: list[Tensor], cardinalities: list[int]) -> Tensor:
+    """Pad each logit tensor to max_cardinality and stack -> [B, F, max_card]."""
+    max_card = max(cardinalities)
+    padded = []
+    for logit, card in zip(logits, cardinalities):
+        if card < max_card:
+            pad = torch.full(
+                (logit.size(0), max_card - card),
+                float("-inf"),
+                device=logit.device,
+                dtype=logit.dtype,
+            )
+            logit = torch.cat([logit, pad], dim=1)
+        padded.append(logit)
+    return torch.stack(padded, dim=1)
 
 
 class NumericalDecoderModule(nn.Module):
@@ -16,104 +56,43 @@ class NumericalDecoderModule(nn.Module):
         hidden_dims: Sequence[int] = (),
         dropout: float = 0.0,
         activation: Callable[[], nn.Module] = nn.ReLU,
-        norm_layer: Optional[Callable[[int], nn.Module]] = nn.BatchNorm1d,
+        norm_layer: Callable[[int], nn.Module] | None = nn.BatchNorm1d,
     ) -> None:
         super().__init__()
-        hidden_dims = list(hidden_dims)
-
         self.mlp = MLPModule(
-            in_features=in_features,
-            out_features=out_features,
-            hidden_dims=hidden_dims,
-            activation=activation,
-            norm_layer=norm_layer,
-            dropout=dropout,
+            in_features, out_features, hidden_dims, activation, norm_layer, dropout
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass.
-
-        Args:
-            x: Tensor of shape [batch_size, latent_dim]
-
-        Returns:
-            Tensor of shape [batch_size, out_features]
-        """
+    def forward(self, x: Tensor) -> Tensor:
         return self.mlp(x)
 
 
 class CategoricalDecoderModule(nn.Module):
-    """Decoder for categorical features using MLP and classification heads."""
+    """Decoder for categorical features using MLP trunk + per-feature classification heads."""
 
     def __init__(
         self,
         in_features: int,
-        num_features: Optional[int] = None,
-        cardinalities: Optional[Sequence[int]] = None,
+        num_features: int | None = None,
+        cardinalities: Sequence[int] | None = None,
         max_emb_dim: int = 50,
         hidden_dims: Sequence[int] = (),
         dropout: float = 0.0,
         activation: Callable[[], nn.Module] = nn.ReLU,
-        norm_layer: Optional[Callable[[int], nn.Module]] = nn.BatchNorm1d,
+        norm_layer: Callable[[int], nn.Module] | None = nn.BatchNorm1d,
     ) -> None:
         super().__init__()
-
-        self.cardinalities = cardinalities or [max_emb_dim] * num_features
-        hidden_dims = list(hidden_dims)
-
-        # Common decoder trunk
-        if hidden_dims:
-            self.trunk = MLPModule(
-                in_features=in_features,
-                out_features=hidden_dims[-1],
-                hidden_dims=hidden_dims[:-1],
-                activation=activation,
-                norm_layer=norm_layer,
-                dropout=dropout,
-            )
-            trunk_out_features = hidden_dims[-1]
-        else:
-            self.trunk = nn.Identity()
-            trunk_out_features = in_features
-
-        # Separate classification head for each categorical feature
-        self.heads = nn.ModuleList(
-            [
-                nn.Linear(trunk_out_features, cardinality)
-                for cardinality in self.cardinalities
-            ]
+        self.cardinalities = list(cardinalities or [max_emb_dim] * num_features)
+        self.trunk, trunk_out = _build_trunk(
+            in_features, list(hidden_dims), activation, norm_layer, dropout
         )
+        self.heads = nn.ModuleList(nn.Linear(trunk_out, c) for c in self.cardinalities)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass.
-
-        Args:
-            x: Tensor of shape [batch_size, latent_dim]
-
-        Returns:
-            Tensor of shape [batch_size, num_features, max_cardinality] for reconstructed categorical logits
-        """
-        # Pass through common trunk
+    def forward(self, x: Tensor) -> Tensor:
         features = self.trunk(x)
-
-        # Generate logits for each categorical feature
-        logits = [head(features) for head in self.heads]
-
-        # Pad to max cardinality if needed
-        max_cardinality = max(self.cardinalities)
-        padded_logits = []
-        for logit, cardinality in zip(logits, self.cardinalities):
-            if cardinality < max_cardinality:
-                padding = torch.full(
-                    (logit.size(0), max_cardinality - cardinality),
-                    float("-inf"),
-                    device=logit.device,
-                    dtype=logit.dtype,
-                )
-                logit = torch.cat([logit, padding], dim=1)
-            padded_logits.append(logit)
-
-        return torch.stack(padded_logits, dim=1)
+        return _pad_cat_logits(
+            [head(features) for head in self.heads], self.cardinalities
+        )
 
 
 class TabularDecoderModule(nn.Module):
@@ -123,80 +102,31 @@ class TabularDecoderModule(nn.Module):
         self,
         in_features: int,
         num_numerical_features: int,
-        num_categorical_features: Optional[int] = None,
-        cardinalities: Optional[Sequence[int]] = None,
+        num_categorical_features: int | None = None,
+        cardinalities: Sequence[int] | None = None,
         max_emb_dim: int = 50,
         hidden_dims: Sequence[int] = (),
         dropout: float = 0.0,
         activation: Callable[[], nn.Module] = nn.ReLU,
-        norm_layer: Optional[Callable[[int], nn.Module]] = nn.BatchNorm1d,
+        norm_layer: Callable[[int], nn.Module] | None = nn.BatchNorm1d,
     ) -> None:
         super().__init__()
-        self.num_numerical_features = num_numerical_features
-
-        self.cardinalities = cardinalities or [max_emb_dim] * num_categorical_features
-        hidden_dims = list(hidden_dims)
-
-        # Common decoder trunk
-        if hidden_dims:
-            self.trunk = MLPModule(
-                in_features=in_features,
-                out_features=hidden_dims[-1],
-                hidden_dims=hidden_dims[:-1],
-                activation=activation,
-                norm_layer=norm_layer,
-                dropout=dropout,
-            )
-            trunk_out_features = hidden_dims[-1]
-        else:
-            self.trunk = nn.Identity()
-            trunk_out_features = in_features
-
-        # Numeric features head
-        self.numerical_head = nn.Linear(trunk_out_features, num_numerical_features)
-
-        # Separate classification head for each categorical feature
+        self.cardinalities = list(
+            cardinalities or [max_emb_dim] * num_categorical_features
+        )
+        self.trunk, trunk_out = _build_trunk(
+            in_features, list(hidden_dims), activation, norm_layer, dropout
+        )
+        self.numerical_head = nn.Linear(trunk_out, num_numerical_features)
         self.categorical_heads = nn.ModuleList(
-            [
-                nn.Linear(trunk_out_features, cardinality)
-                for cardinality in self.cardinalities
-            ]
+            nn.Linear(trunk_out, c) for c in self.cardinalities
         )
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Forward pass.
-
-        Args:
-            x: Tensor of shape [batch_size, latent_dim]
-
-        Returns:
-            Tuple containing:
-                - Tensor of shape [batch_size, num_numerical_features] for reconstructed numerical features
-                - Tensor of shape [batch_size, num_categorical_features, max_cardinality] for reconstructed categorical logits
-        """
-
+    def forward(self, x: Tensor) -> tuple[Tensor, Tensor]:
         features = self.trunk(x)
-
-        # Generate numerical reconstructions
-        numerical_output = self.numerical_head(features)
-
-        # Generate logits for each categorical feature
-        categorical_logits = [head(features) for head in self.categorical_heads]
-
-        # Pad to max cardinality if needed
-        max_cardinality = max(self.cardinalities)
-        padded_logits = []
-        for logit, cardinality in zip(categorical_logits, self.cardinalities):
-            if cardinality < max_cardinality:
-                padding = torch.full(
-                    (logit.size(0), max_cardinality - cardinality),
-                    float("-inf"),
-                    device=logit.device,
-                    dtype=logit.dtype,
-                )
-                logit = torch.cat([logit, padding], dim=1)
-            padded_logits.append(logit)
-
-        categorical_output = torch.stack(padded_logits, dim=1)
-
-        return numerical_output, categorical_output
+        return (
+            self.numerical_head(features),
+            _pad_cat_logits(
+                [head(features) for head in self.categorical_heads], self.cardinalities
+            ),
+        )

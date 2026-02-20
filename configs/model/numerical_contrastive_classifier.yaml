@@ -2,7 +2,6 @@ name: numerical_contrastive_classifier
 
 params:
   in_features: ${data.num_numerical}
-  # Architecture
   hidden_dims: [512, 256, 128]
   dropout: 0.1
   num_classes: 11

@@ -241,6 +241,7 @@ def train(
         tb_logger.close()
 
     logger.info("Training completed.")
+    return model
 
 
 def test(
@@ -380,9 +381,10 @@ def test(
         tb_logger.close()
 
     logger.info("Testing completed.")
+    return _scalar_metrics, _per_class_metrics
 
 
-def main():
+def sup_classify():
     cfg = load_config(
         config_path=Path(__file__).parent / "configs",
         config_name="config",
@@ -390,7 +392,7 @@ def main():
     )
 
     json_logs_path = Path(cfg.path.json_logs)
-    df_meta = load_from_json(json_logs_path / "metadata" / "df.json")
+    df_meta = load_from_json(json_logs_path / "df_metadata.json")
     cfg.model.params.num_classes = df_meta["num_classes"]
 
     device = torch.device(cfg.device)
@@ -451,13 +453,16 @@ def main():
 
     stage = cfg.get("stage", "all")
     if stage in ("all", "training"):
-        train(**train_kwargs)
+        model = train(**train_kwargs)
     if stage in ("all", "testing"):
-        test(**test_kwargs)
+        scalar_metrics, per_class_metrics = test(**test_kwargs)
     if stage not in ("all", "training", "testing"):
         logger.error(f"Unknown stage: {stage!r}. Valid: 'all', 'training', 'testing'.")
         sys.exit(1)
 
+    logger.info("All stages completed.")
+    return model, scalar_metrics or {}, per_class_metrics or {}
+
 
 if __name__ == "__main__":
-    main()
+    sup_classify()

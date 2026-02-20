@@ -1,51 +1,30 @@
-from typing import Sequence, Optional
+from collections.abc import Sequence
 
 import torch
-from torch import nn, Tensor
+from torch import Tensor, nn
 
 
 class EmbeddingModule(nn.Module):
-    """Feature embedding for categorical variables with padding/unknown support."""
+    """Categorical feature embedding with padding/unknown support (index 0 reserved)."""
 
     def __init__(
         self,
-        num_features: Optional[int],
-        cardinalities: Optional[Sequence[int]],
+        num_features: int | None,
+        cardinalities: Sequence[int] | None,
         max_emb_dim: int = 50,
-    ):
-        """Initialize feature embedding.
-
-        Note:
-            Index 0 is reserved for padding/unknown values and initialized to zeros.
-        """
+    ) -> None:
         super().__init__()
-        self.embedding_layers = nn.ModuleList()
-        self.embedding_dims = []
         if num_features is None and cardinalities is None:
             raise ValueError("Either num_features or cardinalities must be provided.")
-
         if cardinalities is None:
-            cardinalities = [max_emb_dim] * num_features  # Default cardinality
-
-        for card in cardinalities:
-            dim = min(max_emb_dim, int(card**0.5))
-            embedding_layer = nn.Embedding(
-                num_embeddings=card + 1, embedding_dim=dim, padding_idx=0
-            )
-            self.embedding_layers.append(embedding_layer)
-            self.embedding_dims.append(dim)
+            cardinalities = [max_emb_dim] * num_features
+        self.embedding_dims = [min(max_emb_dim, int(c**0.5)) for c in cardinalities]
+        self.embedding_layers = nn.ModuleList(
+            nn.Embedding(c + 1, d, padding_idx=0)
+            for c, d in zip(cardinalities, self.embedding_dims)
+        )
 
     def forward(self, x: Tensor) -> Tensor:
-        """Forward pass.
-
-        Args:
-            x: Categorical features [batch_size, num_categorical_features]
-               Values with 0 are treated as padding/unknown
-
-        Returns:
-            Embedded features [batch_size, sum(embedding_dims)]
-        """
-        embedded_features = []
-        for i, embedding_layer in enumerate(self.embedding_layers):
-            embedded_features.append(embedding_layer(x[:, i]))
-        return torch.cat(embedded_features, dim=1)
+        return torch.cat(
+            [layer(x[:, i]) for i, layer in enumerate(self.embedding_layers)], dim=1
+        )

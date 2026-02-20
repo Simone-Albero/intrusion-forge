@@ -1,11 +1,19 @@
-from typing import Optional
-
 import torch
-from torch import Tensor
 import torch.nn.functional as F
+from torch import Tensor
 
-from .base import BaseLoss
 from . import LossFactory
+from .base import BaseLoss
+
+
+def _make_class_weight(
+    class_weight: Tensor | list[float] | None, device: torch.device
+) -> Tensor | None:
+    if class_weight is None:
+        return None
+    if not isinstance(class_weight, torch.Tensor):
+        class_weight = torch.tensor(list(class_weight), dtype=torch.float32)
+    return class_weight.to(device=device)
 
 
 @LossFactory.register()
@@ -17,127 +25,60 @@ class CrossEntropyLoss(BaseLoss):
         reduction: str = "mean",
         ignore_index: int = -1,
         label_smoothing: float = 0.0,
-        class_weight: Optional[Tensor | list[float]] = None,
-        device: Optional[torch.device] = torch.device("cpu"),
+        class_weight: Tensor | list[float] | None = None,
+        device: torch.device = torch.device("cpu"),
     ) -> None:
-        """Initialize cross-entropy loss.
-
-        Args:
-            reduction: How to reduce the loss ('mean', 'sum', 'none')
-            ignore_index: Index to ignore in loss calculation
-            label_smoothing: Label smoothing factor [0, 1)
-            class_weight: Per-class weights for imbalanced datasets
-        """
         super().__init__(reduction)
-
         if not (0.0 <= label_smoothing < 1.0):
             raise ValueError("label_smoothing must be in [0, 1)")
-
         self.ignore_index = ignore_index
         self.label_smoothing = label_smoothing
-
-        if class_weight is not None:
-            if not isinstance(class_weight, torch.Tensor):
-                class_weight = torch.tensor(list(class_weight), dtype=torch.float32).to(
-                    device=device
-                )
-            self.register_buffer("class_weight", class_weight)
+        w = _make_class_weight(class_weight, device)
+        if w is not None:
+            self.register_buffer("class_weight", w)
         else:
             self.class_weight = None
 
-    def forward(
-        self,
-        x: Tensor,
-        target: Tensor,
-    ) -> Tensor:
-        """Compute cross-entropy loss.
-
-        Args:
-            x: Logits tensor [batch_size, num_classes]
-            target: Target class indices [batch_size]
-
-        Returns:
-            Loss tensor (scalar or per-sample based on reduction)
-        """
-        class_weight = self.class_weight
-
+    def forward(self, x: Tensor, target: Tensor) -> Tensor:
         loss = F.cross_entropy(
             x,
             target,
-            weight=class_weight,
+            weight=self.class_weight,
             ignore_index=self.ignore_index,
             label_smoothing=self.label_smoothing,
             reduction="none",
         )
-
-        valid_mask = target != self.ignore_index
-        loss = loss[valid_mask]
-        return self._reduce(loss)
+        return self._reduce(loss[target != self.ignore_index])
 
 
 @LossFactory.register()
 class FocalLoss(BaseLoss):
-    """Focal Loss for addressing class imbalance.
-
-    Focal Loss down-weights easy examples and focuses on hard negatives.
-    FL(p_t) = -alpha_t * (1 - p_t)^gamma * log(p_t)
-    """
+    """Focal loss: FL(p_t) = -alpha_t * (1 - p_t)^gamma * log(p_t)."""
 
     def __init__(
         self,
-        class_weight: Optional[Tensor | list[float]] = None,
+        class_weight: Tensor | list[float] | None = None,
         gamma: float = 2.0,
         reduction: str = "mean",
         ignore_index: int = -1,
         label_smoothing: float = 0.0,
-        device: Optional[torch.device] = torch.device("cpu"),
+        device: torch.device = torch.device("cpu"),
     ) -> None:
-        """Initialize focal loss.
-
-        Args:
-            class_weight: Per-class weights for balancing [num_classes]. If None, no weighting.
-            gamma: Focusing parameter (gamma >= 0). gamma=0 is equivalent to CE.
-            reduction: How to reduce the loss ('mean', 'sum', 'none')
-            ignore_index: Index to ignore in loss calculation
-            label_smoothing: Label smoothing factor [0, 1)
-        """
         super().__init__(reduction)
-
         if gamma < 0:
             raise ValueError(f"gamma must be >= 0, got {gamma}")
-
         if not (0.0 <= label_smoothing < 1.0):
             raise ValueError("label_smoothing must be in [0, 1)")
-
         self.gamma = gamma
         self.ignore_index = ignore_index
         self.label_smoothing = label_smoothing
-
-        if class_weight is not None:
-            if not isinstance(class_weight, torch.Tensor):
-                class_weight = torch.tensor(list(class_weight), dtype=torch.float32).to(
-                    device=device
-                )
-            self.register_buffer("class_weight", class_weight)
+        w = _make_class_weight(class_weight, device)
+        if w is not None:
+            self.register_buffer("class_weight", w)
         else:
             self.class_weight = None
 
-    def forward(
-        self,
-        x: Tensor,
-        target: Tensor,
-    ) -> Tensor:
-        """Compute focal loss.
-
-        Args:
-            x: Logits tensor [batch_size, num_classes]
-            target: Target class indices [batch_size]
-
-        Returns:
-            Loss tensor (scalar or per-sample based on reduction)
-        """
-        import torch
-
+    def forward(self, x: Tensor, target: Tensor) -> Tensor:
         ce_loss = F.cross_entropy(
             x,
             target,
@@ -145,18 +86,8 @@ class FocalLoss(BaseLoss):
             label_smoothing=self.label_smoothing,
             ignore_index=self.ignore_index,
         )
-
-        p = torch.softmax(x, dim=1)
-        p_t = p.gather(1, target.unsqueeze(1)).squeeze(1)
-
-        focal_weight = (1 - p_t) ** self.gamma
-        loss = focal_weight * ce_loss
-
+        p_t = torch.softmax(x, dim=1).gather(1, target.unsqueeze(1)).squeeze(1)
+        loss = (1 - p_t) ** self.gamma * ce_loss
         if self.class_weight is not None:
-            alpha_t = self.class_weight.gather(0, target)
-            loss = alpha_t * loss
-
-        valid_mask = target != self.ignore_index
-        loss = loss[valid_mask]
-
-        return self._reduce(loss)
+            loss = self.class_weight.gather(0, target) * loss
+        return self._reduce(loss[target != self.ignore_index])

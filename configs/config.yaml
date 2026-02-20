@@ -11,11 +11,9 @@ defaults:
   - path: default
 
 seed: 42
-name: supervised_bg
+name: exp
 device: cpu
 stage: all
-
-
 
 hydra:
   run:
