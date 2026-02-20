@@ -321,6 +321,10 @@ def prepare(cfg):
 
     logger.info("Loading and preprocessing data...")
     df = load_df(str(raw_data_path))
+
+    df_info = get_df_info(df)
+    save_to_json(df_info, json_logs_path / "raw_df_info.json")
+
     train_df, val_df, test_df, label_mapping = preprocess_df(
         df,
         num_cols,
@@ -378,7 +382,9 @@ def prepare(cfg):
         cfg.data.benign_tag,
         label_mapping,
     )
-    save_to_json(metadata, json_logs_path / "df.json")
+    save_to_json(metadata, json_logs_path / "df_metadata.json")
+
+    return train_df, val_df, test_df, metadata
 
 
 def main():

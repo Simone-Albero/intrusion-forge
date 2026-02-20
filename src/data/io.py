@@ -1,7 +1,6 @@
-from typing import Tuple, List
+from typing import List
 from pathlib import Path
 import pickle
-import logging
 
 import pandas as pd
 
@@ -42,40 +41,7 @@ def save_df(
         raise ValueError(f"Unsupported file extension: {ext}")
 
 
-logger = logging.getLogger(__name__)
-
-
-def load_data_splits(
-    base_path: Path, file_base: str, ext: str
-) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Load train, validation, and test dataframes.
-
-    Args:
-        base_path: Path to the directory containing data files
-        file_base: Base name of the data files
-        ext: File extension
-
-    Returns:
-        Tuple of (train_df, val_df, test_df)
-
-    Raises:
-        FileNotFoundError: If data files are not found
-        Exception: For other loading errors
-    """
-    try:
-        train_df = load_df(base_path / f"{file_base}_train.{ext}")
-        val_df = load_df(base_path / f"{file_base}_val.{ext}")
-        test_df = load_df(base_path / f"{file_base}_test.{ext}")
-        return train_df, val_df, test_df
-    except FileNotFoundError as e:
-        logger.error(f"Data file not found: {e}")
-        raise
-    except Exception as e:
-        logger.error(f"Error loading data files: {e}")
-        raise
-
-
-def load_listed_df(base_dir: Path, file_names: List[str]) -> List[pd.DataFrame]:
+def load_listed_dfs(base_dir: Path, file_names: List[str]) -> List[pd.DataFrame]:
     """Load a list of DataFrames from a base directory.
 
     Args:
@@ -91,9 +57,9 @@ def load_listed_df(base_dir: Path, file_names: List[str]) -> List[pd.DataFrame]:
             df = load_df(base_dir / f"{file_name}.parquet")
             dfs.append(df)
         except FileNotFoundError as e:
-            logger.error(f"Data file not found: {base_dir / f'{file_name}.parquet'}")
-            raise
+            raise ValueError(
+                f"Data file not found: {base_dir / f'{file_name}.parquet'}"
+            )
         except Exception as e:
-            logger.error(f"Error loading data file {file_name}: {e}")
-            raise
+            raise ValueError(f"Error loading data file {file_name}: {e}")
     return dfs
