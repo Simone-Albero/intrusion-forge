@@ -3,18 +3,19 @@ import sys
 from pathlib import Path
 
 import torch
-import numpy as np
-from ignite.engine import Events
+from ignite.engine import Engine, Events
 from ignite.metrics import Accuracy, ConfusionMatrix, Average
 from ignite.handlers.tensorboard_logger import TensorboardLogger
 
 from src.common.config import load_config
 from src.common.logging import setup_logger
 from src.common.utils import save_to_json, load_from_json
-from src.data.io import load_data_splits
-from src.data.preprocessing import subsample_df, random_undersample_df
+
+from src.data.io import load_listed_dfs
+from src.data.preprocessing import subsample_df
+
 from src.torch.module.checkpoint import load_latest_checkpoint
-from src.torch.engine import exclude_ignored_classes, train_step, eval_step, test_step
+from src.torch.engine import train_step, eval_step, test_step
 from src.torch.builders import (
     create_dataloader,
     create_dataset,
@@ -24,48 +25,87 @@ from src.torch.builders import (
     create_scheduler,
     create_sampler,
 )
+from src.torch.data.batch import ensure_batch
+from src.torch.data.sampler.batch import RivalClusterBatchSampler
+
 from src.ignite.builders import EngineBuilder
 from src.ignite.metrics import F1, Precision, Recall
+
 from src.plot.array import confusion_matrix_to_plot
 from src.plot.dict import dict_to_bar_plot
-
-from src.torch.data.batch import ensure_batch
 
 setup_logger()
 logger = logging.getLogger(__name__)
 
 
-def load_data(
-    processed_data_path,
-    file_name,
-    extension,
-    label_col,
-    n_samples,
-    random_state,
-):
-    """Load and prepare data loaders."""
-    train_df, val_df, test_df = load_data_splits(
-        processed_data_path, file_name, extension
+def load_data(base_path, extension, label_col, n_samples, random_state):
+    """Load train/val/test splits and optionally subsample the training set."""
+    train_df, val_df, test_df = load_listed_dfs(
+        Path(base_path),
+        [f"train.{extension}", f"val.{extension}", f"test.{extension}"],
     )
-
-    # train_df = random_undersample_df(train_df, label_col, random_state)
-
     if n_samples is not None:
         train_df = subsample_df(train_df, n_samples, random_state, label_col)
-
     return train_df, val_df, test_df
 
 
-def make_loader(df, num_cols, cat_cols, label_cols, dataloader_cfg, **kwargs):
-    # Pass both class labels and cluster labels
-    dataset = create_dataset(df, num_cols, cat_cols, label_cols)
-    kwargs.update(dataloader_cfg)
-    return create_dataloader(dataset, kwargs)
+def make_loader(df, num_cols, cat_cols, label_cols, dataloader_cfg):
+    return create_dataloader(
+        create_dataset(df, num_cols, cat_cols, label_cols), dataloader_cfg
+    )
+
+
+def _make_sampler(df, label_col, sampler_name, sampler_params):
+    """Create a batch sampler with cluster and label arrays from a dataframe."""
+    params = dict(sampler_params)
+    params["clusters"] = df["cluster"].values
+    params["labels"] = df[label_col].values
+    return create_sampler(name=sampler_name, params=params)
+
+
+def _build_rival_updater(model, device, batch_sampler, loss_fn, invalid_classes=None):
+    """Build an engine that collects embeddings and updates cluster rivals."""
+
+    def step(engine, batch):
+        model.eval()
+        with torch.no_grad():
+            batch = ensure_batch(batch).to(device, non_blocking=True)
+            out = model(*batch.features)
+            z = torch.nn.functional.normalize(out["z"], dim=1, eps=1e-8)
+        engine.state.all_z.append(z.cpu())
+        engine.state.all_y.append(batch.labels[0].cpu())
+        engine.state.all_c.append(batch.labels[1].cpu())
+
+    engine = Engine(step)
+
+    @engine.on(Events.STARTED)
+    def reset(engine):
+        engine.state.all_z = []
+        engine.state.all_y = []
+        engine.state.all_c = []
+
+    @engine.on(Events.COMPLETED)
+    def _compute_rivals(engine):
+        all_z = torch.cat(engine.state.all_z).numpy()
+        all_y = torch.cat(engine.state.all_y).numpy()
+        all_c = torch.cat(engine.state.all_c).numpy()
+
+        cluster_rivals = RivalClusterBatchSampler.compute_rivals(
+            all_z, all_y, all_c, invalid_classes
+        )
+        if not cluster_rivals:
+            logger.warning("No cluster rivals found, skipping rival update.")
+            return
+
+        batch_sampler.cluster_rivals = cluster_rivals
+        loss_fn.update_cluster_rivals(cluster_rivals)
+        logger.info(f"Cluster rivals: {cluster_rivals}")
+
+    return engine
 
 
 def train(
     processed_data_path,
-    file_name,
     extension,
     num_cols,
     cat_cols,
@@ -96,43 +136,22 @@ def train(
     logger.info("Starting training phase...")
 
     train_df, val_df, _ = load_data(
-        processed_data_path,
-        file_name,
-        extension,
-        label_col,
-        n_samples,
-        random_state,
+        processed_data_path, extension, label_col, n_samples, random_state
     )
 
-    train_sampler = create_sampler(
-        name=sampler_name,
-        params=sampler_params,
-        clusters=train_df["cluster"].values,
-        labels=train_df[label_col].values,
-    )
+    train_sampler = val_sampler = None
+    if sampler_name is not None:
+        train_sampler = _make_sampler(train_df, label_col, sampler_name, sampler_params)
+        val_sampler = _make_sampler(val_df, label_col, sampler_name, sampler_params)
+        train_dataloader_cfg["batch_sampler"] = train_sampler
+        val_dataloader_cfg["batch_sampler"] = val_sampler
 
-    val_sampler = create_sampler(
-        name=sampler_name,
-        params=sampler_params,
-        clusters=val_df["cluster"].values,
-        labels=val_df[label_col].values,
-    )
-
+    extra_cols = ["cluster"] if train_sampler is not None else []
     train_loader = make_loader(
-        train_df,
-        num_cols,
-        cat_cols,
-        [label_col] if sampler_name is None else [label_col, "cluster"],
-        train_dataloader_cfg,
-        batch_sampler=train_sampler,
+        train_df, num_cols, cat_cols, [label_col] + extra_cols, train_dataloader_cfg
     )
     val_loader = make_loader(
-        val_df,
-        num_cols,
-        cat_cols,
-        [label_col] if sampler_name is None else [label_col, "cluster"],
-        val_dataloader_cfg,
-        batch_sampler=val_sampler,
+        val_df, num_cols, cat_cols, [label_col] + extra_cols, val_dataloader_cfg
     )
 
     model = create_model(model_name, model_params, device)
@@ -144,7 +163,6 @@ def train(
 
     log_dir = tb_logs_path / "training"
     log_dir.mkdir(parents=True, exist_ok=True)
-
     tb_logger = TensorboardLogger(log_dir=log_dir)
 
     trainer = (
@@ -205,129 +223,28 @@ def train(
             f"Epoch [{engine.state.epoch}] Val Loss: {validator.state.metrics['loss']:.6f}"
         )
 
+    rival_updater = _build_rival_updater(
+        model, device, train_loader.batch_sampler, loss_fn
+    )
+
     @trainer.on(Events.EPOCH_COMPLETED)
     def update_cluster_rivals(engine):
-        if not hasattr(train_loader.batch_sampler, "cluster_rivals"):
+        if train_sampler is None or not hasattr(
+            train_loader.batch_sampler, "cluster_rivals"
+        ):
             return
-
-        model.eval()
-        all_z, all_y, all_c = [], [], []
-        with torch.no_grad():
-            for batch in train_loader:
-                batch = ensure_batch(batch).to(device, non_blocking=True)
-                out = model(*batch.features)
-                z = torch.nn.functional.normalize(out["z"], dim=1, eps=1e-8)
-                all_z.append(z.cpu())
-                all_y.append(batch.labels[0].cpu())
-                all_c.append(batch.labels[1].cpu())
-
-        all_z = torch.cat(all_z).numpy()
-        all_y = torch.cat(all_y).numpy()
-        all_c = torch.cat(all_c).numpy()
-
-        valid_mask = all_c != -1
-        if valid_mask.sum() == 0:
-            logger.warning("No valid clusters found, skipping rival update")
-            return
-
-        z_v, y_v, c_v = all_z[valid_mask], all_y[valid_mask], all_c[valid_mask]
-        unique_clusters = np.unique(c_v)
-
-        # Compute cluster centroids, majority class, and purity
-        cluster_centroids = {}
-        cluster_to_class = {}
-        cluster_purity = {}
-
-        for cid in unique_clusters:
-            cid = int(cid)
-            mask = c_v == cid
-            z_c, y_c = z_v[mask], y_v[mask]
-
-            if len(z_c) == 0:
-                continue
-
-            centroid = z_c.mean(axis=0)
-            cluster_centroids[cid] = centroid / (np.linalg.norm(centroid) + 1e-12)
-
-            counts = np.bincount(y_c.astype(int))
-            cluster_to_class[cid] = int(counts.argmax())
-            cluster_purity[cid] = float(counts.max() / max(1, counts.sum()))
-
-        purity_threshold = 0.90
-        anchor_clusters = [
-            c
-            for c in cluster_centroids
-            if cluster_purity.get(c, 0.0) >= purity_threshold
-        ]
-
-        if not anchor_clusters:
-            logger.warning("No clusters above purity threshold, skipping rival update")
-            return
-
-        # Compute cosine similarity matrix
-        centroid_ids = list(cluster_centroids.keys())
-        centroids_matrix = np.stack([cluster_centroids[c] for c in centroid_ids])
-        similarity_matrix = centroids_matrix @ centroids_matrix.T
-        idx_map = {cid: i for i, cid in enumerate(centroid_ids)}
-
-        # Configure rival filtering
-        max_rivals = 5
-        min_similarity = 0.7
-        similarity_delta = 0.10
-
-        cluster_rivals = {}
-        cluster_to_similarity = {}
-
-        for cid in anchor_clusters:
-            anchor_idx = idx_map[cid]
-            anchor_class = cluster_to_class[cid]
-
-            # Find cross-class candidates and compute similarities
-            candidates = [
-                (
-                    float(similarity_matrix[anchor_idx, idx_map[other_cid]]),
-                    int(other_cid),
-                )
-                for other_cid in centroid_ids
-                if other_cid != cid and cluster_to_class.get(other_cid) != anchor_class
-            ]
-
-            if not candidates:
-                continue
-
-            # Sort by similarity and apply thresholds
-            candidates.sort(reverse=True)
-            best_similarity = candidates[0][0]
-
-            filtered = [
-                (sim, ocid)
-                for sim, ocid in candidates
-                if sim >= min_similarity and sim >= best_similarity - similarity_delta
-            ]
-
-            if filtered:
-                rivals = [ocid for sim, ocid in filtered[:max_rivals]]
-                cluster_rivals[int(cid)] = rivals
-                cluster_to_similarity[int(cid)] = float(
-                    np.mean([sim for sim, _ in filtered[:max_rivals]])
-                )
-
-        train_loader.batch_sampler.cluster_rivals = cluster_rivals
-        loss_fn.update_cluster_rivals(cluster_rivals)
-        logger.info(f"Current cluster rivals: {cluster_rivals}")
-        logger.info(f"Cluster to similarity: {cluster_to_similarity}")
+        rival_updater.run(train_loader)
 
     try:
         trainer.run(train_loader, max_epochs=max_epochs)
     finally:
         tb_logger.close()
 
-    logger.info("Training completed")
+    logger.info("Training completed.")
 
 
 def test(
     processed_data_path,
-    file_name,
     extension,
     num_cols,
     cat_cols,
@@ -341,19 +258,13 @@ def test(
     tb_logs_path,
     json_logs_path,
     run_id,
-    ignore_classes,
     device,
 ):
     """Test the trained classifier."""
     logger.info("Starting testing phase...")
 
     _, _, test_df = load_data(
-        processed_data_path,
-        file_name,
-        extension,
-        label_col,
-        n_samples,
-        random_state,
+        processed_data_path, extension, label_col, n_samples, random_state
     )
     test_loader = make_loader(
         test_df, num_cols, cat_cols, [label_col], test_dataloader_cfg
@@ -364,7 +275,6 @@ def test(
     num_classes = model_params.num_classes
     log_dir = tb_logs_path / "testing"
     log_dir.mkdir(parents=True, exist_ok=True)
-
     tb_logger = TensorboardLogger(log_dir=log_dir)
 
     prepare_output = lambda x: (
@@ -375,104 +285,79 @@ def test(
     tester = EngineBuilder(test_step).with_state(model=model, device=device)
     tester.with_metric("accuracy", Accuracy(output_transform=prepare_output))
 
-    for avg_type in ["macro", "weighted"]:
-        tester.with_metric(
-            f"precision_{avg_type}",
-            Precision(
-                average=avg_type,
-                output_transform=prepare_output,
-                num_classes=num_classes,
-            ),
-        )
-        tester.with_metric(
-            f"recall_{avg_type}",
-            Recall(
-                average=avg_type,
-                output_transform=prepare_output,
-                num_classes=num_classes,
-            ),
-        )
-        tester.with_metric(
-            f"f1_{avg_type}",
-            F1(
-                average=avg_type,
-                output_transform=prepare_output,
-                num_classes=num_classes,
-            ),
-        )
+    for avg_type in ("macro", "weighted"):
+        for name, cls in (("precision", Precision), ("recall", Recall), ("f1", F1)):
+            tester.with_metric(
+                f"{name}_{avg_type}",
+                cls(
+                    average=avg_type,
+                    output_transform=prepare_output,
+                    num_classes=num_classes,
+                ),
+            )
 
-    for metric_name, metric_cls in [
-        ("precision", Precision),
-        ("recall", Recall),
-        ("f1", F1),
-    ]:
+    for name, cls in (("precision", Precision), ("recall", Recall), ("f1", F1)):
         tester.with_metric(
-            f"{metric_name}_per_class",
-            metric_cls(
-                average=None, output_transform=prepare_output, num_classes=num_classes
-            ),
+            f"{name}_per_class",
+            cls(average=None, output_transform=prepare_output, num_classes=num_classes),
         )
 
     tester.with_metric(
         "confusion_matrix",
         ConfusionMatrix(num_classes=num_classes, output_transform=prepare_output),
     )
-
     tester = tester.build()
+
+    _scalar_metrics = [
+        "accuracy",
+        "precision_macro",
+        "recall_macro",
+        "f1_macro",
+        "precision_weighted",
+        "recall_weighted",
+        "f1_weighted",
+    ]
+    _per_class_metrics = {
+        "precision_per_class",
+        "recall_per_class",
+        "f1_per_class",
+        "confusion_matrix",
+    }
 
     @tester.on(Events.COMPLETED)
     def log_results(engine):
-        """Log metrics to console, JSON, and TensorBoard."""
         metrics = engine.state.metrics
 
-        # Console logging
-        logger.info("Test Results:")
         for name, value in metrics.items():
-            if name not in [
-                "confusion_matrix",
-                "precision_per_class",
-                "recall_per_class",
-                "f1_per_class",
-            ]:
+            if name not in _per_class_metrics:
                 logger.info(f"{name}: {value}")
 
-        # JSON logging
-        metrics_to_save = {}
-        for name, value in metrics.items():
-            if isinstance(value, torch.Tensor):
-                metrics_to_save[name] = (
-                    value.cpu().numpy().tolist() if value.numel() > 1 else float(value)
-                )
-            else:
-                metrics_to_save[name] = value
+        def to_python(v):
+            if isinstance(v, torch.Tensor):
+                return v.cpu().numpy().tolist() if v.numel() > 1 else float(v)
+            return v
 
-        json_path = json_logs_path / "test" / f"summary.json"
-        save_to_json(metrics_to_save, json_path)
+        save_to_json(
+            {k: to_python(v) for k, v in metrics.items()},
+            json_logs_path / "test" / "summary.json",
+        )
 
-        # TensorBoard logging
-        global_metrics = [
-            "accuracy",
-            "precision_macro",
-            "recall_macro",
-            "f1_macro",
-            "precision_weighted",
-            "recall_weighted",
-            "f1_weighted",
-        ]
-
-        for name in global_metrics:
+        for name in _scalar_metrics:
             if name in metrics:
                 tb_logger.writer.add_scalar(
                     f"test/metrics/{name}", metrics[name], run_id
                 )
 
         if "confusion_matrix" in metrics:
-            cm_figure = confusion_matrix_to_plot(
-                metrics["confusion_matrix"].cpu().numpy(),
-                title="Confusion Matrix",
-                normalize="true",
+            tb_logger.writer.add_figure(
+                "test/confusion_matrix",
+                confusion_matrix_to_plot(
+                    metrics["confusion_matrix"].cpu().numpy(),
+                    title="Confusion Matrix",
+                    normalize="true",
+                ),
+                run_id,
             )
-            tb_logger.writer.add_figure("test/confusion_matrix", cm_figure, run_id)
 
         if "f1_per_class" in metrics:
             f1_dict = {
@@ -485,7 +370,7 @@ def test(
 
         tb_logger.writer.add_figure(
             "test/global_metrics",
-            dict_to_bar_plot({k: metrics[k] for k in global_metrics if k in metrics}),
+            dict_to_bar_plot({k: metrics[k] for k in _scalar_metrics if k in metrics}),
             run_id,
         )
 
@@ -494,11 +379,10 @@ def test(
     finally:
         tb_logger.close()
 
-    logger.info("Testing completed")
+    logger.info("Testing completed.")
 
 
 def main():
-    """Main training pipeline for supervised learning."""
     cfg = load_config(
         config_path=Path(__file__).parent / "configs",
         config_name="config",
@@ -506,11 +390,9 @@ def main():
     )
 
     json_logs_path = Path(cfg.path.json_logs)
-    df_meta = load_from_json(
-        json_logs_path / "metadata" / f"df.json",
-    )
+    df_meta = load_from_json(json_logs_path / "metadata" / "df.json")
     cfg.model.params.num_classes = df_meta["num_classes"]
-    # cfg.loss.params.class_weight = df_meta["class_weights"]
+
     device = torch.device(cfg.device)
     logger.info(f"Using device: {device}")
 
@@ -521,70 +403,59 @@ def main():
     processed_data_path = Path(cfg.path.processed_data)
     models_path = Path(cfg.path.models)
     tb_logs_path = Path(cfg.path.tb_logs)
-    ignore_classes = list(cfg.ignore_classes) if cfg.get("ignore_classes") else None
-    run_id = cfg.run_id
 
-    train_kwargs = {
-        "processed_data_path": processed_data_path,
-        "file_name": cfg.data.file_name,
-        "extension": cfg.data.extension,
-        "num_cols": num_cols,
-        "cat_cols": cat_cols,
-        "label_col": label_col,
-        "n_samples": cfg.n_samples,
-        "random_state": cfg.seed,
-        "train_dataloader_cfg": cfg.loops.training.dataloader,
-        "val_dataloader_cfg": cfg.loops.validation.dataloader,
-        "model_name": cfg.model.name,
-        "model_params": cfg.model.params,
-        "loss_name": cfg.loss.name,
-        "loss_params": cfg.loss.params,
-        "optimizer_name": cfg.optimizer.name,
-        "optimizer_params": cfg.optimizer.params,
-        "scheduler_name": cfg.scheduler.name,
-        "scheduler_params": cfg.scheduler.params,
-        "sampler_name": cfg.sampler.name if "sampler" in cfg else None,
-        "sampler_params": cfg.sampler.params if "sampler" in cfg else None,
-        "tb_logs_path": tb_logs_path,
-        "models_path": models_path,
-        "max_epochs": cfg.loops.training.epochs,
-        "max_grad_norm": cfg.loops.training.get("max_grad_norm", 1.0),
-        "early_stopping_patience": cfg.loops.training.early_stopping.patience,
-        "early_stopping_min_delta": cfg.loops.training.early_stopping.min_delta,
-        "device": device,
-    }
+    common = dict(
+        processed_data_path=processed_data_path,
+        extension=cfg.data.extension,
+        num_cols=num_cols,
+        cat_cols=cat_cols,
+        label_col=label_col,
+        n_samples=cfg.n_samples,
+        random_state=cfg.seed,
+    )
 
-    test_kwargs = {
-        "processed_data_path": processed_data_path,
-        "file_name": cfg.data.file_name,
-        "extension": cfg.data.extension,
-        "num_cols": num_cols,
-        "cat_cols": cat_cols,
-        "label_col": label_col,
-        "n_samples": cfg.n_samples,
-        "random_state": cfg.seed,
-        "test_dataloader_cfg": cfg.loops.test.dataloader,
-        "model_name": cfg.model.name,
-        "model_params": cfg.model.params,
-        "models_path": models_path,
-        "tb_logs_path": tb_logs_path,
-        "json_logs_path": json_logs_path,
-        "run_id": run_id,
-        "ignore_classes": ignore_classes,
-        "device": device,
-    }
+    train_kwargs = dict(
+        **common,
+        train_dataloader_cfg=cfg.loops.training.dataloader,
+        val_dataloader_cfg=cfg.loops.validation.dataloader,
+        model_name=cfg.model.name,
+        model_params=cfg.model.params,
+        loss_name=cfg.loss.name,
+        loss_params=cfg.loss.params,
+        optimizer_name=cfg.optimizer.name,
+        optimizer_params=cfg.optimizer.params,
+        scheduler_name=cfg.scheduler.name,
+        scheduler_params=cfg.scheduler.params,
+        sampler_name=cfg.sampler.name if "sampler" in cfg else None,
+        sampler_params=cfg.sampler.params if "sampler" in cfg else None,
+        tb_logs_path=tb_logs_path,
+        models_path=models_path,
+        max_epochs=cfg.loops.training.epochs,
+        max_grad_norm=cfg.loops.training.get("max_grad_norm", 1.0),
+        early_stopping_patience=cfg.loops.training.early_stopping.patience,
+        early_stopping_min_delta=cfg.loops.training.early_stopping.min_delta,
+        device=device,
+    )
 
-    # Run pipeline based on stage
+    test_kwargs = dict(
+        **common,
+        test_dataloader_cfg=cfg.loops.test.dataloader,
+        model_name=cfg.model.name,
+        model_params=cfg.model.params,
+        models_path=models_path,
+        tb_logs_path=tb_logs_path,
+        json_logs_path=json_logs_path,
+        run_id=cfg.run_id,
+        device=device,
+    )
+
     stage = cfg.get("stage", "all")
-    if stage == "all":
+    if stage in ("all", "training"):
         train(**train_kwargs)
+    if stage in ("all", "testing"):
         test(**test_kwargs)
-    elif stage == "training":
-        train(**train_kwargs)
-    elif stage == "testing":
-        test(**test_kwargs)
-    else:
-        logger.error(f"Unknown stage: {stage}. Valid: 'all', 'training', 'testing'")
+    if stage not in ("all", "training", "testing"):
+        logger.error(f"Unknown stage: {stage!r}. Valid: 'all', 'training', 'testing'.")
         sys.exit(1)
 
 

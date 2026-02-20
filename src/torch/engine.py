@@ -1,5 +1,3 @@
-from typing import Dict, Optional, Tuple, List
-
 import torch
 from torch.nn.utils import clip_grad_norm_
 
@@ -13,25 +11,23 @@ from .loss.base import BaseLoss
 def _forward_and_loss(
     model: BaseModel,
     batch: Batch,
-    loss_fn: Optional[BaseLoss] = None,
-) -> Tuple[ModelOutput, Optional[torch.Tensor]]:
+    loss_fn: BaseLoss | None = None,
+) -> tuple[ModelOutput, torch.Tensor | None]:
     """Forward pass with optional loss computation."""
-    outputs = model(*batch.features)
-
-    if loss_fn is None or batch.labels is None:
-        return outputs, None
-
-    loss = loss_fn(*model.for_loss(outputs, *batch.labels))
-    return outputs, loss
+    output = model(*batch.features)
+    if loss_fn is None:
+        return output, None
+    return output, loss_fn(*model.for_loss(output, *batch.labels))
 
 
-def train_step(engine: Engine, batch: Batch) -> Dict[str, float]:
+def train_step(engine: Engine, batch: Batch) -> dict[str, float]:
+    s = engine.state
     model, optimizer, scheduler, loss_fn, device = (
-        engine.state.model,
-        engine.state.optimizer,
-        engine.state.scheduler,
-        engine.state.loss_fn,
-        engine.state.device,
+        s.model,
+        s.optimizer,
+        s.scheduler,
+        s.loss_fn,
+        s.device,
     )
 
     model.train()
@@ -40,27 +36,17 @@ def train_step(engine: Engine, batch: Batch) -> Dict[str, float]:
     optimizer.zero_grad()
     _, loss = _forward_and_loss(model, batch, loss_fn)
     loss.backward()
-
-    grad_norm = float(
-        clip_grad_norm_(model.parameters(), max_norm=engine.state.max_grad_norm)
-    )
-
+    grad_norm = float(clip_grad_norm_(model.parameters(), max_norm=s.max_grad_norm))
     optimizer.step()
     if scheduler is not None:
         scheduler.step()
 
-    return {
-        "loss": loss.item(),
-        "grad_norm": grad_norm,
-    }
+    return {"loss": loss.item(), "grad_norm": grad_norm}
 
 
-def eval_step(engine: Engine, batch: Batch) -> Dict[str, float]:
-    model, loss_fn, device = (
-        engine.state.model,
-        engine.state.loss_fn,
-        engine.state.device,
-    )
+def eval_step(engine: Engine, batch: Batch) -> dict[str, float]:
+    s = engine.state
+    model, loss_fn, device = s.model, s.loss_fn, s.device
 
     model.eval()
     batch = ensure_batch(batch).to(device, non_blocking=True)
@@ -68,45 +54,22 @@ def eval_step(engine: Engine, batch: Batch) -> Dict[str, float]:
     with torch.no_grad():
         _, loss = _forward_and_loss(model, batch, loss_fn)
 
-    return {
-        "loss": loss.item(),
-    }
+    return {"loss": loss.item()}
 
 
-def test_step(engine: Engine, batch: Batch) -> Dict[str, torch.Tensor]:
-    model, device, loss_fn = (
-        engine.state.model,
-        engine.state.device,
-        engine.state.loss_fn if hasattr(engine.state, "loss_fn") else None,
-    )
+def test_step(engine: Engine, batch: Batch) -> dict:
+    s = engine.state
+    model, device = s.model, s.device
+    loss_fn = getattr(s, "loss_fn", None)
 
     model.eval()
     batch = ensure_batch(batch).to(device, non_blocking=True)
 
     with torch.no_grad():
-        output = model(*batch.features)
-        if loss_fn is not None:
-            loss = loss_fn(*model.for_loss(output, *batch.labels))
+        output, loss = _forward_and_loss(model, batch, loss_fn)
 
     return {
         "output": output,
-        "loss": loss if loss_fn is not None else torch.tensor(0.0),
-        "y_true": (
-            batch.labels[0]
-            if isinstance(batch.labels, list) and len(batch.labels) == 1
-            else batch.labels
-        ),
+        "loss": loss if loss is not None else torch.tensor(0.0),
+        "y_true": batch.labels[0] if len(batch.labels) == 1 else batch.labels,
     }
-
-
-def exclude_ignored_classes(
-    output: torch.Tensor,
-    y_true: torch.Tensor,
-    ignore_classes: Optional[List[int]] = None,
-) -> Dict[str, torch.Tensor]:
-    if ignore_classes is not None:
-        mask = ~torch.isin(y_true, torch.tensor(ignore_classes, device=y_true.device))
-
-        return output[mask], y_true[mask]
-
-    return output, y_true

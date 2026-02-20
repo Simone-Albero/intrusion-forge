@@ -1,38 +1,32 @@
-from typing import Tuple, Optional, Sequence, List, Union
-
 import pandas as pd
 import numpy as np
 import torch
 from torch.utils.data import Dataset
 
 
-Sample = Tuple[List[torch.Tensor], List[torch.Tensor]]
+Sample = tuple[list[torch.Tensor], list[torch.Tensor]]
+
+
+def _to_tensor(
+    data: pd.DataFrame | pd.Series | np.ndarray, dtype: torch.dtype
+) -> torch.Tensor:
+    if isinstance(data, (pd.DataFrame, pd.Series)):
+        data = data.values
+    return torch.as_tensor(data, dtype=dtype)
 
 
 class TensorDataset(Dataset):
-    """
-    Wraps a pandas DataFrame (and optional pandas Series) into torch tensors.
-    """
+    """Wraps a DataFrame/array (and optional labels) into a torch Dataset."""
 
     def __init__(
         self,
-        features: Union[pd.DataFrame, np.ndarray],
-        labels: Optional[Union[pd.Series, np.ndarray]] = None,
+        features: pd.DataFrame | np.ndarray,
+        labels: pd.Series | np.ndarray | None = None,
         feature_dtype: torch.dtype = torch.float32,
         label_dtype: torch.dtype = torch.long,
     ) -> None:
-        self.features: torch.Tensor = torch.as_tensor(
-            features.values if isinstance(features, pd.DataFrame) else features,
-            dtype=feature_dtype,
-        )
-        self.labels: Optional[torch.Tensor] = (
-            torch.as_tensor(
-                labels.values if isinstance(labels, pd.Series) else labels,
-                dtype=label_dtype,
-            )
-            if labels is not None
-            else None
-        )
+        self.features = _to_tensor(features, feature_dtype)
+        self.labels = _to_tensor(labels, label_dtype) if labels is not None else None
 
     def __len__(self) -> int:
         return self.features.size(0)
@@ -44,55 +38,48 @@ class TensorDataset(Dataset):
 
 
 class TabularDataset(Dataset):
-    """
-    Dataset for tabular data supporting numerical, categorical, or mixed features.
+    """Dataset for tabular data with mixed numerical and categorical features.
 
     Args:
-        df: DataFrame containing the data
-        num_cols: List of numerical column names (optional)
-        cat_cols: List of categorical column names (optional)
-        label_col: Name or list of label column names (optional)
+        df: Source DataFrame.
+        num_cols: Numerical column names.
+        cat_cols: Categorical column names.
+        label_col: Single label column name or list of label column names.
 
     Returns:
-        Sample tuple where:
-        - features is a list of tensors [numerical, categorical] or single tensor
-        - labels is a list of tensors (one per label column) or same as features if no labels
+        ``(features, labels)`` where each is a list of tensors. When no labels
+        are provided, ``labels`` is the same list as ``features``.
     """
 
     def __init__(
         self,
         df: pd.DataFrame,
-        num_cols: Optional[Sequence[str]] = None,
-        cat_cols: Optional[Sequence[str]] = None,
-        label_col: Optional[Union[str, Sequence[str]]] = None,
+        num_cols: list[str] | None = None,
+        cat_cols: list[str] | None = None,
+        label_col: str | list[str] | None = None,
     ) -> None:
-        self.has_numerical = num_cols is not None and len(num_cols) > 0
-        self.has_categorical = cat_cols is not None and len(cat_cols) > 0
+        if not num_cols and not cat_cols:
+            raise ValueError("At least one of num_cols or cat_cols must be provided.")
 
-        if not self.has_numerical and not self.has_categorical:
-            raise ValueError("At least one of num_cols or cat_cols must be provided")
+        self.numerical_features = (
+            torch.as_tensor(df[num_cols].values.copy(), dtype=torch.float32)
+            if num_cols
+            else None
+        )
+        self.categorical_features = (
+            torch.as_tensor(df[cat_cols].values.copy(), dtype=torch.long)
+            if cat_cols
+            else None
+        )
 
-        self.numerical_features: Optional[torch.Tensor] = None
-        self.categorical_features: Optional[torch.Tensor] = None
-
-        if self.has_numerical:
-            self.numerical_features = torch.as_tensor(
-                df[num_cols].values.copy(), dtype=torch.float32
-            )
-
-        if self.has_categorical:
-            self.categorical_features = torch.as_tensor(
-                df[cat_cols].values.copy(), dtype=torch.long
-            )
-
-        # Support single or multiple label columns
-        self.labels: Optional[List[torch.Tensor]] = None
         if label_col is not None:
             label_cols = [label_col] if isinstance(label_col, str) else list(label_col)
-            self.labels = [
+            self.labels: list[torch.Tensor] | None = [
                 torch.as_tensor(df[col].values.copy(), dtype=torch.long)
                 for col in label_cols
             ]
+        else:
+            self.labels = None
 
         self._length = len(df)
 
@@ -100,19 +87,12 @@ class TabularDataset(Dataset):
         return self._length
 
     def __getitem__(self, index: int) -> Sample:
-        if self.has_numerical and self.has_categorical:
-            features = [
-                self.numerical_features[index],
-                self.categorical_features[index],
-            ]
-        elif self.has_numerical:
-            features = [self.numerical_features[index]]
-        else:
-            features = [self.categorical_features[index]]
-
+        features = [
+            t[index]
+            for t in (self.numerical_features, self.categorical_features)
+            if t is not None
+        ]
         labels = (
-            [label_tensor[index] for label_tensor in self.labels]
-            if self.labels is not None
-            else features
+            [t[index] for t in self.labels] if self.labels is not None else features
         )
         return features, labels

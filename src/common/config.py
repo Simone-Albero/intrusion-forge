@@ -1,6 +1,5 @@
 import os
 from pathlib import Path
-from typing import List, Optional
 
 from hydra import compose, initialize_config_dir
 from omegaconf import DictConfig
@@ -13,7 +12,7 @@ from src.common.utils import save_to_json
 def load_config(
     config_path: str = "configs",
     config_name: str = "config",
-    overrides: Optional[List[str]] = None,
+    overrides: list[str] | None = None,
 ) -> DictConfig:
     """
     Load and return a DictConfig using Hydra's Compose API.

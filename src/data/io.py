@@ -1,4 +1,3 @@
-from typing import List
 from pathlib import Path
 import pickle
 
@@ -41,7 +40,7 @@ def save_df(
         raise ValueError(f"Unsupported file extension: {ext}")
 
 
-def load_listed_dfs(base_dir: Path, file_names: List[str]) -> List[pd.DataFrame]:
+def load_listed_dfs(base_dir: Path, file_names: list[str]) -> list[pd.DataFrame]:
     """Load a list of DataFrames from a base directory.
 
     Args:

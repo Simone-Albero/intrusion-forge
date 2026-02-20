@@ -45,9 +45,7 @@ class ComposableClassifier(BaseModel):
         For standard losses: returns (logits, target)
         For contrastive losses: returns (z, target, clusters, ...)
         """
-        if args:
-            return (output["z"], output["logits"], target, *args)
-        return (output["logits"], target)
+        return (output["logits"], target, *args)
 
 
 class ComposableTabularClassifier(BaseModel):
@@ -90,9 +88,7 @@ class ComposableTabularClassifier(BaseModel):
         For standard losses: returns (logits, target)
         For contrastive losses: returns (z, target, clusters, ...)
         """
-        if args:
-            return (output["z"], output["logits"], target, *args)
-        return (output["logits"], target)
+        return (output["logits"], target, *args)
 
 
 @ModelFactory.register()
