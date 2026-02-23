@@ -7,7 +7,7 @@ from src.common.logging import setup_logger
 from src.common.utils import save_to_json
 
 from src.data.io import load_listed_dfs
-from src.data.analyze import compute_class_similarity, compute_class_separability
+from src.data.analyze import compute_class_separability
 
 setup_logger()
 logger = logging.getLogger(__name__)
@@ -29,7 +29,11 @@ def analyze(cfg):
     )
 
     separability_results = {}
-    label_cols = [cfg.data.label_col, "cluster"]
+    label_cols = (
+        [cfg.data.label_col]
+        if "cluster" not in train_df.columns
+        else [cfg.data.label_col, "cluster"]
+    )
     for split_name, split_df in [
         ("train", train_df),
         ("val", val_df),

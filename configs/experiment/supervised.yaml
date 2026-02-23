@@ -14,10 +14,10 @@ defaults:
   - override /scheduler: one_cycle
   - override /sampler: null
 
-clustering_type: over_all
-cluster_thresholds: [0.4, 0.4]
-cluster_classes: ["DoS", "Exploits"]
-ignore_clusters: [-1] # [-1]
+clustering_type: null # over_all
+cluster_thresholds: [] # [0.4, 0.4]
+cluster_classes: [] # ["DoS", "Exploits"]
+ignore_clusters: [] # [-1]
 
 n_samples: null
 run_id: 0

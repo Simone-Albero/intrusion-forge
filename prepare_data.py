@@ -31,7 +31,7 @@ setup_logger()
 logger = logging.getLogger(__name__)
 
 
-def get_df_info(df):
+def get_df_info(df, label_col=None):
     """Return basic information about the dataframe."""
     info = {
         "shape": list(df.shape),
@@ -46,6 +46,9 @@ def get_df_info(df):
             "dtype": str(df[col].dtype),
             "unique_count": int(df[col].nunique()),
         }
+
+    if label_col and label_col in df.columns:
+        info["label_distribution"] = df[label_col].value_counts().to_dict()
 
     return info
 
@@ -320,7 +323,7 @@ def prepare(cfg):
     logger.info("Loading and preprocessing data...")
     df = load_df(str(raw_data_path))
 
-    df_info = get_df_info(df)
+    df_info = get_df_info(df, label_col=label_col)
     save_to_json(df_info, json_logs_path / "data/info.json")
 
     train_df, val_df, test_df = preprocess_df(
