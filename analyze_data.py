@@ -29,21 +29,25 @@ def analyze(cfg):
     )
 
     separability_results = {}
-    label_col = cfg.data.label_col
+    label_cols = [cfg.data.label_col, "cluster"]
     for split_name, split_df in [
         ("train", train_df),
         ("val", val_df),
         ("test", test_df),
     ]:
-        logger.info(f"Computing separability on {split_name} set ...")
-        X = split_df[feature_cols].values
-        y = split_df[label_col].values
-        separability_result = compute_class_separability(X, y)
-        save_to_json(
-            separability_result,
-            Path(cfg.path.json_logs) / f"separability/{split_name}.json",
-        )
-        separability_results[split_name] = separability_result
+        for label_col in label_cols:
+            logger.info(f"Computing separability on {split_name} set ...")
+            X = split_df[feature_cols].values
+            y = split_df[label_col].values
+            separability_result = compute_class_separability(X, y)
+            save_to_json(
+                separability_result,
+                Path(cfg.path.json_logs)
+                / f"data/separability/{label_col}_{split_name}.json",
+            )
+            if label_col not in separability_results:
+                separability_results[label_col] = {}
+            separability_results[label_col][split_name] = separability_result
 
     return separability_results
 

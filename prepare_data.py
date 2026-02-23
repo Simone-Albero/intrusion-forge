@@ -34,17 +34,17 @@ logger = logging.getLogger(__name__)
 def get_df_info(df):
     """Return basic information about the dataframe."""
     info = {
-        "shape": df.shape,
+        "shape": list(df.shape),
         "columns": list(df.columns),
-        "dtypes": df.dtypes.to_dict(),
-        "memory_usage": df.memory_usage(deep=True).sum(),
+        "dtypes": {col: str(dtype) for col, dtype in df.dtypes.to_dict().items()},
+        "memory_usage": int(df.memory_usage(deep=True).sum()),
         "feature_info": {},
     }
 
     for col in df.columns:
         info["feature_info"][col] = {
-            "dtype": df[col].dtype,
-            "unique_count": df[col].nunique(),
+            "dtype": str(df[col].dtype),
+            "unique_count": int(df[col].nunique()),
         }
 
     return info
@@ -160,15 +160,11 @@ def preprocess_df(
         preprocessor.transform(split) for split in [train_df, val_df, test_df]
     )
 
-    train_df, val_df, test_df, label_mapping = encode_labels(
+    return (
         train_df,
         val_df,
         test_df,
-        label_col,
-        dst_label_col=f"encoded_{label_col}",
     )
-
-    return train_df, val_df, test_df, label_mapping
 
 
 def compute_clusters(
@@ -198,7 +194,7 @@ def compute_clusters(
         )
         core_mask = (labels != -1) & (proba >= threshold)
 
-        cls_indices = df[cls_mask & core_mask].index
+        cls_indices = df[cls_mask].index[core_mask]
         df.loc[cls_indices, dst_col] = labels[core_mask] + offset
         offset += labels.max() + 1
         infos[cls] = info
@@ -325,9 +321,9 @@ def prepare(cfg):
     df = load_df(str(raw_data_path))
 
     df_info = get_df_info(df)
-    save_to_json(df_info, json_logs_path / "raw_df_info.json")
+    save_to_json(df_info, json_logs_path / "data/info.json")
 
-    train_df, val_df, test_df, label_mapping = preprocess_df(
+    train_df, val_df, test_df = preprocess_df(
         df,
         num_cols,
         cat_cols,
@@ -359,10 +355,10 @@ def prepare(cfg):
             ignore_clusters=cfg.ignore_clusters,
             seed=cfg.seed,
         )
-        save_to_json(clusters_metadata, json_logs_path / "clusters.json")
+        save_to_json(clusters_metadata, json_logs_path / "data/clusters.json")
 
     train_df, val_df, test_df, label_mapping = encode_labels(
-        train_df, val_df, test_df, label_col, cfg.data.benign_tag
+        train_df, val_df, test_df, label_col, dst_label_col=f"encoded_{label_col}"
     )
 
     logger.info("Saving processed data...")
@@ -384,7 +380,7 @@ def prepare(cfg):
         cfg.data.benign_tag,
         label_mapping,
     )
-    save_to_json(metadata, json_logs_path / "df_metadata.json")
+    save_to_json(metadata, json_logs_path / "data/metadata.json")
 
     return train_df, val_df, test_df, metadata
 

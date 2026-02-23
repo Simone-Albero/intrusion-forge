@@ -53,12 +53,10 @@ def load_listed_dfs(base_dir: Path, file_names: list[str]) -> list[pd.DataFrame]
     dfs = []
     for file_name in file_names:
         try:
-            df = load_df(base_dir / f"{file_name}.parquet")
+            df = load_df(base_dir / f"{file_name}")
             dfs.append(df)
         except FileNotFoundError as e:
-            raise ValueError(
-                f"Data file not found: {base_dir / f'{file_name}.parquet'}"
-            )
+            raise ValueError(f"Data file not found: {base_dir / f'{file_name}'}")
         except Exception as e:
             raise ValueError(f"Error loading data file {file_name}: {e}")
     return dfs

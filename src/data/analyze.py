@@ -2,7 +2,8 @@ from typing import Any
 
 import numpy as np
 import numpy.typing as npt
-from sklearn.metrics import paired_distances, silhouette_score, roc_auc_score
+from sklearn.metrics import silhouette_score, roc_auc_score
+from sklearn.metrics.pairwise import paired_distances
 
 from src.ml.projection import tsne_projection, create_subsample_mask
 from src.plot.array import samples_plot
@@ -88,7 +89,7 @@ def compute_class_separability(X: np.ndarray, y: np.ndarray) -> list[dict[str, A
 
         results.append(
             {
-                "class": class_name,
+                "class": str(class_name),
                 "n_samples": int(idx_class.size),
                 "intra_mean": float(intra_mean),
                 "inter_mean": float(inter_mean),

@@ -40,9 +40,13 @@ def subsample_df(
     if label_col is None:
         return df.sample(n=min(n_samples, len(df)), random_state=random_state)
     per_class = n_samples // df[label_col].nunique()
+    _key = "__groupby_col__"
+    df = df.copy()
+    df[_key] = df[label_col]
     return (
-        df.groupby(label_col, group_keys=False)
+        df.groupby(_key, group_keys=False)
         .apply(lambda x: x.sample(n=min(len(x), per_class), random_state=random_state))
+        .drop(columns=[_key])
         .reset_index(drop=True)
     )
 
@@ -52,8 +56,11 @@ def random_undersample_df(
 ) -> pd.DataFrame:
     """Undersample to balance classes."""
     min_count = df[label_col].value_counts().min()
+    _key = "__groupby_col__"
+    df = df.copy()
+    df[_key] = df[label_col]
     return (
-        df.groupby(label_col, group_keys=False)
+        df.groupby(_key, group_keys=False)
         .apply(lambda g: g.sample(n=min_count, random_state=random_state))
         .reset_index(drop=True)
     )
@@ -71,9 +78,10 @@ def random_oversample_df(
             g = pd.concat([g, g.sample(n=n, replace=True, random_state=random_state)])
         return g
 
-    return (
-        df.groupby(label_col, group_keys=False).apply(oversample).reset_index(drop=True)
-    )
+    _key = "__groupby_col__"
+    df = df.copy()
+    df[_key] = df[label_col]
+    return df.groupby(_key, group_keys=False).apply(oversample).reset_index(drop=True)
 
 
 def ml_split(

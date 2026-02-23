@@ -107,13 +107,13 @@ def infer():
         overrides=sys.argv[1:],
     )
     json_logs_path = Path(cfg.path.json_logs)
-    df_meta = load_from_json(json_logs_path / "df_metadata.json")
+    df_meta = load_from_json(json_logs_path / "data/metadata.json")
     cfg.model.params.num_classes = df_meta["num_classes"]
     cfg.loss.params.class_weight = df_meta["class_weights"]
     device = torch.device(cfg.device)
     num_cols = list(cfg.data.num_cols) if cfg.data.num_cols else []
     cat_cols = list(cfg.data.cat_cols) if cfg.data.cat_cols else []
-    label_col = "multi_" + cfg.data.label_col
+    label_col = "encoded_" + cfg.data.label_col
     feat_cols = num_cols + cat_cols
 
     splits = load_listed_dfs(
@@ -139,14 +139,22 @@ def infer():
         )
         y_true, y_pred, z, confidences = get_predictions(model, inputs, y, device)
 
+        y_true, y_pred, z, confidences = (
+            y_true.cpu().numpy(),
+            y_pred.cpu().numpy(),
+            z.cpu().numpy() if z is not None else None,
+            confidences.cpu().numpy(),
+        )
+
         class_confidence = {
             int(cls): float(confidences[y_true == cls].mean())
             for cls in np.unique(y_true)
         }
+
         for cls, conf in class_confidence.items():
             logger.info(f"Class {cls}: Mean Confidence {conf:.4f}")
         save_to_json(
-            class_confidence, json_logs_path / f"class_confidence/{suffix}.json"
+            class_confidence, json_logs_path / f"inference/confidence/{suffix}.json"
         )
         stats["class_confidence"][suffix] = class_confidence
 
@@ -175,7 +183,9 @@ def infer():
         logger.info("Analyzing class failures ...")
         class_failures = analyze_classes_failures(X, y_true, y_pred)
         logger.info(f"\n{pd.DataFrame(class_failures)}")
-        save_to_json(class_failures, json_logs_path / f"class_failures/{suffix}.json")
+        save_to_json(
+            class_failures, json_logs_path / f"inference/class_failures/{suffix}.json"
+        )
         stats["class_failures"][suffix] = class_failures
 
         if "cluster" in df.columns:
@@ -183,7 +193,8 @@ def infer():
             cluster_failures = count_cluster_failures(df, y_true, y_pred, confidences)
             logger.info(f"\n{pd.DataFrame(cluster_failures)}")
             save_to_json(
-                cluster_failures, json_logs_path / f"cluster_failures/{suffix}.json"
+                cluster_failures,
+                json_logs_path / f"inference/cluster_failures/{suffix}.json",
             )
             stats["cluster_failures"][suffix] = cluster_failures
 

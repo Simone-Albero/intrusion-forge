@@ -1,10 +1,7 @@
-from __future__ import annotations
-
 from collections.abc import Callable
 
-import numpy as np
 import torch
-from scipy.special import softmax
+import torch.nn.functional as F
 
 from .model.base import BaseModel, ModelOutput
 
@@ -28,7 +25,7 @@ def df_to_tensors(
     result = []
     for cols, dtype in zip(col_groups, dtypes):
         if cols:
-            result.append(torch.as_tensor(df[cols].to_numpy(), dtype=dtype))
+            result.append(torch.tensor(df[cols].to_numpy(), dtype=dtype))
         else:
             result.append(torch.empty(len(df), 0, dtype=dtype))
     return result
@@ -47,11 +44,11 @@ def run_model(
 
 def _default_pred_fn(
     output: ModelOutput,
-) -> tuple[np.ndarray, np.ndarray | None, np.ndarray]:
+) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor]:
     """Default prediction extractor: softmax over logits, optional z embedding."""
-    probs = softmax(output["logits"].cpu().numpy(), axis=1)
-    z = output["z"].cpu().numpy() if "z" in output else None
-    return probs.argmax(axis=1), z, probs.max(axis=1)
+    probs = F.softmax(output["logits"].cpu(), dim=1)
+    z = output["z"].cpu() if "z" in output else None
+    return probs.argmax(dim=1), z, probs.max(dim=1).values
 
 
 def get_predictions(
@@ -60,9 +57,10 @@ def get_predictions(
     y: torch.Tensor,
     device: torch.device,
     pred_fn: (
-        Callable[[ModelOutput], tuple[np.ndarray, np.ndarray | None, np.ndarray]] | None
+        Callable[[ModelOutput], tuple[torch.Tensor, torch.Tensor | None, torch.Tensor]]
+        | None
     ) = None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor]:
     """Run inference and return (y_true, y_pred, z, confidences).
 
     Args:
@@ -74,8 +72,9 @@ def get_predictions(
                  Defaults to softmax over logits with optional z embedding.
 
     Returns:
-        (y_true, y_pred, z, confidences) as numpy arrays (z may be None).
+        (y_true, y_pred, z, confidences) as torch Tensors (z may be None).
     """
     output = run_model(model, inputs, device)
     y_pred, z, confidences = (pred_fn or _default_pred_fn)(output)
-    return y.numpy(), y_pred, z, confidences
+
+    return y.flatten().cpu(), y_pred.flatten(), z, confidences.flatten()

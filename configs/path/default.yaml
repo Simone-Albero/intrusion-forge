@@ -1,10 +1,13 @@
-out_base_path: resources/outputs/${data.file_name}/${name}
+out_base_path: resources/experiments/${data.file_name}/${name}_${seed}
 
-raw_data: resources/raw_data/${data.name}/${data.file_name}.csv
-processed_data: ${path.out_base_path}/processed_data/${run_id}/${data.name}
-models: ${path.out_base_path}/models/${run_id}
-pickles: ${path.out_base_path}/pickles/${run_id}
-tb_logs: ${path.out_base_path}/tb/${seed}
-json_logs: ${path.out_base_path}/json/${seed}/${run_id}
-checkpoints: ${path.out_base_path}/checkpoints/${run_id}
-configs: ${path.out_base_path}/configs/${run_id}
+# inputs
+raw_data: resources/raw_data/${data.dir}/${data.file_name}.csv
+
+# per-run outputs
+processed_data: ${path.out_base_path}/${run_id}/processed_data
+models: ${path.out_base_path}/${run_id}/models
+json_logs: ${path.out_base_path}/${run_id}/logs
+configs: ${path.out_base_path}/${run_id}/configs
+
+# shared across runs (for TensorBoard comparison)
+tb_logs: ${path.out_base_path}/tb

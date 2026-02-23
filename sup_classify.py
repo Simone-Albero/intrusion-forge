@@ -223,8 +223,10 @@ def train(
             f"Epoch [{engine.state.epoch}] Val Loss: {validator.state.metrics['loss']:.6f}"
         )
 
-    rival_updater = _build_rival_updater(
-        model, device, train_loader.batch_sampler, loss_fn
+    rival_updater = (
+        _build_rival_updater(model, device, train_loader.batch_sampler, loss_fn)
+        if train_sampler is not None
+        else None
     )
 
     @trainer.on(Events.EPOCH_COMPLETED)
@@ -340,21 +342,18 @@ def test(
 
         save_to_json(
             {k: to_python(v) for k, v in metrics.items()},
-            json_logs_path / "test" / "summary.json",
+            json_logs_path / "test/summary.json",
         )
 
         for name in _scalar_metrics:
             if name in metrics:
-                tb_logger.writer.add_scalar(
-                    f"test/metrics/{name}", metrics[name], run_id
-                )
+                tb_logger.writer.add_scalar(f"test/{name}", metrics[name], run_id)
 
         if "confusion_matrix" in metrics:
             tb_logger.writer.add_figure(
                 "test/confusion_matrix",
                 confusion_matrix_to_plot(
                     metrics["confusion_matrix"].cpu().numpy(),
-                    title="Confusion Matrix",
                     normalize="true",
                 ),
                 run_id,
@@ -368,12 +367,6 @@ def test(
             tb_logger.writer.add_figure(
                 "test/f1_per_class", dict_to_bar_plot(f1_dict), run_id
             )
-
-        tb_logger.writer.add_figure(
-            "test/global_metrics",
-            dict_to_bar_plot({k: metrics[k] for k in _scalar_metrics if k in metrics}),
-            run_id,
-        )
 
     try:
         tester.run(test_loader)
@@ -392,7 +385,7 @@ def sup_classify():
     )
 
     json_logs_path = Path(cfg.path.json_logs)
-    df_meta = load_from_json(json_logs_path / "df_metadata.json")
+    df_meta = load_from_json(json_logs_path / "data/metadata.json")
     cfg.model.params.num_classes = df_meta["num_classes"]
 
     device = torch.device(cfg.device)
@@ -400,7 +393,7 @@ def sup_classify():
 
     num_cols = list(cfg.data.num_cols) if cfg.data.num_cols else []
     cat_cols = list(cfg.data.cat_cols) if cfg.data.cat_cols else []
-    label_col = "multi_" + cfg.data.label_col
+    label_col = "encoded_" + cfg.data.label_col
 
     processed_data_path = Path(cfg.path.processed_data)
     models_path = Path(cfg.path.models)
