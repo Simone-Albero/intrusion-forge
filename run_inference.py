@@ -48,10 +48,10 @@ def analyze_class_failures(X, y_true, y_pred, target_class, max_samples=1000) ->
         "target_class": int(target_class),
         "n_tp": len(idx_tp),
         "n_fn": len(idx_fn),
-        "tp_tp": compute_distance_stats(sample_distances(X, idx_tp, n_pairs=n_pairs)),
-        "fn_fn": compute_distance_stats(sample_distances(X, idx_fn, n_pairs=n_pairs)),
+        "tp_tp": compute_distance_stats(sample_distances(X, idx_tp, max_pairs=n_pairs)),
+        "fn_fn": compute_distance_stats(sample_distances(X, idx_fn, max_pairs=n_pairs)),
         "fn_tp": compute_distance_stats(
-            sample_distances(X, idx_fn, idx_tp, n_pairs=n_pairs)
+            sample_distances(X, idx_fn, idx_tp, max_pairs=n_pairs)
         ),
     }
 
@@ -158,7 +158,7 @@ def infer():
         )
         stats["class_confidence"][suffix] = class_confidence
 
-        cm_fig = visualize_cm(y_true, y_pred)
+        cm_fig = visualize_cm(y_true, y_pred, normalize=None)
         tb_logger.writer.add_figure("confusion_matrix", cm_fig, step)
         plt.close(cm_fig)
 

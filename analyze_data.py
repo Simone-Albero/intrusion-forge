@@ -43,7 +43,9 @@ def analyze(cfg):
             logger.info(f"Computing separability on {split_name} set ...")
             X = split_df[feature_cols].values
             y = split_df[label_col].values
-            separability_result = compute_class_separability(X, y)
+            separability_result = compute_class_separability(
+                X, y, max_pairs=None, metric="cosine", pairwise=True
+            )
             save_to_json(
                 separability_result,
                 Path(cfg.path.json_logs)

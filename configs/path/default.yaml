@@ -1,5 +1,4 @@
-out_base_path: resources/experiments/${data.file_name}/${name}_${seed}
-
+out_base_path: resources/experiments/${name}/${data.file_name}_${seed}
 # inputs
 raw_data: resources/raw_data/${data.dir}/${data.file_name}.csv
 
