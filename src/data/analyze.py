@@ -152,22 +152,114 @@ def visualize(
     return samples_plot(tsne_projection(X[mask][vis_mask]), y[mask][vis_mask])
 
 
+def _mean_distance_intra(
+    X: np.ndarray,
+    idx: np.ndarray,
+    max_pairs: int | None,
+    metric: str,
+    chunk_size: int = 512,
+) -> float:
+    """Mean intra-class distance without materialising the full distance array.
+
+    Iterates the upper-triangle in row chunks when the total number of pairs is
+    within *max_pairs* (or max_pairs is None); otherwise draws random paired
+    samples and accumulates a running sum.
+    """
+    n = len(idx)
+    if n < 2:
+        return np.nan
+
+    total_pairs = n * (n - 1) // 2
+    exact = max_pairs is None or total_pairs <= max_pairs
+
+    running_sum = 0.0
+    running_count = 0
+
+    if exact:
+        for start in range(0, n - 1, chunk_size):
+            end = min(start + chunk_size, n - 1)
+            D = pairwise_distances(
+                X[idx[start:end]], X[idx[start + 1 :]], metric=metric
+            )
+            for li in range(end - start):
+                row = D[li, li:]  # upper-triangle only
+                running_sum += float(row.sum())
+                running_count += len(row)
+    else:
+        size = int(max_pairs * 1.1) + 32  # type: ignore[operator]
+        i = np.random.randint(0, n, size=size)
+        j = np.random.randint(0, n, size=size)
+        mask = i != j
+        i, j = i[mask][:max_pairs], j[mask][:max_pairs]
+        for start in range(0, len(i), chunk_size):
+            end = min(start + chunk_size, len(i))
+            d = paired_distances(
+                X[idx[i[start:end]]], X[idx[j[start:end]]], metric=metric
+            )
+            running_sum += float(d.sum())
+            running_count += len(d)
+
+    return running_sum / running_count if running_count > 0 else np.nan
+
+
+def _mean_distance_inter(
+    X: np.ndarray,
+    idx_a: np.ndarray,
+    idx_b: np.ndarray,
+    max_pairs: int | None,
+    metric: str,
+    chunk_size: int = 512,
+) -> float:
+    """Mean inter-class distance without materialising the full distance array."""
+    if len(idx_a) == 0 or len(idx_b) == 0:
+        return np.nan
+
+    total_pairs = len(idx_a) * len(idx_b)
+    exact = max_pairs is None or total_pairs <= max_pairs
+
+    running_sum = 0.0
+    running_count = 0
+
+    if exact:
+        for start in range(0, len(idx_a), chunk_size):
+            end = min(start + chunk_size, len(idx_a))
+            D = pairwise_distances(X[idx_a[start:end]], X[idx_b], metric=metric)
+            running_sum += float(D.sum())
+            running_count += D.size
+    else:
+        n = max_pairs  # type: ignore[assignment]
+        replace = n > min(len(idx_a), len(idx_b))
+        i = np.random.choice(len(idx_a), size=n, replace=replace)
+        j = np.random.choice(len(idx_b), size=n, replace=replace)
+        for start in range(0, n, chunk_size):
+            end = min(start + chunk_size, n)
+            d = paired_distances(
+                X[idx_a[i[start:end]]], X[idx_b[j[start:end]]], metric=metric
+            )
+            running_sum += float(d.sum())
+            running_count += len(d)
+
+    return running_sum / running_count if running_count > 0 else np.nan
+
+
 def compute_class_separability(
     X: np.ndarray,
     y: np.ndarray,
-    max_pairs: int = 50_000,
-    pairwise: bool = False,
+    max_pairs: int | None = 50_000,
     metric: str = "cosine",
     pca_variance: float = 0.95,
 ) -> list[dict[str, Any]]:
-    """Analyze class separability using pairwise intra/inter-class distances.
+    """Analyze class separability via intra/inter-class mean distances.
+
+    Distances are never collected into full arrays; sums are accumulated in
+    chunk-sized batches so RAM usage stays O(chunk_size) instead of O(n²).
 
     Returns a list of dicts (one per class) with keys:
       class, pairs, mean_ratio, max_ratio.
     """
     classes = np.unique(y)
 
-    # Reduce once so sample_distances never operates on the raw high-dim matrix.
+    # Reduce dimensionality once so distance computations are cheaper.
     X = PCA(n_components=pca_variance, svd_solver="full", whiten=True).fit_transform(X)
 
     pair_metrics: dict[tuple, dict] = {}
@@ -176,25 +268,20 @@ def compute_class_separability(
             idx_a = np.where(y == class_a)[0]
             idx_b = np.where(y == class_b)[0]
 
-            intra_a = sample_distances(
-                X, idx_a, max_pairs=max_pairs, metric=metric, pairwise=pairwise
-            )
-            intra_b = sample_distances(
-                X, idx_b, max_pairs=max_pairs, metric=metric, pairwise=pairwise
-            )
-            inter_ab = sample_distances(
-                X, idx_a, idx_b, max_pairs=max_pairs, metric=metric, pairwise=pairwise
+            intra_a = _mean_distance_intra(X, idx_a, max_pairs=max_pairs, metric=metric)
+            intra_b = _mean_distance_intra(X, idx_b, max_pairs=max_pairs, metric=metric)
+            inter_ab = _mean_distance_inter(
+                X, idx_a, idx_b, max_pairs=max_pairs, metric=metric
             )
 
             intra_mean = (
-                np.mean([np.mean(intra_a), np.mean(intra_b)])
-                if len(intra_a) > 0 and len(intra_b) > 0
+                np.mean([intra_a, intra_b])
+                if np.isfinite(intra_a) and np.isfinite(intra_b)
                 else np.nan
             )
-            inter_mean = np.mean(inter_ab) if len(inter_ab) > 0 else np.nan
             ratio = (
-                intra_mean / inter_mean
-                if np.isfinite(intra_mean) and np.isfinite(inter_mean)
+                intra_mean / inter_ab
+                if np.isfinite(intra_mean) and np.isfinite(inter_ab)
                 else np.nan
             )
 

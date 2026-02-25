@@ -44,7 +44,7 @@ def analyze(cfg):
             X = split_df[feature_cols].values
             y = split_df[label_col].values
             separability_result = compute_class_separability(
-                X, y, max_pairs=None, metric="cosine", pairwise=True
+                X, y, max_pairs=None, metric="cosine"
             )
             save_to_json(
                 separability_result,
