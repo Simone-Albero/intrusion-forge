@@ -11,11 +11,15 @@ from sklearn.metrics import confusion_matrix
 
 from src.common.config import load_config
 from src.common.logging import setup_logger
-from src.common.utils import load_from_json, save_to_json
+from src.common.utils import load_from_json, save_to_json, save_to_pickle
+
 from src.data.analyze import sample_distances
 from src.data.io import load_listed_dfs
+
 from src.ml.projection import create_subsample_mask, tsne_projection
+
 from src.plot.array import confusion_matrix_to_plot, samples_plot
+
 from src.torch.builders import create_model
 from src.torch.infer import df_to_tensors, get_predictions
 from src.torch.module.checkpoint import load_latest_checkpoint
@@ -97,7 +101,7 @@ def visualize_samples(X, y_1, y_2=None, exclude_classes=None, n_samples=3000):
 
 def visualize_cm(y_true, y_pred, normalize=None):
     cm = confusion_matrix(y_true, y_pred, labels=np.unique(y_true))
-    return confusion_matrix_to_plot(cm, normalize=normalize)
+    return confusion_matrix_to_plot(cm, normalize=normalize), cm
 
 
 def infer():
@@ -158,9 +162,13 @@ def infer():
         )
         stats["class_confidence"][suffix] = class_confidence
 
-        cm_fig = visualize_cm(y_true, y_pred, normalize=None)
+        cm_fig, cm = visualize_cm(y_true, y_pred, normalize=None)
         tb_logger.writer.add_figure("confusion_matrix", cm_fig, step)
         plt.close(cm_fig)
+
+        save_to_pickle(
+            cm, json_logs_path / f"inference/confusion_matrices/{suffix}.pkl"
+        )
 
         for tag, data in (("raw/classes", X), ("latent/classes", z)):
             if data is None:
