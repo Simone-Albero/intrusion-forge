@@ -100,8 +100,8 @@ def visualize_samples(X, y_1, y_2=None, exclude_classes=None, n_samples=3000):
 
 
 def visualize_cm(y_true, y_pred, normalize=None):
-    cm = confusion_matrix(y_true, y_pred, labels=np.unique(y_true))
-    return confusion_matrix_to_plot(cm, normalize=normalize), cm
+    cm = confusion_matrix(y_true, y_pred, labels=np.unique(y_true), normalize=normalize)
+    return confusion_matrix_to_plot(cm), cm
 
 
 def infer():
@@ -163,12 +163,24 @@ def infer():
         stats["class_confidence"][suffix] = class_confidence
 
         cm_fig, cm = visualize_cm(y_true, y_pred, normalize=None)
-        tb_logger.writer.add_figure("confusion_matrix", cm_fig, step)
+        tb_logger.writer.add_figure("confusion_matrices/original", cm_fig, step)
         plt.close(cm_fig)
 
         save_to_pickle(
-            cm, json_logs_path / f"inference/confusion_matrices/{suffix}.pkl"
+            cm, Path(cfg.path.pickle) / f"inference/confusion_matrices/{suffix}.pkl"
         )
+
+        cm_fig, cm = visualize_cm(y_true, y_pred, normalize="true")
+        tb_logger.writer.add_figure(
+            "confusion_matrices/normalized_by_row", cm_fig, step
+        )
+        plt.close(cm_fig)
+
+        cm_fig, cm = visualize_cm(y_true, y_pred, normalize="pred")
+        tb_logger.writer.add_figure(
+            "confusion_matrices/normalized_by_col", cm_fig, step
+        )
+        plt.close(cm_fig)
 
         for tag, data in (("raw/classes", X), ("latent/classes", z)):
             if data is None:

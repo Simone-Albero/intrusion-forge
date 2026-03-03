@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 from scipy.stats import spearmanr
 
 from src.common.config import load_config
@@ -79,7 +80,7 @@ def compute_results(cfg):
         )
 
         inference_cm = load_from_pickle(
-            Path(cfg.path.json_logs) / f"inference/confusion_matrices/{split_name}.pkl"
+            Path(cfg.path.pickle) / f"inference/confusion_matrices/{split_name}.pkl"
         )
 
         cm = np.asarray(inference_cm, dtype=float)
@@ -87,26 +88,61 @@ def compute_results(cfg):
         split_scores = []
         for entry in separability_results:
             class_idx = int(entry["class"])
-            pairs = entry["pairs"]
 
-            if len(pairs) < 2:
+            if class_idx == 0:
                 continue
 
-            pair_indices = [int(j) for j in pairs]
+            pairs = entry["pairs"]
+
+            pair_indices = [int(j) for j in pairs if int(j) != 0]
             ratios = np.array([pairs[str(j)]["ratio"] for j in pair_indices])
             misclassifications = cm[class_idx, pair_indices]
+
+            class_total = cm[class_idx].sum()
+            valid_mask = misclassifications >= 0.006 * class_total
+
+            logger.info(
+                f"class={class_idx}, class_total={class_total:.0f}, "
+                f"misclassifications={misclassifications}, "
+                f"valid={valid_mask.sum()}/{len(valid_mask)}"
+            )
+
+            ratios = ratios[valid_mask]
+            misclassifications = misclassifications[valid_mask]
+
+            if len(ratios) < 1:
+                split_scores.append(
+                    {
+                        "class": class_idx,
+                        "tot_misclassifications": int(misclassifications.sum()),
+                        "score": None,
+                        "pvalue": None,
+                    }
+                )
+                continue
+            elif len(ratios) == 1:
+                split_scores.append(
+                    {
+                        "class": class_idx,
+                        "tot_misclassifications": int(misclassifications.sum()),
+                        "score": 1.0 if ratios[0] > 0.5 else 0,
+                        "pvalue": None,
+                    }
+                )
+                continue
 
             corr, pvalue = spearmanr(ratios, misclassifications)
             split_scores.append(
                 {
                     "class": class_idx,
+                    "tot_misclassifications": int(misclassifications.sum()),
                     "score": float(corr),
-                    "pvalue": float(pvalue),
+                    "pvalue": float(pvalue) if not np.isnan(pvalue) else None,
                 }
             )
-            logger.info(
-                f"[{split_name}] Class {class_idx}: Spearman r={corr:.4f} (p={pvalue:.4f})"
-            )
+
+        logger.info(f"Separability scores for {split_name}:")
+        logger.info(pd.DataFrame(split_scores))
 
         results[split_name] = split_scores
 
@@ -123,7 +159,8 @@ def main():
         config_name="config",
         overrides=sys.argv[1:],
     )
-    analyze(cfg)
+    # analyze(cfg)
+    compute_results(cfg)
 
 
 if __name__ == "__main__":

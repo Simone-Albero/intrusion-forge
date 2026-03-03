@@ -6,6 +6,7 @@ raw_data: resources/raw_data/${data.dir}/${data.file_name}.csv
 processed_data: ${path.out_base_path}/${run_id}/processed_data
 models: ${path.out_base_path}/${run_id}/models
 json_logs: ${path.out_base_path}/${run_id}/logs
+pickle: ${path.out_base_path}/${run_id}/pickle
 configs: ${path.out_base_path}/${run_id}/configs
 
 # shared across runs (for TensorBoard comparison)
