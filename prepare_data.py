@@ -170,7 +170,7 @@ def preprocess_df(
     )
 
 
-def compute_clusters(
+def compute_clusters_and_ambigous(
     df, feature_cols, label_col, classes=None, thresholds=None, dst_col="cluster"
 ):
     """Compute HDBSCAN clusters for specified classes and thresholds."""
@@ -204,24 +204,53 @@ def compute_clusters(
     return df, infos
 
 
+def compute_clusters(df, feature_cols, label_col, classes=None, dst_col="cluster"):
+    """Compute HDBSCAN clusters for specified classes, encoding noise (-1) as max_label + 1."""
+    df[dst_col] = -1
+    offset = 0
+
+    if classes is None:
+        logger.info("Computing clusters for all data...")
+        _, labels, _, info = hdbscan_grid_search(df[feature_cols].values)
+        noise_label = labels.max() + 1
+        labels = np.where(labels == -1, noise_label, labels)
+        df[dst_col] = labels
+        return df, info
+
+    infos = {}
+    for cls in classes:
+        logger.info(f"Computing clusters for class '{cls}'...")
+        cls_mask = df[label_col] == cls
+        _, labels, _, info = hdbscan_grid_search(df.loc[cls_mask, feature_cols].values)
+        noise_label = labels.max() + 1
+        labels = np.where(labels == -1, noise_label, labels)
+
+        cls_indices = df[cls_mask].index
+        df.loc[cls_indices, dst_col] = labels + offset
+        offset += noise_label + 1
+        infos[cls] = info
+
+    return df, infos
+
+
 def clusters_over_splits(
-    train_df, val_df, test_df, feature_cols, label_col, dst_col, classes, thresholds
+    train_df, val_df, test_df, feature_cols, label_col, dst_col, classes
 ):
     train_df, _ = compute_clusters(
-        train_df, feature_cols, label_col, classes, thresholds, dst_col=dst_col
+        train_df, feature_cols, label_col, classes, dst_col=dst_col
     )
     val_df, _ = compute_clusters(
-        val_df, feature_cols, label_col, classes, thresholds, dst_col=dst_col
+        val_df, feature_cols, label_col, classes, dst_col=dst_col
     )
     test_df, _ = compute_clusters(
-        test_df, feature_cols, label_col, classes, thresholds, dst_col=dst_col
+        test_df, feature_cols, label_col, classes, dst_col=dst_col
     )
 
     return train_df, val_df, test_df
 
 
 def clusters_over_all(
-    train_df, val_df, test_df, feature_cols, label_col, dst_col, classes, thresholds
+    train_df, val_df, test_df, feature_cols, label_col, dst_col, classes
 ):
     train_df["_split"] = "train"
     val_df["_split"] = "val"
@@ -229,7 +258,7 @@ def clusters_over_all(
 
     combined_df = pd.concat([train_df, val_df, test_df], ignore_index=True)
     combined_df, _ = compute_clusters(
-        combined_df, feature_cols, label_col, classes, thresholds, dst_col=dst_col
+        combined_df, feature_cols, label_col, classes, dst_col=dst_col
     )
 
     train_df = (
@@ -260,7 +289,6 @@ def run_clustering(
     label_col,
     clustering_type,
     cluster_classes,
-    cluster_thresholds,
     ignore_clusters,
     seed,
     cluster_col="cluster",
@@ -274,6 +302,12 @@ def run_clustering(
     if cluster_fn is None:
         raise ValueError(f"Unknown clustering_type: '{clustering_type}'")
 
+    if cluster_classes is not None and len(cluster_classes) == 0:
+        cluster_classes = train_df[label_col].unique().tolist()
+        logger.info(
+            f"No cluster_classes specified, using all classes: {cluster_classes}"
+        )
+
     train_df, val_df, test_df = cluster_fn(
         train_df,
         val_df,
@@ -282,7 +316,6 @@ def run_clustering(
         label_col=label_col,
         dst_col=cluster_col,
         classes=cluster_classes,
-        thresholds=cluster_thresholds,
     )
 
     if ignore_clusters:
@@ -297,15 +330,18 @@ def run_clustering(
         )
         train_df = random_undersample_df(train_df, label_col, seed)
 
-    clusters_metadata = {
-        "num_clusters": int(train_df[cluster_col].nunique()),
-        "cluster_counts": train_df[cluster_col].value_counts().to_dict(),
-    }
+    cluster_to_class = (
+        train_df.groupby(cluster_col)[label_col].first().astype(str).to_dict()
+    )
+
+    clusters_metadata = {"cluster_to_class": cluster_to_class}
     for cls in cluster_classes:
-        cls_mask = train_df[label_col] == cls
-        clusters_metadata[f"clusters_in_class_{cls}"] = (
-            train_df.loc[cls_mask, cluster_col].value_counts().to_dict()
-        )
+        for split_name, df in zip(
+            ["train", "val", "test"], [train_df, val_df, test_df]
+        ):
+            cls_mask = df[label_col] == cls
+            cluster_counts = df.loc[cls_mask, cluster_col].value_counts().to_dict()
+            clusters_metadata[f"{split_name}_{cls}_cluster_counts"] = cluster_counts
 
     return train_df, val_df, test_df, clusters_metadata
 
@@ -354,7 +390,6 @@ def prepare(cfg):
             label_col=label_col,
             clustering_type=cfg.clustering_type,
             cluster_classes=cfg.cluster_classes,
-            cluster_thresholds=cfg.cluster_thresholds,
             ignore_clusters=cfg.ignore_clusters,
             seed=cfg.seed,
         )
