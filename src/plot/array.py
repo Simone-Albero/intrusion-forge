@@ -1,6 +1,9 @@
 from typing import Union
 
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+from mpl_toolkits.mplot3d import Axes3D
+
 import numpy as np
 from sklearn.metrics import ConfusionMatrixDisplay
 
@@ -69,170 +72,6 @@ def confusion_matrix_to_plot(
     return fig
 
 
-def samples_plot(
-    X: np.ndarray,
-    y_1: Union[list, np.ndarray],
-    y_2: Union[list, np.ndarray, None] = None,
-) -> plt.Figure:
-    """Plot 2D samples with color coding and optional outline color encoding.
-
-    Args:
-        X: Array of shape (n_samples, 2) for 2D plotting.
-        y_1: Integer labels for fill color coding.
-        y_2: Optional integer labels for edge/outline color encoding.
-
-    Returns:
-        Matplotlib Figure object.
-    """
-    X = np.asarray(X)
-    y_1 = np.asarray(y_1)
-
-    if X.shape[1] != 2:
-        raise ValueError("X must have shape (n_samples, 2).")
-
-    if len(X) != len(y_1):
-        raise ValueError("X and y_1 must have the same length.")
-
-    if y_2 is not None:
-        y_2 = np.asarray(y_2)
-        if len(X) != len(y_2):
-            raise ValueError("X and y_2 must have the same length.")
-
-    fig, ax = plt.subplots(figsize=(10, 8))
-
-    unique_y1 = np.unique(y_1)
-
-    if len(unique_y1) <= 10:
-        cmap = plt.cm.get_cmap("tab10", len(unique_y1))
-    elif len(unique_y1) <= 20:
-        cmap = plt.cm.get_cmap("tab20", len(unique_y1))
-    else:
-        cmap = plt.cm.get_cmap("gist_ncar", len(unique_y1))
-
-    # High-contrast outline colors for y_2
-    outline_colors = [
-        "#FF0000",  # red
-        "#000000",  # Black
-        "#0000FF",  # blue
-        "#FF00FF",  # magenta
-        "#00FFFF",  # cyan
-        "#FF8800",  # orange
-        "#8800FF",  # purple
-        "#00FF88",  # spring green
-        "#FF0088",  # rose
-        "#FFFF00",  # yellow
-    ]
-
-    legend_handles = []
-    legend_labels = []
-
-    if y_2 is None:
-        for idx, label in enumerate(unique_y1):
-            mask = y_1 == label
-            scatter = ax.scatter(
-                X[mask, 0],
-                X[mask, 1],
-                c=[cmap(idx)],
-                label=f"Class {label}",
-                edgecolors="black",
-                s=150,
-                alpha=0.7,
-                linewidths=1.5,
-            )
-            legend_handles.append(scatter)
-            legend_labels.append(f"Class {label}")
-    else:
-        unique_y2 = np.unique(y_2)
-
-        if len(unique_y2) > len(outline_colors):
-            raise ValueError(
-                f"Too many unique values in y_2 ({len(unique_y2)}). Maximum supported: {len(outline_colors)}"
-            )
-
-        outline_map = {
-            label: outline_colors[i % len(outline_colors)]
-            for i, label in enumerate(unique_y2)
-        }
-
-        plotted_combinations = set()
-
-        for idx, color_label in enumerate(unique_y1):
-            for shape_label in unique_y2:
-                combined_mask = (y_1 == color_label) & (y_2 == shape_label)
-
-                if np.any(combined_mask):
-                    scatter = ax.scatter(
-                        X[combined_mask, 0],
-                        X[combined_mask, 1],
-                        c=[cmap(idx)],
-                        marker="o",
-                        edgecolors=outline_map[shape_label],
-                        s=150,
-                        alpha=0.7,
-                        linewidths=2.0,
-                    )
-
-                    combo_key = (color_label, shape_label)
-                    if combo_key not in plotted_combinations:
-                        plotted_combinations.add(combo_key)
-                        legend_handles.append(scatter)
-                        legend_labels.append(f"C{color_label}·O{shape_label}")
-
-        # Outline legend entries
-        outline_legend_elements = [
-            plt.Line2D(
-                [0],
-                [0],
-                marker="o",
-                color="w",
-                linestyle="",
-                markersize=10,
-                label=f"Outline {label}",
-                markerfacecolor="gray",
-                markeredgecolor=outline_map[label],
-                markeredgewidth=2.5,
-            )
-            for label in unique_y2
-        ]
-
-    ax.set_xlabel("D1", fontsize=12)
-    ax.set_ylabel("D2", fontsize=12)
-
-    if y_2 is None:
-        ax.legend(
-            handles=legend_handles,
-            labels=legend_labels,
-            loc="best",
-            framealpha=0.9,
-            fontsize=10,
-        )
-    else:
-        leg1 = ax.legend(
-            handles=legend_handles,
-            labels=legend_labels,
-            loc="upper left",
-            framealpha=0.9,
-            fontsize=9,
-            title="Fill·Outline",
-            ncol=max(1, len(legend_labels) // 10),
-        )
-        ax.add_artist(leg1)
-
-        ax.legend(
-            handles=outline_legend_elements,
-            loc="upper right",
-            framealpha=0.9,
-            fontsize=9,
-            title="Outline Reference",
-        )
-
-    ax.set_title("2D Sample Plot", fontsize=14, pad=10)
-    ax.grid(True, alpha=0.3)
-
-    fig.tight_layout()
-    return fig
-
-
 def roc_auc_plot(fpr: np.ndarray, tpr: np.ndarray, auc: float) -> plt.Figure:
     """Plot ROC curve with AUC annotation."""
     fig, ax = plt.subplots()
@@ -243,5 +82,190 @@ def roc_auc_plot(fpr: np.ndarray, tpr: np.ndarray, auc: float) -> plt.Figure:
     ax.set_title("ROC Curve")
     ax.legend(loc="lower right")
     ax.grid(True)
+    fig.tight_layout()
+    return fig
+
+
+# High-contrast palettes
+_FILL_COLORS = [
+    "#4E79A7",
+    "#F28E2B",
+    "#E15759",
+    "#76B7B2",
+    "#59A14F",
+    "#EDC948",
+    "#B07AA1",
+    "#FF9DA7",
+    "#9C755F",
+    "#BAB0AC",
+    "#1F77B4",
+    "#FF7F0E",
+    "#2CA02C",
+    "#D62728",
+    "#9467BD",
+    "#8C564B",
+    "#E377C2",
+    "#7F7F7F",
+    "#BCBD22",
+    "#17BECF",
+]
+
+_OUTLINE_COLORS = [
+    "#FF0000",
+    "#000000",
+    "#0000FF",
+    "#FF00FF",
+    "#00CCCC",
+    "#FF8800",
+    "#6600CC",
+    "#00CC66",
+    "#FF0066",
+    "#CCCC00",
+]
+
+
+def _get_fill_cmap(n: int):
+    """Return a ListedColormap with n high-contrast fill colors."""
+    colors = (_FILL_COLORS * ((n // len(_FILL_COLORS)) + 1))[:n]
+    return mcolors.ListedColormap(colors)
+
+
+def _validate_inputs(
+    X: np.ndarray,
+    y_1: np.ndarray,
+    y_2: Union[np.ndarray, None],
+) -> None:
+    n = len(X)
+    if X.ndim != 2 or X.shape[1] not in (2, 3):
+        raise ValueError("X must have shape (n_samples, 2) or (n_samples, 3).")
+    if len(y_1) != n:
+        raise ValueError("X and y_1 must have the same number of samples.")
+    if y_2 is not None:
+        if len(y_2) != n:
+            raise ValueError("X and y_2 must have the same number of samples.")
+        n_unique_y2 = len(np.unique(y_2))
+        if n_unique_y2 > len(_OUTLINE_COLORS):
+            raise ValueError(
+                f"y_2 has {n_unique_y2} unique values; maximum supported is {len(_OUTLINE_COLORS)}."
+            )
+
+
+def _make_legend_proxy(fill_color, edge_color, label):
+    """Create a proxy artist for the legend."""
+    return plt.Line2D(
+        [],
+        [],
+        marker="o",
+        linestyle="",
+        markersize=9,
+        markerfacecolor=fill_color,
+        markeredgecolor=edge_color,
+        markeredgewidth=2.0,
+        label=label,
+    )
+
+
+def samples_plot(
+    X: np.ndarray,
+    y_1: Union[list, np.ndarray],
+    y_2: Union[list, np.ndarray, None] = None,
+) -> plt.Figure:
+    """Plot 2D or 3D samples with fill-color and optional outline-color encoding.
+
+    Args:
+        X:   Array of shape (n_samples, 2) or (n_samples, 3).
+        y_1: Integer labels mapped to fill color.
+        y_2: Optional integer labels mapped to outline/edge color.
+
+    Returns:
+        Matplotlib Figure object.
+    """
+    X = np.asarray(X)
+    y_1 = np.asarray(y_1)
+    y_2 = np.asarray(y_2) if y_2 is not None else None
+
+    _validate_inputs(X, y_1, y_2)
+
+    is_3d = X.shape[1] == 3
+    unique_y1 = np.unique(y_1)
+    cmap = _get_fill_cmap(len(unique_y1))
+    fill_map = {label: cmap(i) for i, label in enumerate(unique_y1)}
+
+    fig = plt.figure(figsize=(10, 8))
+    ax = fig.add_subplot(111, projection="3d") if is_3d else fig.add_subplot(111)
+
+    scatter_kwargs = dict(s=120, alpha=0.75, linewidths=1.8)
+    legend_proxies = []
+
+    if y_2 is None:
+        # --- Single label: only fill color ---
+        for label in unique_y1:
+            mask = y_1 == label
+            coords = (X[mask, 0], X[mask, 1]) + ((X[mask, 2],) if is_3d else ())
+            ax.scatter(
+                *coords, color=fill_map[label], edgecolors="#222222", **scatter_kwargs
+            )
+            legend_proxies.append(
+                _make_legend_proxy(fill_map[label], "#222222", f"Class {label}")
+            )
+
+    else:
+        # --- Two labels: fill color + outline color ---
+        unique_y2 = np.unique(y_2)
+        outline_map = {label: _OUTLINE_COLORS[i] for i, label in enumerate(unique_y2)}
+
+        for label1 in unique_y1:
+            for label2 in unique_y2:
+                mask = (y_1 == label1) & (y_2 == label2)
+                if not np.any(mask):
+                    continue
+                coords = (X[mask, 0], X[mask, 1]) + ((X[mask, 2],) if is_3d else ())
+                ax.scatter(
+                    *coords,
+                    color=fill_map[label1],
+                    edgecolors=outline_map[label2],
+                    **scatter_kwargs,
+                )
+                legend_proxies.append(
+                    _make_legend_proxy(
+                        fill_map[label1],
+                        outline_map[label2],
+                        f"Fill {label1} · Edge {label2}",
+                    )
+                )
+
+        # Separate outline-only legend
+        outline_proxies = [
+            _make_legend_proxy("lightgray", outline_map[lbl], f"Edge {lbl}")
+            for lbl in unique_y2
+        ]
+        ax.legend(
+            handles=outline_proxies,
+            loc="upper right",
+            fontsize=9,
+            title="Edge label",
+            framealpha=0.9,
+        )
+
+    # Axes labels
+    ax.set_xlabel("D1", fontsize=11)
+    ax.set_ylabel("D2", fontsize=11)
+    if is_3d:
+        ax.set_zlabel("D3", fontsize=11)
+
+    # Main legend
+    ncol = max(1, len(legend_proxies) // 12)
+    ax.legend(
+        handles=legend_proxies,
+        loc="upper left",
+        fontsize=9,
+        title="Fill label" if y_2 is None else "Fill · Edge",
+        framealpha=0.9,
+        ncol=ncol,
+    )
+
+    dims = "3D" if is_3d else "2D"
+    ax.set_title(f"{dims} Sample Plot", fontsize=14, pad=12)
+    ax.grid(True, alpha=0.3)
     fig.tight_layout()
     return fig

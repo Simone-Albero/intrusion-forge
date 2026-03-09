@@ -89,11 +89,13 @@ def count_cluster_failures(
     return sorted(rows, key=lambda r: r["failure_rate"] or 0.0)
 
 
-def visualize_samples(X, y_1, y_2=None, exclude_classes=None, n_samples=3000):
+def visualize_samples(
+    X, y_1, y_2=None, exclude_classes=None, n_samples=3000, n_components=2
+):
     mask = ~np.isin(y_1, exclude_classes or [])
     vis_mask = create_subsample_mask(y_1[mask], n_samples=n_samples, stratify=False)
     return samples_plot(
-        tsne_projection(X[mask][vis_mask]),
+        tsne_projection(X[mask][vis_mask], n_components=n_components),
         y_1[mask][vis_mask],
         y_2[mask][vis_mask] if y_2 is not None else None,
     )
@@ -186,8 +188,13 @@ def infer():
             if data is None:
                 continue
             correct = (y_pred == y_true).astype(int)
-            fig = visualize_samples(data, y_true, correct)
-            tb_logger.writer.add_figure(tag, fig, step)
+
+            fig = visualize_samples(data, y_true, correct, n_components=2)
+            tb_logger.writer.add_figure(tag + "_2D", fig, step)
+
+            fig = visualize_samples(data, y_true, correct, n_components=3)
+            tb_logger.writer.add_figure(tag + "_3D", fig, step)
+
             plt.close(fig)
 
         if "cluster" in df.columns:

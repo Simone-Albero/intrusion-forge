@@ -15,7 +15,6 @@ defaults:
   - override /sampler: null
 
 clustering_type: over_all
-cluster_thresholds: [] # [0.4, 0.4]
 cluster_classes: [] # ["DoS", "Exploits"]
 ignore_clusters: [] # [-1]
 
