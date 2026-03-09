@@ -354,7 +354,6 @@ def test(
                 "test/confusion_matrix",
                 confusion_matrix_to_plot(
                     metrics["confusion_matrix"].cpu().numpy(),
-                    normalize="true",
                 ),
                 run_id,
             )
@@ -374,7 +373,7 @@ def test(
         tb_logger.close()
 
     logger.info("Testing completed.")
-    return _scalar_metrics, _per_class_metrics
+    return model, _scalar_metrics, _per_class_metrics
 
 
 def sup_classify():
@@ -448,7 +447,7 @@ def sup_classify():
     if stage in ("all", "training"):
         model = train(**train_kwargs)
     if stage in ("all", "testing"):
-        scalar_metrics, per_class_metrics = test(**test_kwargs)
+        model, scalar_metrics, per_class_metrics = test(**test_kwargs)
     if stage not in ("all", "training", "testing"):
         logger.error(f"Unknown stage: {stage!r}. Valid: 'all', 'training', 'testing'.")
         sys.exit(1)

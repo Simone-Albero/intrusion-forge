@@ -185,7 +185,8 @@ def infer():
         for tag, data in (("raw/classes", X), ("latent/classes", z)):
             if data is None:
                 continue
-            fig = visualize_samples(data, y_pred, y_true)
+            correct = (y_pred == y_true).astype(int)
+            fig = visualize_samples(data, y_true, correct)
             tb_logger.writer.add_figure(tag, fig, step)
             plt.close(fig)
 
@@ -200,23 +201,23 @@ def infer():
 
         tb_logger.close()
 
-        logger.info("Analyzing class failures ...")
-        class_failures = analyze_classes_failures(X, y_true, y_pred)
-        logger.info(f"\n{pd.DataFrame(class_failures)}")
-        save_to_json(
-            class_failures, json_logs_path / f"inference/class_failures/{suffix}.json"
-        )
-        stats["class_failures"][suffix] = class_failures
+        # logger.info("Analyzing class failures ...")
+        # class_failures = analyze_classes_failures(X, y_true, y_pred)
+        # logger.info(f"\n{pd.DataFrame(class_failures)}")
+        # save_to_json(
+        #     class_failures, json_logs_path / f"inference/class_failures/{suffix}.json"
+        # )
+        # stats["class_failures"][suffix] = class_failures
 
-        if "cluster" in df.columns:
-            logger.info("Counting failures per cluster ...")
-            cluster_failures = count_cluster_failures(df, y_true, y_pred, confidences)
-            logger.info(f"\n{pd.DataFrame(cluster_failures)}")
-            save_to_json(
-                cluster_failures,
-                json_logs_path / f"inference/cluster_failures/{suffix}.json",
-            )
-            stats["cluster_failures"][suffix] = cluster_failures
+        # if "cluster" in df.columns:
+        #     logger.info("Counting failures per cluster ...")
+        #     cluster_failures = count_cluster_failures(df, y_true, y_pred, confidences)
+        #     logger.info(f"\n{pd.DataFrame(cluster_failures)}")
+        #     save_to_json(
+        #         cluster_failures,
+        #         json_logs_path / f"inference/cluster_failures/{suffix}.json",
+        #     )
+        #     stats["cluster_failures"][suffix] = cluster_failures
 
     return stats
 

@@ -27,7 +27,9 @@ def create_subsample_mask(
             n_samples - samples_per_class.sum()
         )
     else:
-        per_class = n_samples // len(unique_labels)
+        label_counts = np.array([np.sum(labels == l) for l in unique_labels])
+        min_class_count = label_counts.min()
+        per_class = min(n_samples // len(unique_labels), min_class_count)
         samples_per_class = [per_class] * len(unique_labels)
 
     for label, k in zip(unique_labels, samples_per_class):

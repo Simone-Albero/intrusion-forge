@@ -74,12 +74,12 @@ def samples_plot(
     y_1: Union[list, np.ndarray],
     y_2: Union[list, np.ndarray, None] = None,
 ) -> plt.Figure:
-    """Plot 2D samples with color coding and optional shape encoding.
+    """Plot 2D samples with color coding and optional outline color encoding.
 
     Args:
         X: Array of shape (n_samples, 2) for 2D plotting.
         y_1: Integer labels for fill color coding.
-        y_2: Optional integer labels for marker shape encoding.
+        y_2: Optional integer labels for edge/outline color encoding.
 
     Returns:
         Matplotlib Figure object.
@@ -100,10 +100,8 @@ def samples_plot(
 
     fig, ax = plt.subplots(figsize=(10, 8))
 
-    # Unique labels
     unique_y1 = np.unique(y_1)
 
-    # Use a colormap that supports many distinct colors
     if len(unique_y1) <= 10:
         cmap = plt.cm.get_cmap("tab10", len(unique_y1))
     elif len(unique_y1) <= 20:
@@ -111,30 +109,24 @@ def samples_plot(
     else:
         cmap = plt.cm.get_cmap("gist_ncar", len(unique_y1))
 
-    # Define marker shapes for y_2
-    marker_shapes = [
-        "o",
-        "s",
-        "^",
-        "D",
-        "v",
-        "<",
-        ">",
-        "p",
-        "*",
-        "h",
-        "H",
-        "X",
-        "d",
-        "P",
+    # High-contrast outline colors for y_2
+    outline_colors = [
+        "#FF0000",  # red
+        "#000000",  # Black
+        "#0000FF",  # blue
+        "#FF00FF",  # magenta
+        "#00FFFF",  # cyan
+        "#FF8800",  # orange
+        "#8800FF",  # purple
+        "#00FF88",  # spring green
+        "#FF0088",  # rose
+        "#FFFF00",  # yellow
     ]
 
-    # Keep track of legend entries to avoid duplicates
     legend_handles = []
     legend_labels = []
 
     if y_2 is None:
-        # Simple case: only color coding
         for idx, label in enumerate(unique_y1):
             mask = y_1 == label
             scatter = ax.scatter(
@@ -143,32 +135,29 @@ def samples_plot(
                 c=[cmap(idx)],
                 label=f"Class {label}",
                 edgecolors="black",
-                s=80,
+                s=150,
                 alpha=0.7,
                 linewidths=1.5,
             )
             legend_handles.append(scatter)
             legend_labels.append(f"Class {label}")
     else:
-        # Complex case: color for y_1, shape for y_2
         unique_y2 = np.unique(y_2)
 
-        if len(unique_y2) > len(marker_shapes):
+        if len(unique_y2) > len(outline_colors):
             raise ValueError(
-                f"Too many unique values in y_2 ({len(unique_y2)}). Maximum supported: {len(marker_shapes)}"
+                f"Too many unique values in y_2 ({len(unique_y2)}). Maximum supported: {len(outline_colors)}"
             )
 
-        # Create a mapping for shapes
-        shape_map = {
-            label: marker_shapes[i % len(marker_shapes)]
+        outline_map = {
+            label: outline_colors[i % len(outline_colors)]
             for i, label in enumerate(unique_y2)
         }
 
-        # Plot all combinations
         plotted_combinations = set()
 
         for idx, color_label in enumerate(unique_y1):
-            for jdx, shape_label in enumerate(unique_y2):
+            for shape_label in unique_y2:
                 combined_mask = (y_1 == color_label) & (y_2 == shape_label)
 
                 if np.any(combined_mask):
@@ -176,37 +165,35 @@ def samples_plot(
                         X[combined_mask, 0],
                         X[combined_mask, 1],
                         c=[cmap(idx)],
-                        marker=shape_map[shape_label],
-                        edgecolors="black",
-                        s=100,
+                        marker="o",
+                        edgecolors=outline_map[shape_label],
+                        s=150,
                         alpha=0.7,
-                        linewidths=1.5,
+                        linewidths=2.0,
                     )
 
-                    # Add to legend only if not already added
                     combo_key = (color_label, shape_label)
                     if combo_key not in plotted_combinations:
                         plotted_combinations.add(combo_key)
                         legend_handles.append(scatter)
-                        legend_labels.append(f"C{color_label}·S{shape_label}")
+                        legend_labels.append(f"C{color_label}·O{shape_label}")
 
-        # Add separate legend for shapes if y_2 is used
-        # Create dummy scatter plots for shape legend
-        shape_legend_elements = []
-        for shape_label in unique_y2:
-            shape_legend_elements.append(
-                plt.Line2D(
-                    [0],
-                    [0],
-                    marker=shape_map[shape_label],
-                    color="gray",
-                    linestyle="",
-                    markersize=8,
-                    label=f"Shape {shape_label}",
-                    markeredgecolor="black",
-                    markeredgewidth=1.5,
-                )
+        # Outline legend entries
+        outline_legend_elements = [
+            plt.Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="w",
+                linestyle="",
+                markersize=10,
+                label=f"Outline {label}",
+                markerfacecolor="gray",
+                markeredgecolor=outline_map[label],
+                markeredgewidth=2.5,
             )
+            for label in unique_y2
+        ]
 
     ax.set_xlabel("D1", fontsize=12)
     ax.set_ylabel("D2", fontsize=12)
@@ -220,24 +207,23 @@ def samples_plot(
             fontsize=10,
         )
     else:
-        # Create two legends: one for color+shape combinations, one for shape reference
         leg1 = ax.legend(
             handles=legend_handles,
             labels=legend_labels,
             loc="upper left",
             framealpha=0.9,
             fontsize=9,
-            title="Color·Shape",
+            title="Fill·Outline",
             ncol=max(1, len(legend_labels) // 10),
         )
         ax.add_artist(leg1)
 
         ax.legend(
-            handles=shape_legend_elements,
+            handles=outline_legend_elements,
             loc="upper right",
             framealpha=0.9,
             fontsize=9,
-            title="Shape Reference",
+            title="Outline Reference",
         )
 
     ax.set_title("2D Sample Plot", fontsize=14, pad=10)

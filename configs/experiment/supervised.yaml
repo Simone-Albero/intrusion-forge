@@ -8,7 +8,7 @@ defaults:
   # - override /sampler: rival_batch
 
   - override /model: numerical_classifier
-  - override /loss: cross_entropy
+  - override /loss: focal
   - override /loops: default
   - override /optimizer: adamw
   - override /scheduler: one_cycle

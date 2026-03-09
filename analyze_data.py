@@ -89,55 +89,61 @@ def compute_results(cfg):
         for entry in separability_results:
             class_idx = int(entry["class"])
 
-            if class_idx == 0:
-                continue
-
             pairs = entry["pairs"]
 
-            pair_indices = [int(j) for j in pairs if int(j) != 0]
+            pair_indices = [int(j) for j in pairs]
             ratios = np.array([pairs[str(j)]["ratio"] for j in pair_indices])
             misclassifications = cm[class_idx, pair_indices]
 
-            class_total = cm[class_idx].sum()
-            valid_mask = misclassifications >= 0.006 * class_total
+            ratios_norm = ratios / ratios.max() if ratios.max() > 0 else ratios
 
-            logger.info(
-                f"class={class_idx}, class_total={class_total:.0f}, "
-                f"misclassifications={misclassifications}, "
-                f"valid={valid_mask.sum()}/{len(valid_mask)}"
+            class_total = cm[class_idx].sum()
+            misclassifications_norm = misclassifications / class_total
+            misclassifications_norm = (
+                misclassifications_norm / misclassifications_norm.max()
+                if misclassifications_norm.max() > 0
+                else misclassifications_norm
             )
 
-            ratios = ratios[valid_mask]
-            misclassifications = misclassifications[valid_mask]
+            valid_mask = misclassifications > 0
+            ratios_norm = ratios_norm[valid_mask]
+            misclassifications_norm = misclassifications_norm[valid_mask]
 
-            if len(ratios) < 1:
+            if len(ratios_norm) < 2:
                 split_scores.append(
                     {
                         "class": class_idx,
                         "tot_misclassifications": int(misclassifications.sum()),
                         "score": None,
-                        "pvalue": None,
-                    }
-                )
-                continue
-            elif len(ratios) == 1:
-                split_scores.append(
-                    {
-                        "class": class_idx,
-                        "tot_misclassifications": int(misclassifications.sum()),
-                        "score": 1.0 if ratios[0] > 0.5 else 0,
-                        "pvalue": None,
                     }
                 )
                 continue
 
-            corr, pvalue = spearmanr(ratios, misclassifications)
+            corr, _ = spearmanr(ratios_norm, misclassifications_norm)
+
+            rank_ratios = np.argsort(np.argsort(ratios_norm)) + 1
+            rank_misc = np.argsort(np.argsort(misclassifications_norm)) + 1
+            disagreements = np.sum(rank_misc != rank_ratios)
+
+            logger.info(
+                f"class={class_idx}, class_total={class_total:.0f}, "
+                f"misclassifications={misclassifications_norm}\n"
+                f"ratios={ratios_norm}\ndisagreements={disagreements}/{len(misclassifications)}, corr={corr:.4f}"
+            )
+
             split_scores.append(
                 {
                     "class": class_idx,
                     "tot_misclassifications": int(misclassifications.sum()),
-                    "score": float(corr),
-                    "pvalue": float(pvalue) if not np.isnan(pvalue) else None,
+                    "error_rate": (
+                        float(misclassifications.sum() / class_total)
+                        if class_total > 0
+                        else 0.0
+                    ),
+                    "disagreements": int(disagreements),
+                    "total_pairs": len(misclassifications),
+                    "corr": float(corr),
+                    "score": (1 - disagreements / len(misclassifications)),
                 }
             )
 
