@@ -219,7 +219,9 @@ def compute_clusters(df, feature_cols, label_col, classes=None, dst_col="cluster
 
     infos = {}
     for cls in classes:
-        logger.info(f"Computing clusters for class '{cls}'...")
+        logger.info(
+            f"Computing clusters for class '{cls}' (n_samples={df[df[label_col] == cls].shape[0]}):..."
+        )
         cls_mask = df[label_col] == cls
         _, labels, _, info = hdbscan_grid_search(df.loc[cls_mask, feature_cols].values)
         noise_label = labels.max() + 1

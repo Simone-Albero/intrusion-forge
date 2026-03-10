@@ -33,22 +33,27 @@ def analyze(cfg):
     )
 
     separability_results = {}
-    label_cols = (
-        [f"encoded_{cfg.data.label_col}"]
-        if "cluster" not in train_df.columns
-        else [f"encoded_{cfg.data.label_col}", "cluster"]
-    )
+    # label_cols = (
+    #     [f"encoded_{cfg.data.label_col}"]
+    #     if "cluster" not in train_df.columns
+    #     else [f"encoded_{cfg.data.label_col}", "cluster"]
+    # )
+    label_cols = [f"cluster"]
+
     for split_name, split_df in [
         ("train", train_df),
         ("val", val_df),
         ("test", test_df),
     ]:
+        if split_name == "val":
+            continue
+
         for label_col in label_cols:
             logger.info(f"Computing separability on {split_name} set ...")
             X = split_df[feature_cols].values
             y = split_df[label_col].values
             separability_result = compute_class_separability(
-                X, y, max_pairs=None, metric="cosine"
+                X, y, max_pairs=50_000, metric="cosine"
             )
             save_to_json(
                 separability_result,
@@ -165,8 +170,8 @@ def main():
         config_name="config",
         overrides=sys.argv[1:],
     )
-    # analyze(cfg)
-    compute_results(cfg)
+    analyze(cfg)
+    # compute_results(cfg)
 
 
 if __name__ == "__main__":

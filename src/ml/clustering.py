@@ -9,6 +9,8 @@ from sklearn.metrics import (
     calinski_harabasz_score,
 )
 from sklearn.neighbors import NearestNeighbors
+from sklearn.decomposition import PCA
+from tqdm import tqdm
 
 
 def kmeans_grid_search(
@@ -77,21 +79,31 @@ def hdbscan_grid_search(
     min_clustered_ratio: float = 0.20,
     penalize: bool = True,
 ) -> tuple[hdbscan.HDBSCAN, np.ndarray, np.ndarray, dict]:
-    """Grid-search over HDBSCAN hyperparameters, scored by silhouette (with optional penalties).
+    X = np.ascontiguousarray(X, dtype=np.float64)
+    if not np.isfinite(X).all():
+        X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
-    Returns:
-        (best_model, labels, probabilities, best_info)
-    """
-    X = np.asarray(X)
+    pca = PCA(n_components=0.8, random_state=42)
+    X = pca.fit_transform(X)
+    X = np.ascontiguousarray(X, dtype=np.float64)
+
     n = X.shape[0]
     if n < 5:
         raise ValueError("Need at least 5 samples.")
 
+    MAX_SAMPLES = 50_000
+    if n > MAX_SAMPLES:
+        rng = np.random.default_rng(42)
+        idx = rng.choice(n, size=MAX_SAMPLES, replace=False)
+        X_fit = np.ascontiguousarray(X[idx], dtype=np.float64)
+    else:
+        X_fit = X
+
     best_model, best_labels, best_proba, best_info = None, None, None, {}
     best_score = -np.inf
 
-    for mcs in min_cluster_size:
-        for ms in min_samples:
+    for mcs in tqdm(min_cluster_size, desc="min_cluster_size"):
+        for ms in tqdm(min_samples, desc="min_samples"):
             model = hdbscan.HDBSCAN(
                 min_cluster_size=int(mcs),
                 min_samples=None if ms is None else int(ms),
@@ -99,10 +111,12 @@ def hdbscan_grid_search(
                 cluster_selection_method=cluster_selection_method,
                 cluster_selection_epsilon=float(cluster_selection_epsilon),
                 prediction_data=True,
-                core_dist_n_jobs=-1,
+                algorithm="prims_kdtree",
             )
-            labels = model.fit_predict(X)
-            proba = getattr(model, "probabilities_", np.zeros(n, dtype=float))
+            labels = model.fit_predict(X_fit)
+            proba = getattr(
+                model, "probabilities_", np.zeros(X_fit.shape[0], dtype=float)
+            )
 
             mask = labels != -1
             noise_ratio = float((~mask).mean())
@@ -117,7 +131,7 @@ def hdbscan_grid_search(
                 continue
 
             try:
-                sil = float(silhouette_score(X[mask], labels[mask], metric=metric))
+                sil = float(silhouette_score(X_fit[mask], labels[mask], metric=metric))
             except Exception:
                 continue
 
@@ -139,6 +153,12 @@ def hdbscan_grid_search(
         raise RuntimeError(
             "No valid clustering found. Try expanding the grid or relaxing filters."
         )
+
+    if n > MAX_SAMPLES:
+        print(f"Predicting on full dataset ({n} samples)...")
+        best_labels, best_proba = hdbscan.approximate_predict(best_model, X)
+        best_labels = np.array(best_labels)
+        best_proba = np.array(best_proba)
 
     return best_model, best_labels, best_proba, best_info
 

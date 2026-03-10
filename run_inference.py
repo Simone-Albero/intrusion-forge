@@ -90,7 +90,7 @@ def count_cluster_failures(
 
 
 def visualize_samples(
-    X, y_1, y_2=None, exclude_classes=None, n_samples=3000, n_components=2
+    X, y_1, y_2=None, exclude_classes=None, n_samples=2000, n_components=2
 ):
     mask = ~np.isin(y_1, exclude_classes or [])
     vis_mask = create_subsample_mask(y_1[mask], n_samples=n_samples, stratify=False)
@@ -197,16 +197,16 @@ def infer():
 
             plt.close(fig)
 
-        if "cluster" in df.columns:
-            clusters = df["cluster"].to_numpy()
-            for tag, data in (("raw/clusters", X), ("latent/clusters", z)):
-                if data is None:
-                    continue
-                fig = visualize_samples(data, clusters, y_true)
-                tb_logger.writer.add_figure(tag, fig, step)
-                plt.close(fig)
+        # if "cluster" in df.columns:
+        #     clusters = df["cluster"].to_numpy()
+        #     for tag, data in (("raw/clusters", X), ("latent/clusters", z)):
+        #         if data is None:
+        #             continue
+        #         fig = visualize_samples(data, clusters, y_true)
+        #         tb_logger.writer.add_figure(tag, fig, step)
+        #         plt.close(fig)
 
-        tb_logger.close()
+        # tb_logger.close()
 
         # logger.info("Analyzing class failures ...")
         # class_failures = analyze_classes_failures(X, y_true, y_pred)
@@ -216,15 +216,19 @@ def infer():
         # )
         # stats["class_failures"][suffix] = class_failures
 
-        # if "cluster" in df.columns:
-        #     logger.info("Counting failures per cluster ...")
-        #     cluster_failures = count_cluster_failures(df, y_true, y_pred, confidences)
-        #     logger.info(f"\n{pd.DataFrame(cluster_failures)}")
-        #     save_to_json(
-        #         cluster_failures,
-        #         json_logs_path / f"inference/cluster_failures/{suffix}.json",
-        #     )
-        #     stats["cluster_failures"][suffix] = cluster_failures
+        if "cluster" in df.columns:
+            logger.info("Counting failures per cluster ...")
+            cluster_failures = count_cluster_failures(df, y_true, y_pred, confidences)
+            cluster_failures = sorted(
+                cluster_failures, key=lambda r: r["failure_rate"] or 0.0, reverse=True
+            )
+
+            logger.info(f"\n{pd.DataFrame(cluster_failures)}")
+            save_to_json(
+                cluster_failures,
+                json_logs_path / f"inference/cluster_failures/{suffix}.json",
+            )
+            stats["cluster_failures"][suffix] = cluster_failures
 
     return stats
 

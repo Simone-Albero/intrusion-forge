@@ -186,7 +186,7 @@ def _mean_distance_intra(
                 running_sum += float(row.sum())
                 running_count += len(row)
     else:
-        size = int(max_pairs * 1.1) + 32  # type: ignore[operator]
+        size = int(max_pairs * 1.1) + 32
         i = np.random.randint(0, n, size=size)
         j = np.random.randint(0, n, size=size)
         mask = i != j
@@ -227,7 +227,7 @@ def _mean_distance_inter(
             running_sum += float(D.sum())
             running_count += D.size
     else:
-        n = max_pairs  # type: ignore[assignment]
+        n = max_pairs
         replace = n > min(len(idx_a), len(idx_b))
         i = np.random.choice(len(idx_a), size=n, replace=replace)
         j = np.random.choice(len(idx_b), size=n, replace=replace)
@@ -247,7 +247,7 @@ def compute_class_separability(
     y: np.ndarray,
     max_pairs: int | None = 50_000,
     metric: str = "cosine",
-    pca_variance: float = 0.95,
+    pca_variance: float = 0.9,
 ) -> list[dict[str, Any]]:
     """Analyze class separability via intra/inter-class mean distances.
 
@@ -259,7 +259,6 @@ def compute_class_separability(
     """
     classes = np.unique(y)
 
-    # Reduce dimensionality once so distance computations are cheaper.
     X = PCA(n_components=pca_variance, svd_solver="full", whiten=True).fit_transform(X)
 
     pair_metrics: dict[tuple, dict] = {}
@@ -281,7 +280,7 @@ def compute_class_separability(
             )
             ratio = (
                 intra_mean / inter_ab
-                if np.isfinite(intra_mean) and np.isfinite(inter_ab)
+                if np.isfinite(intra_mean) and np.isfinite(inter_ab) and inter_ab != 0.0
                 else np.nan
             )
 
