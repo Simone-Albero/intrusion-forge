@@ -69,52 +69,50 @@ def analyze_classes_failures(X, y_true, y_pred, max_samples=1000) -> list[dict]:
 
 def count_cluster_failures(
     df, y_true, y_pred, confidences, cluster_col: str = "cluster"
-) -> list[dict]:
-    rows = []
+) -> dict[str, dict]:
+    rows = {}
     for c_label in df[cluster_col].unique():
         mask = (df[cluster_col] == c_label).to_numpy()
         tot_samples = int(mask.sum())
         tot_failures = int((y_true[mask] != y_pred[mask]).sum())
-        rows.append(
-            {
-                "cluster": int(c_label),
-                "tot_failures": tot_failures,
-                "tot_samples": tot_samples,
-                "failure_rate": tot_failures / tot_samples if tot_samples > 0 else None,
-                "mean_confidence": (
-                    float(confidences[mask].mean()) if tot_samples > 0 else None
-                ),
-            }
-        )
-    return sorted(rows, key=lambda r: r["failure_rate"] or 0.0)
+        rows[str(c_label)] = {
+            "tot_failures": tot_failures,
+            "tot_samples": tot_samples,
+            "failure_rate": tot_failures / tot_samples if tot_samples > 0 else None,
+            "mean_confidence": (
+                float(confidences[mask].mean()) if tot_samples > 0 else None
+            ),
+        }
+    return dict(
+        sorted(rows.items(), key=lambda x: x[1]["failure_rate"] or 0.0, reverse=True)
+    )
 
 
 def count_class_failures(
     df, y_true, y_pred, confidences, cluster_col: str = "cluster"
-) -> list[dict]:
-    rows = []
+) -> dict[str, dict]:
+    rows = {}
     for c_label in np.unique(y_true):
         mask = y_true == c_label
         tot_samples = int(mask.sum())
         tot_failures = int((y_true[mask] != y_pred[mask]).sum())
         clusters_in_failures = (
-            (df[cluster_col].loc[df.index[mask & (y_true != y_pred)]].unique().tolist())
+            df[cluster_col].loc[df.index[mask & (y_true != y_pred)]].unique().tolist()
             if cluster_col in df.columns
             else None
         )
-        rows.append(
-            {
-                "class": int(c_label),
-                "tot_failures": tot_failures,
-                "tot_samples": tot_samples,
-                "failure_rate": tot_failures / tot_samples if tot_samples > 0 else None,
-                "mean_confidence": (
-                    float(confidences[mask].mean()) if tot_samples > 0 else None
-                ),
-                "clusters_in_failures": clusters_in_failures,
-            }
-        )
-    return sorted(rows, key=lambda r: r["failure_rate"] or 0.0)
+        rows[str(c_label)] = {
+            "tot_failures": tot_failures,
+            "tot_samples": tot_samples,
+            "failure_rate": tot_failures / tot_samples if tot_samples > 0 else None,
+            "mean_confidence": (
+                float(confidences[mask].mean()) if tot_samples > 0 else None
+            ),
+            "clusters_in_failures": clusters_in_failures,
+        }
+    return dict(
+        sorted(rows.items(), key=lambda x: x[1]["failure_rate"] or 0.0, reverse=True)
+    )
 
 
 def visualize_samples(
@@ -141,7 +139,7 @@ def infer():
         overrides=sys.argv[1:],
     )
     json_logs_path = Path(cfg.path.json_logs)
-    df_meta = load_from_json(json_logs_path / "data/metadata.json")
+    df_meta = load_from_json(json_logs_path / "data/df_meta.json")
     cfg.model.params.num_classes = df_meta["num_classes"]
     cfg.loss.params.class_weight = df_meta["class_weights"]
     device = torch.device(cfg.device)
@@ -234,25 +232,14 @@ def infer():
 
         logger.info("Counting failures per class ...")
         class_failures = count_class_failures(df, y_true, y_pred, confidences)
-        class_failures = sorted(
-            class_failures, key=lambda r: r["failure_rate"] or 0.0, reverse=True
-        )
-
-        logger.info(f"\n{pd.DataFrame(class_failures)}")
         save_to_json(
-            class_failures,
-            json_logs_path / f"inference/class_failures/{suffix}.json",
+            class_failures, json_logs_path / f"inference/class_failures/{suffix}.json"
         )
         stats["class_failures"][suffix] = class_failures
 
         if "cluster" in df.columns:
             logger.info("Counting failures per cluster ...")
             cluster_failures = count_cluster_failures(df, y_true, y_pred, confidences)
-            cluster_failures = sorted(
-                cluster_failures, key=lambda r: r["failure_rate"] or 0.0, reverse=True
-            )
-
-            logger.info(f"\n{pd.DataFrame(cluster_failures)}")
             save_to_json(
                 cluster_failures,
                 json_logs_path / f"inference/cluster_failures/{suffix}.json",

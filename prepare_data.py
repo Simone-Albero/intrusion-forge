@@ -62,6 +62,7 @@ def compute_splits_metadata(
     cat_cols,
     benign_tag,
     label_mapping=None,
+    cluster_col=None,
 ):
     """Compute and return metadata dictionary for the dataset."""
     class_counts = train_df[label_col].value_counts().sort_index()
@@ -89,6 +90,20 @@ def compute_splits_metadata(
         "num_classes": train_df[label_col].nunique(),
         "class_weights": class_weights_list,
     }
+
+    df_ = pd.concat([train_df, val_df, test_df], ignore_index=True)
+    if cluster_col and cluster_col in df_.columns:
+        class_to_clusters = {}
+        for cls in df_[f"encoded_{label_col}"].unique():
+            class_to_clusters[cls] = (
+                df_[df_[f"encoded_{label_col}"] == cls][cluster_col].unique().tolist()
+            )
+
+        clusters_distribution = df_[cluster_col].value_counts().to_dict()
+        metadata["clusters"] = {
+            "class_to_clusters": class_to_clusters,
+            "clusters_distribution": clusters_distribution,
+        }
 
     return metadata
 
@@ -168,40 +183,6 @@ def preprocess_df(
         val_df,
         test_df,
     )
-
-
-def compute_clusters_and_ambigous(
-    df, feature_cols, label_col, classes=None, thresholds=None, dst_col="cluster"
-):
-    """Compute HDBSCAN clusters for specified classes and thresholds."""
-    df[dst_col] = -1
-    offset = 0
-    if classes is None:
-        logger.info("Computing clusters for all data...")
-        _, labels, proba, info = hdbscan_grid_search(df[feature_cols].values)
-        core_mask = (labels != -1) & (proba >= thresholds[0] if thresholds else 0.0)
-        df[dst_col] = labels
-        return df, info
-
-    if len(classes) > len(thresholds):
-        thresholds = thresholds + [0.0] * (len(classes) - len(thresholds))
-
-    infos = {}
-    for cls, threshold in zip(classes, thresholds):
-        logger.info(
-            f"Computing clusters for class '{cls}' with threshold {threshold}..."
-        )
-        cls_mask = df[label_col] == cls
-        _, labels, proba, info = hdbscan_grid_search(
-            df.loc[cls_mask, feature_cols].values
-        )
-        core_mask = (labels != -1) & (proba >= threshold)
-
-        cls_indices = df[cls_mask].index[core_mask]
-        df.loc[cls_indices, dst_col] = labels[core_mask] + offset
-        offset += labels.max() + 1
-        infos[cls] = info
-    return df, infos
 
 
 def compute_clusters(df, feature_cols, label_col, classes=None, dst_col="cluster"):
@@ -332,20 +313,7 @@ def run_clustering(
         )
         train_df = random_undersample_df(train_df, label_col, seed)
 
-    cluster_to_class = (
-        train_df.groupby(cluster_col)[label_col].first().astype(str).to_dict()
-    )
-
-    clusters_metadata = {"cluster_to_class": cluster_to_class}
-    for cls in cluster_classes:
-        for split_name, df in zip(
-            ["train", "val", "test"], [train_df, val_df, test_df]
-        ):
-            cls_mask = df[label_col] == cls
-            cluster_counts = df.loc[cls_mask, cluster_col].value_counts().to_dict()
-            clusters_metadata[f"{split_name}_{cls}_cluster_counts"] = cluster_counts
-
-    return train_df, val_df, test_df, clusters_metadata
+    return train_df, val_df, test_df
 
 
 def prepare(cfg):
@@ -362,7 +330,7 @@ def prepare(cfg):
     df = load_df(str(raw_data_path))
 
     df_info = get_df_info(df, label_col=label_col)
-    save_to_json(df_info, json_logs_path / "data/info.json")
+    save_to_json(df_info, json_logs_path / "data/df_info.json")
 
     train_df, val_df, test_df = preprocess_df(
         df,
@@ -384,7 +352,7 @@ def prepare(cfg):
     )
 
     if cfg.clustering_type is not None:
-        train_df, val_df, test_df, clusters_metadata = run_clustering(
+        train_df, val_df, test_df = run_clustering(
             train_df,
             val_df,
             test_df,
@@ -395,7 +363,6 @@ def prepare(cfg):
             ignore_clusters=cfg.ignore_clusters,
             seed=cfg.seed,
         )
-        save_to_json(clusters_metadata, json_logs_path / "data/clusters.json")
 
     train_df, val_df, test_df, label_mapping = encode_labels(
         train_df, val_df, test_df, label_col, dst_label_col=f"encoded_{label_col}"
@@ -419,8 +386,9 @@ def prepare(cfg):
         cat_cols,
         cfg.data.benign_tag,
         label_mapping,
+        cluster_col="cluster" if cfg.clustering_type else None,
     )
-    save_to_json(metadata, json_logs_path / "data/metadata.json")
+    save_to_json(metadata, json_logs_path / "data/df_meta.json")
 
     return train_df, val_df, test_df, metadata
 

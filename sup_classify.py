@@ -384,7 +384,7 @@ def sup_classify():
     )
 
     json_logs_path = Path(cfg.path.json_logs)
-    df_meta = load_from_json(json_logs_path / "data/metadata.json")
+    df_meta = load_from_json(json_logs_path / "data/df_meta.json")
     cfg.model.params.num_classes = df_meta["num_classes"]
 
     device = torch.device(cfg.device)

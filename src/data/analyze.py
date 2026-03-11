@@ -248,20 +248,19 @@ def compute_class_separability(
     max_pairs: int | None = 50_000,
     metric: str = "cosine",
     pca_variance: float = 0.9,
-) -> list[dict[str, Any]]:
+) -> dict[str, dict[str, float]]:
     """Analyze class separability via intra/inter-class mean distances.
 
     Distances are never collected into full arrays; sums are accumulated in
     chunk-sized batches so RAM usage stays O(chunk_size) instead of O(n²).
 
-    Returns a list of dicts (one per class) with keys:
-      class, pairs, mean_ratio, max_ratio.
+    Returns a dict {class: {other_class: ratio}} sorted by mean ratio ascending.
     """
     classes = np.unique(y)
 
     X = PCA(n_components=pca_variance, svd_solver="full", whiten=True).fit_transform(X)
 
-    pair_metrics: dict[tuple, dict] = {}
+    pair_metrics: dict[tuple, float] = {}
     for i, class_a in enumerate(classes):
         for class_b in classes[i + 1 :]:
             idx_a = np.where(y == class_a)[0]
@@ -284,31 +283,16 @@ def compute_class_separability(
                 else np.nan
             )
 
-            pair_metrics[(str(class_a), str(class_b))] = {"ratio": ratio}
+            pair_metrics[(str(class_a), str(class_b))] = float(ratio)
 
-    results = []
+    result: dict[str, dict[str, float]] = {}
     for cls in map(str, classes):
         pairs = {
-            other: m
-            for (a, b), m in pair_metrics.items()
-            for other in ([b] if a == cls else [a] if b == cls else [])
+            b if a == cls else a: ratio
+            for (a, b), ratio in pair_metrics.items()
+            if a == cls or b == cls
         }
+        mean_ratio = float(np.nanmean(list(pairs.values()))) if pairs else float("nan")
+        result[cls] = {"_mean_ratio": mean_ratio, **pairs}
 
-        ratios = np.array([m["ratio"] for m in pairs.values()])
-
-        results.append(
-            {
-                "class": cls,
-                "pairs": {
-                    other: {"ratio": float(m["ratio"])}
-                    for other, m in sorted(
-                        pairs.items(), key=lambda x: x[1]["ratio"], reverse=True
-                    )
-                },
-                "mean_ratio": float(np.nanmean(ratios)),
-                "max_ratio": float(np.nanmax(ratios)),
-            }
-        )
-
-    results.sort(key=lambda x: x["mean_ratio"])
-    return results
+    return dict(sorted(result.items(), key=lambda x: x[1]["_mean_ratio"]))
