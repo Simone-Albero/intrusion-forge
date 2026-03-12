@@ -95,11 +95,14 @@ def compute_splits_metadata(
     if cluster_col and cluster_col in df_.columns:
         class_to_clusters = {}
         for cls in df_[f"encoded_{label_col}"].unique():
-            class_to_clusters[cls] = (
-                df_[df_[f"encoded_{label_col}"] == cls][cluster_col].unique().tolist()
-            )
+            class_to_clusters[str(cls)] = [
+                str(v)
+                for v in df_[df_[f"encoded_{label_col}"] == cls][cluster_col].unique()
+            ]
 
-        clusters_distribution = df_[cluster_col].value_counts().to_dict()
+        clusters_distribution = {
+            str(k): v for k, v in df_[cluster_col].value_counts().to_dict().items()
+        }
         metadata["clusters"] = {
             "class_to_clusters": class_to_clusters,
             "clusters_distribution": clusters_distribution,
