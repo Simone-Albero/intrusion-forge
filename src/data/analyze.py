@@ -6,6 +6,7 @@ import numpy.typing as npt
 from sklearn.metrics import roc_auc_score, pairwise_distances
 from sklearn.metrics.pairwise import paired_distances
 from sklearn.decomposition import PCA
+from tqdm import tqdm
 
 from src.ml.projection import tsne_projection, create_subsample_mask
 from src.plot.array import samples_plot
@@ -261,29 +262,31 @@ def compute_class_separability(
     X = PCA(n_components=pca_variance, svd_solver="full", whiten=True).fit_transform(X)
 
     pair_metrics: dict[tuple, float] = {}
-    for i, class_a in enumerate(classes):
-        for class_b in classes[i + 1 :]:
-            idx_a = np.where(y == class_a)[0]
-            idx_b = np.where(y == class_b)[0]
+    n_pairs = len(classes) * (len(classes) - 1) // 2
+    for class_a, class_b in tqdm(
+        combinations(classes, 2), total=n_pairs, desc="class pairs"
+    ):
+        idx_a = np.where(y == class_a)[0]
+        idx_b = np.where(y == class_b)[0]
 
-            intra_a = _mean_distance_intra(X, idx_a, max_pairs=max_pairs, metric=metric)
-            intra_b = _mean_distance_intra(X, idx_b, max_pairs=max_pairs, metric=metric)
-            inter_ab = _mean_distance_inter(
-                X, idx_a, idx_b, max_pairs=max_pairs, metric=metric
-            )
+        intra_a = _mean_distance_intra(X, idx_a, max_pairs=max_pairs, metric=metric)
+        intra_b = _mean_distance_intra(X, idx_b, max_pairs=max_pairs, metric=metric)
+        inter_ab = _mean_distance_inter(
+            X, idx_a, idx_b, max_pairs=max_pairs, metric=metric
+        )
 
-            intra_mean = (
-                np.mean([intra_a, intra_b])
-                if np.isfinite(intra_a) and np.isfinite(intra_b)
-                else np.nan
-            )
-            ratio = (
-                intra_mean / inter_ab
-                if np.isfinite(intra_mean) and np.isfinite(inter_ab) and inter_ab != 0.0
-                else np.nan
-            )
+        intra_mean = (
+            np.mean([intra_a, intra_b])
+            if np.isfinite(intra_a) and np.isfinite(intra_b)
+            else np.nan
+        )
+        ratio = (
+            intra_mean / inter_ab
+            if np.isfinite(intra_mean) and np.isfinite(inter_ab) and inter_ab != 0.0
+            else np.nan
+        )
 
-            pair_metrics[(str(class_a), str(class_b))] = float(ratio)
+        pair_metrics[(str(class_a), str(class_b))] = float(ratio)
 
     result: dict[str, dict[str, float]] = {}
     for cls in map(str, classes):
@@ -292,6 +295,11 @@ def compute_class_separability(
             for (a, b), ratio in pair_metrics.items()
             if a == cls or b == cls
         }
+        pairs = dict(
+            sorted(
+                pairs.items(), key=lambda x: x[1] if np.isfinite(x[1]) else float("inf")
+            )
+        )
         mean_ratio = float(np.nanmean(list(pairs.values()))) if pairs else float("nan")
         result[cls] = {"_mean_ratio": mean_ratio, **pairs}
 

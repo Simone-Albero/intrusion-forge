@@ -92,16 +92,25 @@ def count_class_failures(
     df, y_true, y_pred, confidences, cluster_col: str = "cluster"
 ) -> dict[str, dict]:
     rows = {}
-    for c_label in np.unique(y_true):
-        mask = y_true == c_label
+    for cls_label in np.unique(y_true):
+        mask = y_true == cls_label
         tot_samples = int(mask.sum())
         tot_failures = int((y_true[mask] != y_pred[mask]).sum())
-        clusters_in_failures = (
-            df[cluster_col].loc[df.index[mask & (y_true != y_pred)]].unique().tolist()
-            if cluster_col in df.columns
-            else None
-        )
-        rows[str(c_label)] = {
+
+        if cluster_col in df.columns:
+            failure_mask = mask & (y_true != y_pred)
+            wrong_preds = y_pred[failure_mask]
+            wrong_clusters = df[cluster_col].loc[df.index[failure_mask]].to_numpy()
+            clusters_in_failures = {
+                str(wrong_cls): np.unique(
+                    wrong_clusters[wrong_preds == wrong_cls]
+                ).tolist()
+                for wrong_cls in np.unique(wrong_preds)
+            }
+        else:
+            clusters_in_failures = None
+
+        rows[str(cls_label)] = {
             "tot_failures": tot_failures,
             "tot_samples": tot_samples,
             "failure_rate": tot_failures / tot_samples if tot_samples > 0 else None,
