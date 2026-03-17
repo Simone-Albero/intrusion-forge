@@ -5,8 +5,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split, GridSearchCV
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import mean_absolute_error, r2_score
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import (
+    f1_score,
+    roc_auc_score,
+    confusion_matrix,
+    classification_report,
+)
 
 
 from src.common.config import load_config
@@ -249,32 +254,28 @@ def main():
     )
 
     cluster_stats_df = pd.DataFrame.from_dict(cluster_stats, orient="index")
-    target_col = "failure_rate"
+    target_col = "is_failed"
     exclude_cols = [target_col, "is_failed", "cluster_class"]
-    # feature_cols = [
-    #     "cluster_size",
-    #     "foreign_avg_avg",
-    #     "foreign_max_avg",
-    #     "foreign_avg_max",
-    #     "foreign_max_max",
-    #     "foreign_avg_std",
-    #     "foreign_max_std",
-    #     "self_avg",
-    #     "self_max",
-    # ]
 
-    X = cluster_stats_df.drop(columns=exclude_cols, errors="ignore")
-    # X = X[feature_cols].copy()
-    y = cluster_stats_df[target_col].copy()
+    X = cluster_stats_df.drop(columns=exclude_cols + [target_col], errors="ignore")
+    y = cluster_stats_df[target_col].copy().astype(int)
 
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42
+        X,
+        y,
+        test_size=0.2,
+        random_state=42,
+        stratify=y,
     )
 
     print("Train size:", X_train.shape, y_train.shape)
     print("Test size:", X_test.shape, y_test.shape)
 
-    base_model = RandomForestRegressor(random_state=42, n_jobs=-1)
+    base_model = RandomForestClassifier(
+        random_state=42,
+        n_jobs=-1,
+        class_weight="balanced",
+    )
 
     param_grid = {
         "n_estimators": [200, 300, 500],
@@ -287,7 +288,7 @@ def main():
         estimator=base_model,
         param_grid=param_grid,
         cv=5,
-        scoring="neg_mean_absolute_error",
+        scoring="f1",
         n_jobs=-1,
         verbose=1,
     )
@@ -295,13 +296,21 @@ def main():
     grid.fit(X_train, y_train)
 
     best_model = grid.best_estimator_
+
     y_pred = best_model.predict(X_test)
+    y_proba = best_model.predict_proba(X_test)[:, 1]
 
     print("Best params:", grid.best_params_)
     print("Target Mean:", y.mean())
-    print("Target Std:", y.std())
-    print("Test MAE   :", mean_absolute_error(y_test, y_pred))
-    print("Test R2    :", r2_score(y_test, y_pred))
+
+    print("Test F1                :", f1_score(y_test, y_pred))
+    print("Test ROC AUC           :", roc_auc_score(y_test, y_proba))
+
+    print("\nConfusion Matrix:")
+    print(confusion_matrix(y_test, y_pred))
+
+    print("\nClassification Report:")
+    print(classification_report(y_test, y_pred, digits=4))
 
 
 if __name__ == "__main__":
