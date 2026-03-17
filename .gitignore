@@ -1,6 +1,5 @@
 # Custom skipped files
 resources/
-run_exp.sh
 .idea/
 prof.out
 

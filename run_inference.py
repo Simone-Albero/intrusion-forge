@@ -67,48 +67,80 @@ def analyze_classes_failures(X, y_true, y_pred, max_samples=1000) -> list[dict]:
     ]
 
 
-def count_cluster_failures(
+def evaluate_predictions(
     df, y_true, y_pred, confidences, cluster_col: str = "cluster"
 ) -> dict[str, dict]:
     rows = {}
-    for c_label in df[cluster_col].unique():
-        mask = (df[cluster_col] == c_label).to_numpy()
-        tot_samples = int(mask.sum())
-        tot_failures = int((y_true[mask] != y_pred[mask]).sum())
-        rows[str(c_label)] = {
-            "tot_failures": tot_failures,
-            "tot_samples": tot_samples,
-            "failure_rate": tot_failures / tot_samples if tot_samples > 0 else None,
-            "mean_confidence": (
-                float(confidences[mask].mean()) if tot_samples > 0 else None
-            ),
-        }
-    return dict(
-        sorted(rows.items(), key=lambda x: x[1]["failure_rate"] or 0.0, reverse=True)
+    cluster_errors_by_class = {}
+    cluster_errors_total = None
+
+    has_cluster = cluster_col in df.columns
+    if has_cluster:
+        all_clusters = df[cluster_col].to_numpy()
+        global_error_mask = y_true != y_pred
+        global_failed_clusters = all_clusters[global_error_mask]
+
+        cluster_errors_total = {}
+        for c in np.unique(all_clusters):
+            n_total = int((all_clusters == c).sum())
+            n_error = int((global_failed_clusters == c).sum())
+            cluster_errors_total[str(c)] = {
+                "n_error": n_error,
+                "n_total": n_total,
+                "error_rate": (n_error / n_total) if n_total > 0 else None,
+            }
+
+    cluster_errors_total = (
+        dict(
+            sorted(
+                cluster_errors_total.items(),
+                key=lambda x: x[1]["error_rate"] or 0.0,
+                reverse=True,
+            )
+        )
+        if cluster_errors_total
+        else None
     )
 
-
-def count_class_failures(
-    df, y_true, y_pred, confidences, cluster_col: str = "cluster"
-) -> dict[str, dict]:
-    rows = {}
     for cls_label in np.unique(y_true):
         mask = y_true == cls_label
         tot_samples = int(mask.sum())
         tot_failures = int((y_true[mask] != y_pred[mask]).sum())
 
-        if cluster_col in df.columns:
+        if has_cluster:
             failure_mask = mask & (y_true != y_pred)
             wrong_preds = y_pred[failure_mask]
             wrong_clusters = df[cluster_col].loc[df.index[failure_mask]].to_numpy()
-            clusters_in_failures = {
+            cluster_in_fn = {
                 str(wrong_cls): np.unique(
                     wrong_clusters[wrong_preds == wrong_cls]
                 ).tolist()
                 for wrong_cls in np.unique(wrong_preds)
             }
+
+            tp_mask = mask & (y_true == y_pred)
+            tp_clusters = df[cluster_col].loc[df.index[tp_mask]].to_numpy()
+            cluster_in_tp = np.unique(tp_clusters).tolist()
+
+            class_clusters = df[cluster_col].loc[df.index[mask]].to_numpy()
+            failed_class_clusters = (
+                df[cluster_col].loc[df.index[failure_mask]].to_numpy()
+            )
+
+            class_cluster_stats = {}
+            for c in np.unique(class_clusters):
+                n_total = int((class_clusters == c).sum())
+                n_error = int((failed_class_clusters == c).sum())
+                class_cluster_stats[str(c)] = {
+                    "n_error": n_error,
+                    "n_total": n_total,
+                    "error_rate": (n_error / n_total) if n_total > 0 else None,
+                }
+
+            cluster_errors_by_class[str(cls_label)] = class_cluster_stats
         else:
-            clusters_in_failures = None
+            cluster_in_fn = None
+            cluster_in_tp = None
 
         rows[str(cls_label)] = {
             "tot_failures": tot_failures,
@@ -117,11 +149,21 @@ def count_class_failures(
             "mean_confidence": (
                 float(confidences[mask].mean()) if tot_samples > 0 else None
             ),
-            "clusters_in_failures": clusters_in_failures,
+            "cluster_in_fn": cluster_in_fn,
+            "cluster_in_tp": cluster_in_tp,
         }
-    return dict(
+
+    rows = dict(
         sorted(rows.items(), key=lambda x: x[1]["failure_rate"] or 0.0, reverse=True)
     )
+
+    return {
+        "classes": rows,
+        "cluster_errors": {
+            "by_class": cluster_errors_by_class if has_cluster else None,
+            "total": cluster_errors_total,
+        },
+    }
 
 
 def visualize_samples(
@@ -164,7 +206,7 @@ def infer():
     model = create_model(cfg.model.name, cfg.model.params, device)
     load_latest_checkpoint(Path(cfg.path.models), model, device)
 
-    stats = {"class_confidence": {}, "class_failures": {}, "cluster_failures": {}}
+    stats = {"class_confidence": {}, "pred_infos": {}, "cluster_failures": {}}
     for suffix, df in zip(("train", "val", "test"), splits):
         logger.info(f"Running inference on {suffix} set ...")
         log_dir = Path(cfg.path.tb_logs) / "inference" / suffix
@@ -220,40 +262,13 @@ def infer():
 
             plt.close(fig)
 
-        # if "cluster" in df.columns:
-        #     clusters = df["cluster"].to_numpy()
-        #     for tag, data in (("raw/clusters", X), ("latent/clusters", z)):
-        #         if data is None:
-        #             continue
-        #         fig = visualize_samples(data, clusters, y_true)
-        #         tb_logger.writer.add_figure(tag, fig, step)
-        #         plt.close(fig)
-
-        # tb_logger.close()
-
-        # logger.info("Analyzing class failures ...")
-        # class_failures = analyze_classes_failures(X, y_true, y_pred)
-        # logger.info(f"\n{pd.DataFrame(class_failures)}")
-        # save_to_json(
-        #     class_failures, json_logs_path / f"inference/class_failures/{suffix}.json"
-        # )
-        # stats["class_failures"][suffix] = class_failures
-
         logger.info("Counting failures per class ...")
-        class_failures = count_class_failures(df, y_true, y_pred, confidences)
+        pred_infos = evaluate_predictions(df, y_true, y_pred, confidences)
         save_to_json(
-            class_failures, json_logs_path / f"inference/class_failures/{suffix}.json"
+            pred_infos,
+            json_logs_path / f"inference/pred_infos/{suffix}.json",
         )
-        stats["class_failures"][suffix] = class_failures
-
-        if "cluster" in df.columns:
-            logger.info("Counting failures per cluster ...")
-            cluster_failures = count_cluster_failures(df, y_true, y_pred, confidences)
-            save_to_json(
-                cluster_failures,
-                json_logs_path / f"inference/cluster_failures/{suffix}.json",
-            )
-            stats["cluster_failures"][suffix] = cluster_failures
+        stats["pred_infos"][suffix] = pred_infos
 
     return stats
 
