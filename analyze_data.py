@@ -255,9 +255,22 @@ def main():
 
     cluster_stats_df = pd.DataFrame.from_dict(cluster_stats, orient="index")
     target_col = "is_failed"
-    exclude_cols = [target_col, "is_failed", "cluster_class"]
+    exclude_cols = ["failure_rate", "is_failed", "cluster_class"]
 
     X = cluster_stats_df.drop(columns=exclude_cols + [target_col], errors="ignore")
+    X = X[
+        [
+            "cluster_size",
+            "foreign_avg_avg",
+            "foreign_max_avg",
+            "foreign_avg_max",
+            "foreign_max_max",
+            "foreign_avg_std",
+            "foreign_max_std",
+            "self_avg",
+            "self_max",
+        ]
+    ].copy()
     y = cluster_stats_df[target_col].copy().astype(int)
 
     X_train, X_test, y_train, y_test = train_test_split(

@@ -9,7 +9,7 @@ DATASETS=(
     "ton_iot_v2"
 )
 
-NAME="cluster_separability_cosine"
+NAME="cluster_separability_euclidean"
 source venv/bin/activate
 
 for dataset in "${DATASETS[@]}"; do
