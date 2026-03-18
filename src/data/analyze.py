@@ -278,12 +278,12 @@ def compute_class_separability(
         intra_mean = (
             np.mean([intra_a, intra_b])
             if np.isfinite(intra_a) and np.isfinite(intra_b)
-            else np.nan
+            else None
         )
         ratio = (
             intra_mean / inter_ab
             if np.isfinite(intra_mean) and np.isfinite(inter_ab) and inter_ab != 0.0
-            else np.nan
+            else None
         )
 
         pair_metrics[(str(class_a), str(class_b))] = float(ratio)
@@ -300,7 +300,7 @@ def compute_class_separability(
                 pairs.items(), key=lambda x: x[1] if np.isfinite(x[1]) else float("inf")
             )
         )
-        mean_ratio = float(np.nanmean(list(pairs.values()))) if pairs else float("nan")
+        mean_ratio = float(np.nanmean(list(pairs.values()))) if pairs else None
         result[cls] = {"_mean_ratio": mean_ratio, **pairs}
 
     return dict(sorted(result.items(), key=lambda x: x[1]["_mean_ratio"]))

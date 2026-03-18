@@ -4,19 +4,18 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import (
+    classification_report,
+    confusion_matrix,
     f1_score,
     roc_auc_score,
-    confusion_matrix,
-    classification_report,
 )
-
+from sklearn.model_selection import GridSearchCV, train_test_split
 
 from src.common.config import load_config
 from src.common.logging import setup_logger
-from src.common.utils import save_to_json, load_from_json, load_from_pickle
+from src.common.utils import load_from_json, save_to_json
 
 from src.data.io import load_listed_dfs
 from src.data.analyze import compute_class_separability
@@ -25,13 +24,13 @@ setup_logger()
 logger = logging.getLogger(__name__)
 
 
-def analyze(cfg):
+def run_separability_analysis(cfg):
     num_cols = list(cfg.data.num_cols) if cfg.data.num_cols else []
     cat_cols = list(cfg.data.cat_cols) if cfg.data.cat_cols else []
     feature_cols = num_cols + cat_cols
 
     logger.info("Loading data ...")
-    train_df, val_df, test_df = load_listed_dfs(
+    train_df, _, test_df = load_listed_dfs(
         Path(cfg.path.processed_data),
         [
             f"train.{cfg.data.extension}",
@@ -40,34 +39,19 @@ def analyze(cfg):
         ],
     )
 
-    separability_results = {}
-    label_cols = [f"cluster"]
+    results = {}
+    for split_name, split_df in [("train", train_df), ("test", test_df)]:
+        logger.info(f"Computing separability on {split_name} set ...")
+        X = split_df[feature_cols].values
+        y = split_df["cluster"].values
+        sep = compute_class_separability(X, y, max_pairs=50_000, metric="euclidean")
+        save_to_json(
+            sep,
+            Path(cfg.path.json_logs) / f"data/separability/cluster_{split_name}.json",
+        )
+        results.setdefault("cluster", {})[split_name] = sep
 
-    for split_name, split_df in [
-        ("train", train_df),
-        ("val", val_df),
-        ("test", test_df),
-    ]:
-        if split_name == "val":
-            continue
-
-        for label_col in label_cols:
-            logger.info(f"Computing separability on {split_name} set ...")
-            X = split_df[feature_cols].values
-            y = split_df[label_col].values
-            separability_result = compute_class_separability(
-                X, y, max_pairs=50_000, metric="cosine"
-            )
-            save_to_json(
-                separability_result,
-                Path(cfg.path.json_logs)
-                / f"data/separability/{label_col}_{split_name}.json",
-            )
-            if label_col not in separability_results:
-                separability_results[label_col] = {}
-            separability_results[label_col][split_name] = separability_result
-
-    return separability_results
+    return results
 
 
 def _to_finite_float(value) -> float | None:
@@ -78,18 +62,10 @@ def _to_finite_float(value) -> float | None:
         return None
 
 
-def compute_cluster_class_stats(
-    cluster_separability: dict,
-    class_to_clusters: dict,
-) -> dict:
+def compute_class_stats(separability: dict, class_to_clusters: dict) -> dict:
     """
-    For each cluster in cluster_separability, computes class-wise stats
-    against clusters of each class:
-    - mean_ratio
-    - max_ratio
-
-    NaN/inf/non-numeric values are ignored; returns None when no valid
-    ratios are available for a class.
+    For each cluster, compute mean_ratio and max_ratio against clusters of each class.
+    Non-finite values are ignored; returns None when no valid ratios exist for a class.
     """
     class_clusters = {
         str(cls): {str(c) for c in clusters}
@@ -97,233 +73,193 @@ def compute_cluster_class_stats(
     }
 
     result = {}
-    for cluster_id, ratios in cluster_separability.items():
-        cid = str(cluster_id)
+    for cid, ratios in separability.items():
+        peer_ratios = {
+            str(k): fv
+            for k, v in ratios.items()
+            if k != "_mean_ratio" and (fv := _to_finite_float(v)) is not None
+        }
 
-        peer_ratios = {}
-        for k, v in ratios.items():
-            if k == "_mean_ratio":
-                continue
-            fv = _to_finite_float(v)
-            if fv is not None:
-                peer_ratios[str(k)] = fv
-
-        class_stats = {}
-        for cls, cls_cluster_ids in class_clusters.items():
-            relevant = [
-                peer_ratios[c] for c in cls_cluster_ids if c in peer_ratios and c != cid
-            ]
-            class_stats[cls] = {
-                "mean_ratio": float(np.mean(relevant)) if relevant else None,
-                "max_ratio": float(np.max(relevant)) if relevant else None,
+        result[str(cid)] = {
+            cls: {
+                "mean_ratio": (
+                    float(np.mean(vals))
+                    if (
+                        vals := [
+                            peer_ratios[c]
+                            for c in ids
+                            if c in peer_ratios and c != str(cid)
+                        ]
+                    )
+                    else None
+                ),
+                "max_ratio": float(np.max(vals)) if vals else None,
             }
-
-        result[cid] = class_stats
+            for cls, ids in class_clusters.items()
+        }
 
     return result
 
 
-def build_cluster_statistics(
-    test_failures: dict,
-    cluster_meta: dict,
-    cluster_separability: dict,
-    cluster_class_avgs: dict,
+def build_cluster_stats(
+    failures: dict, meta: dict, separability: dict, class_stats: dict
 ) -> dict:
     """
-    For each cluster cid, returns:
-    - cluster_class
-    - failure_rate
-    - is_failed (boolean, whether failure_rate > 0)
-    - cluster_size
-    - foreign_avg_avg: average of mean_ratios against clusters of other classes
-    - foreign_max_avg: average of max_ratios against clusters of other classes
-    - foreign_avg_max: max of mean_ratios against clusters of other classes
-    - foreign_max_max: max of max_ratios against clusters of other classes
-    - foreign_avg_std: std of mean_ratios against clusters of other classes
-    - foreign_max_std: std of max_ratios against clusters of other classes
-    - self_avg: mean_ratio against clusters of the same class
-    - self_max: max_ratio against clusters of the same class
-    - separability_distances: dict of distances to other clusters (excluding self), if available
+    For each cluster, return separability stats, failure rate, and class membership.
+
+    Fields: cluster_class, failure_rate, is_failed, cluster_size,
+            foreign_{avg,max}_{avg,max,std}, self_{avg,max},
+            separability_distances (per-cluster).
     """
+    cluster_to_class = {
+        str(c): cls
+        for cls, clusters in meta["class_to_clusters"].items()
+        for c in clusters
+    }
+
     results = {}
+    for cid in meta["clusters_distribution"]:
+        cid = str(cid)
+        cluster_class = cluster_to_class.get(cid)
+        cluster_size = meta["clusters_distribution"].get(cid)
 
-    for cid in cluster_meta["clusters_distribution"].keys():
-        cluster_to_class = {
-            c: cls
-            for cls, clusters in cluster_meta["class_to_clusters"].items()
-            for c in clusters
-        }
-        cluster_class = cluster_to_class.get(str(cid), None)
+        foreign_avgs, foreign_maxs = [], []
+        self_avg = self_max = None
 
-        cluster_size = cluster_meta["clusters_distribution"].get(str(cid), None)
-
-        class_avgs = cluster_class_avgs.get(str(cid), {})
-
-        foreign_avgs = []
-        foreign_maxs = []
-        self_avg = None
-        self_max = None
-
-        for cls, stats in class_avgs.items():
+        for cls, stats in class_stats.get(cid, {}).items():
             if cls == cluster_class:
-                self_avg = stats.get("mean_ratio", None)
-                self_max = stats.get("max_ratio", None)
+                self_avg = stats.get("mean_ratio")
+                self_max = stats.get("max_ratio")
             else:
-                if stats.get("mean_ratio", None) is not None:
-                    foreign_avgs.append(stats["mean_ratio"])
-                if stats.get("max_ratio", None) is not None:
-                    foreign_maxs.append(stats["max_ratio"])
+                if (v := stats.get("mean_ratio")) is not None:
+                    foreign_avgs.append(v)
+                if (v := stats.get("max_ratio")) is not None:
+                    foreign_maxs.append(v)
 
-        foreign_avg_avg = float(np.mean(foreign_avgs)) if foreign_avgs else None
-        foreign_max_avg = float(np.mean(foreign_maxs)) if foreign_maxs else None
-        foreign_avg_max = float(np.max(foreign_avgs)) if foreign_avgs else None
-        foreign_max_max = float(np.max(foreign_maxs)) if foreign_maxs else None
-        foreign_avg_std = float(np.std(foreign_avgs)) if foreign_avgs else None
-        foreign_max_std = float(np.std(foreign_maxs)) if foreign_maxs else None
-
-        failure_rate = (
-            test_failures["cluster_errors"]["total"]
-            .get(str(cid), {})
-            .get("error_rate", None)
-        )
-        is_failed = failure_rate is not None and failure_rate > 0.0
-
-        separability_distances = cluster_separability.get(str(cid), {})
-        separability_distances = {
+        distances = {
             k: _to_finite_float(v)
-            for k, v in separability_distances.items()
+            for k, v in separability.get(cid, {}).items()
             if k != "_mean_ratio"
         }
-        separability_distances[cid] = 1.0
+        distances[cid] = 1.0
 
-        results[str(cid)] = {
+        failure_rate = failures["clusters"]["total"].get(cid, {}).get("error_rate")
+
+        results[cid] = {
             "cluster_class": cluster_class,
             "failure_rate": failure_rate,
-            "is_failed": is_failed,
+            "is_failed": failure_rate is not None and failure_rate > 0.0,
             "cluster_size": cluster_size,
-            "foreign_avg_avg": foreign_avg_avg,
-            "foreign_max_avg": foreign_max_avg,
-            "foreign_avg_max": foreign_avg_max,
-            "foreign_max_max": foreign_max_max,
-            "foreign_avg_std": foreign_avg_std,
-            "foreign_max_std": foreign_max_std,
+            "foreign_avg_avg": float(np.mean(foreign_avgs)) if foreign_avgs else None,
+            "foreign_max_avg": float(np.mean(foreign_maxs)) if foreign_maxs else None,
+            "foreign_avg_max": float(np.max(foreign_avgs)) if foreign_avgs else None,
+            "foreign_max_max": float(np.max(foreign_maxs)) if foreign_maxs else None,
+            "foreign_avg_std": float(np.std(foreign_avgs)) if foreign_avgs else None,
+            "foreign_max_std": float(np.std(foreign_maxs)) if foreign_maxs else None,
             "self_avg": self_avg,
             "self_max": self_max,
-            **(separability_distances if separability_distances else {}),
+            **distances,
         }
+
     return results
 
 
-def main():
-    """Main entry point for data analysis."""
-    cfg = load_config(
-        config_path=Path(__file__).parent / "configs",
-        config_name="config",
-        overrides=sys.argv[1:],
-    )
-    # analyze(cfg)
-
-    test_failures = load_from_json(
-        Path(cfg.path.json_logs) / "inference/pred_infos/test.json"
-    )
-    cluster_separability = load_from_json(
-        Path(cfg.path.json_logs) / "data/separability/cluster_test.json"
-    )
-    clusters_meta = load_from_json(Path(cfg.path.json_logs) / "data/df_meta.json")[
-        "clusters"
+def find_correlation_between_separability_and_failure(cluster_stats: dict) -> dict:
+    FEATURE_COLS = [
+        "cluster_size",
+        "foreign_avg_avg",
+        "foreign_max_avg",
+        "foreign_avg_max",
+        "foreign_max_max",
+        "foreign_avg_std",
+        "foreign_max_std",
+        "self_avg",
+        "self_max",
     ]
 
-    cluster_class_stats = compute_cluster_class_stats(
-        cluster_separability, clusters_meta["class_to_clusters"]
-    )
-    save_to_json(
-        cluster_class_stats,
-        Path(cfg.path.json_logs) / "data/separability/cluster_class_stats.json",
-    )
-
-    cluster_stats = build_cluster_statistics(
-        test_failures=test_failures,
-        cluster_meta=clusters_meta,
-        cluster_separability=cluster_separability,
-        cluster_class_avgs=cluster_class_stats,
-    )
-
-    save_to_json(
-        cluster_stats,
-        Path(cfg.path.json_logs) / "inference/cluster_statistics.json",
-    )
-
-    cluster_stats_df = pd.DataFrame.from_dict(cluster_stats, orient="index")
-    target_col = "is_failed"
-    exclude_cols = ["failure_rate", "is_failed", "cluster_class"]
-
-    X = cluster_stats_df.drop(columns=exclude_cols + [target_col], errors="ignore")
-    X = X[
-        [
-            "cluster_size",
-            "foreign_avg_avg",
-            "foreign_max_avg",
-            "foreign_avg_max",
-            "foreign_max_max",
-            "foreign_avg_std",
-            "foreign_max_std",
-            "self_avg",
-            "self_max",
-        ]
-    ].copy()
-    y = cluster_stats_df[target_col].copy().astype(int)
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X,
-        y,
-        test_size=0.2,
-        random_state=42,
-        stratify=y,
-    )
-
-    print("Train size:", X_train.shape, y_train.shape)
-    print("Test size:", X_test.shape, y_test.shape)
-
-    base_model = RandomForestClassifier(
-        random_state=42,
-        n_jobs=-1,
-        class_weight="balanced",
-    )
-
-    param_grid = {
+    RF_PARAM_GRID = {
         "n_estimators": [200, 300, 500],
         "max_depth": [None, 10, 20],
         "min_samples_leaf": [1, 2, 5],
         "max_features": ["sqrt", 0.5],
     }
 
+    df = pd.DataFrame.from_dict(cluster_stats, orient="index")
+    X = df[FEATURE_COLS].copy()
+    y = df["is_failed"].astype(int)
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y
+    )
+    logger.info(f"Train: {X_train.shape}  Test: {X_test.shape}")
+
     grid = GridSearchCV(
-        estimator=base_model,
-        param_grid=param_grid,
+        estimator=RandomForestClassifier(
+            random_state=42, n_jobs=-1, class_weight="balanced"
+        ),
+        param_grid=RF_PARAM_GRID,
         cv=5,
         scoring="f1",
         n_jobs=-1,
         verbose=1,
     )
-
     grid.fit(X_train, y_train)
+    best = grid.best_estimator_
 
-    best_model = grid.best_estimator_
+    y_pred = best.predict(X_test)
+    y_proba = best.predict_proba(X_test)[:, 1]
 
-    y_pred = best_model.predict(X_test)
-    y_proba = best_model.predict_proba(X_test)[:, 1]
+    logger.info("Best params:", grid.best_params_)
+    logger.info(
+        f"F1: {f1_score(y_test, y_pred):.4f}  ROC-AUC: {roc_auc_score(y_test, y_proba):.4f}"
+    )
+    logger.info(
+        f"F1: {f1_score(y_test, y_pred):.4f}  ROC-AUC: {roc_auc_score(y_test, y_proba):.4f}"
+    )
+    logger.info("\nConfusion Matrix:\n", confusion_matrix(y_test, y_pred))
+    logger.info(
+        "\nClassification Report:\n", classification_report(y_test, y_pred, digits=4)
+    )
+    return {
+        "best_params": grid.best_params_,
+        "f1_score": f1_score(y_test, y_pred),
+        "roc_auc": roc_auc_score(y_test, y_proba),
+        "confusion_matrix": confusion_matrix(y_test, y_pred).tolist(),
+        "classification_report": classification_report(
+            y_test, y_pred, digits=4, output_dict=True
+        ),
+    }
 
-    print("Best params:", grid.best_params_)
-    print("Target Mean:", y.mean())
 
-    print("Test F1                :", f1_score(y_test, y_pred))
-    print("Test ROC AUC           :", roc_auc_score(y_test, y_proba))
+def main():
+    cfg = load_config(
+        config_path=Path(__file__).parent / "configs",
+        config_name="config",
+        overrides=sys.argv[1:],
+    )
 
-    print("\nConfusion Matrix:")
-    print(confusion_matrix(y_test, y_pred))
+    logs = Path(cfg.path.json_logs)
+    run_separability_analysis(cfg)
 
-    print("\nClassification Report:")
-    print(classification_report(y_test, y_pred, digits=4))
+    # failures = load_from_json(logs / "inference/pred_infos/test.json")
+    # separability = load_from_json(logs / "data/separability/cluster_test.json")
+    # cluster_meta = load_from_json(logs / "data/df_meta.json")["clusters"]
+
+    # class_stats = compute_class_stats(separability, cluster_meta["class_to_clusters"])
+    # save_to_json(class_stats, logs / "data/separability/class.json")
+
+    # cluster_stats = build_cluster_stats(
+    #     failures=failures,
+    #     meta=cluster_meta,
+    #     separability=separability,
+    #     class_stats=class_stats,
+    # )
+    # save_to_json(cluster_stats, logs / "inference/cluster_summary.json")
+
+    # correlation_results = find_correlation_between_separability_and_failure(
+    #     cluster_stats
+    # )
+    # save_to_json(correlation_results, logs / "inference/correlation_results.json")
 
 
 if __name__ == "__main__":

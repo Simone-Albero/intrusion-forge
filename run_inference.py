@@ -4,7 +4,6 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 import torch
 from ignite.handlers.tensorboard_logger import TensorboardLogger
 from sklearn.metrics import confusion_matrix
@@ -28,140 +27,96 @@ setup_logger()
 logger = logging.getLogger(__name__)
 
 
-def compute_distance_stats(distances: np.ndarray) -> dict:
-    if distances.size == 0:
-        return {"mean": None, "median": None, "p90": None, "n": 0}
-    return {
-        "mean": float(np.mean(distances)),
-        "median": float(np.median(distances)),
-        "p90": float(np.quantile(distances, 0.9)),
-        "n": int(distances.size),
-    }
-
-
-def analyze_class_failures(X, y_true, y_pred, target_class, max_samples=1000) -> dict:
-    mask = y_true == target_class
-    idx_tp = np.where(mask & (y_pred == target_class))[0]
-    idx_fn = np.where(mask & (y_pred != target_class))[0]
-    if len(idx_tp) > max_samples:
-        idx_tp = np.random.choice(idx_tp, size=max_samples, replace=False)
-    if len(idx_fn) > max_samples:
-        idx_fn = np.random.choice(idx_fn, size=max_samples, replace=False)
-    n_pairs = min(len(idx_tp), len(idx_fn))
-    return {
-        "target_class": int(target_class),
-        "n_tp": len(idx_tp),
-        "n_fn": len(idx_fn),
-        "tp_tp": compute_distance_stats(sample_distances(X, idx_tp, max_pairs=n_pairs)),
-        "fn_fn": compute_distance_stats(sample_distances(X, idx_fn, max_pairs=n_pairs)),
-        "fn_tp": compute_distance_stats(
-            sample_distances(X, idx_fn, idx_tp, max_pairs=n_pairs)
-        ),
-    }
-
-
-def analyze_classes_failures(X, y_true, y_pred, max_samples=1000) -> list[dict]:
-    return [
-        analyze_class_failures(X, y_true, y_pred, cls, max_samples)
-        for cls in np.unique(y_true)
-    ]
+def _cluster_error_rates(clusters: np.ndarray, error_mask: np.ndarray) -> dict:
+    """Return {cluster_id: {n_error, n_total, error_rate}} sorted by error_rate desc."""
+    failed = clusters[error_mask]
+    stats = {}
+    for c in np.unique(clusters):
+        n_total = int((clusters == c).sum())
+        n_error = int((failed == c).sum())
+        stats[str(c)] = {
+            "n_error": n_error,
+            "n_total": n_total,
+            "error_rate": (n_error / n_total) if n_total > 0 else None,
+        }
+    return dict(
+        sorted(stats.items(), key=lambda x: x[1]["error_rate"] or 0.0, reverse=True)
+    )
 
 
 def evaluate_predictions(
     df, y_true, y_pred, confidences, cluster_col: str = "cluster"
-) -> dict[str, dict]:
-    rows = {}
-    cluster_errors_by_class = {}
-    cluster_errors_total = None
+) -> dict:
+    """
+    Evaluate per-class prediction quality and cluster-level error rates.
 
+    Returns:
+        {
+            "classes": {
+                "<label>": {
+                    "tot_failures", "tot_samples", "failure_rate",
+                    "mean_confidence", "cluster_in_fn", "cluster_in_tp"
+                }, ...
+            },
+            "clusters": {
+                "global":   {<cluster_id>: {n_error, n_total, error_rate}, ...} | None,
+                "by_class": {<label>: {<cluster_id>: {...}}, ...}              | None,
+            },
+        }
+    """
     has_cluster = cluster_col in df.columns
-    if has_cluster:
-        all_clusters = df[cluster_col].to_numpy()
-        global_error_mask = y_true != y_pred
-        global_failed_clusters = all_clusters[global_error_mask]
-
-        cluster_errors_total = {}
-        for c in np.unique(all_clusters):
-            n_total = int((all_clusters == c).sum())
-            n_error = int((global_failed_clusters == c).sum())
-            cluster_errors_total[str(c)] = {
-                "n_error": n_error,
-                "n_total": n_total,
-                "error_rate": (n_error / n_total) if n_total > 0 else None,
-            }
+    all_clusters = df[cluster_col].to_numpy() if has_cluster else None
+    global_error_mask = y_true != y_pred
 
     cluster_errors_total = (
-        dict(
-            sorted(
-                cluster_errors_total.items(),
-                key=lambda x: x[1]["error_rate"] or 0.0,
-                reverse=True,
-            )
-        )
-        if cluster_errors_total
-        else None
+        _cluster_error_rates(all_clusters, global_error_mask) if has_cluster else None
     )
+    cluster_errors_by_class = {} if has_cluster else None
 
-    for cls_label in np.unique(y_true):
-        mask = y_true == cls_label
-        tot_samples = int(mask.sum())
-        tot_failures = int((y_true[mask] != y_pred[mask]).sum())
+    classes = {}
+    for label in np.unique(y_true):
+        mask = y_true == label
+        n_total = int(mask.sum())
+        n_errors = int((y_true[mask] != y_pred[mask]).sum())
+        error_mask = mask & global_error_mask
 
         if has_cluster:
-            failure_mask = mask & (y_true != y_pred)
-            wrong_preds = y_pred[failure_mask]
-            wrong_clusters = df[cluster_col].loc[df.index[failure_mask]].to_numpy()
+            wrong_preds = y_pred[error_mask]
+            wrong_clusters = df[cluster_col].loc[df.index[error_mask]].to_numpy()
             cluster_in_fn = {
-                str(wrong_cls): np.unique(
-                    wrong_clusters[wrong_preds == wrong_cls]
-                ).tolist()
-                for wrong_cls in np.unique(wrong_preds)
+                str(cls): np.unique(wrong_clusters[wrong_preds == cls]).tolist()
+                for cls in np.unique(wrong_preds)
             }
-
-            tp_mask = mask & (y_true == y_pred)
-            tp_clusters = df[cluster_col].loc[df.index[tp_mask]].to_numpy()
+            tp_clusters = (
+                df[cluster_col].loc[df.index[mask & ~global_error_mask]].to_numpy()
+            )
             cluster_in_tp = np.unique(tp_clusters).tolist()
 
             class_clusters = df[cluster_col].loc[df.index[mask]].to_numpy()
-            failed_class_clusters = (
-                df[cluster_col].loc[df.index[failure_mask]].to_numpy()
+            cluster_errors_by_class[str(label)] = _cluster_error_rates(
+                class_clusters, error_mask[mask]
             )
-
-            class_cluster_stats = {}
-            for c in np.unique(class_clusters):
-                n_total = int((class_clusters == c).sum())
-                n_error = int((failed_class_clusters == c).sum())
-                class_cluster_stats[str(c)] = {
-                    "n_error": n_error,
-                    "n_total": n_total,
-                    "error_rate": (n_error / n_total) if n_total > 0 else None,
-                }
-
-            cluster_errors_by_class[str(cls_label)] = class_cluster_stats
         else:
-            cluster_in_fn = None
-            cluster_in_tp = None
+            cluster_in_fn = cluster_in_tp = None
 
-        rows[str(cls_label)] = {
-            "tot_failures": tot_failures,
-            "tot_samples": tot_samples,
-            "failure_rate": tot_failures / tot_samples if tot_samples > 0 else None,
-            "mean_confidence": (
-                float(confidences[mask].mean()) if tot_samples > 0 else None
-            ),
+        classes[str(label)] = {
+            "tot_failures": n_errors,
+            "tot_samples": n_total,
+            "failure_rate": n_errors / n_total if n_total > 0 else None,
+            "mean_confidence": float(confidences[mask].mean()) if n_total > 0 else None,
             "cluster_in_fn": cluster_in_fn,
             "cluster_in_tp": cluster_in_tp,
         }
 
-    rows = dict(
-        sorted(rows.items(), key=lambda x: x[1]["failure_rate"] or 0.0, reverse=True)
+    classes = dict(
+        sorted(classes.items(), key=lambda x: x[1]["failure_rate"] or 0.0, reverse=True)
     )
 
     return {
-        "classes": rows,
-        "cluster_errors": {
-            "by_class": cluster_errors_by_class if has_cluster else None,
-            "total": cluster_errors_total,
+        "classes": classes,
+        "clusters": {
+            "global": cluster_errors_total,
+            "by_class": cluster_errors_by_class,
         },
     }
 
@@ -240,12 +195,6 @@ def infer():
         cm_fig, cm = visualize_cm(y_true, y_pred, normalize="true")
         tb_logger.writer.add_figure(
             "confusion_matrices/normalized_by_row", cm_fig, step
-        )
-        plt.close(cm_fig)
-
-        cm_fig, cm = visualize_cm(y_true, y_pred, normalize="pred")
-        tb_logger.writer.add_figure(
-            "confusion_matrices/normalized_by_col", cm_fig, step
         )
         plt.close(cm_fig)
 
