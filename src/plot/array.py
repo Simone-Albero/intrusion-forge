@@ -1,8 +1,5 @@
-from typing import Union
-
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
-from mpl_toolkits.mplot3d import Axes3D
 
 import numpy as np
 from sklearn.metrics import ConfusionMatrixDisplay
@@ -72,20 +69,6 @@ def confusion_matrix_to_plot(
     return fig
 
 
-def roc_auc_plot(fpr: np.ndarray, tpr: np.ndarray, auc: float) -> plt.Figure:
-    """Plot ROC curve with AUC annotation."""
-    fig, ax = plt.subplots()
-    ax.plot(fpr, tpr, label=f"ROC curve (AUC = {auc:.2f})", color="blue")
-    ax.plot([0, 1], [0, 1], linestyle="--", color="gray", label="Random guess")
-    ax.set_xlabel("False Positive Rate")
-    ax.set_ylabel("True Positive Rate")
-    ax.set_title("ROC Curve")
-    ax.legend(loc="lower right")
-    ax.grid(True)
-    fig.tight_layout()
-    return fig
-
-
 # High-contrast palettes
 _FILL_COLORS = [
     "#4E79A7",
@@ -133,7 +116,7 @@ def _get_fill_cmap(n: int):
 def _validate_inputs(
     X: np.ndarray,
     y_1: np.ndarray,
-    y_2: Union[np.ndarray, None],
+    y_2: np.ndarray | None,
 ) -> None:
     n = len(X)
     if X.ndim != 2 or X.shape[1] not in (2, 3):
@@ -167,8 +150,8 @@ def _make_legend_proxy(fill_color, edge_color, label):
 
 def samples_plot(
     X: np.ndarray,
-    y_1: Union[list, np.ndarray],
-    y_2: Union[list, np.ndarray, None] = None,
+    y_1: list | np.ndarray,
+    y_2: list | np.ndarray | None = None,
 ) -> plt.Figure:
     """Plot 2D or 3D samples with fill-color and optional outline-color encoding.
 

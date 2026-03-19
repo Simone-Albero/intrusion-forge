@@ -12,7 +12,6 @@ from src.common.config import load_config
 from src.common.logging import setup_logger
 from src.common.utils import load_from_json, save_to_json, save_to_pickle
 
-from src.data.analyze import sample_distances
 from src.data.io import load_listed_dfs
 
 from src.ml.projection import create_subsample_mask, tsne_projection
@@ -138,12 +137,8 @@ def visualize_cm(y_true, y_pred, normalize=None):
     return confusion_matrix_to_plot(cm), cm
 
 
-def infer():
-    cfg = load_config(
-        config_path=Path(__file__).parent / "configs",
-        config_name="config",
-        overrides=sys.argv[1:],
-    )
+def infer(cfg):
+    """Run inference on all splits and collect prediction diagnostics."""
     json_logs_path = Path(cfg.path.json_logs)
     df_meta = load_from_json(json_logs_path / "data/df_meta.json")
     cfg.model.params.num_classes = df_meta["num_classes"]
@@ -163,7 +158,7 @@ def infer():
 
     stats = {"class_confidence": {}, "pred_infos": {}, "cluster_failures": {}}
     for suffix, df in zip(("train", "val", "test"), splits):
-        logger.info(f"Running inference on {suffix} set ...")
+        logger.info("Running inference on %s set ...", suffix)
         log_dir = Path(cfg.path.tb_logs) / "inference" / suffix
         log_dir.mkdir(parents=True, exist_ok=True)
         tb_logger = TensorboardLogger(log_dir=log_dir)
@@ -205,10 +200,10 @@ def infer():
 
             fig = visualize_samples(data, y_true, correct, n_components=2)
             tb_logger.writer.add_figure(tag + "_2D", fig, step)
+            plt.close(fig)
 
             fig = visualize_samples(data, y_true, correct, n_components=3)
             tb_logger.writer.add_figure(tag + "_3D", fig, step)
-
             plt.close(fig)
 
         logger.info("Counting failures per class ...")
@@ -222,5 +217,15 @@ def infer():
     return stats
 
 
+def main():
+    """Main entry point for inference."""
+    cfg = load_config(
+        config_path=Path(__file__).parent / "configs",
+        config_name="config",
+        overrides=sys.argv[1:],
+    )
+    infer(cfg)
+
+
 if __name__ == "__main__":
-    infer()
+    main()

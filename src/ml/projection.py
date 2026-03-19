@@ -6,6 +6,7 @@ def create_subsample_mask(
     labels: np.ndarray,
     n_samples: int | None = None,
     stratify: bool = True,
+    random_state: int | None = None,
 ) -> np.ndarray:
     """Generate a boolean mask for subsampling data.
 
@@ -16,13 +17,13 @@ def create_subsample_mask(
     if n_samples is None or n_samples >= len(labels):
         return np.ones(len(labels), dtype=bool)
 
+    rng = np.random.default_rng(random_state)
     mask = np.zeros(len(labels), dtype=bool)
     unique_labels = np.unique(labels)
 
     if stratify:
         label_counts = np.array([np.sum(labels == l) for l in unique_labels])
         samples_per_class = np.round(label_counts / len(labels) * n_samples).astype(int)
-        # Fix rounding so total == n_samples
         samples_per_class[np.argmax(samples_per_class)] += (
             n_samples - samples_per_class.sum()
         )
@@ -34,7 +35,7 @@ def create_subsample_mask(
 
     for label, k in zip(unique_labels, samples_per_class):
         class_indices = np.where(labels == label)[0]
-        selected = np.random.choice(
+        selected = rng.choice(
             class_indices, size=min(k, len(class_indices)), replace=False
         )
         mask[selected] = True
@@ -43,11 +44,14 @@ def create_subsample_mask(
 
 
 def tsne_projection(
-    data: np.ndarray, n_components: int = 2, perplexity: int | None = None
+    data: np.ndarray,
+    n_components: int = 2,
+    perplexity: int | None = None,
+    random_state: int = 42,
 ) -> np.ndarray:
-    """Project data to 2D using t-SNE with adaptive perplexity."""
+    """Project data to lower dimensions using t-SNE with adaptive perplexity."""
     if perplexity is None:
         perplexity = max(5, min(30, (len(data) - 1) // 3))
     return TSNE(
-        n_components=n_components, perplexity=perplexity, random_state=42
+        n_components=n_components, perplexity=perplexity, random_state=random_state
     ).fit_transform(data)

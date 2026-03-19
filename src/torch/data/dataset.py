@@ -1,40 +1,9 @@
 import pandas as pd
-import numpy as np
 import torch
 from torch.utils.data import Dataset
 
 
 Sample = tuple[list[torch.Tensor], list[torch.Tensor]]
-
-
-def _to_tensor(
-    data: pd.DataFrame | pd.Series | np.ndarray, dtype: torch.dtype
-) -> torch.Tensor:
-    if isinstance(data, (pd.DataFrame, pd.Series)):
-        data = data.values
-    return torch.as_tensor(data, dtype=dtype)
-
-
-class TensorDataset(Dataset):
-    """Wraps a DataFrame/array (and optional labels) into a torch Dataset."""
-
-    def __init__(
-        self,
-        features: pd.DataFrame | np.ndarray,
-        labels: pd.Series | np.ndarray | None = None,
-        feature_dtype: torch.dtype = torch.float32,
-        label_dtype: torch.dtype = torch.long,
-    ) -> None:
-        self.features = _to_tensor(features, feature_dtype)
-        self.labels = _to_tensor(labels, label_dtype) if labels is not None else None
-
-    def __len__(self) -> int:
-        return self.features.size(0)
-
-    def __getitem__(self, index: int) -> Sample:
-        features = [self.features[index]]
-        labels = [self.labels[index]] if self.labels is not None else features
-        return features, labels
 
 
 class TabularDataset(Dataset):

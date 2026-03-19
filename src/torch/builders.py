@@ -7,7 +7,6 @@ from .data.dataset import TabularDataset
 from .data.batch import default_collate
 from .model import ModelFactory
 from .loss import LossFactory
-from .data.sampler import SamplerFactory
 
 
 def create_dataset(
@@ -40,7 +39,7 @@ def create_optimizer(
     trainable = list(model.parameters())
     if loss_fn is not None and list(loss_fn.parameters()):
         trainable += list(loss_fn.parameters())
-    return torch.optim.__dict__[name](trainable, **params)
+    return getattr(torch.optim, name)(trainable, **params)
 
 
 def create_scheduler(
@@ -53,10 +52,4 @@ def create_scheduler(
         return None
     if params.get("steps_per_epoch") == "auto":
         params["steps_per_epoch"] = len(dataloader)
-    return torch.optim.lr_scheduler.__dict__[name](optimizer, **params)
-
-
-def create_sampler(name: str, params: dict) -> torch.utils.data.Sampler:
-    if name is None:
-        raise ValueError("Sampler name must be provided.")
-    return SamplerFactory.create(name, params)
+    return getattr(torch.optim.lr_scheduler, name)(optimizer, **params)

@@ -1,70 +1,16 @@
-from collections.abc import Iterable
+import logging
+from collections.abc import Callable, Iterable
 
 import numpy as np
+import pandas as pd
 import hdbscan
-from sklearn.cluster import KMeans
-from sklearn.metrics import (
-    silhouette_score,
-    davies_bouldin_score,
-    calinski_harabasz_score,
-)
-from sklearn.neighbors import NearestNeighbors
+from sklearn.metrics import silhouette_score
 from sklearn.decomposition import PCA
 from tqdm import tqdm
 
+ClusterFn = Callable[[np.ndarray], np.ndarray]
 
-def kmeans_grid_search(
-    X: np.ndarray,
-    n_clusters: Iterable[int] = range(2, 21),
-    n_init: int = 10,
-    max_iter: int = 300,
-    random_state: int = 42,
-    metric: str = "euclidean",
-    penalize_k: bool = True,
-) -> tuple[KMeans, np.ndarray, dict]:
-    """Grid-search over k for KMeans, scored by silhouette (- 0.01*k if penalize_k).
-
-    Returns:
-        (best_model, best_labels, best_info)
-    """
-    X = np.asarray(X)
-    if X.shape[0] < 3:
-        raise ValueError("Need at least 3 samples.")
-
-    best_model, best_labels, best_info = None, None, {}
-    best_score = -np.inf
-
-    for k in n_clusters:
-        k = int(k)
-        if k < 2 or k >= X.shape[0]:
-            continue
-
-        model = KMeans(
-            n_clusters=k,
-            init="k-means++",
-            n_init=n_init,
-            max_iter=max_iter,
-            random_state=random_state,
-        )
-        labels = model.fit_predict(X)
-        if np.unique(labels).size < 2:
-            continue
-
-        try:
-            sil = float(silhouette_score(X, labels, metric=metric))
-        except Exception:
-            continue
-
-        score = sil - (0.01 * k if penalize_k else 0.0)
-        if score > best_score:
-            best_score = score
-            best_model, best_labels = model, labels
-            best_info = {"n_clusters": k, "silhouette": sil, "score": score}
-
-    if best_model is None:
-        raise RuntimeError("No valid KMeans solution found.")
-
-    return best_model, best_labels, best_info
+logger = logging.getLogger(__name__)
 
 
 def hdbscan_grid_search(
@@ -78,23 +24,38 @@ def hdbscan_grid_search(
     max_noise_ratio: float = 0.60,
     min_clustered_ratio: float = 0.20,
     penalize: bool = True,
+    max_fit_samples: int = 50_000,
+    pca_variance: float = 0.8,
 ) -> tuple[hdbscan.HDBSCAN, np.ndarray, np.ndarray, dict]:
+    """Grid-search over HDBSCAN hyperparameters, scored by silhouette.
+
+    Args:
+        max_fit_samples: Fit on at most this many samples, then approximate_predict
+            on the full dataset. Set to 0 to disable.
+        pca_variance: Fraction of variance to retain via PCA before clustering.
+    """
     X = np.ascontiguousarray(X, dtype=np.float64)
-    if not np.isfinite(X).all():
+
+    n_non_finite = int(np.count_nonzero(~np.isfinite(X)))
+    if n_non_finite:
+        logger.warning(
+            "Replacing %d non-finite values with 0 before clustering.", n_non_finite
+        )
         X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
-    pca = PCA(n_components=0.8, random_state=42)
-    X = pca.fit_transform(X)
-    X = np.ascontiguousarray(X, dtype=np.float64)
+    pca = PCA(n_components=pca_variance, random_state=42)
+    X = np.ascontiguousarray(pca.fit_transform(X), dtype=np.float64)
 
     n = X.shape[0]
     if n < 5:
         raise ValueError("Need at least 5 samples.")
 
-    MAX_SAMPLES = 50_000
-    if n > MAX_SAMPLES:
+    if max_fit_samples and n > max_fit_samples:
+        logger.info(
+            "Downsampling from %d to %d samples for HDBSCAN fit.", n, max_fit_samples
+        )
         rng = np.random.default_rng(42)
-        idx = rng.choice(n, size=MAX_SAMPLES, replace=False)
+        idx = rng.choice(n, size=max_fit_samples, replace=False)
         X_fit = np.ascontiguousarray(X[idx], dtype=np.float64)
     else:
         X_fit = X
@@ -154,8 +115,8 @@ def hdbscan_grid_search(
             "No valid clustering found. Try expanding the grid or relaxing filters."
         )
 
-    if n > MAX_SAMPLES:
-        print(f"Predicting on full dataset ({n} samples)...")
+    if max_fit_samples and n > max_fit_samples:
+        logger.info("Predicting on full dataset (%d samples)...", n)
         best_labels, best_proba = hdbscan.approximate_predict(best_model, X)
         best_labels = np.array(best_labels)
         best_proba = np.array(best_proba)
@@ -163,72 +124,63 @@ def hdbscan_grid_search(
     return best_model, best_labels, best_proba, best_info
 
 
-def hopkins_statistic(
-    X: np.ndarray,
-    sample_size: int | None = None,
-    random_state: int = 42,
-) -> float:
-    """Compute the Hopkins statistic to assess clustering tendency.
+def make_hdbscan_cluster_fn(**kwargs) -> ClusterFn:
+    """Wrap :func:`hdbscan_grid_search` into a ``ClusterFn`` (X → labels)."""
 
-    Returns a value in [0, 1]: ~0.5 → random, ~1 → clustered, ~0 → regular.
+    def _fn(X: np.ndarray) -> np.ndarray:
+        _, labels, _, _ = hdbscan_grid_search(X, **kwargs)
+        return labels
+
+    return _fn
+
+
+def assign_clusters(
+    df: pd.DataFrame,
+    feature_cols: list[str],
+    cluster_fn: ClusterFn,
+    label_col: str | None = None,
+    classes: list | None = None,
+    dst_col: str = "cluster",
+    noise_label: int = -1,
+) -> tuple[pd.DataFrame, dict[str, np.ndarray]]:
+    """Assign cluster labels to rows of *df* using *cluster_fn*.
+
+    When *classes* is provided, clustering runs independently per class.
+    Noise labels (== *noise_label*) are remapped to ``max_label + 1``.
+    Labels are offset so they are globally unique across groups.
+
+    Returns ``(df, centroids)`` where *centroids* maps ``str(label)`` to
+    centroid ndarray.
     """
-    n_samples, n_features = X.shape
-    sample_size = min(sample_size or 200, n_samples - 1)
-    rng = np.random.RandomState(random_state)
+    df = df.copy()
+    df[dst_col] = noise_label
+    centroids: dict[str, np.ndarray] = {}
+    offset = 0
 
-    X_sample = X[rng.choice(n_samples, size=sample_size, replace=False)]
-    nbrs = NearestNeighbors(n_neighbors=2).fit(X)
-
-    u_distances = nbrs.kneighbors(X_sample)[0][:, 1]
-
-    random_points = rng.uniform(
-        X.min(axis=0), X.max(axis=0), size=(sample_size, n_features)
-    )
-    v_distances = nbrs.kneighbors(random_points)[0][:, 0]
-
-    u_sum, v_sum = np.sum(u_distances), np.sum(v_distances)
-    return 0.5 if u_sum + v_sum == 0 else float(v_sum / (u_sum + v_sum))
-
-
-def compute_cluster_quality_measures(
-    X: np.ndarray,
-    labels: np.ndarray,
-    filter_noise: bool = True,
-) -> dict[str, float]:
-    """Compute cluster quality measures (silhouette, Davies-Bouldin, Calinski-Harabasz, Hopkins).
-
-    Returns a dict with keys: silhouette, davies_bouldin, calinski_harabasz, hopkins,
-    n_clusters, n_noise, noise_ratio.
-    """
-    if filter_noise and -1 in labels:
-        mask = labels != -1
-        X_f, labels_f = X[mask], labels[mask]
-        n_noise = int((~mask).sum())
+    if classes is None or label_col is None:
+        groups = [(df.index, df[feature_cols].values)]
     else:
-        X_f, labels_f = X, labels
-        n_noise = 0
+        groups = [
+            (
+                df[df[label_col] == cls].index,
+                df.loc[df[label_col] == cls, feature_cols].values,
+            )
+            for cls in classes
+        ]
 
-    n_clusters = len(np.unique(labels_f))
-    measures: dict[str, float] = {
-        "n_clusters": n_clusters,
-        "n_noise": n_noise,
-        "noise_ratio": n_noise / len(labels),
-    }
+    for idx, values in groups:
+        if len(values) == 0:
+            continue
+        labels = cluster_fn(values)
 
-    try:
-        measures["hopkins"] = hopkins_statistic(X)
-    except Exception:
-        pass
+        remap = int(labels.max()) + 1
+        labels = np.where(labels == noise_label, remap, labels)
 
-    if n_clusters >= 2 and len(X_f) > n_clusters:
-        for key, fn in (
-            ("silhouette", lambda: silhouette_score(X_f, labels_f)),
-            ("davies_bouldin", lambda: davies_bouldin_score(X_f, labels_f)),
-            ("calinski_harabasz", lambda: calinski_harabasz_score(X_f, labels_f)),
-        ):
-            try:
-                measures[key] = float(fn())
-            except Exception:
-                pass
+        df.loc[idx, dst_col] = labels + offset
 
-    return measures
+        for lbl in np.unique(labels):
+            centroids[str(int(lbl) + offset)] = values[labels == lbl].mean(axis=0)
+
+        offset += remap + 1
+
+    return df, centroids

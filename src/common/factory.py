@@ -26,6 +26,12 @@ class Factory(Generic[T]):
 
         return decorator
 
+    def __contains__(self, name: str) -> bool:
+        return name in self._registry
+
+    def __len__(self) -> int:
+        return len(self._registry)
+
     def create(self, class_name: str, params: dict | None = None) -> T:
         """Create an instance of a registered class."""
         cls = self._registry.get(class_name)
@@ -38,6 +44,10 @@ class Factory(Generic[T]):
 
     def create_from_list(self, names: list[str], params_list: list[dict]) -> list[T]:
         """Create multiple instances from parallel name/params lists."""
+        if len(names) != len(params_list):
+            raise ValueError(
+                f"Length mismatch: {len(names)} names vs {len(params_list)} params"
+            )
         return [self.create(name, params) for name, params in zip(names, params_list)]
 
     def get_available(self) -> list[str]:

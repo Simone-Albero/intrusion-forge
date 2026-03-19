@@ -1,62 +1,68 @@
-from pathlib import Path
 import pickle
+from pathlib import Path
 
 import pandas as pd
 
+_LOADERS = {
+    ".parquet": pd.read_parquet,
+    ".csv": pd.read_csv,
+}
 
-def load_df(file_path: str, **kwargs) -> pd.DataFrame:
+_SAVERS = {
+    ".parquet": lambda df, p, **kw: df.to_parquet(p, **kw),
+    ".csv": lambda df, p, **kw: df.to_csv(p, **kw),
+}
+
+_PICKLE_EXTS = {".pkl", ".pickle"}
+_ALL_EXTS = sorted({*_LOADERS, *_PICKLE_EXTS})
+
+
+def load_df(file_path: str | Path, **kwargs) -> pd.DataFrame:
     """Load a DataFrame from a file based on its extension."""
-    ext = Path(file_path).suffix.lower()
-    if ext == ".parquet":
-        return pd.read_parquet(file_path, **kwargs)
-    elif ext == ".csv":
-        return pd.read_csv(file_path, **kwargs)
-    elif ext == ".pkl" or ext == ".pickle":
+    file_path = Path(file_path)
+    ext = file_path.suffix.lower()
+
+    if ext in _PICKLE_EXTS:
         with open(file_path, "rb") as f:
             return pickle.load(f)
-    else:
-        raise ValueError(f"Unsupported file extension: {ext}")
+
+    loader = _LOADERS.get(ext)
+    if loader is None:
+        raise ValueError(f"Unsupported file extension: {ext!r}. Supported: {_ALL_EXTS}")
+    return loader(file_path, **kwargs)
 
 
 def save_df(
     df: pd.DataFrame,
-    file_path: str,
+    file_path: str | Path,
     index: bool = False,
     **kwargs,
 ) -> None:
     """Save a DataFrame to a file based on its extension."""
     file_path = Path(file_path)
     file_path.parent.mkdir(parents=True, exist_ok=True)
-
     ext = file_path.suffix.lower()
-    if ext == ".parquet":
-        df.to_parquet(file_path, index=index, **kwargs)
-    elif ext == ".csv":
-        df.to_csv(file_path, index=index, **kwargs)
-    elif ext == ".pkl" or ext == ".pickle":
+
+    if ext in _PICKLE_EXTS:
         with open(file_path, "wb") as f:
             pickle.dump(df, f)
-    else:
-        raise ValueError(f"Unsupported file extension: {ext}")
+        return
+
+    saver = _SAVERS.get(ext)
+    if saver is None:
+        raise ValueError(f"Unsupported file extension: {ext!r}. Supported: {_ALL_EXTS}")
+    saver(df, file_path, index=index, **kwargs)
 
 
-def load_listed_dfs(base_dir: Path, file_names: list[str]) -> list[pd.DataFrame]:
+def load_listed_dfs(base_dir: str | Path, file_names: list[str]) -> list[pd.DataFrame]:
     """Load a list of DataFrames from a base directory.
 
     Args:
-        base_dir: Path to the directory containing data files
-        file_names: List of file names (without extension)
+        base_dir: Path to the directory containing data files.
+        file_names: List of file names (with extension).
 
     Returns:
-        List of DataFrames
+        List of DataFrames in the same order as file_names.
     """
-    dfs = []
-    for file_name in file_names:
-        try:
-            df = load_df(base_dir / f"{file_name}")
-            dfs.append(df)
-        except FileNotFoundError as e:
-            raise ValueError(f"Data file not found: {base_dir / f'{file_name}'}")
-        except Exception as e:
-            raise ValueError(f"Error loading data file {file_name}: {e}")
-    return dfs
+    base_dir = Path(base_dir)
+    return [load_df(base_dir / name) for name in file_names]

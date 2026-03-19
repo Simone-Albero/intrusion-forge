@@ -1,4 +1,4 @@
-from typing import Callable
+from collections.abc import Callable
 
 import torch
 from ignite.metrics import Metric
@@ -45,7 +45,6 @@ class _ClassificationMetric(Metric):
         zeros = lambda: torch.zeros(
             self._num_classes, dtype=torch.long, device=self._device
         )
-        self._tp = self._fp = self._fn = self._support = None  # reset first
         self._tp, self._fp, self._fn, self._support = zeros(), zeros(), zeros(), zeros()
 
     @reinit__is_reduced

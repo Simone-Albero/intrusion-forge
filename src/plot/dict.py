@@ -1,10 +1,9 @@
-import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 
 
 def dict_to_bar_plot(
-    d: dict, title: str = "Metrics", ylim: tuple = (0, 1)
+    d: dict, title: str = "Metrics", ylim: tuple[float, float] | None = (0, 1)
 ) -> plt.Figure:
     """Plot dictionary as a bar plot."""
     fig, ax = plt.subplots()

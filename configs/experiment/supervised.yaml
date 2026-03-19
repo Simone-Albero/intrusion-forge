@@ -1,18 +1,10 @@
 # @package _global_
 defaults:
-  # - override /model: numerical_contrastive_classifier
-  # - override /loss: joint_sup_con_ce
-  # - override /loops: batch_sampler
-  # - override /optimizer: adamw
-  # - override /scheduler: one_cycle
-  # - override /sampler: rival_batch
-
   - override /model: numerical_classifier
   - override /loss: focal
   - override /loops: default
   - override /optimizer: adamw
   - override /scheduler: one_cycle
-  - override /sampler: null
 
 clustering_type: over_all
 cluster_classes: [] # ["DoS", "Exploits"]

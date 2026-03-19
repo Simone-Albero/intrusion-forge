@@ -1,7 +1,6 @@
 from pathlib import Path
 import logging
 from logging.handlers import RotatingFileHandler
-from typing import Optional
 
 from rich.logging import RichHandler
 
@@ -12,8 +11,8 @@ def setup_logger(
     fmt: str = "%(asctime)s: %(message)s",
     date_fmt: str = "%H:%M:%S",
     console: bool = True,
-    log_file: Optional[str] = "resources/logs.txt",
-    file_level: Optional[int] = None,
+    log_file: str | None = "resources/logs.txt",
+    file_level: int | None = None,
     max_bytes: int = 10 * 1024 * 1024,
     backup_count: int = 3,
 ) -> logging.Logger:
@@ -46,15 +45,15 @@ def setup_logger(
 
     if log_file:
         file_level = file_level or level
+        resolved_path = str(Path(log_file).resolve())
 
         Path(log_file).parent.mkdir(parents=True, exist_ok=True)
 
-        # avoid adding twice for the same filename
         existing = [
             h
             for h in root.handlers
             if isinstance(h, RotatingFileHandler)
-            and getattr(h, "baseFilename", "") == log_file
+            and getattr(h, "baseFilename", "") == resolved_path
         ]
         if not existing:
             fh = RotatingFileHandler(

@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 import torch
-from ignite.engine import Engine, Events
+from ignite.engine import Events
 from ignite.metrics import Accuracy, ConfusionMatrix, Average
 from ignite.handlers.tensorboard_logger import TensorboardLogger
 
@@ -23,10 +23,7 @@ from src.torch.builders import (
     create_loss,
     create_optimizer,
     create_scheduler,
-    create_sampler,
 )
-from src.torch.data.batch import ensure_batch
-from src.torch.data.sampler.batch import RivalClusterBatchSampler
 
 from src.ignite.builders import EngineBuilder
 from src.ignite.metrics import F1, Precision, Recall
@@ -55,117 +52,17 @@ def make_loader(df, num_cols, cat_cols, label_cols, dataloader_cfg):
     )
 
 
-def _make_sampler(df, label_col, sampler_name, sampler_params):
-    """Create a batch sampler with cluster and label arrays from a dataframe."""
-    params = dict(sampler_params)
-    params["clusters"] = df["cluster"].values
-    params["labels"] = df[label_col].values
-    return create_sampler(name=sampler_name, params=params)
-
-
-def _build_rival_updater(model, device, batch_sampler, loss_fn, invalid_classes=None):
-    """Build an engine that collects embeddings and updates cluster rivals."""
-
-    def step(engine, batch):
-        model.eval()
-        with torch.no_grad():
-            batch = ensure_batch(batch).to(device, non_blocking=True)
-            out = model(*batch.features)
-            z = torch.nn.functional.normalize(out["z"], dim=1, eps=1e-8)
-        engine.state.all_z.append(z.cpu())
-        engine.state.all_y.append(batch.labels[0].cpu())
-        engine.state.all_c.append(batch.labels[1].cpu())
-
-    engine = Engine(step)
-
-    @engine.on(Events.STARTED)
-    def reset(engine):
-        engine.state.all_z = []
-        engine.state.all_y = []
-        engine.state.all_c = []
-
-    @engine.on(Events.COMPLETED)
-    def _compute_rivals(engine):
-        all_z = torch.cat(engine.state.all_z).numpy()
-        all_y = torch.cat(engine.state.all_y).numpy()
-        all_c = torch.cat(engine.state.all_c).numpy()
-
-        cluster_rivals = RivalClusterBatchSampler.compute_rivals(
-            all_z, all_y, all_c, invalid_classes
-        )
-        if not cluster_rivals:
-            logger.warning("No cluster rivals found, skipping rival update.")
-            return
-
-        batch_sampler.cluster_rivals = cluster_rivals
-        loss_fn.update_cluster_rivals(cluster_rivals)
-        logger.info(f"Cluster rivals: {cluster_rivals}")
-
-    return engine
-
-
-def train(
-    processed_data_path,
-    extension,
-    num_cols,
-    cat_cols,
-    label_col,
-    n_samples,
-    random_state,
-    train_dataloader_cfg,
-    val_dataloader_cfg,
-    model_name,
-    model_params,
-    loss_name,
-    loss_params,
-    optimizer_name,
-    optimizer_params,
-    scheduler_name,
-    scheduler_params,
-    sampler_name,
-    sampler_params,
-    tb_logs_path,
-    models_path,
-    max_epochs,
-    max_grad_norm,
-    early_stopping_patience,
-    early_stopping_min_delta,
+def _build_trainer(
+    model,
+    loss_fn,
+    optimizer,
+    scheduler,
     device,
+    max_grad_norm,
+    tb_logger,
 ):
-    """Train the supervised classifier."""
-    logger.info("Starting training phase...")
-
-    train_df, val_df, _ = load_data(
-        processed_data_path, extension, label_col, n_samples, random_state
-    )
-
-    train_sampler = val_sampler = None
-    if sampler_name is not None:
-        train_sampler = _make_sampler(train_df, label_col, sampler_name, sampler_params)
-        val_sampler = _make_sampler(val_df, label_col, sampler_name, sampler_params)
-        train_dataloader_cfg["batch_sampler"] = train_sampler
-        val_dataloader_cfg["batch_sampler"] = val_sampler
-
-    extra_cols = ["cluster"] if train_sampler is not None else []
-    train_loader = make_loader(
-        train_df, num_cols, cat_cols, [label_col] + extra_cols, train_dataloader_cfg
-    )
-    val_loader = make_loader(
-        val_df, num_cols, cat_cols, [label_col] + extra_cols, val_dataloader_cfg
-    )
-
-    model = create_model(model_name, model_params, device)
-    loss_fn = create_loss(loss_name, loss_params, device)
-    optimizer = create_optimizer(optimizer_name, optimizer_params, model, loss_fn)
-    scheduler = create_scheduler(
-        scheduler_name, scheduler_params, optimizer, train_loader
-    )
-
-    log_dir = tb_logs_path / "training"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    tb_logger = TensorboardLogger(log_dir=log_dir)
-
-    trainer = (
+    """Configure the training engine with TensorBoard logging."""
+    return (
         EngineBuilder(train_step)
         .with_state(
             model=model,
@@ -187,7 +84,19 @@ def train(
         .build()
     )
 
-    validator = (
+
+def _build_validator(
+    model,
+    loss_fn,
+    device,
+    tb_logger,
+    trainer,
+    early_stopping_patience,
+    early_stopping_min_delta,
+    models_path,
+):
+    """Configure the validation engine with early stopping and checkpointing."""
+    return (
         EngineBuilder(eval_step)
         .with_state(model=model, loss_fn=loss_fn, device=device)
         .with_metric("loss", Average(output_transform=lambda x: x["loss"]))
@@ -213,29 +122,140 @@ def train(
         .build()
     )
 
-    @trainer.on(Events.EPOCH_COMPLETED)
-    def run_validation(engine):
-        logger.info(
-            f"Epoch [{engine.state.epoch}] Train Loss: {engine.state.metrics['loss']:.6f}"
-        )
-        validator.run(val_loader)
-        logger.info(
-            f"Epoch [{engine.state.epoch}] Val Loss: {validator.state.metrics['loss']:.6f}"
+
+def _build_tester(model, device, num_classes):
+    """Configure the test engine with classification metrics (no TensorBoard)."""
+    prepare_output = lambda x: (
+        torch.softmax(x["output"]["logits"], dim=1),
+        x["y_true"],
+    )
+
+    builder = EngineBuilder(test_step).with_state(model=model, device=device)
+    builder.with_metric("accuracy", Accuracy(output_transform=prepare_output))
+
+    for avg_type in ("macro", "weighted"):
+        for name, cls in (("precision", Precision), ("recall", Recall), ("f1", F1)):
+            builder.with_metric(
+                f"{name}_{avg_type}",
+                cls(
+                    average=avg_type,
+                    output_transform=prepare_output,
+                    num_classes=num_classes,
+                ),
+            )
+
+    for name, cls in (("precision", Precision), ("recall", Recall), ("f1", F1)):
+        builder.with_metric(
+            f"{name}_per_class",
+            cls(
+                average=None,
+                output_transform=prepare_output,
+                num_classes=num_classes,
+            ),
         )
 
-    rival_updater = (
-        _build_rival_updater(model, device, train_loader.batch_sampler, loss_fn)
-        if train_sampler is not None
-        else None
+    builder.with_metric(
+        "confusion_matrix",
+        ConfusionMatrix(num_classes=num_classes, output_transform=prepare_output),
+    )
+    return builder.build()
+
+
+def _to_python(v):
+    """Convert a metric value to a JSON-serialisable Python type."""
+    if isinstance(v, torch.Tensor):
+        return v.cpu().numpy().tolist() if v.numel() > 1 else float(v)
+    return v
+
+
+def collect_test_results(metrics: dict) -> dict:
+    """Convert raw engine metrics into a JSON-serialisable dict."""
+    return {k: _to_python(v) for k, v in metrics.items()}
+
+
+def train(
+    processed_data_path,
+    extension,
+    num_cols,
+    cat_cols,
+    label_col,
+    n_samples,
+    random_state,
+    train_dataloader_cfg,
+    val_dataloader_cfg,
+    model_name,
+    model_params,
+    loss_name,
+    loss_params,
+    optimizer_name,
+    optimizer_params,
+    scheduler_name,
+    scheduler_params,
+    tb_logs_path,
+    models_path,
+    max_epochs,
+    max_grad_norm,
+    early_stopping_patience,
+    early_stopping_min_delta,
+    device,
+):
+    """Train the supervised classifier."""
+    logger.info("Starting training phase...")
+
+    train_df, val_df, _ = load_data(
+        processed_data_path, extension, label_col, n_samples, random_state
+    )
+    train_loader = make_loader(
+        train_df, num_cols, cat_cols, [label_col], train_dataloader_cfg
+    )
+    val_loader = make_loader(
+        val_df, num_cols, cat_cols, [label_col], val_dataloader_cfg
+    )
+
+    model = create_model(model_name, model_params, device)
+    loss_fn = create_loss(loss_name, loss_params, device)
+    optimizer = create_optimizer(optimizer_name, optimizer_params, model, loss_fn)
+    scheduler = create_scheduler(
+        scheduler_name, scheduler_params, optimizer, train_loader
+    )
+
+    log_dir = tb_logs_path / "training"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    tb_logger = TensorboardLogger(log_dir=log_dir)
+
+    trainer = _build_trainer(
+        model,
+        loss_fn,
+        optimizer,
+        scheduler,
+        device,
+        max_grad_norm,
+        tb_logger,
+    )
+    validator = _build_validator(
+        model,
+        loss_fn,
+        device,
+        tb_logger,
+        trainer,
+        early_stopping_patience,
+        early_stopping_min_delta,
+        models_path,
     )
 
     @trainer.on(Events.EPOCH_COMPLETED)
-    def update_cluster_rivals(engine):
-        if train_sampler is None or not hasattr(
-            train_loader.batch_sampler, "cluster_rivals"
-        ):
-            return
-        rival_updater.run(train_loader)
+    def run_validation(engine):
+        logger.info(
+            "Epoch [%d] Train Loss: %.6f",
+            engine.state.epoch,
+            engine.state.metrics["loss"],
+        )
+        validator.run(val_loader)
+        logger.info(
+            "Epoch [%d] Val Loss: %.6f",
+            engine.state.epoch,
+            validator.state.metrics["loss"],
+        )
 
     try:
         trainer.run(train_loader, max_epochs=max_epochs)
@@ -244,6 +264,19 @@ def train(
 
     logger.info("Training completed.")
     return model
+
+
+SCALAR_METRICS = [
+    "accuracy",
+    "precision_macro",
+    "recall_macro",
+    "f1_macro",
+    "precision_weighted",
+    "recall_weighted",
+    "f1_weighted",
+]
+
+PER_CLASS_METRICS = ["precision_per_class", "recall_per_class", "f1_per_class"]
 
 
 def test(
@@ -272,123 +305,63 @@ def test(
     test_loader = make_loader(
         test_df, num_cols, cat_cols, [label_col], test_dataloader_cfg
     )
+
     model = create_model(model_name, model_params, device)
     load_latest_checkpoint(models_path, model, device)
 
-    num_classes = model_params.num_classes
+    tester = _build_tester(model, device, model_params.num_classes)
+
     log_dir = tb_logs_path / "testing"
     log_dir.mkdir(parents=True, exist_ok=True)
     tb_logger = TensorboardLogger(log_dir=log_dir)
-
-    prepare_output = lambda x: (
-        torch.softmax(x["output"]["logits"], dim=1),
-        x["y_true"],
-    )
-
-    tester = EngineBuilder(test_step).with_state(model=model, device=device)
-    tester.with_metric("accuracy", Accuracy(output_transform=prepare_output))
-
-    for avg_type in ("macro", "weighted"):
-        for name, cls in (("precision", Precision), ("recall", Recall), ("f1", F1)):
-            tester.with_metric(
-                f"{name}_{avg_type}",
-                cls(
-                    average=avg_type,
-                    output_transform=prepare_output,
-                    num_classes=num_classes,
-                ),
-            )
-
-    for name, cls in (("precision", Precision), ("recall", Recall), ("f1", F1)):
-        tester.with_metric(
-            f"{name}_per_class",
-            cls(average=None, output_transform=prepare_output, num_classes=num_classes),
-        )
-
-    tester.with_metric(
-        "confusion_matrix",
-        ConfusionMatrix(num_classes=num_classes, output_transform=prepare_output),
-    )
-    tester = tester.build()
-
-    _scalar_metrics = [
-        "accuracy",
-        "precision_macro",
-        "recall_macro",
-        "f1_macro",
-        "precision_weighted",
-        "recall_weighted",
-        "f1_weighted",
-    ]
-    _per_class_metrics = {
-        "precision_per_class",
-        "recall_per_class",
-        "f1_per_class",
-        "confusion_matrix",
-    }
-
-    @tester.on(Events.COMPLETED)
-    def log_results(engine):
-        metrics = engine.state.metrics
-
-        for name, value in metrics.items():
-            if name not in _per_class_metrics:
-                logger.info(f"{name}: {value}")
-
-        def to_python(v):
-            if isinstance(v, torch.Tensor):
-                return v.cpu().numpy().tolist() if v.numel() > 1 else float(v)
-            return v
-
-        save_to_json(
-            {k: to_python(v) for k, v in metrics.items()},
-            json_logs_path / "test/summary.json",
-        )
-
-        for name in _scalar_metrics:
-            if name in metrics:
-                tb_logger.writer.add_scalar(f"test/{name}", metrics[name], run_id)
-
-        if "confusion_matrix" in metrics:
-            tb_logger.writer.add_figure(
-                "test/confusion_matrix",
-                confusion_matrix_to_plot(
-                    metrics["confusion_matrix"].cpu().numpy(),
-                ),
-                run_id,
-            )
-
-        if "f1_per_class" in metrics:
-            f1_dict = {
-                f"class_{i}": float(v)
-                for i, v in enumerate(metrics["f1_per_class"].cpu().numpy())
-            }
-            tb_logger.writer.add_figure(
-                "test/f1_per_class", dict_to_bar_plot(f1_dict), run_id
-            )
 
     try:
         tester.run(test_loader)
     finally:
         tb_logger.close()
 
+    metrics = tester.state.metrics
+
+    # --- Logging ---
+    for name, value in metrics.items():
+        if name not in PER_CLASS_METRICS and name != "confusion_matrix":
+            logger.info("%s: %s", name, value)
+
+    # --- Persistence ---
+    results = collect_test_results(metrics)
+    save_to_json(results, json_logs_path / "test/summary.json")
+
+    # --- TensorBoard ---
+    writer = tb_logger.writer
+    for name in SCALAR_METRICS:
+        if name in metrics:
+            writer.add_scalar(f"test/{name}", metrics[name], run_id)
+
+    if "confusion_matrix" in metrics:
+        writer.add_figure(
+            "test/confusion_matrix",
+            confusion_matrix_to_plot(metrics["confusion_matrix"].cpu().numpy()),
+            run_id,
+        )
+    if "f1_per_class" in metrics:
+        f1_dict = {
+            f"class_{i}": float(v)
+            for i, v in enumerate(metrics["f1_per_class"].cpu().numpy())
+        }
+        writer.add_figure("test/f1_per_class", dict_to_bar_plot(f1_dict), run_id)
+
     logger.info("Testing completed.")
-    return model, _scalar_metrics, _per_class_metrics
+    return model
 
 
-def sup_classify():
-    cfg = load_config(
-        config_path=Path(__file__).parent / "configs",
-        config_name="config",
-        overrides=sys.argv[1:],
-    )
-
+def sup_classify(cfg):
+    """Run supervised classification pipeline (train and/or test)."""
     json_logs_path = Path(cfg.path.json_logs)
     df_meta = load_from_json(json_logs_path / "data/df_meta.json")
     cfg.model.params.num_classes = df_meta["num_classes"]
 
     device = torch.device(cfg.device)
-    logger.info(f"Using device: {device}")
+    logger.info("Using device: %s", device)
 
     num_cols = list(cfg.data.num_cols) if cfg.data.num_cols else []
     cat_cols = list(cfg.data.cat_cols) if cfg.data.cat_cols else []
@@ -408,53 +381,61 @@ def sup_classify():
         random_state=cfg.seed,
     )
 
-    train_kwargs = dict(
-        **common,
-        train_dataloader_cfg=cfg.loops.training.dataloader,
-        val_dataloader_cfg=cfg.loops.validation.dataloader,
-        model_name=cfg.model.name,
-        model_params=cfg.model.params,
-        loss_name=cfg.loss.name,
-        loss_params=cfg.loss.params,
-        optimizer_name=cfg.optimizer.name,
-        optimizer_params=cfg.optimizer.params,
-        scheduler_name=cfg.scheduler.name,
-        scheduler_params=cfg.scheduler.params,
-        sampler_name=cfg.sampler.name if "sampler" in cfg else None,
-        sampler_params=cfg.sampler.params if "sampler" in cfg else None,
-        tb_logs_path=tb_logs_path,
-        models_path=models_path,
-        max_epochs=cfg.loops.training.epochs,
-        max_grad_norm=cfg.loops.training.get("max_grad_norm", 1.0),
-        early_stopping_patience=cfg.loops.training.early_stopping.patience,
-        early_stopping_min_delta=cfg.loops.training.early_stopping.min_delta,
-        device=device,
-    )
-
-    test_kwargs = dict(
-        **common,
-        test_dataloader_cfg=cfg.loops.test.dataloader,
-        model_name=cfg.model.name,
-        model_params=cfg.model.params,
-        models_path=models_path,
-        tb_logs_path=tb_logs_path,
-        json_logs_path=json_logs_path,
-        run_id=cfg.run_id,
-        device=device,
-    )
-
     stage = cfg.get("stage", "all")
+    model = None
+
     if stage in ("all", "training"):
-        model = train(**train_kwargs)
+        model = train(
+            **common,
+            train_dataloader_cfg=cfg.loops.training.dataloader,
+            val_dataloader_cfg=cfg.loops.validation.dataloader,
+            model_name=cfg.model.name,
+            model_params=cfg.model.params,
+            loss_name=cfg.loss.name,
+            loss_params=cfg.loss.params,
+            optimizer_name=cfg.optimizer.name,
+            optimizer_params=cfg.optimizer.params,
+            scheduler_name=cfg.scheduler.name,
+            scheduler_params=cfg.scheduler.params,
+            tb_logs_path=tb_logs_path,
+            models_path=models_path,
+            max_epochs=cfg.loops.training.epochs,
+            max_grad_norm=cfg.loops.training.get("max_grad_norm", 1.0),
+            early_stopping_patience=cfg.loops.training.early_stopping.patience,
+            early_stopping_min_delta=cfg.loops.training.early_stopping.min_delta,
+            device=device,
+        )
+
     if stage in ("all", "testing"):
-        model, scalar_metrics, per_class_metrics = test(**test_kwargs)
+        model = test(
+            **common,
+            test_dataloader_cfg=cfg.loops.test.dataloader,
+            model_name=cfg.model.name,
+            model_params=cfg.model.params,
+            models_path=models_path,
+            tb_logs_path=tb_logs_path,
+            json_logs_path=json_logs_path,
+            run_id=cfg.run_id,
+            device=device,
+        )
+
     if stage not in ("all", "training", "testing"):
-        logger.error(f"Unknown stage: {stage!r}. Valid: 'all', 'training', 'testing'.")
+        logger.error("Unknown stage: %r. Valid: 'all', 'training', 'testing'.", stage)
         sys.exit(1)
 
     logger.info("All stages completed.")
-    return model, scalar_metrics or {}, per_class_metrics or {}
+    return model
+
+
+def main():
+    """Main entry point for supervised classification."""
+    cfg = load_config(
+        config_path=Path(__file__).parent / "configs",
+        config_name="config",
+        overrides=sys.argv[1:],
+    )
+    sup_classify(cfg)
 
 
 if __name__ == "__main__":
-    sup_classify()
+    main()

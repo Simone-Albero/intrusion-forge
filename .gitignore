@@ -1,4 +1,5 @@
 # Custom skipped files
+.github/
 resources/
 .idea/
 prof.out

@@ -2,9 +2,12 @@ import hashlib
 
 import pandas as pd
 import numpy as np
+from sklearn import set_config
 from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.compose import ColumnTransformer
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import LabelEncoder, RobustScaler
 
 
 def drop_nans(df: pd.DataFrame, cols: list) -> pd.DataFrame:
@@ -40,13 +43,9 @@ def subsample_df(
     if label_col is None:
         return df.sample(n=min(n_samples, len(df)), random_state=random_state)
     per_class = n_samples // df[label_col].nunique()
-    _key = "__groupby_col__"
-    df = df.copy()
-    df[_key] = df[label_col]
     return (
-        df.groupby(_key, group_keys=False)
+        df.groupby(df[label_col].values, group_keys=False)
         .apply(lambda x: x.sample(n=min(len(x), per_class), random_state=random_state))
-        .drop(columns=[_key])
         .reset_index(drop=True)
     )
 
@@ -56,32 +55,11 @@ def random_undersample_df(
 ) -> pd.DataFrame:
     """Undersample to balance classes."""
     min_count = df[label_col].value_counts().min()
-    _key = "__groupby_col__"
-    df = df.copy()
-    df[_key] = df[label_col]
     return (
-        df.groupby(_key, group_keys=False)
+        df.groupby(df[label_col].values, group_keys=False)
         .apply(lambda g: g.sample(n=min_count, random_state=random_state))
         .reset_index(drop=True)
     )
-
-
-def random_oversample_df(
-    df: pd.DataFrame, label_col: str, random_state: int | None = None
-) -> pd.DataFrame:
-    """Oversample to balance classes."""
-    max_count = df[label_col].value_counts().max()
-
-    def oversample(g):
-        n = max_count - len(g)
-        if n > 0:
-            g = pd.concat([g, g.sample(n=n, replace=True, random_state=random_state)])
-        return g
-
-    _key = "__groupby_col__"
-    df = df.copy()
-    df[_key] = df[label_col]
-    return df.groupby(_key, group_keys=False).apply(oversample).reset_index(drop=True)
 
 
 def ml_split(
@@ -111,25 +89,6 @@ def ml_split(
     return train_df, val_df, test_df
 
 
-class QuantileClipper(BaseEstimator, TransformerMixin):
-    """Clip numerical features to specified quantiles to reduce outlier impact."""
-
-    def __init__(self, lower_quantile: float = 0.01, upper_quantile: float = 0.99):
-        self.lower_quantile = lower_quantile
-        self.upper_quantile = upper_quantile
-
-    def fit(self, X: pd.DataFrame, y=None):
-        X = pd.DataFrame(X)
-        self.lower_bounds_ = X.quantile(self.lower_quantile)
-        self.upper_bounds_ = X.quantile(self.upper_quantile)
-        return self
-
-    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
-        return pd.DataFrame(X).clip(
-            lower=self.lower_bounds_, upper=self.upper_bounds_, axis=1
-        )
-
-
 class LogTransformer(BaseEstimator, TransformerMixin):
     """Apply log1p transformation to handle skewed data with zeros."""
 
@@ -141,38 +100,6 @@ class LogTransformer(BaseEstimator, TransformerMixin):
 
     def transform(self, X):
         return np.log1p(np.maximum(X, 0) + self.epsilon)
-
-
-class TopNCategoryEncoder(BaseEstimator, TransformerMixin):
-    """Encode categorical features by mapping top-N frequent categories to integers."""
-
-    def __init__(self, top_n: int = 256, default_value: int = 0):
-        self.top_n = top_n
-        self.default_value = default_value
-
-    def fit(self, X: pd.DataFrame, y=None):
-        X = pd.DataFrame(X)
-        self.category_maps_ = {
-            col: {
-                cat: i + 1
-                for i, cat in enumerate(
-                    X[col].value_counts().nlargest(self.top_n - 1).index
-                )
-            }
-            for col in X.columns
-        }
-        return self
-
-    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
-        X = pd.DataFrame(X).copy()
-        for col in X.columns:
-            X[col] = (
-                X[col]
-                .map(self.category_maps_.get(col, {}))
-                .fillna(self.default_value)
-                .astype(int)
-            )
-        return X
 
 
 class TopNHashEncoder(BaseEstimator, TransformerMixin):
@@ -261,3 +188,32 @@ def encode_labels(
     test_df[dst] = le.transform(test_df[src_label_col])
     label_mapping = {int(i): str(name) for i, name in enumerate(le.classes_)}
     return train_df, val_df, test_df, label_mapping
+
+
+def build_preprocessor(
+    num_cols: list[str] | None = None,
+    cat_cols: list[str] | None = None,
+    num_steps: list[tuple[str, BaseEstimator]] | None = None,
+    cat_steps: list[tuple[str, BaseEstimator]] | None = None,
+    remainder: str = "passthrough",
+) -> ColumnTransformer:
+    """Assemble a :class:`ColumnTransformer` from per-type transformer steps.
+
+    Args:
+        num_cols: Numerical columns to transform.
+        cat_cols: Categorical columns to transform.
+        num_steps: ``(name, transformer)`` pairs assembled into a numerical pipeline.
+        cat_steps: ``(name, transformer)`` pairs assembled into a categorical pipeline.
+        remainder: Strategy for columns not covered by any transformer.
+    """
+    set_config(transform_output="pandas")
+    transformers = []
+    if num_cols and num_steps:
+        transformers.append(("num", Pipeline(num_steps), num_cols))
+    if cat_cols and cat_steps:
+        transformers.append(("cat", Pipeline(cat_steps), cat_cols))
+    return ColumnTransformer(
+        transformers=transformers,
+        remainder=remainder,
+        verbose_feature_names_out=False,
+    )
