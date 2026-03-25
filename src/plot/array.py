@@ -2,6 +2,7 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 
 import numpy as np
+import seaborn as sns
 from sklearn.metrics import ConfusionMatrixDisplay
 
 
@@ -251,4 +252,219 @@ def samples_plot(
     ax.set_title(f"{dims} Sample Plot", fontsize=14, pad=12)
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
+    return fig
+
+
+def strip_box_plot(
+    categories: np.ndarray,
+    values: np.ndarray,
+    color_values: np.ndarray | None = None,
+    x_label: str = "",
+    y_label: str = "",
+    c_label: str = "",
+    title: str = "",
+    figsize: tuple[float, float] = (12, 6),
+    strip_size: float = 5,
+) -> plt.Figure:
+    """Strip plot with per-point color encoding and per-category median marker.
+
+    Points are colored by *color_values* if provided, otherwise by *values*.
+    """
+    categories = np.asarray(categories)
+    values = np.asarray(values)
+    c = np.asarray(color_values) if color_values is not None else values
+
+    if color_values is not None:
+        c_min, c_max = float(c.min()), float(c.max())
+        c = (
+            (c - c_min) / (c_max - c_min)
+            if c_max > c_min
+            else np.zeros_like(c, dtype=float)
+        )
+
+    cmap = plt.get_cmap("RdYlGn_r")
+    norm = plt.Normalize(vmin=c.min(), vmax=c.max())
+
+    category_order = list(dict.fromkeys(categories))
+    cat_to_x = {cat: i for i, cat in enumerate(category_order)}
+
+    rng = np.random.default_rng(seed=42)
+    x_positions = np.array(
+        [cat_to_x[cat] + rng.uniform(-0.25, 0.25) for cat in categories]
+    )
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    ax.scatter(
+        x_positions,
+        values,
+        c=cmap(norm(c)),
+        s=strip_size**2,
+        zorder=3,
+        edgecolors="white",
+        linewidths=0.4,
+        alpha=0.85,
+    )
+
+    for cat, x in cat_to_x.items():
+        median_val = np.median(values[categories == cat])
+        ax.plot(
+            [x - 0.3, x + 0.3],
+            [median_val, median_val],
+            color="#444444",
+            linewidth=1.5,
+            zorder=4,
+        )
+
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])
+    cbar = fig.colorbar(sm, ax=ax, pad=0.02, fraction=0.03)
+    cbar.set_label(c_label, fontsize=10)
+
+    ax.set_xticks(range(len(category_order)))
+    ax.set_xticklabels(category_order)
+    ax.set_title(title, fontsize=14, pad=16)
+    ax.set_xlabel(x_label, labelpad=10)
+    ax.set_ylabel(y_label, labelpad=10)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha="right")
+    fig.tight_layout()
+    return fig
+
+
+def violin_box_plot(
+    categories: np.ndarray,
+    values: np.ndarray,
+    x_label: str = "",
+    y_label: str = "",
+    title: str = "",
+    figsize: tuple[float, float] = (6, 5),
+    violin_alpha: float = 0.4,
+    palette: str = "Set2",
+) -> plt.Figure:
+    """Combined violin plot + inner box plot, grouped by category."""
+    categories = np.asarray(categories)
+    values = np.asarray(values)
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    sns.violinplot(
+        x=categories,
+        y=values,
+        hue=categories,
+        palette=palette,
+        inner="box",
+        alpha=violin_alpha,
+        legend=False,
+        ax=ax,
+    )
+
+    ax.set_title(title, fontsize=13, pad=14)
+    ax.set_xlabel(x_label, labelpad=10)
+    ax.set_ylabel(y_label, labelpad=10)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    fig.tight_layout()
+    return fig
+
+
+def scatter_annotated_plot(
+    x: np.ndarray,
+    y: np.ndarray,
+    labels: list[str],
+    xerr: np.ndarray | None = None,
+    x_label: str = "",
+    y_label: str = "",
+    title: str = "",
+    figsize: tuple[float, float] = (8, 6),
+) -> plt.Figure:
+    """Scatter plot with per-point annotation and optional x-axis error bars."""
+    x = np.asarray(x)
+    y = np.asarray(y)
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    ax.errorbar(
+        x,
+        y,
+        xerr=xerr,
+        fmt="o",
+        markersize=7,
+        capsize=4,
+        elinewidth=1.2,
+        color="#4E79A7",
+        ecolor="#AAAAAA",
+        zorder=3,
+    )
+
+    for xi, yi, label in zip(x, y, labels):
+        ax.annotate(
+            label,
+            (xi, yi),
+            xytext=(6, 4),
+            textcoords="offset points",
+            fontsize=8,
+            color="#333333",
+        )
+
+    ax.set_title(title, fontsize=14, pad=16)
+    ax.set_xlabel(x_label, labelpad=10)
+    ax.set_ylabel(y_label, labelpad=10)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.grid(True, alpha=0.25, linestyle="--")
+
+    fig.tight_layout()
+    return fig
+
+
+def roc_curve_plot(
+    fpr: np.ndarray,
+    tpr: np.ndarray,
+    auc_score: float,
+    title: str = "ROC Curve",
+    figsize: tuple[float, float] = (6, 6),
+) -> plt.Figure:
+    """ROC curve with AUC annotation and random-classifier baseline."""
+    fig, ax = plt.subplots(figsize=figsize)
+
+    ax.plot(fpr, tpr, color="#4E79A7", linewidth=2, label=f"AUC = {auc_score:.4f}")
+    ax.plot(
+        [0, 1], [0, 1], color="#AAAAAA", linewidth=1, linestyle="--", label="Random"
+    )
+
+    ax.set_xlim(0.0, 1.0)
+    ax.set_ylim(0.0, 1.05)
+    ax.set_xlabel("False Positive Rate", labelpad=10)
+    ax.set_ylabel("True Positive Rate", labelpad=10)
+    ax.set_title(title, fontsize=14, pad=16)
+    ax.legend(loc="lower right", fontsize=10)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    fig.tight_layout()
+    return fig
+
+
+def feature_importance_plot(
+    importances: dict[str, float],
+    title: str = "Feature Importances",
+    figsize: tuple[float, float] = (12, 8),
+) -> plt.Figure:
+    """Horizontal bar chart of feature importances, sorted descending."""
+    sorted_items = sorted(importances.items(), key=lambda x: x[1])
+    features = [item[0] for item in sorted_items]
+    values = np.array([item[1] for item in sorted_items])
+
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.barh(features, values, color="#4E79A7", edgecolor="white", linewidth=0.5)
+    ax.set_title(title, fontsize=14, pad=16)
+    ax.set_xlabel("Importance", labelpad=10)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.tick_params(axis="y", labelsize=8)
+
+    fig.tight_layout(pad=1.0)
     return fig

@@ -184,14 +184,14 @@ Runs the best model on all splits (train, val, test). For each split: extracts p
 
 ```
 {run_id}/
-├── pickle/inference/
+├── pickle/analysis/
 │   └── confusion_matrices/
 │       ├── train.pkl, val.pkl, test.pkl
-├── logs/inference/
-│   └── pred_infos/
+├── logs/analysis/
+│   └── predictions/
 │       ├── train.json, val.json, test.json   # Per-class failure analysis
 tb/
-└── inference/
+└── analysis/
     ├── train/, val/, test/                    # TensorBoard: t-SNE, confusion matrices
 ```
 
@@ -208,7 +208,7 @@ Performs post-hoc analysis on the model outputs. The specific analyses depend on
 ```
 {run_id}/logs/
 ├── data/              # Data-level analysis results
-└── inference/         # Prediction-level analysis results
+└── analysis/          # Prediction-level analysis results
 ```
 
 ---
@@ -255,13 +255,13 @@ Additional outputs produced by this experiment:
 ```
 {run_id}/logs/
 ├── data/
-│   ├── clusters_meta.json             # Cluster distributions and centroids
-│   └── separability/
-│       ├── cluster_train.json         # Pairwise separability (train)
-│       └── cluster_test.json          # Pairwise separability (test)
-└── inference/
+│   └── clusters_meta.json             # Cluster distributions and centroids
+└── analysis/
     ├── cluster_summary.json           # Aggregated per-cluster summary
-    └── correlation_results.json       # RF grid search results, feature importances
+    ├── correlation_results.json       # RF grid search results, feature importances
+    └── separability/
+        ├── cluster_train.json         # Pairwise separability (train)
+        └── cluster_test.json          # Pairwise separability (test)
 ```
 
 ---
@@ -278,14 +278,14 @@ resources/experiments/{name}/{data.file_name}_{seed}/
 │   ├── logs/
 │   │   ├── data/             # df_info, df_meta, experiment-specific logs
 │   │   ├── test/             # summary.json (test metrics)
-│   │   └── inference/        # pred_infos/, experiment-specific analysis
+│   │   └── analysis/         # predictions/, experiment-specific analysis
 │   ├── pickle/               # Serialized objects (confusion matrices)
 │   └── configs/              # Resolved config snapshot
 └── tb/                       # TensorBoard logs (shared across runs)
     ├── training/
     ├── validation/
     ├── testing/
-    └── inference/
+    └── analysis/
 ```
 
 To view TensorBoard logs:

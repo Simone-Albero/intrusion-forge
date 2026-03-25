@@ -254,6 +254,7 @@ def prepare(cfg):
             cluster_col="cluster",
             centroids=centroids,
             feature_cols=num_cols + cat_cols,
+            metric=cfg.distance_metric,
         )
         save_to_json(clusters_metadata, json_logs_path / "data/clusters_meta.json")
 

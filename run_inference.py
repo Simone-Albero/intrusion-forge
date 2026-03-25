@@ -159,7 +159,7 @@ def infer(cfg):
     stats = {"class_confidence": {}, "pred_infos": {}, "cluster_failures": {}}
     for suffix, df in zip(("train", "val", "test"), splits):
         logger.info("Running inference on %s set ...", suffix)
-        log_dir = Path(cfg.path.tb_logs) / "inference" / suffix
+        log_dir = Path(cfg.path.tb_logs) / "analysis" / suffix
         log_dir.mkdir(parents=True, exist_ok=True)
         tb_logger = TensorboardLogger(log_dir=log_dir)
         step = cfg.run_id or 0
@@ -184,7 +184,7 @@ def infer(cfg):
         plt.close(cm_fig)
 
         save_to_pickle(
-            cm, Path(cfg.path.pickle) / f"inference/confusion_matrices/{suffix}.pkl"
+            cm, Path(cfg.path.pickle) / f"analysis/confusion_matrices/{suffix}.pkl"
         )
 
         cm_fig, cm = visualize_cm(y_true, y_pred, normalize="true")
@@ -210,7 +210,7 @@ def infer(cfg):
         pred_infos = evaluate_predictions(df, y_true, y_pred, confidences)
         save_to_json(
             pred_infos,
-            json_logs_path / f"inference/pred_infos/{suffix}.json",
+            json_logs_path / f"analysis/predictions/{suffix}.json",
         )
         stats["pred_infos"][suffix] = pred_infos
 

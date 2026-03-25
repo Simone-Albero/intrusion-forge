@@ -298,6 +298,7 @@ def _single_cluster_stats(
     sil_values: np.ndarray | None,
     mask_arr: np.ndarray,
     eps: float,
+    metric: str,
 ) -> dict:
     """Compute statistics for a single cluster."""
     n = len(samples)
@@ -321,7 +322,7 @@ def _single_cluster_stats(
             "silhouette": None,
         }
 
-    dists = np.linalg.norm(samples - centroid, axis=1)
+    dists = pairwise_distances(samples, centroid.reshape(1, -1), metric=metric).ravel()
     intra = float(np.mean(dists))
     n_unique = int(np.unique(samples, axis=0).shape[0])
 
@@ -350,7 +351,13 @@ def _single_cluster_stats(
         "density": float(n / (intra + eps) ** 3),
         "log_density": float(np.log1p(n) - 3.0 * np.log(intra + eps)),
         "dist_to_class_centroid": (
-            float(np.linalg.norm(centroid - class_centroids[cls_key]))
+            float(
+                pairwise_distances(
+                    centroid.reshape(1, -1),
+                    class_centroids[cls_key].reshape(1, -1),
+                    metric=metric,
+                )[0, 0]
+            )
             if cls_key in class_centroids
             else None
         ),
@@ -379,12 +386,15 @@ def compute_cluster_stats(
     encoded_label_col: str,
     centroids: dict,
     eps: float = 1e-8,
+    metric: str = "euclidean",
     compute_silhouette: bool = True,
     silhouette_max_samples: int = 10_000,
 ) -> dict:
     """Compute per-cluster statistics.
 
     Args:
+        metric: Distance metric for intra-cluster dispersion and centroid
+            distances. Supports ``"euclidean"`` and ``"cosine"``.
         silhouette_max_samples: Max points for the silhouette approximation.
             Set to 0 to use all samples (exact but O(n²)).
     """
@@ -406,9 +416,7 @@ def compute_cluster_stats(
         return {}
 
     centroid_matrix = np.stack([np.asarray(centroids[k], dtype=float) for k in keys])
-    pairwise_dist = np.linalg.norm(
-        centroid_matrix[:, None] - centroid_matrix[None], axis=-1
-    )
+    pairwise_dist = pairwise_distances(centroid_matrix, metric=metric)
 
     sil_values = None
     if compute_silhouette:
@@ -431,6 +439,7 @@ def compute_cluster_stats(
             sil_values=sil_values,
             mask_arr=mask.to_numpy(),
             eps=eps,
+            metric=metric,
         )
 
     return cluster_stats
@@ -444,6 +453,7 @@ def compute_clusters_metadata(
     cluster_col: str,
     centroids: dict,
     feature_cols: list[str],
+    metric: str = "euclidean",
 ) -> dict:
     """Aggregate cluster metadata across all splits."""
     df_ = pd.concat([train_df, val_df, test_df], ignore_index=True)
@@ -466,6 +476,7 @@ def compute_clusters_metadata(
         cluster_col=cluster_col,
         encoded_label_col=encoded_label_col,
         centroids=centroids,
+        metric=metric,
     )
 
     return {
@@ -548,9 +559,6 @@ def build_cluster_summary(
 
     # --- assemble per-cluster summary ---
     _STATS_KEYS = (
-        "n_samples",
-        "n_unique",
-        "unique_ratio",
         "intra_dispersion",
         "std_dispersion",
         "median_dispersion",
