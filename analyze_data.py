@@ -39,35 +39,39 @@ logger = logging.getLogger(__name__)
 
 SEPARABILITY_FEATURE_COLS = [
     "cluster_size",
-    "n_samples",
-    "n_unique",
-    "unique_ratio",
     "intra_dispersion",
     "std_dispersion",
     "median_dispersion",
     "max_dispersion",
+    "p95_dispersion",
+    "p99_dispersion",
     "density",
-    "log_density",
     "dist_to_class_centroid",
     "dist_to_nearest_cluster",
     "dist_to_nearest_foreign_cluster",
-    "nearest_separation_ratio",
     "foreign_separation_ratio",
+    "overlap_margin",
+    "normalized_overlap_margin",
+    "intra_foreign_margin",
+    "max_foreign_margin",
+    "foreign_coverage_ratio",
     "silhouette",
-    "foreign_avg_avg",
-    "foreign_max_avg",
-    "foreign_avg_max",
-    "foreign_max_max",
-    "foreign_avg_std",
-    "foreign_max_std",
-    "self_avg",
-    "self_max",
+    "min_silhouette",
+    "p5_silhouette",
+    "frac_at_risk",
+    "min_foreign_ratio",
+    "max_foreign_ratio",
+    "min_self_ratio",
+    "max_self_ratio",
+    "ratio_spread",
+    "ratio_scale",
 ]
 
 RELEVANT_GEOMETRIC_FEATURES = [
     "max_dispersion",
-    "dist_to_nearest_foreign_cluster",
-    "foreign_max_max",
+    "p5_silhouette",
+    "frac_at_risk",
+    "foreign_coverage_ratio",
 ]
 
 N_CONFUSED_PAIRS = 3
@@ -80,7 +84,7 @@ RF_PARAM_GRID = {
 }
 
 
-def find_correlation(
+def train_failure_classifier(
     cluster_stats: dict,
     param_grid: dict,
     feature_cols: list[str] | None = None,
@@ -127,6 +131,7 @@ def find_correlation(
     oof_y_true: list[int] = []
     oof_y_pred: list[int] = []
     oof_y_proba: list[float] = []
+    oof_indices: list = []
 
     for train_idx, test_idx in tqdm(
         outer_cv.split(X, y), total=n_outer_splits, desc="Outer CV"
@@ -157,6 +162,7 @@ def find_correlation(
         oof_y_true.extend(y_test.tolist())
         oof_y_pred.extend(y_pred.tolist())
         oof_y_proba.extend(y_proba.tolist())
+        oof_indices.extend(X_test.index.tolist())
 
     oof_y_true_arr = np.array(oof_y_true)
     oof_y_pred_arr = np.array(oof_y_pred)
@@ -181,6 +187,10 @@ def find_correlation(
             output_dict=True,
         ),
         "feature_importances": dict(zip(feature_cols, mean_importances.tolist())),
+        "oof_predictions": {
+            str(cid): int(pred == true)
+            for cid, pred, true in zip(oof_indices, oof_y_pred, oof_y_true)
+        },
     }
 
 
@@ -218,38 +228,9 @@ def run_separability_analysis(cfg):
     return results
 
 
-def _find_most_confused_pairs(
-    cm_data: list[list[int]],
-    label_mapping: dict[str, str],
-    n: int = N_CONFUSED_PAIRS,
-) -> list[tuple[str, str]]:
-    """Return the top-n most-confused class pairs from a confusion matrix.
-
-    Confusion between class i and j is measured as the symmetric normalised rate:
-        cm[i][j] / sum(cm[i])  +  cm[j][i] / sum(cm[j])
-
-    This is robust to class imbalance because each direction is normalised by
-    the true-class sample count before summing.
-    """
-    cm = np.array(cm_data, dtype=float)
-    row_sums = cm.sum(axis=1)
-    n_classes = cm.shape[0]
-
-    pairs: list[tuple[float, int, int]] = []
-    for i in range(n_classes):
-        for j in range(i + 1, n_classes):
-            rate = cm[i, j] / row_sums[i] + cm[j, i] / row_sums[j]
-            pairs.append((rate, i, j))
-
-    pairs.sort(key=lambda x: x[0], reverse=True)
-
-    return [(label_mapping[str(i)], label_mapping[str(j)]) for _, i, j in pairs[:n]]
-
-
 def compute_summary_visualizzations(
     cluster_summary: dict,
     df_meta: dict,
-    test_summary: dict,
     correlation_results: dict,
     cfg,
 ):
@@ -262,14 +243,21 @@ def compute_summary_visualizzations(
     summary_df = pd.DataFrame.from_dict(cluster_summary, orient="index")
     summary_df["class_name"] = summary_df["cluster_class"].map(df_meta["label_mapping"])
 
+    oof_preds = correlation_results.get("oof_predictions", {})
+    rf_correct = np.array(
+        [oof_preds.get(str(cid), np.nan) for cid in summary_df.index], dtype=float
+    )
+
     fig = strip_box_plot(
         categories=summary_df["class_name"].values,
         values=summary_df["failure_rate"].values,
         color_values=summary_df["failure_rate"].values,
+        edge_values=rf_correct,
         x_label="class",
         y_label="Failure rate",
         c_label="Failure rate",
-        title=f"Failure rate per class ({cfg.data.file_name})",
+        edge_label="RF prediction",
+        title=f"{cfg.data.file_name}",
     )
     tb_logger.writer.add_figure("summary/failure_rate_strip_box", fig, step)
     plt.close(fig)
@@ -277,13 +265,14 @@ def compute_summary_visualizzations(
     fig = strip_box_plot(
         categories=summary_df["class_name"].values,
         values=summary_df["failure_rate"].values,
-        color_values=summary_df["cluster_size"].values,
+        color_values=summary_df["failure_rate"].values,
         x_label="class",
         y_label="Failure rate",
-        c_label="Cluster size",
-        title=f"Failure rate per class ({cfg.data.file_name})",
+        c_label="Failure rate",
+        title=f"{cfg.data.file_name}",
+        cmap="RdYlGn",
     )
-    tb_logger.writer.add_figure("summary/failure_rate_strip_box_sizes", fig, step)
+    tb_logger.writer.add_figure("summary/rf_prediction_strip_box", fig, step)
     plt.close(fig)
 
     logger.info("Generating per-failed visualizations ...")
@@ -295,41 +284,16 @@ def compute_summary_visualizzations(
             values=summary_df[feature].values,
             x_label="outcome",
             y_label=feature,
-            title=f"{feature} by outcome ({cfg.data.file_name})",
+            title=f"{cfg.data.file_name}",
         )
         tb_logger.writer.add_figure(f"summary/global/{feature}", fig, step)
         plt.close(fig)
-
-    logger.info("Generating per-confused-pair visualizations ...")
-    confused_pairs = _find_most_confused_pairs(
-        test_summary["confusion_matrix"],
-        df_meta["label_mapping"],
-    )
-    logger.info(
-        "Top-%d confused pairs: %s",
-        len(confused_pairs),
-        [(a, b) for a, b in confused_pairs],
-    )
-
-    for rank, (class_a, class_b) in enumerate(confused_pairs):
-        pair_df = summary_df[summary_df["class_name"].isin([class_a, class_b])]
-        tag_prefix = f"summary/confused_pairs/{rank}_{class_a}_vs_{class_b}"
-        for feature in RELEVANT_GEOMETRIC_FEATURES:
-            fig = violin_box_plot(
-                categories=pair_df["class_name"].values,
-                values=pair_df[feature].values,
-                x_label="class",
-                y_label=feature,
-                title=f"{feature}: {class_a} vs {class_b} ({cfg.data.file_name})",
-            )
-            tb_logger.writer.add_figure(f"{tag_prefix}/{feature}", fig, step)
-            plt.close(fig)
 
     logger.info("Generating correlation confusion matrix ...")
     fig = confusion_matrix_to_plot(
         cm=np.array(correlation_results["confusion_matrix"]),
         class_names=["correct", "failed"],
-        title=f"Cluster failure predictor ({cfg.data.file_name})",
+        title=f"Random Forest prediction [{cfg.data.file_name}]",
         figsize=(6, 5),
     )
     tb_logger.writer.add_figure("summary/correlation/confusion_matrix", fig, step)
@@ -341,16 +305,24 @@ def compute_summary_visualizzations(
         fpr=np.array(roc_data["fpr"]),
         tpr=np.array(roc_data["tpr"]),
         auc_score=correlation_results["roc_auc"],
-        title=f"ROC curve ({cfg.data.file_name})",
+        title=f"ROC curve [{cfg.data.file_name}]",
     )
     tb_logger.writer.add_figure("summary/correlation/roc_curve", fig, step)
     plt.close(fig)
 
     n_features = len(correlation_results["feature_importances"])
+    max_features_to_plot = min(n_features, 20)
+    top_importances = dict(
+        sorted(
+            correlation_results["feature_importances"].items(),
+            key=lambda x: x[1],
+            reverse=True,
+        )[:max_features_to_plot]
+    )
     fig = feature_importance_plot(
-        importances=correlation_results["feature_importances"],
-        title=f"Feature importances ({cfg.data.file_name})",
-        figsize=(12, max(8, n_features * 0.5)),
+        importances=top_importances,
+        title=f"Feature importances [{cfg.data.file_name}]",
+        figsize=(12, max(8, max_features_to_plot * 0.5)),
     )
     tb_logger.writer.add_figure("summary/correlation/feature_importances", fig, step)
     plt.close(fig)
@@ -369,7 +341,7 @@ def analyze(cfg):
     pred_infos = load_from_json(logs / "analysis/predictions/test.json")
     clusters_meta = load_from_json(logs / "data/clusters_meta.json")
     df_meta = load_from_json(logs / "data/df_meta.json")
-    test_summary = load_from_json(logs / "test/summary.json")
+    # test_summary = load_from_json(logs / "test/summary.json")
 
     cluster_summary = build_cluster_summary(
         class_to_clusters=clusters_meta["class_to_clusters"],
@@ -382,23 +354,21 @@ def analyze(cfg):
     logger.info("Cluster summary saved.")
 
     # --- 3. Correlation analysis ---
-    logger.info("Running correlation analysis ...")
-    correlation_results = find_correlation(
-        cluster_stats=cluster_summary,
-        param_grid=RF_PARAM_GRID,
-    )
-    save_to_json(correlation_results, logs / "analysis/correlation_results.json")
-    logger.info(
-        "Correlation results — F1: %.4f, ROC-AUC: %.4f",
-        correlation_results["f1_score"],
-        correlation_results["roc_auc"],
-    )
+    # logger.info("Running correlation analysis ...")
+    # correlation_results = train_failure_classifier(
+    #     cluster_stats=cluster_summary,
+    #     param_grid=RF_PARAM_GRID,
+    # )
+    # save_to_json(correlation_results, logs / "analysis/correlation_results.json")
+    # logger.info(
+    #     "Correlation results — F1: %.4f, ROC-AUC: %.4f",
+    #     correlation_results["f1_score"],
+    #     correlation_results["roc_auc"],
+    # )
 
     # --- 4. Per-class visualizations (TensorBoard) ---
     correlation_results = load_from_json(logs / "analysis/correlation_results.json")
-    compute_summary_visualizzations(
-        cluster_summary, df_meta, test_summary, correlation_results, cfg
-    )
+    compute_summary_visualizzations(cluster_summary, df_meta, correlation_results, cfg)
 
 
 def main():

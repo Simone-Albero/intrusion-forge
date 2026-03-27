@@ -312,14 +312,22 @@ def _single_cluster_stats(
             "std_dispersion": None,
             "median_dispersion": None,
             "max_dispersion": None,
+            "p95_dispersion": None,
+            "p99_dispersion": None,
             "density": None,
-            "log_density": None,
             "dist_to_class_centroid": None,
             "dist_to_nearest_cluster": None,
             "dist_to_nearest_foreign_cluster": None,
-            "nearest_separation_ratio": None,
             "foreign_separation_ratio": None,
+            "overlap_margin": None,
+            "normalized_overlap_margin": None,
+            "intra_foreign_margin": None,
+            "max_foreign_margin": None,
+            "foreign_coverage_ratio": None,
             "silhouette": None,
+            "min_silhouette": None,
+            "p5_silhouette": None,
+            "frac_at_risk": None,
         }
 
     dists = pairwise_distances(samples, centroid.reshape(1, -1), metric=metric).ravel()
@@ -339,6 +347,36 @@ def _single_cluster_stats(
     ]
     nearest_foreign = float(np.min(foreign_dists)) if foreign_dists else None
 
+    max_disp = float(np.max(dists))
+    overlap_margin = (
+        float(nearest_foreign - nearest)
+        if nearest is not None and nearest_foreign is not None
+        else None
+    )
+
+    foreign_class_centroids = [
+        c for cls, c in class_centroids.items() if cls != cls_key
+    ]
+    if foreign_class_centroids and cls_key in class_centroids:
+        foreign_matrix = np.stack(foreign_class_centroids)
+        min_foreign_dists = pairwise_distances(
+            samples, foreign_matrix, metric=metric
+        ).min(axis=1)
+        frac_at_risk = float(np.mean(min_foreign_dists < dists))
+    else:
+        frac_at_risk = None
+
+    if sil_values is not None and np.any(mask_arr):
+        sil_valid = sil_values[mask_arr]
+        sil_valid = sil_valid[np.isfinite(sil_valid)]
+        min_silhouette = float(np.min(sil_valid)) if len(sil_valid) > 0 else None
+        p5_silhouette = (
+            float(np.percentile(sil_valid, 5)) if len(sil_valid) > 0 else None
+        )
+    else:
+        min_silhouette = None
+        p5_silhouette = None
+
     return {
         "centroid": centroid.tolist(),
         "n_samples": n,
@@ -347,9 +385,10 @@ def _single_cluster_stats(
         "intra_dispersion": intra,
         "std_dispersion": float(np.std(dists)),
         "median_dispersion": float(np.median(dists)),
-        "max_dispersion": float(np.max(dists)),
+        "max_dispersion": max_disp,
+        "p95_dispersion": float(np.percentile(dists, 95)),
+        "p99_dispersion": float(np.percentile(dists, 99)),
         "density": float(n / (intra + eps) ** 3),
-        "log_density": float(np.log1p(n) - 3.0 * np.log(intra + eps)),
         "dist_to_class_centroid": (
             float(
                 pairwise_distances(
@@ -363,11 +402,25 @@ def _single_cluster_stats(
         ),
         "dist_to_nearest_cluster": nearest,
         "dist_to_nearest_foreign_cluster": nearest_foreign,
-        "nearest_separation_ratio": (
-            float(nearest / (intra + eps)) if nearest is not None else None
-        ),
         "foreign_separation_ratio": (
             float(nearest_foreign / (intra + eps))
+            if nearest_foreign is not None
+            else None
+        ),
+        "overlap_margin": overlap_margin,
+        "normalized_overlap_margin": (
+            float(overlap_margin / (nearest_foreign + eps))
+            if overlap_margin is not None and nearest_foreign is not None
+            else None
+        ),
+        "intra_foreign_margin": (
+            float(nearest_foreign - intra) if nearest_foreign is not None else None
+        ),
+        "max_foreign_margin": (
+            float(nearest_foreign - max_disp) if nearest_foreign is not None else None
+        ),
+        "foreign_coverage_ratio": (
+            float(max_disp / (nearest_foreign + eps))
             if nearest_foreign is not None
             else None
         ),
@@ -376,6 +429,9 @@ def _single_cluster_stats(
             if sil_values is not None and np.any(mask_arr)
             else None
         ),
+        "min_silhouette": min_silhouette,
+        "p5_silhouette": p5_silhouette,
+        "frac_at_risk": frac_at_risk,
     }
 
 
@@ -526,51 +582,28 @@ def build_cluster_summary(
         str(c): cls for cls, clusters in class_to_clusters.items() for c in clusters
     }
 
-    # --- per-cluster, per-class separability ratio aggregation ---
-    class_cluster_sets = {
-        str(cls): {str(c) for c in clusters}
-        for cls, clusters in class_to_clusters.items()
-    }
-
-    per_cluster_class_ratios: dict[str, dict] = {}
-    for cid, ratios in separability.items():
-        peer_ratios = {
-            str(k): fv
-            for k, v in ratios.items()
-            if k != "_mean_ratio" and (fv := _to_finite_float(v)) is not None
-        }
-        per_cluster_class_ratios[str(cid)] = {
-            cls: {
-                "mean_ratio": (
-                    float(np.mean(vals))
-                    if (
-                        vals := [
-                            peer_ratios[c]
-                            for c in ids
-                            if c in peer_ratios and c != str(cid)
-                        ]
-                    )
-                    else None
-                ),
-                "max_ratio": float(np.max(vals)) if vals else None,
-            }
-            for cls, ids in class_cluster_sets.items()
-        }
-
     # --- assemble per-cluster summary ---
     _STATS_KEYS = (
         "intra_dispersion",
         "std_dispersion",
         "median_dispersion",
         "max_dispersion",
+        "p95_dispersion",
+        "p99_dispersion",
         "density",
-        "log_density",
         "dist_to_class_centroid",
         "dist_to_nearest_cluster",
         "dist_to_nearest_foreign_cluster",
-        "nearest_separation_ratio",
         "foreign_separation_ratio",
+        "overlap_margin",
+        "normalized_overlap_margin",
+        "intra_foreign_margin",
+        "max_foreign_margin",
+        "foreign_coverage_ratio",
         "silhouette",
+        "min_silhouette",
+        "p5_silhouette",
+        "frac_at_risk",
     )
 
     results = {}
@@ -587,19 +620,26 @@ def build_cluster_summary(
         error_entry = cluster_errors.get(cid, {})
         failure_rate = error_entry.get("error_rate")
 
-        # separability: foreign vs self aggregation
-        foreign_avgs, foreign_maxs = [], []
-        self_avg = self_max = None
+        # separability: cluster-level foreign vs self ratios
+        peer_ratios = {
+            str(k): fv
+            for k, v in separability.get(cid, {}).items()
+            if k != "_mean_ratio" and (fv := _to_finite_float(v)) is not None
+        }
+        foreign_ratios = [
+            r
+            for k, r in peer_ratios.items()
+            if cluster_to_class.get(k) != cluster_class
+        ]
+        self_ratios = [
+            r
+            for k, r in peer_ratios.items()
+            if cluster_to_class.get(k) == cluster_class
+        ]
 
-        for cls, ratios in per_cluster_class_ratios.get(cid, {}).items():
-            if cls == cluster_class:
-                self_avg = ratios.get("mean_ratio")
-                self_max = ratios.get("max_ratio")
-            else:
-                if (v := ratios.get("mean_ratio")) is not None:
-                    foreign_avgs.append(v)
-                if (v := ratios.get("max_ratio")) is not None:
-                    foreign_maxs.append(v)
+        min_foreign = float(np.min(foreign_ratios)) if foreign_ratios else None
+        max_foreign = float(np.max(foreign_ratios)) if foreign_ratios else None
+        min_self = float(np.min(self_ratios)) if self_ratios else None
 
         # pairwise distances to other clusters
         distances = {
@@ -615,14 +655,20 @@ def build_cluster_summary(
             "failure_rate": failure_rate,
             "is_failed": failure_rate is not None and failure_rate > 0.0,
             **stats_fields,
-            "foreign_avg_avg": float(np.mean(foreign_avgs)) if foreign_avgs else None,
-            "foreign_max_avg": float(np.mean(foreign_maxs)) if foreign_maxs else None,
-            "foreign_avg_max": float(np.max(foreign_avgs)) if foreign_avgs else None,
-            "foreign_max_max": float(np.max(foreign_maxs)) if foreign_maxs else None,
-            "foreign_avg_std": float(np.std(foreign_avgs)) if foreign_avgs else None,
-            "foreign_max_std": float(np.std(foreign_maxs)) if foreign_maxs else None,
-            "self_avg": self_avg,
-            "self_max": self_max,
+            "min_foreign_ratio": min_foreign,
+            "max_foreign_ratio": max_foreign,
+            "min_self_ratio": min_self,
+            "max_self_ratio": float(np.max(self_ratios)) if self_ratios else None,
+            "ratio_spread": (
+                float(max_foreign - min_self)
+                if max_foreign is not None and min_self is not None
+                else None
+            ),
+            "ratio_scale": (
+                float(max_foreign / min_self)
+                if max_foreign is not None and min_self is not None and min_self > 0
+                else None
+            ),
             **distances,
         }
 

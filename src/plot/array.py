@@ -259,35 +259,70 @@ def strip_box_plot(
     categories: np.ndarray,
     values: np.ndarray,
     color_values: np.ndarray | None = None,
+    edge_values: np.ndarray | None = None,
     x_label: str = "",
     y_label: str = "",
     c_label: str = "",
+    edge_label: str = "",
     title: str = "",
     figsize: tuple[float, float] = (12, 6),
-    strip_size: float = 5,
+    marker_size: float = 36,
+    cmap: str = "RdYlGn_r",
 ) -> plt.Figure:
-    """Strip plot with per-point color encoding and per-category median marker.
+    """Strip plot with per-point color encoding and optional discrete edge encoding.
 
-    Points are colored by *color_values* if provided, otherwise by *values*.
+    Points are jittered horizontally per category; y-axis shows *values*.
+    Fill color maps *color_values* (or *values* if omitted) through *cmap*.
+    NaN fill values render as neutral gray.
+    If *edge_values* is given, discrete unique values map to high-contrast edge
+    colors; NaN edge values receive a muted gray outline.
+    A horizontal bar marks the per-category median.
     """
     categories = np.asarray(categories)
-    values = np.asarray(values)
-    c = np.asarray(color_values) if color_values is not None else values
+    values = np.asarray(values, dtype=float)
+    c = (
+        np.asarray(color_values, dtype=float)
+        if color_values is not None
+        else values.copy()
+    )
 
-    if color_values is not None:
-        c_min, c_max = float(c.min()), float(c.max())
-        c = (
-            (c - c_min) / (c_max - c_min)
-            if c_max > c_min
-            else np.zeros_like(c, dtype=float)
+    # --- fill colors: normalize over finite values, NaN → gray ---
+    finite = np.isfinite(c)
+    c_min = float(c[finite].min()) if finite.any() else 0.0
+    c_max = float(c[finite].max()) if finite.any() else 1.0
+    norm = mcolors.Normalize(vmin=c_min, vmax=c_max)
+    colormap = plt.get_cmap(cmap)
+    c_safe = np.where(finite, c, (c_min + c_max) / 2)
+    point_colors = colormap(norm(c_safe))
+    point_colors[~finite] = [0.75, 0.75, 0.75, 0.85]
+
+    # --- edge colors: discrete mapping, NaN → gray ---
+    mapped_edge_colors: list | str = "white"
+    unique_edges: list = []
+    edge_color_map: dict = {}
+    scatter_lw = 0.4
+    if edge_values is not None:
+        edge_arr = np.asarray(edge_values)
+        try:
+            nan_edge = ~np.isfinite(edge_arr.astype(float))
+        except (ValueError, TypeError):
+            nan_edge = np.zeros(len(edge_arr), dtype=bool)
+        unique_edges = list(
+            dict.fromkeys(v for v, m in zip(edge_arr.tolist(), nan_edge) if not m)
         )
+        edge_color_map = {
+            v: _OUTLINE_COLORS[i % len(_OUTLINE_COLORS)]
+            for i, v in enumerate(unique_edges)
+        }
+        mapped_edge_colors = [
+            "#bbbbbb" if m else edge_color_map[v]
+            for v, m in zip(edge_arr.tolist(), nan_edge)
+        ]
+        scatter_lw = 1.3
 
-    cmap = plt.get_cmap("RdYlGn_r")
-    norm = plt.Normalize(vmin=c.min(), vmax=c.max())
-
+    # --- layout ---
     category_order = list(dict.fromkeys(categories))
     cat_to_x = {cat: i for i, cat in enumerate(category_order)}
-
     rng = np.random.default_rng(seed=42)
     x_positions = np.array(
         [cat_to_x[cat] + rng.uniform(-0.25, 0.25) for cat in categories]
@@ -298,11 +333,11 @@ def strip_box_plot(
     ax.scatter(
         x_positions,
         values,
-        c=cmap(norm(c)),
-        s=strip_size**2,
+        c=point_colors,
+        s=marker_size,
+        edgecolors=mapped_edge_colors,
+        linewidths=scatter_lw,
         zorder=3,
-        edgecolors="white",
-        linewidths=0.4,
         alpha=0.85,
     )
 
@@ -316,10 +351,36 @@ def strip_box_plot(
             zorder=4,
         )
 
-    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm = plt.cm.ScalarMappable(cmap=colormap, norm=norm)
     sm.set_array([])
-    cbar = fig.colorbar(sm, ax=ax, pad=0.02, fraction=0.03)
-    cbar.set_label(c_label, fontsize=10)
+    fig.colorbar(sm, ax=ax, pad=0.02, fraction=0.03).set_label(c_label, fontsize=10)
+
+    if unique_edges:
+        _fmt = lambda v: str(int(v)) if isinstance(v, float) and v == int(v) else str(v)
+        edge_handles = [
+            plt.Line2D(
+                [],
+                [],
+                marker="o",
+                linestyle="",
+                markersize=7,
+                markerfacecolor="#dddddd",
+                markeredgecolor=edge_color_map[v],
+                markeredgewidth=1.5,
+                label=_fmt(v),
+            )
+            for v in unique_edges
+        ]
+        ax.add_artist(
+            ax.legend(
+                handles=edge_handles,
+                title=edge_label or "edge",
+                loc="upper left",
+                fontsize=8,
+                title_fontsize=9,
+                framealpha=0.9,
+            )
+        )
 
     ax.set_xticks(range(len(category_order)))
     ax.set_xticklabels(category_order)
@@ -343,78 +404,62 @@ def violin_box_plot(
     violin_alpha: float = 0.4,
     palette: str = "Set2",
 ) -> plt.Figure:
-    """Combined violin plot + inner box plot, grouped by category."""
+    """Split violin plot: each category occupies one half, with a color legend.
+
+    The first category in order of appearance is drawn on the left half,
+    the second on the right. Inner quartile lines mark Q1, median, and Q3.
+    """
     categories = np.asarray(categories)
     values = np.asarray(values)
 
+    unique_cats = list(dict.fromkeys(categories))
+    palette_colors = sns.color_palette(palette, n_colors=len(unique_cats))
+
     fig, ax = plt.subplots(figsize=figsize)
 
-    sns.violinplot(
-        x=categories,
-        y=values,
-        hue=categories,
-        palette=palette,
-        inner="box",
-        alpha=violin_alpha,
-        legend=False,
-        ax=ax,
-    )
+    for side, (cat, color) in enumerate(zip(unique_cats, palette_colors)):
+        mask = categories == cat
+        vals = values[mask]
+        if len(vals) < 2:
+            continue
 
+        parts = ax.violinplot(
+            vals, positions=[0], showmedians=False, showextrema=False, widths=0.8
+        )
+        body = parts["bodies"][0]
+        body.set_facecolor(color)
+        body.set_alpha(violin_alpha)
+        body.set_edgecolor(color)
+        body.set_linewidth(1.0)
+
+        # clip to left (side=0) or right (side=1) half
+        verts = body.get_paths()[0].vertices
+        if side == 0:
+            verts[:, 0] = np.minimum(verts[:, 0], 0.0)
+        else:
+            verts[:, 0] = np.maximum(verts[:, 0], 0.0)
+
+        # inner quartile indicator
+        q1, med, q3 = np.percentile(vals, [25, 50, 75])
+        sign = -1 if side == 0 else 1
+        ax.plot([0, sign * 0.06], [med, med], color=color, lw=2.0, zorder=4)
+        ax.vlines(sign * 0.04, q1, q3, color=color, lw=1.5, zorder=4)
+
+    ax.axvline(0, color="#aaaaaa", lw=0.8, zorder=2)
+
+    legend_handles = [
+        plt.Line2D([], [], color=c, lw=6, alpha=violin_alpha, label=cat)
+        for cat, c in zip(unique_cats, palette_colors)
+    ]
+    ax.legend(handles=legend_handles, loc="best", fontsize=9, framealpha=0.9)
+
+    ax.set_xticks([])
     ax.set_title(title, fontsize=13, pad=14)
     ax.set_xlabel(x_label, labelpad=10)
     ax.set_ylabel(y_label, labelpad=10)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-
-    fig.tight_layout()
-    return fig
-
-
-def scatter_annotated_plot(
-    x: np.ndarray,
-    y: np.ndarray,
-    labels: list[str],
-    xerr: np.ndarray | None = None,
-    x_label: str = "",
-    y_label: str = "",
-    title: str = "",
-    figsize: tuple[float, float] = (8, 6),
-) -> plt.Figure:
-    """Scatter plot with per-point annotation and optional x-axis error bars."""
-    x = np.asarray(x)
-    y = np.asarray(y)
-
-    fig, ax = plt.subplots(figsize=figsize)
-
-    ax.errorbar(
-        x,
-        y,
-        xerr=xerr,
-        fmt="o",
-        markersize=7,
-        capsize=4,
-        elinewidth=1.2,
-        color="#4E79A7",
-        ecolor="#AAAAAA",
-        zorder=3,
-    )
-
-    for xi, yi, label in zip(x, y, labels):
-        ax.annotate(
-            label,
-            (xi, yi),
-            xytext=(6, 4),
-            textcoords="offset points",
-            fontsize=8,
-            color="#333333",
-        )
-
-    ax.set_title(title, fontsize=14, pad=16)
-    ax.set_xlabel(x_label, labelpad=10)
-    ax.set_ylabel(y_label, labelpad=10)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    ax.grid(True, alpha=0.25, linestyle="--")
+    ax.spines["bottom"].set_visible(False)
 
     fig.tight_layout()
     return fig
