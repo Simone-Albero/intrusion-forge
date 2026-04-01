@@ -264,6 +264,7 @@ def strip_box_plot(
     y_label: str = "",
     c_label: str = "",
     edge_label: str = "",
+    edge_value_labels: dict | None = None,
     title: str = "",
     figsize: tuple[float, float] = (12, 6),
     marker_size: float = 36,
@@ -307,7 +308,7 @@ def strip_box_plot(
             nan_edge = ~np.isfinite(edge_arr.astype(float))
         except (ValueError, TypeError):
             nan_edge = np.zeros(len(edge_arr), dtype=bool)
-        unique_edges = list(
+        unique_edges = sorted(
             dict.fromkeys(v for v, m in zip(edge_arr.tolist(), nan_edge) if not m)
         )
         edge_color_map = {
@@ -356,7 +357,11 @@ def strip_box_plot(
     fig.colorbar(sm, ax=ax, pad=0.02, fraction=0.03).set_label(c_label, fontsize=10)
 
     if unique_edges:
-        _fmt = lambda v: str(int(v)) if isinstance(v, float) and v == int(v) else str(v)
+        _fmt = lambda v: (
+            edge_value_labels[v]
+            if edge_value_labels and v in edge_value_labels
+            else (str(int(v)) if isinstance(v, float) and v == int(v) else str(v))
+        )
         edge_handles = [
             plt.Line2D(
                 [],
@@ -403,6 +408,7 @@ def violin_box_plot(
     figsize: tuple[float, float] = (6, 5),
     violin_alpha: float = 0.4,
     palette: str = "Set2",
+    category_order: list | None = None,
 ) -> plt.Figure:
     """Split violin plot: each category occupies one half, with a color legend.
 
@@ -412,7 +418,11 @@ def violin_box_plot(
     categories = np.asarray(categories)
     values = np.asarray(values)
 
-    unique_cats = list(dict.fromkeys(categories))
+    unique_cats = (
+        category_order
+        if category_order is not None
+        else list(dict.fromkeys(categories))
+    )
     palette_colors = sns.color_palette(palette, n_colors=len(unique_cats))
 
     fig, ax = plt.subplots(figsize=figsize)
@@ -512,4 +522,55 @@ def feature_importance_plot(
     ax.tick_params(axis="y", labelsize=8)
 
     fig.tight_layout(pad=1.0)
+    return fig
+
+
+def grouped_bar_plot(
+    labels: list[str],
+    groups: dict[str, list[float]],
+    title: str = "",
+    x_label: str = "",
+    y_label: str = "",
+    figsize: tuple[float, float] | None = None,
+    colors: list[str] | None = None,
+) -> plt.Figure:
+    """Grouped bar chart comparing multiple series across the same set of labels.
+
+    Args:
+        labels: Category labels for the x-axis.
+        groups: ``{series_name: [value, ...]}`` — all lists must have the same
+            length as *labels*.
+        title: Chart title.
+        x_label: X-axis label.
+        y_label: Y-axis label.
+        figsize: Figure size. Defaults to ``(max(8, n * 0.9), 5)``.
+        colors: One color per series. Defaults to ``_FILL_COLORS``.
+    """
+    n = len(labels)
+    series = list(groups.items())
+    n_series = len(series)
+    width = 0.8 / n_series
+    offsets = np.linspace(-(n_series - 1) / 2, (n_series - 1) / 2, n_series) * width
+    palette = colors or _FILL_COLORS
+
+    if figsize is None:
+        figsize = (max(8, n * 0.9), 5)
+
+    x = np.arange(n)
+    fig, ax = plt.subplots(figsize=figsize)
+
+    for (name, values), offset, color in zip(series, offsets, palette):
+        ax.bar(x + offset, values, width, label=name, color=color, alpha=0.85)
+
+    ax.axhline(0, color="#888888", linewidth=0.8, linestyle="--")
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=45, ha="right")
+    ax.set_title(title, fontsize=13, pad=14)
+    ax.set_xlabel(x_label, labelpad=10)
+    ax.set_ylabel(y_label, labelpad=10)
+    ax.legend(fontsize=9, framealpha=0.9)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    fig.tight_layout()
     return fig

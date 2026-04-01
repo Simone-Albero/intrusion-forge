@@ -29,6 +29,7 @@ from src.data.analyze import (
 from src.plot.array import (
     confusion_matrix_to_plot,
     feature_importance_plot,
+    grouped_bar_plot,
     roc_curve_plot,
     strip_box_plot,
     violin_box_plot,
@@ -71,7 +72,6 @@ RELEVANT_GEOMETRIC_FEATURES = [
     "max_dispersion",
     "p5_silhouette",
     "frac_at_risk",
-    "foreign_coverage_ratio",
 ]
 
 N_CONFUSED_PAIRS = 3
@@ -231,6 +231,7 @@ def run_separability_analysis(cfg):
 def compute_summary_visualizzations(
     cluster_summary: dict,
     df_meta: dict,
+    clusters_meta: dict,
     correlation_results: dict,
     cfg,
 ):
@@ -257,6 +258,7 @@ def compute_summary_visualizzations(
         y_label="Failure rate",
         c_label="Failure rate",
         edge_label="RF prediction",
+        edge_value_labels={0.0: "failed", 1.0: "correct"},
         title=f"{cfg.data.file_name}",
     )
     tb_logger.writer.add_figure("summary/failure_rate_strip_box", fig, step)
@@ -270,7 +272,6 @@ def compute_summary_visualizzations(
         y_label="Failure rate",
         c_label="Failure rate",
         title=f"{cfg.data.file_name}",
-        cmap="RdYlGn",
     )
     tb_logger.writer.add_figure("summary/rf_prediction_strip_box", fig, step)
     plt.close(fig)
@@ -285,6 +286,7 @@ def compute_summary_visualizzations(
             x_label="outcome",
             y_label=feature,
             title=f"{cfg.data.file_name}",
+            category_order=["correct", "failed"],
         )
         tb_logger.writer.add_figure(f"summary/global/{feature}", fig, step)
         plt.close(fig)
@@ -325,6 +327,25 @@ def compute_summary_visualizzations(
         figsize=(12, max(8, max_features_to_plot * 0.5)),
     )
     tb_logger.writer.add_figure("summary/correlation/feature_importances", fig, step)
+    plt.close(fig)
+
+    logger.info("Generating silhouette comparison chart ...")
+    label_mapping = df_meta["label_mapping"]
+    sil_per_class = clusters_meta.get("silhouette_per_class", {})
+    mean_cluster_sil = clusters_meta.get("mean_cluster_silhouette", {})
+    class_keys = [k for k in sil_per_class if k in mean_cluster_sil]
+    class_names = [label_mapping.get(k, k) for k in class_keys]
+
+    fig = grouped_bar_plot(
+        labels=class_names,
+        groups={
+            "silhouette_per_class": [sil_per_class[k] for k in class_keys],
+            "mean_cluster_silhouette": [mean_cluster_sil[k] for k in class_keys],
+        },
+        title=f"{cfg.data.file_name}",
+        y_label="Silhouette score",
+    )
+    tb_logger.writer.add_figure("summary/silhouette_comparison", fig, step)
     plt.close(fig)
     tb_logger.close()
 
@@ -368,7 +389,9 @@ def analyze(cfg):
 
     # --- 4. Per-class visualizations (TensorBoard) ---
     correlation_results = load_from_json(logs / "analysis/correlation_results.json")
-    compute_summary_visualizzations(cluster_summary, df_meta, correlation_results, cfg)
+    compute_summary_visualizzations(
+        cluster_summary, df_meta, clusters_meta, correlation_results, cfg
+    )
 
 
 def main():

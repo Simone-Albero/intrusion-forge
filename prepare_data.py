@@ -6,7 +6,7 @@ import pandas as pd
 
 from src.common.config import load_config
 from src.common.logging import setup_logger
-from src.common.utils import save_to_json
+from src.common.utils import load_from_json, save_to_json
 
 from src.data.analyze import (
     compute_clusters_metadata,
@@ -173,6 +173,43 @@ def run_clustering(
     return train_df, val_df, test_df, centroids
 
 
+def recompute_clusters_metadata(cfg):
+    """Reload processed splits and recompute clusters_meta.json.
+
+    Useful to refresh derived sections without rerunning the full pipeline.
+    Centroids are reconstructed from the existing clusters_meta.json.
+    """
+    num_cols = list(cfg.data.num_cols) if cfg.data.num_cols else []
+    cat_cols = list(cfg.data.cat_cols) if cfg.data.cat_cols else []
+    processed_data_path = Path(cfg.path.processed_data)
+    json_logs_path = Path(cfg.path.json_logs)
+
+    train_df, val_df, test_df = (
+        load_df(str(processed_data_path / f"{split}.{cfg.data.extension}"))
+        for split in ("train", "val", "test")
+    )
+
+    existing = load_from_json(json_logs_path / "data/clusters_meta.json")
+    centroids = {
+        cid: stats["centroid"]
+        for cid, stats in existing["cluster_stats"].items()
+        if stats.get("centroid") is not None
+    }
+
+    clusters_metadata = compute_clusters_metadata(
+        train_df,
+        val_df,
+        test_df,
+        cfg.data.label_col,
+        cluster_col="cluster",
+        centroids=centroids,
+        feature_cols=num_cols + cat_cols,
+        metric=cfg.distance_metric,
+    )
+    save_to_json(clusters_metadata, json_logs_path / "data/clusters_meta.json")
+    logger.info("clusters_meta.json recomputed and saved.")
+
+
 def prepare(cfg):
     """Prepare data given a configuration object."""
     num_cols = list(cfg.data.num_cols) if cfg.data.num_cols else []
@@ -268,7 +305,8 @@ def main():
         config_name="config",
         overrides=sys.argv[1:],
     )
-    prepare(cfg)
+    # prepare(cfg)
+    recompute_clusters_metadata(cfg)
 
 
 if __name__ == "__main__":

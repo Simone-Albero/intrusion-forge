@@ -535,10 +535,47 @@ def compute_clusters_metadata(
         metric=metric,
     )
 
+    # silhouette_per_class: approximate silhouette using class labels as groups
+    X = df_[feature_cols].to_numpy(dtype=float)
+    class_labels = df_[encoded_label_col].to_numpy()
+    sil_values = _approx_silhouette(X, class_labels)
+    if sil_values is not None:
+        silhouette_per_class = {
+            str(cls): float(np.nanmean(sil_values[class_labels == cls]))
+            for cls in np.unique(class_labels)
+        }
+    else:
+        silhouette_per_class = {str(cls): None for cls in np.unique(class_labels)}
+
+    # mean_cluster_silhouette: average of per-cluster silhouette scores per class
+    mean_cluster_silhouette = {
+        cls: (
+            float(
+                np.nanmean(
+                    [
+                        cluster_stats[cid]["silhouette"]
+                        for cid in cids
+                        if cid in cluster_stats
+                        and cluster_stats[cid].get("silhouette") is not None
+                    ]
+                )
+            )
+            if any(
+                cid in cluster_stats
+                and cluster_stats[cid].get("silhouette") is not None
+                for cid in cids
+            )
+            else None
+        )
+        for cls, cids in class_to_clusters.items()
+    }
+
     return {
         "class_to_clusters": class_to_clusters,
         "clusters_distribution": clusters_distribution,
         "cluster_stats": cluster_stats,
+        "silhouette_per_class": silhouette_per_class,
+        "mean_cluster_silhouette": mean_cluster_silhouette,
     }
 
 
