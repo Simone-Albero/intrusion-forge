@@ -90,6 +90,7 @@ def train_failure_classifier(
     feature_cols: list[str] | None = None,
     n_outer_splits: int = 5,
     random_state: int = 42,
+    failure_threshold: float | None = None,
 ) -> dict:
     """Train a Random Forest with nested CV to predict cluster failure from separability features.
 
@@ -118,7 +119,9 @@ def train_failure_classifier(
             if c != "is_failed" and c != "failure_rate"
         ]
     X = df[feature_cols].copy()
-    y = df["is_failed"].astype(int)
+
+    threshold = failure_threshold or 0.0
+    y = df["failure_rate"].apply(lambda x: 1 if x > threshold else 0)
 
     outer_cv = StratifiedKFold(
         n_splits=n_outer_splits, shuffle=True, random_state=random_state
@@ -375,17 +378,18 @@ def analyze(cfg):
     logger.info("Cluster summary saved.")
 
     # --- 3. Correlation analysis ---
-    # logger.info("Running correlation analysis ...")
-    # correlation_results = train_failure_classifier(
-    #     cluster_stats=cluster_summary,
-    #     param_grid=RF_PARAM_GRID,
-    # )
-    # save_to_json(correlation_results, logs / "analysis/correlation_results.json")
-    # logger.info(
-    #     "Correlation results — F1: %.4f, ROC-AUC: %.4f",
-    #     correlation_results["f1_score"],
-    #     correlation_results["roc_auc"],
-    # )
+    logger.info("Running correlation analysis ...")
+    correlation_results = train_failure_classifier(
+        cluster_stats=cluster_summary,
+        param_grid=RF_PARAM_GRID,
+        failure_threshold=cfg.failure_threshold,
+    )
+    save_to_json(correlation_results, logs / "analysis/correlation_results.json")
+    logger.info(
+        "Correlation results — F1: %.4f, ROC-AUC: %.4f",
+        correlation_results["f1_score"],
+        correlation_results["roc_auc"],
+    )
 
     # --- 4. Per-class visualizations (TensorBoard) ---
     correlation_results = load_from_json(logs / "analysis/correlation_results.json")

@@ -13,3 +13,4 @@ distance_metric: euclidean
 
 n_samples: null
 run_id: 0
+failure_threshold: 0.1
