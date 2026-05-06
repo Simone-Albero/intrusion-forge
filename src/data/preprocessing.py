@@ -183,6 +183,9 @@ def encode_labels(
     """
     le = LabelEncoder()
     dst = dst_label_col or f"encoded_{src_label_col}"
+    train_df = train_df.copy()
+    val_df = val_df.copy()
+    test_df = test_df.copy()
     train_df[dst] = le.fit_transform(train_df[src_label_col])
     val_df[dst] = le.transform(val_df[src_label_col])
     test_df[dst] = le.transform(test_df[src_label_col])

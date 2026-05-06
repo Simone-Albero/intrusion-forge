@@ -51,5 +51,6 @@ def create_scheduler(
     if name is None:
         return None
     if params.get("steps_per_epoch") == "auto":
+        params = dict(params)
         params["steps_per_epoch"] = len(dataloader)
     return getattr(torch.optim.lr_scheduler, name)(optimizer, **params)

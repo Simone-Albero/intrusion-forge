@@ -11,10 +11,10 @@ The pipeline covers data preparation, model training, inference, and result anal
 ```
 intrusion-forge/
 ├── prepare_data.py          # Step 1: preprocess raw CSV → parquet splits
-├── sup_classify.py          # Step 2: train and test a supervised classifier
-├── run_inference.py         # Step 3: full inference with visualizations and error analysis
-├── analyze_data.py          # Step 4: post-hoc analysis of model predictions
-├── run_exp.sh               # Batch runner for multiple datasets
+├── classify.py              # Step 2: train and evaluate supervised classifier
+├── analyze_data.py          # Step 3: post-hoc analysis of model predictions
+├── generate_synthetic.py    # Generate synthetic test dataset
+├── Makefile                 # Experiment runner (prepare / classify / analyze / generate / all)
 │
 ├── configs/                 # Hydra configuration hierarchy
 │   ├── config.yaml          # Root config with defaults
@@ -27,6 +27,10 @@ intrusion-forge/
 │   ├── scheduler/           # LR scheduler configs
 │   └── path/                # Output path templates
 │
+├── docs/                    # Reference documentation
+│   ├── cluster_features.md  # Feature selection rationale for clustering
+│   └── synthetic_dataset.md # Synthetic dataset class specifications
+│
 ├── src/                     # Library code
 │   ├── common/              # Config loading, logging, factory, utilities
 │   ├── data/                # I/O, preprocessing, analysis functions
@@ -36,8 +40,9 @@ intrusion-forge/
 │   └── ignite/              # Ignite engine builder, custom metrics
 │
 └── resources/
-    ├── raw_data/dataset_v2/ # Input CSV files (one per dataset)
-    └── experiments/         # Experiment outputs (per name/dataset/seed/run)
+    ├── raw_data/dataset_v2/     # Input CSV files (one per dataset)
+    ├── raw_data/synthetic/      # Generated synthetic CSV
+    └── experiments/             # Experiment outputs (per name/dataset/seed/run)
 ```
 
 ---
@@ -68,6 +73,17 @@ Place raw CSV files under `resources/raw_data/`. Each dataset config in `configs
 resources/raw_data/${data.dir}/${data.file_name}.csv
 ```
 
+### Synthetic Dataset
+
+A synthetic dataset is included for local testing without real data:
+
+```bash
+make generate          # default: ~102,500 rows
+make generate ROWS=50000
+```
+
+This writes `resources/raw_data/synthetic/synthetic_test.csv` and can be used immediately with `data=synthetic_test`. The dataset covers 11 classes with engineered separation challenges (hard pairs, overlapping distributions, rare-class filtering, NaN/Inf injection). See [docs/synthetic_dataset.md](docs/synthetic_dataset.md) for the full class specification.
+
 ---
 
 ## Configuration
@@ -79,7 +95,7 @@ defaults:
   - data: cic_2018_v2
   - loops: default
   - model: tabular_classifier
-  - loss: classification
+  - loss: cross_entropy
   - optimizer: adamw
   - scheduler: one_cycle
   - experiment: supervised
@@ -107,7 +123,9 @@ defaults:
 | `name` | `exp` | Experiment name (part of output path) |
 | `device` | `cpu` | Device for training (`cpu`, `cuda`) |
 | `stage` | `all` | Which stages to run: `training`, `testing`, or `all` |
-| `run_id` | 0 | Run index within an experiment |
+| `run_id` | 0 | Run index within an experiment (set by `experiment` config) |
+| `n_samples` | `null` | Optional training set subsampling size |
+| `failure_threshold` | 0.1 | Cluster failure rate threshold for analysis (set by `experiment` config) |
 
 Any parameter can be overridden from the command line:
 
@@ -151,7 +169,8 @@ Loads the raw CSV, applies preprocessing (NaN removal, rare category filtering, 
 ### Step 2 — Training & Testing
 
 ```bash
-python sup_classify.py data=cic_2018_v2 experiment=supervised name=my_exp
+make classify DATA=cic_2018_v2 NAME=my_exp
+# or: python classify.py experiment=supervised data=cic_2018_v2 name=my_exp
 ```
 
 Trains a classifier using PyTorch Ignite (with early stopping and best-model checkpointing), then runs evaluation on the test set. Metrics: accuracy, precision, recall, F1 (macro, weighted, per-class).
@@ -164,41 +183,22 @@ The `stage` parameter controls execution: `training` (train only), `testing` (te
 {run_id}/
 ├── models/
 │   └── model_{epoch}_loss={loss}.pt     # Best model checkpoint
-└── logs/test/
-    └── summary.json                     # All scalar metrics
+├── logs/testing/
+│   └── summary.json                     # All scalar metrics
+└── logs/analysis/
+    └── predictions/
+        └── test.json                    # Per-class failure analysis
 tb/
-├── training/    # TensorBoard events (loss, grad norm)
-├── validation/  # TensorBoard events (loss, metrics)
-└── testing/     # TensorBoard events (confusion matrix, per-class F1)
+├── training/    # TensorBoard events (loss, grad norm, epoch duration)
+├── validation/  # TensorBoard events (loss)
+└── testing/     # TensorBoard events (confusion matrix, per-class F1, projections)
 ```
 
-### Step 3 — Inference & Diagnostics
+### Step 3 — Analysis
 
 ```bash
-python run_inference.py data=cic_2018_v2 experiment=supervised name=my_exp
-```
-
-Runs the best model on all splits (train, val, test). For each split: extracts predictions, confidences, and latent embeddings; generates confusion matrices (raw and normalized); computes per-class failure rates; produces t-SNE projections of raw features and learned representations.
-
-**Outputs:**
-
-```
-{run_id}/
-├── pickle/analysis/
-│   └── confusion_matrices/
-│       ├── train.pkl, val.pkl, test.pkl
-├── logs/analysis/
-│   └── predictions/
-│       ├── train.json, val.json, test.json   # Per-class failure analysis
-tb/
-└── analysis/
-    ├── train/, val/, test/                    # TensorBoard: t-SNE, confusion matrices
-```
-
-### Step 4 — Analysis
-
-```bash
-python analyze_data.py data=cic_2018_v2 experiment=supervised name=my_exp
+make analyze DATA=cic_2018_v2 NAME=my_exp
+# or: python analyze_data.py experiment=supervised data=cic_2018_v2 name=my_exp
 ```
 
 Performs post-hoc analysis on the model outputs. The specific analyses depend on the experiment configuration (see [Experiments](#experiments)).
@@ -215,26 +215,19 @@ Performs post-hoc analysis on the model outputs. The specific analyses depend on
 
 ## Running All Datasets
 
-The [run_exp.sh](run_exp.sh) script iterates over all four datasets and runs the full pipeline:
+Use the `all` Makefile target to run the full pipeline on every dataset:
 
 ```bash
-chmod +x run_exp.sh
-./run_exp.sh
+make all NAME=my_experiment
 ```
 
-Edit the script to uncomment the stages you want to run and set the experiment `NAME`:
+This runs `prepare → classify → analyze` for each dataset in `DATASETS` (`nb15_v2`, `bot_iot_v2`, `cic_2018_v2`, `ton_iot_v2`). Override `SEED` and `EXPERIMENT` as needed:
 
 ```bash
-DATASETS=("nb15_v2" "bot_iot_v2" "cic_2018_v2" "ton_iot_v2")
-NAME="my_experiment"
-
-for dataset in "${DATASETS[@]}"; do
-    python3 prepare_data.py experiment=supervised data="$dataset" name="$NAME"
-    python3 sup_classify.py experiment=supervised data="$dataset" name="$NAME"
-    python3 run_inference.py experiment=supervised data="$dataset" name="$NAME"
-    python3 analyze_data.py experiment=supervised data="$dataset" name="$NAME"
-done
+make all NAME=my_experiment SEED=123 EXPERIMENT=supervised
 ```
+
+Individual steps can also be run with `make prepare`, `make classify`, `make analyze`.
 
 ---
 
@@ -258,7 +251,7 @@ Additional outputs produced by this experiment:
 │   └── clusters_meta.json             # Cluster distributions and centroids
 └── analysis/
     ├── cluster_summary.json           # Aggregated per-cluster summary
-    ├── correlation_results.json       # RF grid search results, feature importances
+    ├── classifier_results.json        # RF grid search results, feature importances
     └── separability/
         ├── cluster_train.json         # Pairwise separability (train)
         └── cluster_test.json          # Pairwise separability (test)
@@ -277,9 +270,8 @@ resources/experiments/{name}/{data.file_name}_{seed}/
 │   ├── models/               # Best model checkpoint (.pt)
 │   ├── logs/
 │   │   ├── data/             # df_info, df_meta, experiment-specific logs
-│   │   ├── test/             # summary.json (test metrics)
-│   │   └── analysis/         # predictions/, experiment-specific analysis
-│   ├── pickle/               # Serialized objects (confusion matrices)
+│   │   ├── testing/          # summary.json (test metrics)
+│   │   └── analysis/         # predictions/, cluster_summary, separability, RF results
 │   └── configs/              # Resolved config snapshot
 └── tb/                       # TensorBoard logs (shared across runs)
     ├── training/
@@ -291,7 +283,7 @@ resources/experiments/{name}/{data.file_name}_{seed}/
 To view TensorBoard logs:
 
 ```bash
-tensorboard --logdir resources/experiments/{name}/{data.file_name}_{seed}/tb
+make tensorboard NAME=my_experiment DATA=cic_2018_v2
 ```
 
 ---
@@ -302,8 +294,8 @@ tensorboard --logdir resources/experiments/{name}/{data.file_name}_{seed}/tb
 
 - **config.py** — Load Hydra config via Compose API (`load_config`)
 - **factory.py** — Generic Factory with `@register` decorator (used by models and losses)
-- **logging.py** — Logger setup (`setup_logger`)
-- **utils.py** — JSON/pickle save/load helpers
+- **log.py** — Logger setup (`setup_logger`), `LogBundle`, `LogDispatcher`, and subscribers (`TensorBoardSubscriber`, `JSONSubscriber`, `PickleSubscriber`)
+- **utils.py** — JSON/pickle save/load helpers, `timed` decorator, `flush_timing`
 
 ### `src/data`
 
@@ -318,7 +310,9 @@ tensorboard --logdir resources/experiments/{name}/{data.file_name}_{seed}/tb
 
 ### `src/plot`
 
-- **array.py** — Confusion matrix and sample scatter plots
+- **base.py** — `Plot` dataclass wrapping a rendered PNG buffer
+- **style.py** — Shared color palettes and Matplotlib style helpers
+- **array.py** — Confusion matrix, scatter/strip/violin/bar plots from arrays
 - **dict.py** — Bar charts and table plots from dictionaries
 
 ### `src/torch`

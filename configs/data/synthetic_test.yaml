@@ -1,0 +1,44 @@
+dir: synthetic
+file_name: synthetic_test
+extension: parquet
+
+label_col: label
+
+num_cols:
+  - num_1
+  - num_2
+  - num_3
+  - num_4
+  - num_5
+  - num_6
+  - num_7
+  - num_8
+  - num_9
+  - num_10
+  - num_11
+  - num_12
+  - num_13
+  - num_14
+  - num_15
+  - num_16
+  - num_17
+  - num_18
+  - num_19
+  - num_20
+
+cat_cols:
+  - cat_1
+  - cat_2
+
+num_numerical: 20
+num_categorical: 2
+benign_tag: class_1
+
+train_frac: 0.8
+val_frac: 0.1
+test_frac: 0.1
+
+filter_query: null
+min_cat_count: 3000
+top_n: 128
+hash_buckets: 256

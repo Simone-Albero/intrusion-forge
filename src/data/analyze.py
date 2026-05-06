@@ -279,7 +279,7 @@ def _approx_silhouette(
 
     try:
         scores = silhouette_samples(X[idx], labels[idx])
-    except Exception:
+    except ValueError:
         return None
     full = np.full(n, np.nan)
     full[idx] = scores
@@ -654,7 +654,7 @@ def build_cluster_summary(
         stats_fields = {k: stats_entry.get(k) for k in _STATS_KEYS}
 
         # failure info
-        error_entry = cluster_errors.get(cid, {})
+        error_entry = (cluster_errors or {}).get(cid, {})
         failure_rate = error_entry.get("error_rate")
 
         # separability: cluster-level foreign vs self ratios

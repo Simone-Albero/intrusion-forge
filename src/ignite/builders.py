@@ -104,21 +104,15 @@ class EngineBuilder:
         trainer: Engine | None = None,
     ) -> "EngineBuilder":
         """Add TensorBoard output logging."""
-        kwargs = {
-            "event_name": event,
-            **({} if tag is None else {"tag": tag}),
-            **(
-                {}
-                if output_transform is None
-                else {"output_transform": output_transform}
-            ),
-            **({} if metric_names is None else {"metric_names": metric_names}),
-            **(
-                {}
-                if trainer is None
-                else {"global_step_transform": global_step_from_engine(trainer)}
-            ),
-        }
+        kwargs: dict = {"event_name": event}
+        if tag is not None:
+            kwargs["tag"] = tag
+        if output_transform is not None:
+            kwargs["output_transform"] = output_transform
+        if metric_names is not None:
+            kwargs["metric_names"] = metric_names
+        if trainer is not None:
+            kwargs["global_step_transform"] = global_step_from_engine(trainer)
         return self.with_handler(
             Events.STARTED,
             lambda engine: tb_logger.attach_output_handler(engine, **kwargs),
@@ -172,8 +166,13 @@ class EngineBuilder:
     def build(self) -> Engine:
         """Build and return the configured engine."""
         engine = Engine(self._step_function)
-        for key, value in self._state_kwargs.items():
-            setattr(engine.state, key, value)
+        state_kwargs = self._state_kwargs
+
+        def _inject_state(engine: Engine) -> None:
+            for key, value in state_kwargs.items():
+                setattr(engine.state, key, value)
+
+        engine.add_event_handler(Events.STARTED, _inject_state)
         for name, metric in self._metrics.items():
             metric.attach(engine, name)
         for event, handler, args, kwargs in self._event_handlers:

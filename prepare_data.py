@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.common.config import load_config
-from src.common.logging import setup_logger
-from src.common.utils import load_from_json, save_to_json
+from src.common.config import load_config, save_config
+from src.common.log import setup_logger, LogDispatcher, LogBundle, JSONSubscriber
+from src.common.utils import flush_timing, load_from_json, timed
 
 from src.data.analyze import (
     compute_clusters_metadata,
@@ -29,10 +29,11 @@ from src.data.preprocessing import (
 )
 from src.ml.clustering import assign_clusters, make_hdbscan_cluster_fn
 
-setup_logger()
+setup_logger(log_file="resources/logs.txt")
 logger = logging.getLogger(__name__)
 
 
+@timed
 def preprocess_df(
     df,
     num_cols,
@@ -48,6 +49,12 @@ def preprocess_df(
     hash_buckets,
 ):
     """Preprocess dataframe: filter, encode, scale, and split."""
+    logger.info(
+        "Preprocessing: %d rows, %d num_cols, %d cat_cols",
+        len(df),
+        len(num_cols),
+        len(cat_cols),
+    )
     df = drop_nans(df, num_cols + cat_cols + [label_col])
     df = query_filter(df, filter_query)
     df = rare_category_filter(df, [label_col], min_count=min_cat_count)
@@ -61,6 +68,12 @@ def preprocess_df(
         label_col=label_col,
     )
     train_df = random_undersample_df(train_df, label_col, random_state)
+    logger.info(
+        "Split sizes — train: %d, val: %d, test: %d",
+        len(train_df),
+        len(val_df),
+        len(test_df),
+    )
 
     preprocessor = build_preprocessor(
         num_cols=num_cols,
@@ -82,6 +95,7 @@ def preprocess_df(
     return train_df, val_df, test_df
 
 
+@timed
 def run_clustering(
     train_df,
     val_df,
@@ -95,6 +109,11 @@ def run_clustering(
     cluster_col="cluster",
 ):
     """Apply the requested clustering strategy and return updated splits with centroids."""
+    logger.info(
+        "Running clustering — type: %s, features: %d",
+        clustering_type,
+        len(feature_cols),
+    )
     cluster_fn = make_hdbscan_cluster_fn()
 
     if cluster_classes is not None and len(cluster_classes) == 0:
@@ -158,13 +177,14 @@ def run_clustering(
     else:
         raise ValueError(f"Unknown clustering_type: '{clustering_type}'")
 
+    logger.info("Clustering complete — %d clusters found", len(centroids))
     if ignore_clusters:
-        for df in [val_df, test_df]:
-            df.drop(
-                df[df[cluster_col].isin(ignore_clusters)].index,
-                inplace=True,
-            )
-            df.reset_index(drop=True, inplace=True)
+        val_df = val_df[~val_df[cluster_col].isin(ignore_clusters)].reset_index(
+            drop=True
+        )
+        test_df = test_df[~test_df[cluster_col].isin(ignore_clusters)].reset_index(
+            drop=True
+        )
         train_df = train_df[~train_df[cluster_col].isin(ignore_clusters)].reset_index(
             drop=True
         )
@@ -179,6 +199,7 @@ def recompute_clusters_metadata(cfg):
     Useful to refresh derived sections without rerunning the full pipeline.
     Centroids are reconstructed from the existing clusters_meta.json.
     """
+    logger.info("Recomputing clusters metadata ...")
     num_cols = list(cfg.data.num_cols) if cfg.data.num_cols else []
     cat_cols = list(cfg.data.cat_cols) if cfg.data.cat_cols else []
     processed_data_path = Path(cfg.path.processed_data)
@@ -206,10 +227,15 @@ def recompute_clusters_metadata(cfg):
         feature_cols=num_cols + cat_cols,
         metric=cfg.distance_metric,
     )
-    save_to_json(clusters_metadata, json_logs_path / "data/clusters_meta.json")
+    dispatcher = LogDispatcher()
+    dispatcher.subscribe(JSONSubscriber(json_logs_path))
+    dispatcher.publish(
+        LogBundle.from_dict({"json/data/clusters_meta": clusters_metadata})
+    )
     logger.info("clusters_meta.json recomputed and saved.")
 
 
+@timed
 def prepare(cfg):
     """Prepare data given a configuration object."""
     num_cols = list(cfg.data.num_cols) if cfg.data.num_cols else []
@@ -220,11 +246,15 @@ def prepare(cfg):
     processed_data_path = Path(cfg.path.processed_data)
     json_logs_path = Path(cfg.path.json_logs)
 
+    dispatcher = LogDispatcher()
+    dispatcher.subscribe(JSONSubscriber(json_logs_path))
+
     logger.info("Loading and preprocessing data...")
     df = load_df(str(raw_data_path))
+    logger.info("Raw data loaded: %d rows, %d columns", *df.shape)
 
     df_info = get_df_info(df, label_col=label_col)
-    save_to_json(df_info, json_logs_path / "data/df_info.json")
+    dispatcher.publish(LogBundle.from_dict({"json/data/df_info": df_info}))
 
     train_df, val_df, test_df = preprocess_df(
         df,
@@ -280,7 +310,7 @@ def prepare(cfg):
         cfg.data.benign_tag,
         label_mapping,
     )
-    save_to_json(metadata, json_logs_path / "data/df_meta.json")
+    dispatcher.publish(LogBundle.from_dict({"json/data/df_meta": metadata}))
 
     if cfg.clustering_type is not None and centroids is not None:
         clusters_metadata = compute_clusters_metadata(
@@ -293,7 +323,10 @@ def prepare(cfg):
             feature_cols=num_cols + cat_cols,
             metric=cfg.distance_metric,
         )
-        save_to_json(clusters_metadata, json_logs_path / "data/clusters_meta.json")
+        dispatcher.publish(
+            LogBundle.from_dict({"json/data/clusters_meta": clusters_metadata})
+        )
+        logger.info("Cluster metadata saved.")
 
     return train_df, val_df, test_df, metadata
 
@@ -305,8 +338,9 @@ def main():
         config_name="config",
         overrides=sys.argv[1:],
     )
-    # prepare(cfg)
-    recompute_clusters_metadata(cfg)
+    save_config(cfg, Path(cfg.path.configs) / "config_composed.json")
+    prepare(cfg)
+    flush_timing(Path(cfg.path.json_logs) / "timing.json")
 
 
 if __name__ == "__main__":

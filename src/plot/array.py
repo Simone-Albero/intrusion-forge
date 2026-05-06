@@ -5,6 +5,20 @@ import numpy as np
 import seaborn as sns
 from sklearn.metrics import ConfusionMatrixDisplay
 
+from .base import Plot, _fig_to_plot, _get_fill_cmap
+from .style import (
+    FILL_COLORS,
+    OUTLINE_COLORS,
+    TITLE_FONTSIZE,
+    TITLE_PAD,
+    LABEL_FONTSIZE,
+    LABEL_PAD,
+    TICK_LABELSIZE,
+    LEGEND_FONTSIZE,
+    LEGEND_FRAMEALPHA,
+    GRID_ALPHA,
+)
+
 
 def confusion_matrix_to_plot(
     cm: np.ndarray,
@@ -14,7 +28,7 @@ def confusion_matrix_to_plot(
     figsize: tuple[float, float] = (8, 6),
     show_colorbar: bool = True,
     values_decimals: int | None = None,
-) -> plt.Figure:
+) -> Plot:
     """Plot a confusion matrix, handling both raw counts and normalized values."""
     if cm.ndim != 2 or cm.shape[0] != cm.shape[1]:
         raise ValueError("`cm` must be a square 2D array (n_classes x n_classes).")
@@ -58,60 +72,16 @@ def confusion_matrix_to_plot(
     if is_normalized and "normaliz" not in title.lower():
         title = f"{title} (Normalized)"
 
-    ax.set_title(title, fontsize=14, pad=16)
-    ax.set_xlabel("Predicted label", labelpad=10)
-    ax.set_ylabel("True label", labelpad=10)
+    ax.set_title(title, fontsize=TITLE_FONTSIZE, pad=TITLE_PAD)
+    ax.set_xlabel("Predicted label", fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
+    ax.set_ylabel("True label", fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
 
-    ax.tick_params(axis="x", labelsize=10)
-    ax.tick_params(axis="y", labelsize=10)
+    ax.tick_params(axis="x", labelsize=TICK_LABELSIZE)
+    ax.tick_params(axis="y", labelsize=TICK_LABELSIZE)
     ax.set_aspect("equal")
 
     fig.tight_layout()
-    return fig
-
-
-# High-contrast palettes
-_FILL_COLORS = [
-    "#4E79A7",
-    "#F28E2B",
-    "#E15759",
-    "#76B7B2",
-    "#59A14F",
-    "#EDC948",
-    "#B07AA1",
-    "#FF9DA7",
-    "#9C755F",
-    "#BAB0AC",
-    "#1F77B4",
-    "#FF7F0E",
-    "#2CA02C",
-    "#D62728",
-    "#9467BD",
-    "#8C564B",
-    "#E377C2",
-    "#7F7F7F",
-    "#BCBD22",
-    "#17BECF",
-]
-
-_OUTLINE_COLORS = [
-    "#FF0000",
-    "#000000",
-    "#0000FF",
-    "#FF00FF",
-    "#00CCCC",
-    "#FF8800",
-    "#6600CC",
-    "#00CC66",
-    "#FF0066",
-    "#CCCC00",
-]
-
-
-def _get_fill_cmap(n: int):
-    """Return a ListedColormap with n high-contrast fill colors."""
-    colors = (_FILL_COLORS * ((n // len(_FILL_COLORS)) + 1))[:n]
-    return mcolors.ListedColormap(colors)
+    return _fig_to_plot(fig)
 
 
 def _validate_inputs(
@@ -128,9 +98,9 @@ def _validate_inputs(
         if len(y_2) != n:
             raise ValueError("X and y_2 must have the same number of samples.")
         n_unique_y2 = len(np.unique(y_2))
-        if n_unique_y2 > len(_OUTLINE_COLORS):
+        if n_unique_y2 > len(OUTLINE_COLORS):
             raise ValueError(
-                f"y_2 has {n_unique_y2} unique values; maximum supported is {len(_OUTLINE_COLORS)}."
+                f"y_2 has {n_unique_y2} unique values; maximum supported is {len(OUTLINE_COLORS)}."
             )
 
 
@@ -149,63 +119,48 @@ def _make_legend_proxy(fill_color, edge_color, label):
     )
 
 
-def samples_plot(
+def _samples_plot_2d(
     X: np.ndarray,
-    y_1: list | np.ndarray,
-    y_2: list | np.ndarray | None = None,
-) -> plt.Figure:
-    """Plot 2D or 3D samples with fill-color and optional outline-color encoding.
+    y_1: np.ndarray,
+    y_2: np.ndarray | None,
+    y1_names: dict | None = None,
+    y2_names: dict | None = None,
+) -> Plot:
+    _n1 = lambda v: y1_names.get(int(v), f"Class {v}") if y1_names else f"Class {v}"
+    _n2 = lambda v: y2_names.get(int(v), str(v)) if y2_names else str(v)
 
-    Args:
-        X:   Array of shape (n_samples, 2) or (n_samples, 3).
-        y_1: Integer labels mapped to fill color.
-        y_2: Optional integer labels mapped to outline/edge color.
-
-    Returns:
-        Matplotlib Figure object.
-    """
-    X = np.asarray(X)
-    y_1 = np.asarray(y_1)
-    y_2 = np.asarray(y_2) if y_2 is not None else None
-
-    _validate_inputs(X, y_1, y_2)
-
-    is_3d = X.shape[1] == 3
     unique_y1 = np.unique(y_1)
     cmap = _get_fill_cmap(len(unique_y1))
     fill_map = {label: cmap(i) for i, label in enumerate(unique_y1)}
 
-    fig = plt.figure(figsize=(10, 8))
-    ax = fig.add_subplot(111, projection="3d") if is_3d else fig.add_subplot(111)
-
+    fig, ax = plt.subplots(figsize=(10, 8))
     scatter_kwargs = dict(s=120, alpha=0.75, linewidths=1.8)
     legend_proxies = []
 
     if y_2 is None:
-        # --- Single label: only fill color ---
         for label in unique_y1:
             mask = y_1 == label
-            coords = (X[mask, 0], X[mask, 1]) + ((X[mask, 2],) if is_3d else ())
             ax.scatter(
-                *coords, color=fill_map[label], edgecolors="#222222", **scatter_kwargs
+                X[mask, 0],
+                X[mask, 1],
+                color=fill_map[label],
+                edgecolors="#222222",
+                **scatter_kwargs,
             )
             legend_proxies.append(
-                _make_legend_proxy(fill_map[label], "#222222", f"Class {label}")
+                _make_legend_proxy(fill_map[label], "#222222", _n1(label))
             )
-
     else:
-        # --- Two labels: fill color + outline color ---
         unique_y2 = np.unique(y_2)
-        outline_map = {label: _OUTLINE_COLORS[i] for i, label in enumerate(unique_y2)}
-
+        outline_map = {label: OUTLINE_COLORS[i] for i, label in enumerate(unique_y2)}
         for label1 in unique_y1:
             for label2 in unique_y2:
                 mask = (y_1 == label1) & (y_2 == label2)
                 if not np.any(mask):
                     continue
-                coords = (X[mask, 0], X[mask, 1]) + ((X[mask, 2],) if is_3d else ())
                 ax.scatter(
-                    *coords,
+                    X[mask, 0],
+                    X[mask, 1],
                     color=fill_map[label1],
                     edgecolors=outline_map[label2],
                     **scatter_kwargs,
@@ -214,45 +169,151 @@ def samples_plot(
                     _make_legend_proxy(
                         fill_map[label1],
                         outline_map[label2],
-                        f"Fill {label1} · Edge {label2}",
+                        f"{_n1(label1)} · {_n2(label2)}",
                     )
                 )
-
-        # Separate outline-only legend
         outline_proxies = [
-            _make_legend_proxy("lightgray", outline_map[lbl], f"Edge {lbl}")
+            _make_legend_proxy("lightgray", outline_map[lbl], _n2(lbl))
             for lbl in unique_y2
         ]
         ax.legend(
             handles=outline_proxies,
             loc="upper right",
-            fontsize=9,
+            fontsize=LEGEND_FONTSIZE,
             title="Edge label",
-            framealpha=0.9,
+            framealpha=LEGEND_FRAMEALPHA,
         )
 
-    # Axes labels
-    ax.set_xlabel("D1", fontsize=11)
-    ax.set_ylabel("D2", fontsize=11)
-    if is_3d:
-        ax.set_zlabel("D3", fontsize=11)
-
-    # Main legend
     ncol = max(1, len(legend_proxies) // 12)
     ax.legend(
         handles=legend_proxies,
         loc="upper left",
-        fontsize=9,
+        fontsize=LEGEND_FONTSIZE,
         title="Fill label" if y_2 is None else "Fill · Edge",
-        framealpha=0.9,
+        framealpha=LEGEND_FRAMEALPHA,
         ncol=ncol,
     )
-
-    dims = "3D" if is_3d else "2D"
-    ax.set_title(f"{dims} Sample Plot", fontsize=14, pad=12)
-    ax.grid(True, alpha=0.3)
+    ax.set_xlabel("D1", fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
+    ax.set_ylabel("D2", fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
+    ax.set_title("2D Sample Plot", fontsize=TITLE_FONTSIZE, pad=TITLE_PAD)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.grid(True, alpha=GRID_ALPHA)
     fig.tight_layout()
-    return fig
+    return _fig_to_plot(fig)
+
+
+def _samples_plot_3d(
+    X: np.ndarray,
+    y_1: np.ndarray,
+    y_2: np.ndarray | None,
+    y1_names: dict | None = None,
+    y2_names: dict | None = None,
+) -> Plot:
+    _n1 = lambda v: y1_names.get(int(v), f"Class {v}") if y1_names else f"Class {v}"
+    _n2 = lambda v: y2_names.get(int(v), str(v)) if y2_names else str(v)
+
+    unique_y1 = np.unique(y_1)
+    cmap = _get_fill_cmap(len(unique_y1))
+    fill_map = {label: cmap(i) for i, label in enumerate(unique_y1)}
+
+    fig = plt.figure(figsize=(10, 8))
+    ax = fig.add_subplot(111, projection="3d")
+    scatter_kwargs = dict(s=120, alpha=0.75, linewidths=1.8)
+    legend_proxies = []
+
+    if y_2 is None:
+        for label in unique_y1:
+            mask = y_1 == label
+            ax.scatter(
+                X[mask, 0],
+                X[mask, 1],
+                X[mask, 2],
+                color=fill_map[label],
+                edgecolors="#222222",
+                **scatter_kwargs,
+            )
+            legend_proxies.append(
+                _make_legend_proxy(fill_map[label], "#222222", _n1(label))
+            )
+    else:
+        unique_y2 = np.unique(y_2)
+        outline_map = {label: OUTLINE_COLORS[i] for i, label in enumerate(unique_y2)}
+        for label1 in unique_y1:
+            for label2 in unique_y2:
+                mask = (y_1 == label1) & (y_2 == label2)
+                if not np.any(mask):
+                    continue
+                ax.scatter(
+                    X[mask, 0],
+                    X[mask, 1],
+                    X[mask, 2],
+                    color=fill_map[label1],
+                    edgecolors=outline_map[label2],
+                    **scatter_kwargs,
+                )
+                legend_proxies.append(
+                    _make_legend_proxy(
+                        fill_map[label1],
+                        outline_map[label2],
+                        f"{_n1(label1)} · {_n2(label2)}",
+                    )
+                )
+        outline_proxies = [
+            _make_legend_proxy("lightgray", outline_map[lbl], _n2(lbl))
+            for lbl in unique_y2
+        ]
+        ax.legend(
+            handles=outline_proxies,
+            loc="upper right",
+            fontsize=LEGEND_FONTSIZE,
+            title="Edge label",
+            framealpha=LEGEND_FRAMEALPHA,
+        )
+
+    ncol = max(1, len(legend_proxies) // 12)
+    ax.legend(
+        handles=legend_proxies,
+        loc="upper left",
+        fontsize=LEGEND_FONTSIZE,
+        title="Fill label" if y_2 is None else "Fill · Edge",
+        framealpha=LEGEND_FRAMEALPHA,
+        ncol=ncol,
+    )
+    ax.set_xlabel("D1", fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
+    ax.set_ylabel("D2", fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
+    ax.set_zlabel("D3", fontsize=LABEL_FONTSIZE)
+    ax.set_title("3D Sample Plot", fontsize=TITLE_FONTSIZE, pad=TITLE_PAD)
+    ax.grid(True, alpha=GRID_ALPHA)
+    fig.tight_layout()
+    return _fig_to_plot(fig)
+
+
+def samples_plot(
+    X: np.ndarray,
+    y_1: list | np.ndarray,
+    y_2: list | np.ndarray | None = None,
+    y1_names: dict | None = None,
+    y2_names: dict | None = None,
+) -> Plot:
+    """Plot 2D or 3D samples with fill-color and optional outline-color encoding.
+
+    Args:
+        X:        Array of shape (n_samples, 2) or (n_samples, 3).
+        y_1:      Integer labels mapped to fill color.
+        y_2:      Optional integer labels mapped to outline/edge color.
+        y1_names: Optional dict mapping y_1 integer values to legend label strings.
+        y2_names: Optional dict mapping y_2 integer values to legend label strings.
+    """
+    X = np.asarray(X)
+    y_1 = np.asarray(y_1)
+    y_2 = np.asarray(y_2) if y_2 is not None else None
+
+    _validate_inputs(X, y_1, y_2)
+
+    if X.shape[1] == 3:
+        return _samples_plot_3d(X, y_1, y_2, y1_names, y2_names)
+    return _samples_plot_2d(X, y_1, y_2, y1_names, y2_names)
 
 
 def strip_box_plot(
@@ -269,7 +330,7 @@ def strip_box_plot(
     figsize: tuple[float, float] = (12, 6),
     marker_size: float = 36,
     cmap: str = "RdYlGn_r",
-) -> plt.Figure:
+) -> Plot:
     """Strip plot with per-point color encoding and optional discrete edge encoding.
 
     Points are jittered horizontally per category; y-axis shows *values*.
@@ -312,7 +373,7 @@ def strip_box_plot(
             dict.fromkeys(v for v, m in zip(edge_arr.tolist(), nan_edge) if not m)
         )
         edge_color_map = {
-            v: _OUTLINE_COLORS[i % len(_OUTLINE_COLORS)]
+            v: OUTLINE_COLORS[i % len(OUTLINE_COLORS)]
             for i, v in enumerate(unique_edges)
         }
         mapped_edge_colors = [
@@ -383,20 +444,20 @@ def strip_box_plot(
                 loc="upper left",
                 fontsize=8,
                 title_fontsize=9,
-                framealpha=0.9,
+                framealpha=LEGEND_FRAMEALPHA,
             )
         )
 
     ax.set_xticks(range(len(category_order)))
     ax.set_xticklabels(category_order)
-    ax.set_title(title, fontsize=14, pad=16)
-    ax.set_xlabel(x_label, labelpad=10)
-    ax.set_ylabel(y_label, labelpad=10)
+    ax.set_title(title, fontsize=TITLE_FONTSIZE, pad=TITLE_PAD)
+    ax.set_xlabel(x_label, fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
+    ax.set_ylabel(y_label, fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha="right")
     fig.tight_layout()
-    return fig
+    return _fig_to_plot(fig)
 
 
 def violin_box_plot(
@@ -409,7 +470,7 @@ def violin_box_plot(
     violin_alpha: float = 0.4,
     palette: str = "Set2",
     category_order: list | None = None,
-) -> plt.Figure:
+) -> Plot:
     """Split violin plot: each category occupies one half, with a color legend.
 
     The first category in order of appearance is drawn on the left half,
@@ -461,18 +522,23 @@ def violin_box_plot(
         plt.Line2D([], [], color=c, lw=6, alpha=violin_alpha, label=cat)
         for cat, c in zip(unique_cats, palette_colors)
     ]
-    ax.legend(handles=legend_handles, loc="best", fontsize=9, framealpha=0.9)
+    ax.legend(
+        handles=legend_handles,
+        loc="best",
+        fontsize=LEGEND_FONTSIZE,
+        framealpha=LEGEND_FRAMEALPHA,
+    )
 
     ax.set_xticks([])
-    ax.set_title(title, fontsize=13, pad=14)
-    ax.set_xlabel(x_label, labelpad=10)
-    ax.set_ylabel(y_label, labelpad=10)
+    ax.set_title(title, fontsize=TITLE_FONTSIZE, pad=TITLE_PAD)
+    ax.set_xlabel(x_label, fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
+    ax.set_ylabel(y_label, fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     ax.spines["bottom"].set_visible(False)
 
     fig.tight_layout()
-    return fig
+    return _fig_to_plot(fig)
 
 
 def roc_curve_plot(
@@ -481,7 +547,7 @@ def roc_curve_plot(
     auc_score: float,
     title: str = "ROC Curve",
     figsize: tuple[float, float] = (6, 6),
-) -> plt.Figure:
+) -> Plot:
     """ROC curve with AUC annotation and random-classifier baseline."""
     fig, ax = plt.subplots(figsize=figsize)
 
@@ -492,22 +558,23 @@ def roc_curve_plot(
 
     ax.set_xlim(0.0, 1.0)
     ax.set_ylim(0.0, 1.05)
-    ax.set_xlabel("False Positive Rate", labelpad=10)
-    ax.set_ylabel("True Positive Rate", labelpad=10)
-    ax.set_title(title, fontsize=14, pad=16)
-    ax.legend(loc="lower right", fontsize=10)
+    ax.set_xlabel("False Positive Rate", fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
+    ax.set_ylabel("True Positive Rate", fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
+    ax.set_title(title, fontsize=TITLE_FONTSIZE, pad=TITLE_PAD)
+    ax.legend(loc="lower right", fontsize=LEGEND_FONTSIZE)
+    ax.grid(True, alpha=GRID_ALPHA, linestyle="--")
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
 
     fig.tight_layout()
-    return fig
+    return _fig_to_plot(fig)
 
 
 def feature_importance_plot(
     importances: dict[str, float],
     title: str = "Feature Importances",
     figsize: tuple[float, float] = (12, 8),
-) -> plt.Figure:
+) -> Plot:
     """Horizontal bar chart of feature importances, sorted descending."""
     sorted_items = sorted(importances.items(), key=lambda x: x[1])
     features = [item[0] for item in sorted_items]
@@ -515,14 +582,16 @@ def feature_importance_plot(
 
     fig, ax = plt.subplots(figsize=figsize)
     ax.barh(features, values, color="#4E79A7", edgecolor="white", linewidth=0.5)
-    ax.set_title(title, fontsize=14, pad=16)
-    ax.set_xlabel("Importance", labelpad=10)
+    ax.set_title(title, fontsize=TITLE_FONTSIZE, pad=TITLE_PAD)
+    ax.set_xlabel("Importance", fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-    ax.tick_params(axis="y", labelsize=8)
+    ax.tick_params(axis="y", labelsize=TICK_LABELSIZE)
+    ax.xaxis.grid(True, alpha=GRID_ALPHA, linestyle="--")
+    ax.set_axisbelow(True)
 
     fig.tight_layout(pad=1.0)
-    return fig
+    return _fig_to_plot(fig)
 
 
 def grouped_bar_plot(
@@ -533,7 +602,7 @@ def grouped_bar_plot(
     y_label: str = "",
     figsize: tuple[float, float] | None = None,
     colors: list[str] | None = None,
-) -> plt.Figure:
+) -> Plot:
     """Grouped bar chart comparing multiple series across the same set of labels.
 
     Args:
@@ -544,14 +613,14 @@ def grouped_bar_plot(
         x_label: X-axis label.
         y_label: Y-axis label.
         figsize: Figure size. Defaults to ``(max(8, n * 0.9), 5)``.
-        colors: One color per series. Defaults to ``_FILL_COLORS``.
+        colors: One color per series. Defaults to ``FILL_COLORS``.
     """
     n = len(labels)
     series = list(groups.items())
     n_series = len(series)
     width = 0.8 / n_series
     offsets = np.linspace(-(n_series - 1) / 2, (n_series - 1) / 2, n_series) * width
-    palette = colors or _FILL_COLORS
+    palette = colors or FILL_COLORS
 
     if figsize is None:
         figsize = (max(8, n * 0.9), 5)
@@ -565,12 +634,12 @@ def grouped_bar_plot(
     ax.axhline(0, color="#888888", linewidth=0.8, linestyle="--")
     ax.set_xticks(x)
     ax.set_xticklabels(labels, rotation=45, ha="right")
-    ax.set_title(title, fontsize=13, pad=14)
-    ax.set_xlabel(x_label, labelpad=10)
-    ax.set_ylabel(y_label, labelpad=10)
-    ax.legend(fontsize=9, framealpha=0.9)
+    ax.set_title(title, fontsize=TITLE_FONTSIZE, pad=TITLE_PAD)
+    ax.set_xlabel(x_label, fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
+    ax.set_ylabel(y_label, fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
+    ax.legend(fontsize=LEGEND_FONTSIZE, framealpha=LEGEND_FRAMEALPHA)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
 
     fig.tight_layout()
-    return fig
+    return _fig_to_plot(fig)

@@ -1,4 +1,5 @@
 # Custom skipped files
+plans/
 .github/
 resources/
 .idea/

@@ -42,10 +42,13 @@ def load_config(
     with initialize_config_dir(version_base=None, config_dir=str(config_dir)):
         cfg = compose(config_name=config_name, overrides=overrides)
 
-    save_to_json(
-        OmegaConf.to_container(cfg, resolve=True),
-        Path(cfg.path.configs) / f"{config_name}_composed.json",
-    )
-
     cfg = DictConfig(cfg)
     return cfg
+
+
+def save_config(cfg: DictConfig, path: str | Path) -> None:
+    """Persist the fully-resolved config to a JSON file."""
+    save_to_json(
+        OmegaConf.to_container(cfg, resolve=True),
+        path,
+    )
