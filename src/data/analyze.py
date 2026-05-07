@@ -2,7 +2,7 @@ from itertools import combinations
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import pairwise_distances, silhouette_samples
+from sklearn.metrics import pairwise_distances
 from sklearn.metrics.pairwise import paired_distances
 from sklearn.decomposition import PCA
 from tqdm import tqdm
@@ -226,18 +226,6 @@ def compute_df_metadata(
     }
 
 
-def _majority_class_map(
-    cluster_labels: np.ndarray, class_labels: np.ndarray
-) -> dict[str, str]:
-    """Map each cluster label to its majority class label."""
-    mapping: dict[str, str] = {}
-    for c in np.unique(cluster_labels):
-        classes_in = class_labels[cluster_labels == c]
-        vals, counts = np.unique(classes_in, return_counts=True)
-        mapping[str(c)] = str(vals[np.argmax(counts)])
-    return mapping
-
-
 def _approx_silhouette(
     X: np.ndarray,
     labels: np.ndarray,
@@ -278,227 +266,14 @@ def _approx_silhouette(
             idx = guaranteed
 
     try:
+        from sklearn.metrics import silhouette_samples
+
         scores = silhouette_samples(X[idx], labels[idx])
     except ValueError:
         return None
     full = np.full(n, np.nan)
     full[idx] = scores
     return full
-
-
-def _single_cluster_stats(
-    samples: np.ndarray,
-    centroid: np.ndarray,
-    pairwise_dist_row: np.ndarray,
-    idx_in_keys: int,
-    cluster_to_class: dict[str, str],
-    class_centroids: dict[str, np.ndarray],
-    key: str,
-    keys: list[str],
-    sil_values: np.ndarray | None,
-    mask_arr: np.ndarray,
-    eps: float,
-    metric: str,
-) -> dict:
-    """Compute statistics for a single cluster."""
-    n = len(samples)
-    if n == 0:
-        return {
-            "centroid": centroid.tolist(),
-            "n_samples": 0,
-            "n_unique": 0,
-            "unique_ratio": None,
-            "intra_dispersion": None,
-            "std_dispersion": None,
-            "median_dispersion": None,
-            "max_dispersion": None,
-            "p95_dispersion": None,
-            "p99_dispersion": None,
-            "density": None,
-            "dist_to_class_centroid": None,
-            "dist_to_nearest_cluster": None,
-            "dist_to_nearest_foreign_cluster": None,
-            "foreign_separation_ratio": None,
-            "overlap_margin": None,
-            "normalized_overlap_margin": None,
-            "intra_foreign_margin": None,
-            "max_foreign_margin": None,
-            "foreign_coverage_ratio": None,
-            "silhouette": None,
-            "min_silhouette": None,
-            "p5_silhouette": None,
-            "frac_at_risk": None,
-        }
-
-    dists = pairwise_distances(samples, centroid.reshape(1, -1), metric=metric).ravel()
-    intra = float(np.mean(dists))
-    n_unique = int(np.unique(samples, axis=0).shape[0])
-
-    row = pairwise_dist_row.copy()
-    row[idx_in_keys] = np.inf
-    min_dist = np.min(row) if len(keys) > 1 else np.inf
-    nearest = float(min_dist) if np.isfinite(min_dist) else None
-
-    cls_key = cluster_to_class.get(key)
-    foreign_dists = [
-        pairwise_dist_row[j]
-        for j, k in enumerate(keys)
-        if j != idx_in_keys and cluster_to_class.get(k) != cls_key
-    ]
-    nearest_foreign = float(np.min(foreign_dists)) if foreign_dists else None
-
-    max_disp = float(np.max(dists))
-    overlap_margin = (
-        float(nearest_foreign - nearest)
-        if nearest is not None and nearest_foreign is not None
-        else None
-    )
-
-    foreign_class_centroids = [
-        c for cls, c in class_centroids.items() if cls != cls_key
-    ]
-    if foreign_class_centroids and cls_key in class_centroids:
-        foreign_matrix = np.stack(foreign_class_centroids)
-        min_foreign_dists = pairwise_distances(
-            samples, foreign_matrix, metric=metric
-        ).min(axis=1)
-        frac_at_risk = float(np.mean(min_foreign_dists < dists))
-    else:
-        frac_at_risk = None
-
-    if sil_values is not None and np.any(mask_arr):
-        sil_valid = sil_values[mask_arr]
-        sil_valid = sil_valid[np.isfinite(sil_valid)]
-        min_silhouette = float(np.min(sil_valid)) if len(sil_valid) > 0 else None
-        p5_silhouette = (
-            float(np.percentile(sil_valid, 5)) if len(sil_valid) > 0 else None
-        )
-    else:
-        min_silhouette = None
-        p5_silhouette = None
-
-    return {
-        "centroid": centroid.tolist(),
-        "n_samples": n,
-        "n_unique": n_unique,
-        "unique_ratio": float(n_unique / n),
-        "intra_dispersion": intra,
-        "std_dispersion": float(np.std(dists)),
-        "median_dispersion": float(np.median(dists)),
-        "max_dispersion": max_disp,
-        "p95_dispersion": float(np.percentile(dists, 95)),
-        "p99_dispersion": float(np.percentile(dists, 99)),
-        "density": float(n / (intra + eps) ** 3),
-        "dist_to_class_centroid": (
-            float(
-                pairwise_distances(
-                    centroid.reshape(1, -1),
-                    class_centroids[cls_key].reshape(1, -1),
-                    metric=metric,
-                )[0, 0]
-            )
-            if cls_key in class_centroids
-            else None
-        ),
-        "dist_to_nearest_cluster": nearest,
-        "dist_to_nearest_foreign_cluster": nearest_foreign,
-        "foreign_separation_ratio": (
-            float(nearest_foreign / (intra + eps))
-            if nearest_foreign is not None
-            else None
-        ),
-        "overlap_margin": overlap_margin,
-        "normalized_overlap_margin": (
-            float(overlap_margin / (nearest_foreign + eps))
-            if overlap_margin is not None and nearest_foreign is not None
-            else None
-        ),
-        "intra_foreign_margin": (
-            float(nearest_foreign - intra) if nearest_foreign is not None else None
-        ),
-        "max_foreign_margin": (
-            float(nearest_foreign - max_disp) if nearest_foreign is not None else None
-        ),
-        "foreign_coverage_ratio": (
-            float(max_disp / (nearest_foreign + eps))
-            if nearest_foreign is not None
-            else None
-        ),
-        "silhouette": (
-            float(np.nanmean(sil_values[mask_arr]))
-            if sil_values is not None and np.any(mask_arr)
-            else None
-        ),
-        "min_silhouette": min_silhouette,
-        "p5_silhouette": p5_silhouette,
-        "frac_at_risk": frac_at_risk,
-    }
-
-
-def compute_cluster_stats(
-    df_: pd.DataFrame,
-    feature_cols: list[str],
-    cluster_col: str,
-    encoded_label_col: str,
-    centroids: dict,
-    eps: float = 1e-8,
-    metric: str = "euclidean",
-    compute_silhouette: bool = True,
-    silhouette_max_samples: int = 10_000,
-) -> dict:
-    """Compute per-cluster statistics.
-
-    Args:
-        metric: Distance metric for intra-cluster dispersion and centroid
-            distances. Supports ``"euclidean"`` and ``"cosine"``.
-        silhouette_max_samples: Max points for the silhouette approximation.
-            Set to 0 to use all samples (exact but O(n²)).
-    """
-    if df_.empty:
-        return {}
-
-    X = df_[feature_cols].to_numpy(dtype=float)
-    cluster_labels = df_[cluster_col].to_numpy()
-    class_labels = df_[encoded_label_col].to_numpy()
-
-    class_centroids = {
-        str(cls): X[class_labels == cls].mean(axis=0) for cls in np.unique(class_labels)
-    }
-    cluster_to_class = _majority_class_map(cluster_labels, class_labels)
-
-    present = {str(c) for c in cluster_labels}
-    keys = [str(k) for k in centroids if str(k) in present]
-    if not keys:
-        return {}
-
-    centroid_matrix = np.stack([np.asarray(centroids[k], dtype=float) for k in keys])
-    pairwise_dist = pairwise_distances(centroid_matrix, metric=metric)
-
-    sil_values = None
-    if compute_silhouette:
-        max_s = silhouette_max_samples if silhouette_max_samples > 0 else len(X)
-        sil_values = _approx_silhouette(X, cluster_labels, max_samples=max_s)
-
-    cluster_stats: dict[str, dict] = {}
-    for i, key in tqdm(enumerate(keys), total=len(keys), desc="cluster stats"):
-        mask = df_[cluster_col].astype(str) == key
-        samples = df_.loc[mask, feature_cols].to_numpy(dtype=float)
-        cluster_stats[key] = _single_cluster_stats(
-            samples=samples,
-            centroid=centroid_matrix[i],
-            pairwise_dist_row=pairwise_dist[i],
-            idx_in_keys=i,
-            cluster_to_class=cluster_to_class,
-            class_centroids=class_centroids,
-            key=key,
-            keys=keys,
-            sil_values=sil_values,
-            mask_arr=mask.to_numpy(),
-            eps=eps,
-            metric=metric,
-        )
-
-    return cluster_stats
 
 
 def compute_clusters_metadata(
@@ -508,10 +283,11 @@ def compute_clusters_metadata(
     label_col: str,
     cluster_col: str,
     centroids: dict,
-    feature_cols: list[str],
-    metric: str = "euclidean",
 ) -> dict:
-    """Aggregate cluster metadata across all splits."""
+    """Aggregate cluster metadata across all splits.
+
+    Returns {class_to_clusters, clusters_distribution, centroids}.
+    """
     df_ = pd.concat([train_df, val_df, test_df], ignore_index=True)
     encoded_label_col = f"encoded_{label_col}"
 
@@ -526,187 +302,8 @@ def compute_clusters_metadata(
         str(k): v for k, v in df_[cluster_col].value_counts().to_dict().items()
     }
 
-    cluster_stats = compute_cluster_stats(
-        df_=df_,
-        feature_cols=feature_cols,
-        cluster_col=cluster_col,
-        encoded_label_col=encoded_label_col,
-        centroids=centroids,
-        metric=metric,
-    )
-
-    # silhouette_per_class: approximate silhouette using class labels as groups
-    X = df_[feature_cols].to_numpy(dtype=float)
-    class_labels = df_[encoded_label_col].to_numpy()
-    sil_values = _approx_silhouette(X, class_labels)
-    if sil_values is not None:
-        silhouette_per_class = {
-            str(cls): float(np.nanmean(sil_values[class_labels == cls]))
-            for cls in np.unique(class_labels)
-        }
-    else:
-        silhouette_per_class = {str(cls): None for cls in np.unique(class_labels)}
-
-    # mean_cluster_silhouette: average of per-cluster silhouette scores per class
-    mean_cluster_silhouette = {
-        cls: (
-            float(
-                np.nanmean(
-                    [
-                        cluster_stats[cid]["silhouette"]
-                        for cid in cids
-                        if cid in cluster_stats
-                        and cluster_stats[cid].get("silhouette") is not None
-                    ]
-                )
-            )
-            if any(
-                cid in cluster_stats
-                and cluster_stats[cid].get("silhouette") is not None
-                for cid in cids
-            )
-            else None
-        )
-        for cls, cids in class_to_clusters.items()
-    }
-
     return {
         "class_to_clusters": class_to_clusters,
         "clusters_distribution": clusters_distribution,
-        "cluster_stats": cluster_stats,
-        "silhouette_per_class": silhouette_per_class,
-        "mean_cluster_silhouette": mean_cluster_silhouette,
+        "centroids": {str(k): v for k, v in centroids.items()},
     }
-
-
-def _to_finite_float(value) -> float | None:
-    """Convert to float, returning None for non-finite or unconvertible values."""
-    try:
-        v = float(value)
-        return v if np.isfinite(v) else None
-    except (TypeError, ValueError):
-        return None
-
-
-def build_cluster_summary(
-    class_to_clusters: dict,
-    clusters_distribution: dict,
-    cluster_stats: dict,
-    cluster_errors: dict,
-    separability: dict,
-) -> dict:
-    """Assemble a comprehensive per-cluster summary from all available sources.
-
-    Merges cluster statistics (dispersion, density, silhouette, etc.),
-    failure rates, and separability-based foreign/self ratios into a single
-    dict keyed by cluster id.
-
-    Args:
-        class_to_clusters: ``{class_label: [cluster_id, ...]}``.
-        clusters_distribution: ``{cluster_id: sample_count}``.
-        cluster_stats: Per-cluster statistics dict (from ``compute_cluster_stats``),
-            keyed by cluster id. Each entry may contain centroid, dispersion,
-            density, silhouette, etc.
-        cluster_errors: ``{cluster_id: {n_error, n_total, error_rate}}``.
-        separability: Output of ``compute_pairwise_separability``.
-
-    Returns:
-        ``{cluster_id: {cluster_class, cluster_size, failure_rate, is_failed,
-        <cluster_stats fields>, foreign_*_*, self_*, ...pairwise distances}}``.
-    """
-    # --- cluster → class mapping ---
-    cluster_to_class = {
-        str(c): cls for cls, clusters in class_to_clusters.items() for c in clusters
-    }
-
-    # --- assemble per-cluster summary ---
-    _STATS_KEYS = (
-        "intra_dispersion",
-        "std_dispersion",
-        "median_dispersion",
-        "max_dispersion",
-        "p95_dispersion",
-        "p99_dispersion",
-        "density",
-        "dist_to_class_centroid",
-        "dist_to_nearest_cluster",
-        "dist_to_nearest_foreign_cluster",
-        "foreign_separation_ratio",
-        "overlap_margin",
-        "normalized_overlap_margin",
-        "intra_foreign_margin",
-        "max_foreign_margin",
-        "foreign_coverage_ratio",
-        "silhouette",
-        "min_silhouette",
-        "p5_silhouette",
-        "frac_at_risk",
-    )
-
-    results = {}
-    for cid in clusters_distribution:
-        cid = str(cid)
-        cluster_class = cluster_to_class.get(cid)
-        cluster_size = clusters_distribution.get(cid)
-
-        # cluster_stats fields (exclude centroid — not useful in summary)
-        stats_entry = cluster_stats.get(cid, {})
-        stats_fields = {k: stats_entry.get(k) for k in _STATS_KEYS}
-
-        # failure info
-        error_entry = (cluster_errors or {}).get(cid, {})
-        failure_rate = error_entry.get("error_rate")
-
-        # separability: cluster-level foreign vs self ratios
-        peer_ratios = {
-            str(k): fv
-            for k, v in separability.get(cid, {}).items()
-            if k != "_mean_ratio" and (fv := _to_finite_float(v)) is not None
-        }
-        foreign_ratios = [
-            r
-            for k, r in peer_ratios.items()
-            if cluster_to_class.get(k) != cluster_class
-        ]
-        self_ratios = [
-            r
-            for k, r in peer_ratios.items()
-            if cluster_to_class.get(k) == cluster_class
-        ]
-
-        min_foreign = float(np.min(foreign_ratios)) if foreign_ratios else None
-        max_foreign = float(np.max(foreign_ratios)) if foreign_ratios else None
-        min_self = float(np.min(self_ratios)) if self_ratios else None
-
-        # pairwise distances to other clusters
-        distances = {
-            k: _to_finite_float(v)
-            for k, v in separability.get(cid, {}).items()
-            if k != "_mean_ratio"
-        }
-        distances[cid] = 1.0
-
-        results[cid] = {
-            "cluster_class": cluster_class,
-            "cluster_size": cluster_size,
-            "failure_rate": failure_rate,
-            "is_failed": failure_rate is not None and failure_rate > 0.0,
-            **stats_fields,
-            "min_foreign_ratio": min_foreign,
-            "max_foreign_ratio": max_foreign,
-            "min_self_ratio": min_self,
-            "max_self_ratio": float(np.max(self_ratios)) if self_ratios else None,
-            "ratio_spread": (
-                float(max_foreign - min_self)
-                if max_foreign is not None and min_self is not None
-                else None
-            ),
-            "ratio_scale": (
-                float(max_foreign / min_self)
-                if max_foreign is not None and min_self is not None and min_self > 0
-                else None
-            ),
-            **distances,
-        }
-
-    return results

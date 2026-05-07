@@ -2,11 +2,23 @@ import logging
 import sys
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
+from sklearn.manifold import TSNE
+from ignite.handlers.tensorboard_logger import TensorboardLogger
+
 from src.common.config import load_config, save_config
-from src.common.log import setup_logger, LogDispatcher, LogBundle, JSONSubscriber
+from src.common.log import (
+    setup_logger,
+    LogDispatcher,
+    LogBundle,
+    JSONSubscriber,
+    TensorBoardSubscriber,
+)
 from src.common.utils import flush_timing, load_from_json, timed
+from src.plot.array import cluster_scatter_plot
+from src.plot.base import Plot
 
 from src.data.analyze import (
     compute_clusters_metadata,
@@ -27,10 +39,49 @@ from src.data.preprocessing import (
     rare_category_filter,
     random_undersample_df,
 )
-from src.ml.clustering import assign_clusters, make_hdbscan_cluster_fn
+from src.ml.clustering import (
+    grid_search,
+    fit_hdbscan,
+    make_hdbscan_cluster_fn,
+    make_clusters,
+)
 
 setup_logger(log_file="resources/logs.txt")
 logger = logging.getLogger(__name__)
+
+_TSNE_MAX_SAMPLES = 5_000
+
+
+def _tsne_cluster_plot(
+    df: pd.DataFrame,
+    num_cols: list[str],
+    cluster_col: str,
+    title: str = "",
+    random_state: int = 42,
+    max_samples: int = _TSNE_MAX_SAMPLES,
+) -> Plot | None:
+    """Subsample df, fit t-SNE on num_cols, return a cluster_scatter_plot.
+
+    Returns None if the DataFrame is empty or has no numerical columns.
+    """
+    if len(df) == 0 or not num_cols:
+        return None
+    n = len(df)
+    if n > max_samples:
+        df = df.sample(n=max_samples, random_state=random_state)
+    X = df[num_cols].to_numpy(dtype=np.float64)
+    n_samples = len(X)
+    if n_samples < 6:
+        return None
+    perplexity = min(30.0, max(5.0, n_samples / 5))
+    embedding = TSNE(
+        n_components=2,
+        perplexity=perplexity,
+        random_state=random_state,
+        n_jobs=-1,
+    ).fit_transform(X)
+    labels = df[cluster_col].to_numpy()
+    return cluster_scatter_plot(embedding, labels, title=title)
 
 
 @timed
@@ -95,104 +146,6 @@ def preprocess_df(
     return train_df, val_df, test_df
 
 
-@timed
-def run_clustering(
-    train_df,
-    val_df,
-    test_df,
-    feature_cols,
-    label_col,
-    clustering_type,
-    cluster_classes,
-    ignore_clusters,
-    seed,
-    cluster_col="cluster",
-):
-    """Apply the requested clustering strategy and return updated splits with centroids."""
-    logger.info(
-        "Running clustering — type: %s, features: %d",
-        clustering_type,
-        len(feature_cols),
-    )
-    cluster_fn = make_hdbscan_cluster_fn()
-
-    if cluster_classes is not None and len(cluster_classes) == 0:
-        cluster_classes = train_df[label_col].unique().tolist()
-        logger.info(
-            "No cluster_classes specified, using all classes: %s", cluster_classes
-        )
-
-    if clustering_type == "over_all":
-        train_df["_split"] = "train"
-        val_df["_split"] = "val"
-        test_df["_split"] = "test"
-
-        combined = pd.concat([train_df, val_df, test_df], ignore_index=True)
-        combined, centroids = assign_clusters(
-            combined,
-            feature_cols,
-            cluster_fn,
-            label_col,
-            cluster_classes,
-            cluster_col,
-        )
-
-        train_df = (
-            combined[combined["_split"] == "train"]
-            .drop("_split", axis=1)
-            .reset_index(drop=True)
-        )
-        val_df = (
-            combined[combined["_split"] == "val"]
-            .drop("_split", axis=1)
-            .reset_index(drop=True)
-        )
-        test_df = (
-            combined[combined["_split"] == "test"]
-            .drop("_split", axis=1)
-            .reset_index(drop=True)
-        )
-
-    elif clustering_type == "over_splits":
-        centroids = {}
-        offset = 0
-        updated = []
-        for split_df in [train_df, val_df, test_df]:
-            split_df, split_c = assign_clusters(
-                split_df,
-                feature_cols,
-                cluster_fn,
-                label_col,
-                cluster_classes,
-                cluster_col,
-            )
-            if offset:
-                split_df[cluster_col] += offset
-                split_c = {str(int(k) + offset): v for k, v in split_c.items()}
-            offset = int(split_df[cluster_col].max()) + 1
-            centroids.update(split_c)
-            updated.append(split_df)
-        train_df, val_df, test_df = updated
-
-    else:
-        raise ValueError(f"Unknown clustering_type: '{clustering_type}'")
-
-    logger.info("Clustering complete — %d clusters found", len(centroids))
-    if ignore_clusters:
-        val_df = val_df[~val_df[cluster_col].isin(ignore_clusters)].reset_index(
-            drop=True
-        )
-        test_df = test_df[~test_df[cluster_col].isin(ignore_clusters)].reset_index(
-            drop=True
-        )
-        train_df = train_df[~train_df[cluster_col].isin(ignore_clusters)].reset_index(
-            drop=True
-        )
-        train_df = random_undersample_df(train_df, label_col, seed)
-
-    return train_df, val_df, test_df, centroids
-
-
 def recompute_clusters_metadata(cfg):
     """Reload processed splits and recompute clusters_meta.json.
 
@@ -211,11 +164,7 @@ def recompute_clusters_metadata(cfg):
     )
 
     existing = load_from_json(json_logs_path / "data/clusters_meta.json")
-    centroids = {
-        cid: stats["centroid"]
-        for cid, stats in existing["cluster_stats"].items()
-        if stats.get("centroid") is not None
-    }
+    centroids = existing.get("centroids", {})
 
     clusters_metadata = compute_clusters_metadata(
         train_df,
@@ -224,8 +173,6 @@ def recompute_clusters_metadata(cfg):
         cfg.data.label_col,
         cluster_col="cluster",
         centroids=centroids,
-        feature_cols=num_cols + cat_cols,
-        metric=cfg.distance_metric,
     )
     dispatcher = LogDispatcher()
     dispatcher.subscribe(JSONSubscriber(json_logs_path))
@@ -245,9 +192,12 @@ def prepare(cfg):
     raw_data_path = Path(cfg.path.raw_data)
     processed_data_path = Path(cfg.path.processed_data)
     json_logs_path = Path(cfg.path.json_logs)
+    tb_logs_path = Path(cfg.path.tb_logs)
 
+    tb_logger = TensorboardLogger(log_dir=tb_logs_path / "prepare")
     dispatcher = LogDispatcher()
     dispatcher.subscribe(JSONSubscriber(json_logs_path))
+    dispatcher.subscribe(TensorBoardSubscriber(tb_logger.writer))
 
     logger.info("Loading and preprocessing data...")
     df = load_df(str(raw_data_path))
@@ -275,19 +225,73 @@ def prepare(cfg):
         df.reset_index(drop=True) for df in [train_df, val_df, test_df]
     )
 
-    centroids = None
-    if cfg.clustering_type is not None:
-        train_df, val_df, test_df, centroids = run_clustering(
-            train_df,
-            val_df,
-            test_df,
-            feature_cols=num_cols + cat_cols,
-            label_col=label_col,
-            clustering_type=cfg.clustering_type,
-            cluster_classes=cfg.cluster_classes,
-            ignore_clusters=cfg.ignore_clusters,
-            seed=cfg.seed,
+    n_train, n_val = len(train_df), len(val_df)
+    X_num_ref = train_df[num_cols].to_numpy(dtype=np.float64)
+    X_cat_ref = train_df[cat_cols].to_numpy() if cat_cols else None
+
+    logger.info("Running grid search for clustering parameters...")
+    best_params = grid_search(
+        X_num_ref,
+        X_cat_ref,
+        fit_hdbscan,
+        param_grid={
+            "min_cluster_size": list(cfg.min_cluster_sizes),
+            "min_samples": list(cfg.min_samples_list),
+        },
+        max_fit_samples=cfg.max_fit_samples,
+        random_state=cfg.run_id,
+        k_cluster=cfg.k_cluster,
+        penalize=False,
+    )
+    logger.info("Clustering best params: %s", best_params)
+
+    cluster_fn = make_hdbscan_cluster_fn(
+        max_fit_samples=cfg.max_fit_samples,
+        random_state=cfg.run_id,
+        **best_params,
+    )
+
+    combined = pd.concat([train_df, val_df, test_df], ignore_index=True)
+    X_num = combined[num_cols].to_numpy(dtype=np.float64)
+    X_cat = combined[cat_cols].to_numpy() if cat_cols else None
+    y_class = combined[label_col].to_numpy()
+    all_classes = sorted(combined[label_col].unique().tolist())
+
+    labels, centroids = make_clusters(X_num, X_cat, y_class, all_classes, cluster_fn)
+
+    # reassign noise points (-1) to per-class pseudo-clusters
+    noise_count = int((labels == -1).sum())
+    if noise_count > 0:
+        labels = labels.copy()
+        next_id = max(centroids.keys(), default=-1) + 1
+        for noise_cls in sorted(np.unique(y_class)):
+            noise_mask = (y_class == noise_cls) & (labels == -1)
+            if noise_mask.any():
+                labels[noise_mask] = next_id
+                centroids[next_id] = X_num[noise_mask].mean(axis=0)
+                next_id += 1
+
+    combined["cluster"] = labels
+    train_df = combined.iloc[:n_train].reset_index(drop=True)
+    val_df = combined.iloc[n_train : n_train + n_val].reset_index(drop=True)
+    test_df = combined.iloc[n_train + n_val :].reset_index(drop=True)
+
+    ignore_clusters = list(cfg.ignore_clusters)
+    if ignore_clusters:
+        train_df = train_df[~train_df["cluster"].isin(ignore_clusters)].reset_index(
+            drop=True
         )
+        val_df = val_df[~val_df["cluster"].isin(ignore_clusters)].reset_index(drop=True)
+        test_df = test_df[~test_df["cluster"].isin(ignore_clusters)].reset_index(
+            drop=True
+        )
+        train_df = random_undersample_df(train_df, label_col, cfg.seed)
+
+    logger.info(
+        "Clustering complete — %d clusters (noise reassigned: %d points into pseudo-clusters)",
+        len(centroids),
+        noise_count,
+    )
 
     train_df, val_df, test_df, label_mapping = encode_labels(
         train_df, val_df, test_df, label_col, dst_label_col=f"encoded_{label_col}"
@@ -312,21 +316,44 @@ def prepare(cfg):
     )
     dispatcher.publish(LogBundle.from_dict({"json/data/df_meta": metadata}))
 
-    if cfg.clustering_type is not None and centroids is not None:
-        clusters_metadata = compute_clusters_metadata(
-            train_df,
-            val_df,
-            test_df,
-            label_col,
+    clusters_metadata = compute_clusters_metadata(
+        train_df,
+        val_df,
+        test_df,
+        label_col,
+        cluster_col="cluster",
+        centroids={str(k): v.tolist() for k, v in centroids.items()},
+        feature_cols=num_cols + cat_cols,
+        metric=cfg.distance_metric,
+    )
+    dispatcher.publish(
+        LogBundle.from_dict({"json/data/clusters_meta": clusters_metadata})
+    )
+    logger.info("Cluster metadata saved.")
+
+    logger.info("Computing t-SNE cluster plots ...")
+    step = cfg.run_id or 0
+    for class_name in combined[label_col].unique():
+        logger.info("Class %s", class_name)
+        plot = _tsne_cluster_plot(
+            combined[combined[label_col] == class_name],
+            num_cols,
             cluster_col="cluster",
-            centroids=centroids,
-            feature_cols=num_cols + cat_cols,
-            metric=cfg.distance_metric,
+            random_state=cfg.run_id or 0,
         )
+        if plot is None:
+            logger.warning(
+                "Skipped t-SNE for class %s (too few samples or no num_cols)",
+                class_name,
+            )
+            continue
         dispatcher.publish(
-            LogBundle.from_dict({"json/data/clusters_meta": clusters_metadata})
+            LogBundle(
+                figures={f"data/cluster_tsne/class_{class_name}": plot}, step=step
+            )
         )
-        logger.info("Cluster metadata saved.")
+
+    tb_logger.close()
 
     return train_df, val_df, test_df, metadata
 

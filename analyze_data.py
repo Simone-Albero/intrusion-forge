@@ -27,11 +27,8 @@ from src.common.log import (
 )
 from src.common.utils import flush_timing, load_from_json, timed
 
-from src.data.io import load_listed_dfs
-from src.data.analyze import (
-    compute_pairwise_separability,
-    build_cluster_summary,
-)
+from src.data.io import load_df
+from src.data.complexity import compute_all_complexity_measures
 from src.plot.array import (
     confusion_matrix_to_plot,
     feature_importance_plot,
@@ -46,11 +43,23 @@ logger = logging.getLogger(__name__)
 
 RELEVANT_GEOMETRIC_FEATURES = [
     "max_dispersion",
+    "dist_to_nearest_foreign_cluster",
     "p5_silhouette",
     "frac_at_risk",
+    "min_sibling_centroid_dist",
+    "f1_mean",
+    "f2_mean",
+    "f3_mean",
+    "f4_mean",
+    "n1_mean",
+    "n2_mean",
+    "n3_mean",
+    "n4_mean",
+    "network_density_mean",
+    "t2",
+    "t3",
+    "t4",
 ]
-
-SEPARABILITY_MAX_PAIRS = 50_000
 
 RF_PARAM_GRID = {
     "n_estimators": [100, 200, 300, 500],
@@ -68,15 +77,6 @@ class OutputPaths:
     tb_logs: Path
     processed_data: Path
     configs: Path
-
-
-@dataclass
-class SeparabilityConfig:
-    """Parameters for cluster separability computation."""
-
-    feature_cols: list[str]
-    extension: str
-    distance_metric: str
 
 
 def _run_outer_fold(
@@ -213,34 +213,6 @@ def fit_failure_classifier(
     return results
 
 
-def measure_cluster_separability(
-    processed_data_path: Path,
-    sep_cfg: SeparabilityConfig,
-) -> dict[str, dict]:
-    """Compute pairwise cluster separability on train and test splits.
-
-    Returns:
-        {"train": <sep_train>, "test": <sep_test>}
-    """
-    train_df, _, test_df = load_listed_dfs(
-        processed_data_path,
-        [
-            f"train.{sep_cfg.extension}",
-            f"val.{sep_cfg.extension}",
-            f"test.{sep_cfg.extension}",
-        ],
-    )
-
-    separability = {}
-    for split_name, split_df in (("train", train_df), ("test", test_df)):
-        X = split_df[sep_cfg.feature_cols].values
-        y = split_df["cluster"].values
-        separability[split_name] = compute_pairwise_separability(
-            X, y, max_pairs=SEPARABILITY_MAX_PAIRS, metric=sep_cfg.distance_metric
-        )
-    return separability
-
-
 def _plot_failure_strips(
     summary_df: pd.DataFrame, rf_correct: np.ndarray, title: str
 ) -> dict[str, Plot]:
@@ -348,41 +320,62 @@ def assemble_analysis_figures(
 @timed
 def analyze(
     paths: OutputPaths,
-    separability: dict[str, dict],
+    X_num: np.ndarray,
+    X_cat: np.ndarray | None,
+    y_class: np.ndarray,
+    y_cluster: np.ndarray,
+    centroids: dict,
     step: int,
     title: str,
     failure_threshold: float,
+    max_complexity_samples: int | None = None,
 ) -> None:
     """Run data analysis pipeline."""
     logger.info("Starting analysis pipeline ...")
 
     pred_infos = load_from_json(paths.json_logs / "analysis/predictions/test.json")
-    clusters_meta = load_from_json(paths.json_logs / "data/clusters_meta.json")
     df_meta = load_from_json(paths.json_logs / "data/df_meta.json")
 
-    cluster_summary = build_cluster_summary(
-        class_to_clusters=clusters_meta["class_to_clusters"],
-        clusters_distribution=clusters_meta["clusters_distribution"],
-        cluster_stats=clusters_meta["cluster_stats"],
-        cluster_errors=pred_infos["clusters"]["global"],
-        separability=separability["test"],
+    logger.info("Computing complexity measures ...")
+    complexity = compute_all_complexity_measures(
+        X_num,
+        X_cat,
+        y_class,
+        y_cluster,
+        centroids,
+        max_samples=max_complexity_samples,
     )
+
+    cluster_errors = pred_infos["clusters"]["global"]
+
+    # build cluster → class mapping from the data
+    cluster_to_class: dict[str, int] = {}
+    for cid in np.unique(y_cluster):
+        if cid == -1:
+            continue
+        mask = y_cluster == cid
+        cluster_to_class[str(cid)] = int(y_class[mask][0])
+
+    cluster_summary = {}
+    for cid, measures in complexity.items():
+        error_entry = (cluster_errors or {}).get(str(cid), {})
+        failure_rate = error_entry.get("error_rate")
+        cluster_summary[str(cid)] = {
+            **measures,
+            "cluster_class": cluster_to_class.get(str(cid)),
+            "failure_rate": failure_rate,
+            "is_failed": failure_rate is not None and failure_rate > 0.0,
+        }
 
     analysis_bus = LogDispatcher()
     tb_logger = TensorboardLogger(log_dir=paths.tb_logs / "analysis")
     analysis_bus.subscribe(TensorBoardSubscriber(tb_logger.writer))
     analysis_bus.subscribe(JSONSubscriber(paths.json_logs))
     try:
-        for split_name, sep in separability.items():
-            analysis_bus.publish(
-                LogBundle.from_dict(
-                    {f"json/analysis/separability/cluster_{split_name}": sep}
-                )
-            )
         analysis_bus.publish(
             LogBundle.from_dict({"json/analysis/cluster_summary": cluster_summary})
         )
-        logger.info("Cluster summary and separability published.")
+        logger.info("Cluster summary published.")
         logger.info("Running failure classifier ...")
         classifier_results = fit_failure_classifier(
             cluster_stats=cluster_summary,
@@ -428,25 +421,36 @@ def main():
 
     num_cols = list(cfg.data.num_cols) if cfg.data.num_cols else []
     cat_cols = list(cfg.data.cat_cols) if cfg.data.cat_cols else []
-    sep_cfg = SeparabilityConfig(
-        feature_cols=num_cols + cat_cols,
-        extension=cfg.data.extension,
-        distance_metric=cfg.distance_metric,
-    )
+    ext = cfg.data.extension
 
-    logger.info("Computing cluster separability ...")
-    separability = measure_cluster_separability(paths.processed_data, sep_cfg)
-    # separability = {
-    #     split: load_from_json(paths.json_logs / f"analysis/separability/cluster_{split}.json")
-    #     for split in ("train", "test")
-    # }
+    train_df = load_df(str(paths.processed_data / f"train.{ext}"))
+    val_df = load_df(str(paths.processed_data / f"val.{ext}"))
+    test_df = load_df(str(paths.processed_data / f"test.{ext}"))
+    combined = pd.concat([train_df, val_df, test_df], ignore_index=True)
+
+    X_num = (
+        combined[num_cols].to_numpy(dtype=np.float64)
+        if num_cols
+        else np.empty((len(combined), 0))
+    )
+    X_cat = combined[cat_cols].to_numpy() if cat_cols else None
+    y_class = combined[f"encoded_{cfg.data.label_col}"].to_numpy(dtype=np.int64)
+    y_cluster = combined["cluster"].to_numpy()
+
+    clusters_meta = load_from_json(Path(cfg.path.json_logs) / "data/clusters_meta.json")
+    centroids = clusters_meta.get("centroids", {})
 
     analyze(
         paths=paths,
-        separability=separability,
+        X_num=X_num,
+        X_cat=X_cat,
+        y_class=y_class,
+        y_cluster=y_cluster,
+        centroids=centroids,
         step=cfg.run_id or 0,
         title=cfg.data.file_name,
         failure_threshold=cfg.failure_threshold or 0.0,
+        max_complexity_samples=cfg.max_complexity_samples,
     )
     flush_timing(paths.json_logs / "timing.json")
 

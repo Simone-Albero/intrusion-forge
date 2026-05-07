@@ -643,3 +643,76 @@ def grouped_bar_plot(
 
     fig.tight_layout()
     return _fig_to_plot(fig)
+
+
+def cluster_scatter_plot(
+    X: np.ndarray,
+    cluster_labels: np.ndarray,
+    title: str = "",
+    x_label: str = "",
+    y_label: str = "",
+    figsize: tuple[float, float] = (10, 8),
+    marker_size: float = 18.0,
+) -> Plot:
+    """2D scatter of pre-computed embeddings colored by cluster label.
+
+    Noise points (cluster_labels == -1) are rendered as grey crosses.
+    No legend is drawn — color alone distinguishes clusters.
+
+    Args:
+        X:              (n, 2) float array, pre-computed 2D embedding.
+        cluster_labels: (n,) int array; -1 = noise / unassigned.
+        title:          Plot title.
+        x_label:        X-axis label.
+        y_label:        Y-axis label.
+        figsize:        Matplotlib figure size.
+        marker_size:    Marker area (scatter ``s`` parameter).
+    """
+    X = np.asarray(X)
+    cluster_labels = np.asarray(cluster_labels)
+    if X.ndim != 2 or X.shape[1] != 2:
+        raise ValueError("`X` must have shape (n, 2).")
+
+    valid_ids = sorted(int(c) for c in np.unique(cluster_labels) if c != -1)
+    cmap = _get_fill_cmap(max(len(valid_ids), 1))
+    color_map = {cid: cmap(i) for i, cid in enumerate(valid_ids)}
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # noise points
+    noise_mask = cluster_labels == -1
+    if noise_mask.any():
+        ax.scatter(
+            X[noise_mask, 0],
+            X[noise_mask, 1],
+            c="#AAAAAA",
+            marker="x",
+            s=marker_size * 1.5,
+            alpha=0.4,
+            linewidths=0.8,
+            zorder=1,
+        )
+
+    # cluster points
+    for cid in valid_ids:
+        mask = cluster_labels == cid
+        ax.scatter(
+            X[mask, 0],
+            X[mask, 1],
+            c=[color_map[cid]],
+            marker="o",
+            s=marker_size,
+            alpha=0.7,
+            linewidths=0,
+            zorder=2,
+        )
+
+    ax.set_xlabel(x_label, fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
+    ax.set_ylabel(y_label, fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
+    ax.set_title(title, fontsize=TITLE_FONTSIZE, pad=TITLE_PAD)
+    ax.tick_params(labelsize=TICK_LABELSIZE)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.grid(True, alpha=GRID_ALPHA)
+    fig.tight_layout()
+    return _fig_to_plot(fig)
