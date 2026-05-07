@@ -1,8 +1,7 @@
 import numpy as np
 import hdbscan
 
-from src.data.complexity.shared import build_sparse_knn_matrix
-from src.ml.clustering.base import ClusterFn, _subsample
+from src.ml.clustering.base import _subsample
 
 
 def fit_hdbscan(
@@ -20,18 +19,10 @@ def fit_hdbscan(
     random_state: int = 0,
     **fixed_params,
 ) -> np.ndarray:
-    """Fit HDBSCAN and return labels (n,).
+    """Fit HDBSCAN with Euclidean distance and return labels (n,).
 
-    Gower path (X_cat is not None):
-      k = fixed_params.get("k_cluster", 50)
-      D_sparse = build_sparse_knn_matrix(X_num, X_cat, k=k)
-      HDBSCAN(metric="precomputed").fit(D_sparse)
-      No PCA, no approximate_predict.
-
-    Euclidean path (X_cat is None):
-      HDBSCAN(metric="euclidean").fit(X_num)
-      approximate_predict used if n > max_fit_samples.
-
+    X_cat is accepted but ignored — clustering is always Euclidean on X_num.
+    If n > max_fit_samples: subsample → fit → approximate_predict.
     No logging, no grid search.
     Returns labels of shape (n,). Invalid clusterings return all -1 when penalize=False,
     or raise ValueError when penalize=True and thresholds are violated.
@@ -43,23 +34,17 @@ def fit_hdbscan(
         min_samples=min_samples,
         cluster_selection_method=cluster_selection_method,
         cluster_selection_epsilon=cluster_selection_epsilon,
-        metric="precomputed" if X_cat is not None else "euclidean",
-        prediction_data=X_cat is None,  # only needed for approximate_predict
+        metric="euclidean",
+        prediction_data=True,
     )
 
-    if X_cat is not None:
-        k = fixed_params.get("k_cluster", 50)
-        D_sparse = build_sparse_knn_matrix(X_num, X_cat, k=k)
-        clf.fit(D_sparse)
-        labels = clf.labels_
+    if n > max_fit_samples:
+        sub_num, _ = _subsample(X_num, None, max_fit_samples, random_state)
+        clf.fit(sub_num)
+        labels, _ = hdbscan.approximate_predict(clf, X_num)
     else:
-        if n > max_fit_samples:
-            sub_num, _ = _subsample(X_num, None, max_fit_samples, random_state)
-            clf.fit(sub_num)
-            labels, _ = hdbscan.approximate_predict(clf, X_num)
-        else:
-            clf.fit(X_num)
-            labels = clf.labels_
+        clf.fit(X_num)
+        labels = clf.labels_
 
     if penalize:
         n_clustered = (labels != -1).sum()
@@ -77,30 +62,3 @@ def fit_hdbscan(
             )
 
     return labels
-
-
-def make_hdbscan_cluster_fn(
-    max_fit_samples: int = 50_000,
-    random_state: int = 0,
-    **best_params,
-) -> ClusterFn:
-    """Return a ClusterFn closing over fit_hdbscan with fixed best_params.
-
-    No grid search inside — grid_search must be called separately to obtain best_params.
-    k_cluster is forwarded inside best_params if present.
-    penalize is always False in the returned ClusterFn (used for final assignment, not search).
-    """
-    # strip penalize if caller accidentally included it — always False in final assignment
-    best_params.pop("penalize", None)
-
-    def cluster_fn(X_num: np.ndarray, X_cat: np.ndarray | None) -> np.ndarray:
-        return fit_hdbscan(
-            X_num,
-            X_cat,
-            max_fit_samples=max_fit_samples,
-            random_state=random_state,
-            penalize=False,
-            **best_params,
-        )
-
-    return cluster_fn

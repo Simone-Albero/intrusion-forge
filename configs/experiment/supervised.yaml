@@ -1,17 +1,15 @@
 # @package _global_
 defaults:
-  - override /model: numerical_classifier
+  - override /model: tabular_classifier
   - override /loss: focal
   - override /loops: default
   - override /optimizer: adamw
   - override /scheduler: one_cycle
 
 k: 5                                      # k for complexity k-NN graph (build_knn_graph)
-k_cluster: 50                             # k for Gower sparse kNN in HDBSCAN (caps min_samples_list values)
 min_cluster_sizes: [30, 50, 100, 150]
-min_samples_list: [10, 30, 50]            # values must be ≤ k_cluster
+min_samples_list: [10, 30, 50]
 max_fit_samples: 10000
-ignore_clusters: []
 
 n_samples: null
 run_id: 0

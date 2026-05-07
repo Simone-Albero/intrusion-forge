@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 
 from sklearn.manifold import TSNE
 from ignite.handlers.tensorboard_logger import TensorboardLogger
@@ -42,8 +43,6 @@ from src.data.preprocessing import (
 from src.ml.clustering import (
     grid_search,
     fit_hdbscan,
-    make_hdbscan_cluster_fn,
-    make_clusters,
 )
 
 setup_logger(log_file="resources/logs.txt")
@@ -82,6 +81,61 @@ def _tsne_cluster_plot(
     ).fit_transform(X)
     labels = df[cluster_col].to_numpy()
     return cluster_scatter_plot(embedding, labels, title=title)
+
+
+def _cluster_per_class(
+    X_num: np.ndarray,
+    y_class: np.ndarray,
+    classes: list,
+    param_grid: dict,
+    max_fit_samples: int,
+    random_state: int,
+) -> tuple[np.ndarray, dict[int, np.ndarray]]:
+    """Per-class grid search + HDBSCAN fit. Returns (labels, centroids).
+
+    For each class: grid_search finds best (min_cluster_size, min_samples),
+    then fit_hdbscan assigns labels. Cluster IDs are globally unique via offset.
+    Noise points (-1) are left as-is; caller handles reassignment.
+    """
+    n = X_num.shape[0]
+    labels = np.full(n, -1, dtype=np.int64)
+    centroids: dict[int, np.ndarray] = {}
+    offset = 0
+
+    for cls in tqdm(classes, desc="Clustering classes"):
+        mask = y_class == cls
+        if not mask.any():
+            continue
+        X_num_cls = X_num[mask]
+
+        best_params = grid_search(
+            X_num_cls,
+            None,
+            fit_hdbscan,
+            param_grid=param_grid,
+            max_fit_samples=max_fit_samples,
+            random_state=random_state,
+            penalize=False,
+        )
+        logger.info("Class %s — best params: %s", cls, best_params)
+
+        raw_labels = fit_hdbscan(
+            X_num_cls,
+            None,
+            max_fit_samples=max_fit_samples,
+            random_state=random_state,
+            penalize=False,
+            **best_params,
+        )
+
+        cluster_ids = np.unique(raw_labels[raw_labels != -1])
+        labels[mask] = np.where(raw_labels == -1, -1, raw_labels + offset)
+        for cid in cluster_ids:
+            centroids[int(cid + offset)] = X_num_cls[raw_labels == cid].mean(axis=0)
+        if len(cluster_ids) > 0:
+            offset += int(cluster_ids.max()) + 1
+
+    return labels, centroids
 
 
 @timed
@@ -226,38 +280,25 @@ def prepare(cfg):
     )
 
     n_train, n_val = len(train_df), len(val_df)
-    X_num_ref = train_df[num_cols].to_numpy(dtype=np.float64)
-    X_cat_ref = train_df[cat_cols].to_numpy() if cat_cols else None
-
-    logger.info("Running grid search for clustering parameters...")
-    best_params = grid_search(
-        X_num_ref,
-        X_cat_ref,
-        fit_hdbscan,
-        param_grid={
-            "min_cluster_size": list(cfg.min_cluster_sizes),
-            "min_samples": list(cfg.min_samples_list),
-        },
-        max_fit_samples=cfg.max_fit_samples,
-        random_state=cfg.run_id,
-        k_cluster=cfg.k_cluster,
-        penalize=False,
-    )
-    logger.info("Clustering best params: %s", best_params)
-
-    cluster_fn = make_hdbscan_cluster_fn(
-        max_fit_samples=cfg.max_fit_samples,
-        random_state=cfg.run_id,
-        **best_params,
-    )
 
     combined = pd.concat([train_df, val_df, test_df], ignore_index=True)
     X_num = combined[num_cols].to_numpy(dtype=np.float64)
-    X_cat = combined[cat_cols].to_numpy() if cat_cols else None
     y_class = combined[label_col].to_numpy()
     all_classes = sorted(combined[label_col].unique().tolist())
 
-    labels, centroids = make_clusters(X_num, X_cat, y_class, all_classes, cluster_fn)
+    logger.info("Running per-class grid search and clustering...")
+    param_grid = {
+        "min_cluster_size": list(cfg.min_cluster_sizes),
+        "min_samples": list(cfg.min_samples_list),
+    }
+    labels, centroids = _cluster_per_class(
+        X_num,
+        y_class,
+        all_classes,
+        param_grid=param_grid,
+        max_fit_samples=cfg.max_fit_samples,
+        random_state=cfg.run_id,
+    )
 
     # reassign noise points (-1) to per-class pseudo-clusters
     noise_count = int((labels == -1).sum())
@@ -275,17 +316,6 @@ def prepare(cfg):
     train_df = combined.iloc[:n_train].reset_index(drop=True)
     val_df = combined.iloc[n_train : n_train + n_val].reset_index(drop=True)
     test_df = combined.iloc[n_train + n_val :].reset_index(drop=True)
-
-    ignore_clusters = list(cfg.ignore_clusters)
-    if ignore_clusters:
-        train_df = train_df[~train_df["cluster"].isin(ignore_clusters)].reset_index(
-            drop=True
-        )
-        val_df = val_df[~val_df["cluster"].isin(ignore_clusters)].reset_index(drop=True)
-        test_df = test_df[~test_df["cluster"].isin(ignore_clusters)].reset_index(
-            drop=True
-        )
-        train_df = random_undersample_df(train_df, label_col, cfg.seed)
 
     logger.info(
         "Clustering complete — %d clusters (noise reassigned: %d points into pseudo-clusters)",
@@ -323,8 +353,6 @@ def prepare(cfg):
         label_col,
         cluster_col="cluster",
         centroids={str(k): v.tolist() for k, v in centroids.items()},
-        feature_cols=num_cols + cat_cols,
-        metric=cfg.distance_metric,
     )
     dispatcher.publish(
         LogBundle.from_dict({"json/data/clusters_meta": clusters_metadata})
