@@ -43,19 +43,29 @@ logger = logging.getLogger(__name__)
 
 RELEVANT_GEOMETRIC_FEATURES = [
     "max_dispersion",
+    "p95_dispersion",
     "dist_to_nearest_foreign_cluster",
     "p5_silhouette",
     "frac_at_risk",
     "min_sibling_centroid_dist",
-    "f1_mean",
-    "f2_mean",
-    "f3_mean",
-    "f4_mean",
-    "n1_mean",
-    "n2_mean",
-    "n3_mean",
-    "n4_mean",
-    "network_density_mean",
+    "f1_class_mean",
+    "f2_class_mean",
+    "f3_class_mean",
+    "f4_class_mean",
+    "f1_cluster_mean",
+    "f2_cluster_mean",
+    "f3_cluster_mean",
+    "f4_cluster_mean",
+    "n1_class_mean",
+    "n2_class_mean",
+    "n3_class_mean",
+    "n4_class_mean",
+    "n1_cluster_mean",
+    "n2_cluster_mean",
+    "n3_cluster_mean",
+    "n4_cluster_mean",
+    "network_density_class_mean",
+    "network_density_cluster_mean",
     "t2",
     "t3",
     "t4",
@@ -328,6 +338,9 @@ def analyze(
     step: int,
     title: str,
     failure_threshold: float,
+    k: int,
+    top_k_clusters: int,
+    min_subsample_per_cluster: int,
     max_complexity_samples: int | None = None,
 ) -> None:
     """Run data analysis pipeline."""
@@ -343,7 +356,10 @@ def analyze(
         y_class,
         y_cluster,
         centroids,
+        k=k,
+        top_k_clusters=top_k_clusters,
         max_samples=max_complexity_samples,
+        min_per_cluster=min_subsample_per_cluster,
     )
 
     cluster_errors = pred_infos["clusters"]["global"]
@@ -435,7 +451,7 @@ def main():
     )
     X_cat = combined[cat_cols].to_numpy() if cat_cols else None
     y_class = combined[f"encoded_{cfg.data.label_col}"].to_numpy(dtype=np.int64)
-    y_cluster = combined["cluster"].to_numpy()
+    y_cluster = combined["cluster"].to_numpy(dtype=np.int64)
 
     clusters_meta = load_from_json(Path(cfg.path.json_logs) / "data/clusters_meta.json")
     centroids = clusters_meta.get("centroids", {})
@@ -450,6 +466,9 @@ def main():
         step=cfg.run_id or 0,
         title=cfg.data.file_name,
         failure_threshold=cfg.failure_threshold or 0.0,
+        k=cfg.k,
+        top_k_clusters=cfg.top_k_clusters,
+        min_subsample_per_cluster=cfg.min_subsample_per_cluster,
         max_complexity_samples=cfg.max_complexity_samples,
     )
     flush_timing(paths.json_logs / "timing.json")

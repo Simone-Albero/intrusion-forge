@@ -1,207 +1,163 @@
 import numpy as np
 from tqdm import tqdm
 
-from src.data.complexity.shared import build_approx_mst
+from src.data.complexity.shared import (
+    aggregate_min_mean_max,
+    build_approx_mst,
+    make_null_row,
+)
 from ...common.utils import timed
 
 
-def _n1_pair(
-    c_set: set[int],
-    j_set: set[int],
-    mst_edges: list[tuple[int, int, float]],
-) -> float:
-    """N1(c, j): fraction of cluster-c samples with at least one MST edge to class j."""
-    boundary = set()
-    for u, v, _ in mst_edges:
-        if u in c_set and v in j_set:
-            boundary.add(u)
-        elif v in c_set and u in j_set:
-            boundary.add(v)
-    return len(boundary) / len(c_set) if c_set else 0.0
+_N_KEYS = ("n1", "n2", "n3", "n4")
 
 
-def _n2_pair(
-    c_indices: np.ndarray,
-    j_set: set[int],
-    knn_idx: np.ndarray,
-    knn_dist: np.ndarray,
+def _n1_vec(c_mask: np.ndarray, j_mask: np.ndarray, edges_uv: np.ndarray) -> float:
+    """N1: fraction of cluster-c samples sharing an MST edge with the j population."""
+    n_c = int(c_mask.sum())
+    if n_c == 0 or edges_uv.shape[0] == 0:
+        return 0.0
+    u, v = edges_uv[:, 0], edges_uv[:, 1]
+    boundary_u = u[c_mask[u] & j_mask[v]]
+    boundary_v = v[c_mask[v] & j_mask[u]]
+    if boundary_u.size == 0 and boundary_v.size == 0:
+        return 0.0
+    return float(np.unique(np.concatenate([boundary_u, boundary_v])).size / n_c)
+
+
+def _n2_vec(
+    nbs: np.ndarray,
+    nb_dists: np.ndarray,
+    in_c: np.ndarray,
+    in_j: np.ndarray,
     eps: float = 1e-8,
 ) -> float:
-    """N2(c, j): mean intra/(intra + inter) NN ratio.
-
-    For each x in cluster c:
-      intra = nearest distance to a same-cluster neighbor (excl. self)
-      inter = nearest distance to a class-j neighbor
-    Returns mean ratio; skips points with no intra or no inter neighbor in graph.
-    Higher = harder (intra ≈ inter means no separation).
-    """
-    c_set = set(c_indices.tolist())
-    ratios = []
-    for xi in c_indices:
-        nbs = knn_idx[xi]
-        ds = knn_dist[xi]
-        intra_d = next(
-            (d for nb, d in zip(nbs, ds) if int(nb) in c_set and int(nb) != xi), None
-        )
-        inter_d = next((d for nb, d in zip(nbs, ds) if int(nb) in j_set), None)
-        if intra_d is None or inter_d is None:
-            continue
-        ratios.append(float(intra_d) / (float(intra_d) + float(inter_d) + eps))
-    return float(np.mean(ratios)) if ratios else 0.5
+    """N2: mean intra/(intra+inter) NN distance ratio over cluster-c samples."""
+    valid = in_c.any(axis=1) & in_j.any(axis=1)
+    if not valid.any():
+        return 0.5
+    rows = np.arange(nbs.shape[0])
+    intra_d = nb_dists[rows, in_c.argmax(axis=1)]
+    inter_d = nb_dists[rows, in_j.argmax(axis=1)]
+    ratios = intra_d[valid] / (intra_d[valid] + inter_d[valid] + eps)
+    return float(ratios.mean())
 
 
-def _n3_pair(
-    c_indices: np.ndarray,
-    c_set: set[int],
-    j_set: set[int],
-    knn_idx: np.ndarray,
+def _n3_vec(
+    nbs: np.ndarray, j_mask: np.ndarray, in_c: np.ndarray, in_j: np.ndarray
 ) -> float:
-    """N3(c, j): 1-NN error rate on cluster-c samples using neighbors from c union j.
-
-    For each x in c, find the nearest neighbor in (c union j) minus {x}.
-    Misclassified if that neighbor is in j.
-    Higher = harder.
-    """
-    misclassified = 0
-    valid = 0
-    for xi in c_indices:
-        for nb in knn_idx[xi]:
-            nb = int(nb)
-            if nb == xi:
-                continue
-            if nb in c_set:
-                valid += 1
-                break
-            if nb in j_set:
-                valid += 1
-                misclassified += 1
-                break
-    return float(misclassified / valid) if valid > 0 else 0.0
+    """N3: 1-NN error rate restricted to c ∪ j neighbours."""
+    in_cj = in_c | in_j
+    valid = in_cj.any(axis=1)
+    if not valid.any():
+        return 0.0
+    rows = np.arange(nbs.shape[0])
+    nb_idx = nbs[rows, in_cj.argmax(axis=1)]
+    misclassified = j_mask[nb_idx] & valid
+    return float(misclassified.sum() / valid.sum())
 
 
-def _n4_pair(
-    c_indices: np.ndarray,
-    c_set: set[int],
-    j_set: set[int],
-    knn_idx: np.ndarray,
-) -> float:
-    """N4(c, j): k-NN majority-vote error rate on cluster-c samples using neighbors from c∪j.
+def _n4_vec(in_c: np.ndarray, in_j: np.ndarray) -> float:
+    """N4: k-NN majority-vote error rate restricted to c ∪ j neighbours."""
+    c_votes = in_c.sum(axis=1)
+    j_votes = in_j.sum(axis=1)
+    valid = (c_votes + j_votes) > 0
+    if not valid.any():
+        return 0.0
+    return float(((j_votes > c_votes) & valid).sum() / valid.sum())
 
-    For each x in c, among its k neighbors, count votes from c (excl. self) and j.
-    Misclassified if j-votes > c-votes.
-    Higher = harder.
-    """
-    misclassified = 0
-    valid = 0
-    for xi in c_indices:
-        c_votes = sum(1 for nb in knn_idx[xi] if int(nb) in c_set and int(nb) != xi)
-        j_votes = sum(1 for nb in knn_idx[xi] if int(nb) in j_set)
-        if c_votes + j_votes == 0:
+
+def _pair_metrics(
+    nbs: np.ndarray,
+    nb_dists: np.ndarray,
+    c_mask: np.ndarray,
+    j_mask: np.ndarray,
+    edges_uv: np.ndarray,
+) -> tuple[float, float, float, float]:
+    """Compute (n1, n2, n3, n4) for cluster c against population j."""
+    in_c = c_mask[nbs]
+    in_j = j_mask[nbs]
+    n1 = _n1_vec(c_mask, j_mask, edges_uv)
+    n2 = _n2_vec(nbs, nb_dists, in_c, in_j)
+    n3 = _n3_vec(nbs, j_mask, in_c, in_j)
+    n4 = _n4_vec(in_c, in_j)
+    return n1, n2, n3, n4
+
+
+def _aggregate_pairs(
+    nbs: np.ndarray,
+    nb_dists: np.ndarray,
+    c_mask: np.ndarray,
+    population_masks: list[np.ndarray],
+    edges_uv: np.ndarray,
+) -> dict[str, list[float]]:
+    """Run _pair_metrics over each population mask, skipping empty ones."""
+    out: dict[str, list[float]] = {k: [] for k in _N_KEYS}
+    for j_mask in population_masks:
+        if not j_mask.any():
             continue
-        valid += 1
-        if j_votes > c_votes:
-            misclassified += 1
-    return float(misclassified / valid) if valid > 0 else 0.0
+        n1, n2, n3, n4 = _pair_metrics(nbs, nb_dists, c_mask, j_mask, edges_uv)
+        out["n1"].append(n1)
+        out["n2"].append(n2)
+        out["n3"].append(n3)
+        out["n4"].append(n4)
+    return out
 
 
 @timed
 def compute_n_measures(
-    y_class: np.ndarray,
     y_cluster: np.ndarray,
     knn_idx: np.ndarray,
     knn_dist: np.ndarray,
+    X_num: np.ndarray,
+    X_cat: np.ndarray | None,
+    class_mask: dict[int, np.ndarray],
+    cluster_mask: dict[str, np.ndarray],
+    cluster_to_class: dict[str, int],
+    top_k_map: dict[str, list[str]],
 ) -> dict[str, dict[str, float | None]]:
-    """Compute N1-N4 per cluster vs each adversarial class, aggregated as min + mean.
+    """Compute N1-N4 per cluster aggregated against (a) adversarial classes and
+    (b) the top-K nearest adversarial clusters, returned as min/mean/max for
+    each scope.
 
-    Inputs:
-        y_class    — (n,) int array, class labels (full dataset, including noise).
-        y_cluster  — (n,) int array, cluster labels (-1 = noise, excluded).
-        knn_idx    — (n, k) int array, k-NN indices in the full dataset.
-        knn_dist   — (n, k) float array, corresponding k-NN distances.
+    Builds a global approximate MST once (for N1), then derives N2-N4 from the
+    k-NN graph using vectorised boolean masks. Noise points (y_cluster == -1)
+    are excluded from cluster membership but may appear as neighbours.
 
-    Builds a global approximate MST once (for N1), then computes N2-N4 from the kNN graph.
-    Noise points (y_cluster == -1) are excluded from cluster-level computations,
-    but their indices may appear in knn_idx (as class-j neighbors).
-
-    Output keys per cluster:
-        n1_min, n1_mean, n1_max  (MST boundary fraction — higher = harder)
-        n2_min, n2_mean, n2_max  (intra/inter NN ratio — higher = harder)
-        n3_min, n3_mean, n3_max  (1-NN error rate — higher = harder)
-        n4_min, n4_mean, n4_max  (k-NN majority error rate — higher = harder)
+    Output keys per cluster (24 total):
+        n{i}_class_{min,mean,max}   — aggregated over adversarial classes
+        n{i}_cluster_{min,mean,max} — aggregated over top-K adversarial clusters
+        for i in {1, 2, 3, 4}.
     """
-    mst_edges = build_approx_mst(knn_idx, knn_dist)
-
-    mask_valid = y_cluster != -1
-    yc_v = y_class[mask_valid]
-    yk_v = y_cluster[mask_valid]
-
-    # global indices (in full array) for each cluster and each class
-    full_idx = np.where(mask_valid)[0]
-    all_classes = np.unique(yc_v)
+    edges_uv = build_approx_mst(knn_idx, knn_dist, X_num, X_cat)
 
     result: dict[str, dict[str, float | None]] = {}
-
-    for cid in tqdm(np.unique(yk_v), desc="N measures", unit="cluster", leave=False):
-        local_mask = yk_v == cid
-        c_full_idx = full_idx[local_mask]
-        c_set = set(c_full_idx.tolist())
-        cls_c = int(yc_v[local_mask][0])
-        adversarial = [j for j in all_classes if j != cls_c]
-
-        null_row: dict[str, float | None] = {
-            "n1_min": None,
-            "n1_mean": None,
-            "n1_max": None,
-            "n2_min": None,
-            "n2_mean": None,
-            "n2_max": None,
-            "n3_min": None,
-            "n3_mean": None,
-            "n3_max": None,
-            "n4_min": None,
-            "n4_mean": None,
-            "n4_max": None,
-        }
-
-        if not adversarial or len(c_full_idx) == 0:
-            result[str(cid)] = null_row
+    for cid_str, c_mask in tqdm(
+        cluster_mask.items(), desc="N measures", unit="cluster", leave=False
+    ):
+        row = make_null_row(_N_KEYS)
+        c_full_idx = np.where(c_mask)[0]
+        if c_full_idx.size == 0:
+            result[cid_str] = row
             continue
 
-        n1_vals, n2_vals, n3_vals, n4_vals = [], [], [], []
-        for j in adversarial:
-            # class j: all non-noise samples of class j (across all clusters)
-            j_full_idx = full_idx[yc_v == j]
-            j_set = set(j_full_idx.tolist())
-            if not j_set:
-                continue
-            n1_vals.append(_n1_pair(c_set, j_set, mst_edges))
-            n2_vals.append(_n2_pair(c_full_idx, j_set, knn_idx, knn_dist))
-            n3_vals.append(_n3_pair(c_full_idx, c_set, j_set, knn_idx))
-            n4_vals.append(_n4_pair(c_full_idx, c_set, j_set, knn_idx))
+        cls_c = cluster_to_class[cid_str]
+        nbs = knn_idx[c_full_idx]
+        nb_dists = knn_dist[c_full_idx]
 
-        def _agg(vals: list[float]) -> tuple[float | None, float | None, float | None]:
-            if not vals:
-                return None, None, None
-            return float(np.min(vals)), float(np.mean(vals)), float(np.max(vals))
+        class_pops = [m for j, m in class_mask.items() if j != cls_c]
+        cluster_pops = [
+            cluster_mask[ac] for ac in top_k_map.get(cid_str, []) if ac in cluster_mask
+        ]
 
-        n1_min, n1_mean, n1_max = _agg(n1_vals)
-        n2_min, n2_mean, n2_max = _agg(n2_vals)
-        n3_min, n3_mean, n3_max = _agg(n3_vals)
-        n4_min, n4_mean, n4_max = _agg(n4_vals)
+        for scope, pops in (("class", class_pops), ("cluster", cluster_pops)):
+            agg = _aggregate_pairs(nbs, nb_dists, c_mask, pops, edges_uv)
+            for nk in _N_KEYS:
+                mn, me, mx = aggregate_min_mean_max(agg[nk])
+                row[f"{nk}_{scope}_min"] = mn
+                row[f"{nk}_{scope}_mean"] = me
+                row[f"{nk}_{scope}_max"] = mx
 
-        result[str(cid)] = {
-            "n1_min": n1_min,
-            "n1_mean": n1_mean,
-            "n1_max": n1_max,
-            "n2_min": n2_min,
-            "n2_mean": n2_mean,
-            "n2_max": n2_max,
-            "n3_min": n3_min,
-            "n3_mean": n3_mean,
-            "n3_max": n3_max,
-            "n4_min": n4_min,
-            "n4_mean": n4_mean,
-            "n4_max": n4_max,
-        }
+        result[cid_str] = row
 
     return result

@@ -36,17 +36,17 @@ num_cols:
   - DNS_TTL_ANSWER
 
 cat_cols:
-  # - PROTOCOL
-  # - TCP_FLAGS
-  # - CLIENT_TCP_FLAGS
-  # - SERVER_TCP_FLAGS
-  # - ICMP_TYPE
-  # - ICMP_IPV4_TYPE
-  # - DNS_QUERY_TYPE
-  # - FTP_COMMAND_RET_CODE
+  - PROTOCOL
+  - TCP_FLAGS
+  - CLIENT_TCP_FLAGS
+  - SERVER_TCP_FLAGS
+  - ICMP_TYPE
+  - ICMP_IPV4_TYPE
+  - DNS_QUERY_TYPE
+  - FTP_COMMAND_RET_CODE
 
 num_numerical: 29
-num_categorical: 0
+num_categorical: 8
 benign_tag: Benign
 
 train_frac: 0.8

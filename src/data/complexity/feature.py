@@ -1,6 +1,7 @@
 import numpy as np
 from tqdm import tqdm
 
+from src.data.complexity.shared import aggregate_min_mean_max, make_null_row
 from ...common.utils import timed
 
 
@@ -61,94 +62,90 @@ def _f4_pair(X_c: np.ndarray, X_j: np.ndarray) -> float:
     return float(np.mean(in_all))
 
 
+_F_KEYS = ("f1", "f2", "f3", "f4")
+
+
+def _pair_block(X_c: np.ndarray, X_others: list[np.ndarray]) -> dict[str, list[float]]:
+    """Compute F1-F4 for cluster X_c against each population in X_others.
+
+    Skips populations with fewer than 2 samples.
+    """
+    out: dict[str, list[float]] = {k: [] for k in _F_KEYS}
+    for X_o in X_others:
+        if len(X_o) < 2:
+            continue
+        out["f1"].append(_f1_pair(X_c, X_o))
+        out["f2"].append(_f2_pair(X_c, X_o))
+        out["f3"].append(_f3_pair(X_c, X_o))
+        out["f4"].append(_f4_pair(X_c, X_o))
+    return out
+
+
 @timed
 def compute_f_measures(
     X_num: np.ndarray,
     y_class: np.ndarray,
     y_cluster: np.ndarray,
+    cluster_to_class: dict[str, int],
+    top_k_map: dict[str, list[str]],
 ) -> dict[str, dict[str, float | None]]:
-    """Compute F1-F4 per cluster vs each adversarial class, aggregated as min + mean.
+    """Compute F1-F4 per cluster aggregated against (a) adversarial classes and
+    (b) the top-K nearest adversarial clusters, returned as min/mean/max for
+    each scope.
 
     Inputs:
-        X_num      — (n, d_num) float array, RobustScaled numericals.
-        y_class    — (n,) int array, class labels.
-        y_cluster  — (n,) int array, cluster labels (-1 = noise, excluded).
+        X_num             — (n, d_num) float array, RobustScaled numericals.
+        y_class           — (n,) int array, class labels.
+        y_cluster         — (n,) int array, cluster labels (-1 = noise, excluded).
+        cluster_to_class  — {str(cluster_id): class_label} for non-noise clusters.
+        top_k_map         — {str(cluster_id): [str(adversarial_cluster_id), ...]}
+                            top-K nearest adversarial clusters per cluster.
 
-    Output keys per cluster:
-        f1_min, f1_mean, f1_max  (Fisher discriminant ratio — higher = harder)
-        f2_min, f2_mean, f2_max  (bounding-box overlap — higher = harder)
-        f3_min, f3_mean, f3_max  (best single-feature separability — higher = harder)
-        f4_min, f4_mean, f4_max  (joint-feature overlap — higher = harder)
+    Output keys per cluster (24 total):
+        f{i}_class_{min,mean,max}    — aggregated over adversarial classes
+        f{i}_cluster_{min,mean,max}  — aggregated over top-K adversarial clusters
+        for i in {1, 2, 3, 4}.
 
-    For each cluster c (class cls_c), pairs it against each class j ≠ cls_c.
-    X_j = all non-noise samples with y_class == j (across all clusters of j).
+    F-family is numerical-only by design (categorical information enters via
+    the N/ND families through the Gower k-NN graph).
     """
     mask_valid = y_cluster != -1
     X_v = X_num[mask_valid]
     yc_v = y_class[mask_valid]
     yk_v = y_cluster[mask_valid]
 
-    all_classes = np.unique(yc_v)
+    class_block: dict[int, np.ndarray] = {
+        int(j): X_v[yc_v == j] for j in np.unique(yc_v)
+    }
+    cluster_block: dict[str, np.ndarray] = {
+        str(int(cid)): X_v[yk_v == cid] for cid in np.unique(yk_v)
+    }
+
     result: dict[str, dict[str, float | None]] = {}
-
-    for cid in tqdm(np.unique(yk_v), desc="F measures", unit="cluster", leave=False):
-        mask_c = yk_v == cid
-        X_c = X_v[mask_c]
-        cls_c = int(yc_v[mask_c][0])
-        adversarial = [j for j in all_classes if j != cls_c]
-
-        null_row: dict[str, float | None] = {
-            "f1_min": None,
-            "f1_mean": None,
-            "f1_max": None,
-            "f2_min": None,
-            "f2_mean": None,
-            "f2_max": None,
-            "f3_min": None,
-            "f3_mean": None,
-            "f3_max": None,
-            "f4_min": None,
-            "f4_mean": None,
-            "f4_max": None,
-        }
-
-        if not adversarial or len(X_c) < 2 or X_c.shape[1] == 0:
-            result[str(cid)] = null_row
+    for cid_str, X_c in tqdm(
+        cluster_block.items(), desc="F measures", unit="cluster", leave=False
+    ):
+        row = make_null_row(_F_KEYS)
+        if len(X_c) < 2 or X_c.shape[1] == 0:
+            result[cid_str] = row
             continue
 
-        f1_vals, f2_vals, f3_vals, f4_vals = [], [], [], []
-        for j in adversarial:
-            X_j = X_v[yc_v == j]
-            if len(X_j) < 2:
-                continue
-            f1_vals.append(_f1_pair(X_c, X_j))
-            f2_vals.append(_f2_pair(X_c, X_j))
-            f3_vals.append(_f3_pair(X_c, X_j))
-            f4_vals.append(_f4_pair(X_c, X_j))
+        cls_c = cluster_to_class[cid_str]
+        class_blocks = [b for j, b in class_block.items() if j != cls_c]
+        cluster_blocks = [
+            cluster_block[ac]
+            for ac in top_k_map.get(cid_str, [])
+            if ac in cluster_block
+        ]
 
-        def _agg(vals: list[float]) -> tuple[float | None, float | None, float | None]:
-            if not vals:
-                return None, None, None
-            return float(np.min(vals)), float(np.mean(vals)), float(np.max(vals))
+        for scope, blocks in (("class", class_blocks), ("cluster", cluster_blocks)):
+            vals = _pair_block(X_c, blocks)
+            for fk in _F_KEYS:
+                mn, me, mx = aggregate_min_mean_max(vals[fk])
+                row[f"{fk}_{scope}_min"] = mn
+                row[f"{fk}_{scope}_mean"] = me
+                row[f"{fk}_{scope}_max"] = mx
 
-        f1_min, f1_mean, f1_max = _agg(f1_vals)
-        f2_min, f2_mean, f2_max = _agg(f2_vals)
-        f3_min, f3_mean, f3_max = _agg(f3_vals)
-        f4_min, f4_mean, f4_max = _agg(f4_vals)
-
-        result[str(cid)] = {
-            "f1_min": f1_min,
-            "f1_mean": f1_mean,
-            "f1_max": f1_max,
-            "f2_min": f2_min,
-            "f2_mean": f2_mean,
-            "f2_max": f2_max,
-            "f3_min": f3_min,
-            "f3_mean": f3_mean,
-            "f3_max": f3_max,
-            "f4_min": f4_min,
-            "f4_mean": f4_mean,
-            "f4_max": f4_max,
-        }
+        result[cid_str] = row
 
     return result

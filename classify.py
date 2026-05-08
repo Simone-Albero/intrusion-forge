@@ -283,7 +283,7 @@ def _build_figures(
 
     classes = np.unique(y_true)
     class_names = [label_mapping.get(str(int(c)), str(c)) for c in classes]
-    cm = confusion_matrix(y_true, y_pred, labels=classes)
+    cm = confusion_matrix(y_true, y_pred, labels=classes, normalize="true")
     figures["figure/testing/confusion_matrix"] = confusion_matrix_to_plot(
         cm, class_names=class_names
     )
@@ -366,7 +366,7 @@ def evaluate(
 
     scalars, full_metrics = _compute_metrics(y_true, y_pred)
     pred_infos = evaluate_predictions(y_true, y_pred, confidences, clusters)
-    cm = confusion_matrix(y_true, y_pred, labels=np.unique(y_true))
+    cm = confusion_matrix(y_true, y_pred, labels=np.unique(y_true), normalize="true")
     figures = _build_figures(X, y_true, y_pred, z, label_mapping)
 
     return {

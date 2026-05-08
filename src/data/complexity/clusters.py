@@ -51,7 +51,6 @@ def _approx_silhouette(
 @timed
 def compute_cluster_geometry(
     X_num: np.ndarray,
-    X_cat: np.ndarray | None,
     y_class: np.ndarray,
     y_cluster: np.ndarray,
     centroids: dict[str, list[float]],
@@ -66,6 +65,7 @@ def compute_cluster_geometry(
 
     Output keys per cluster:
         max_dispersion                  max Euclidean distance sample → centroid
+        p95_dispersion                  95th pct of sample → centroid distances
         dist_to_nearest_foreign_cluster min centroid-to-centroid dist (cross-class)
         p5_silhouette                   5th pct of Euclidean silhouette scores
         frac_at_risk                    fraction of points with silhouette < 0
@@ -116,11 +116,16 @@ def compute_cluster_geometry(
         samples = X_v[mask_cid]
         centroid = centroid_matrix[idx_c]
 
-        # max_dispersion
+        # max_dispersion + p95_dispersion (outlier-robust counterpart)
         dists = pairwise_distances(
             samples, centroid.reshape(1, -1), metric="euclidean"
         ).ravel()
-        max_dispersion = float(np.max(dists)) if len(dists) > 0 else None
+        if len(dists) > 0:
+            max_dispersion = float(np.max(dists))
+            p95_dispersion = float(np.percentile(dists, 95))
+        else:
+            max_dispersion = None
+            p95_dispersion = None
 
         # dist_to_nearest_foreign_cluster
         row = pw[idx_c]
@@ -162,6 +167,7 @@ def compute_cluster_geometry(
 
         result[cid] = {
             "max_dispersion": max_dispersion,
+            "p95_dispersion": p95_dispersion,
             "dist_to_nearest_foreign_cluster": dist_to_nearest_foreign,
             "p5_silhouette": p5_sil,
             "frac_at_risk": frac_at_risk,

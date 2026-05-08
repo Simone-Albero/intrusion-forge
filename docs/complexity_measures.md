@@ -1,19 +1,33 @@
 # Complexity Measures
 
 All measures are computed per cluster via `compute_all_complexity_measures`.
-Each cluster is treated as a binary problem: *cluster c (class `cls_c`)* vs *each adversarial class `j ≠ cls_c`*.
-When a measure is pairwise, the final value is the **min** (worst case), **mean**, and **max** (best case) over all adversarial classes.
 
-The k-NN graph is built once using **Gower distance** (batched, mixed numerical + categorical support) with `k = 5` by default.
+The pairwise families (F, N, ND) are aggregated against two scopes:
+
+- **`*_class_*`**: cluster *c* (class `cls_c`) vs each adversarial **class** `j ≠ cls_c`.
+  `X_j` is the union of all non-noise samples of class `j`.
+- **`*_cluster_*`**: cluster *c* vs each of the **top-K nearest adversarial
+  clusters** `c'` (i.e., clusters of any class `≠ cls_c`), ranked by Euclidean
+  centroid distance.
+
+For each scope the final value is the **min** (worst case), **mean**, and
+**max** (best case) over the populations considered.
+
+The k-NN graph is built once using **Gower distance** (batched, mixed
+numerical + categorical). Numerical features are pre-scaled by their **IQR
+(Q3 − Q1)** to keep the metric robust to heavy-tailed outliers. Defaults:
+`k = 30`, `top_k_clusters = 10`. Both are configurable via
+`configs/experiment/supervised.yaml`.
 
 ---
 
 ## Family F — Feature-based
 
-Measures how well individual features separate a cluster from adversarial classes.
-Computed on RobustScaled numerical features only (`X_num`).
+Measures how well individual features separate a cluster from an adversarial
+population. Computed on RobustScaled numerical features only (`X_num`).
+Categorical information is captured by the N/ND families.
 
-### `f1_min` / `f1_mean` / `f1_max`
+### `f1_class_{min,mean,max}` / `f1_cluster_{min,mean,max}`
 
 **Fisher discriminant ratio**
 
@@ -28,11 +42,12 @@ $$f_1(c, j) = \frac{1}{1 + \max_f \frac{(\mu_{c,f} - \mu_{j,f})^2}{\sigma^2_{c,f
 
 ---
 
-### `f2_min` / `f2_mean` / `f2_max`
+### `f2_class_{min,mean,max}` / `f2_cluster_{min,mean,max}`
 
 **Bounding-box overlap ratio**
 
-Mean fraction of per-feature range shared between cluster $c$ and class $j$.
+Mean fraction of per-feature range shared between cluster $c$ and adversarial
+population $j$.
 
 $$f_2(c, j) = \frac{1}{d} \sum_f \frac{\max(0,\, \min(c_{\max,f}, j_{\max,f}) - \max(c_{\min,f}, j_{\min,f}))}{\max(c_{\max,f}, j_{\max,f}) - \min(c_{\min,f}, j_{\min,f})}$$
 
@@ -45,12 +60,13 @@ $$f_2(c, j) = \frac{1}{d} \sum_f \frac{\max(0,\, \min(c_{\max,f}, j_{\max,f}) - 
 
 ---
 
-### `f3_min` / `f3_mean` / `f3_max`
+### `f3_class_{min,mean,max}` / `f3_cluster_{min,mean,max}`
 
 **Best single-feature separability (fraction in overlap region)**
 
-For each feature, fraction of cluster-$c$ samples that fall in the overlap region with class $j$.
-Takes the **minimum over features** (best discriminating feature).
+For each feature, fraction of cluster-$c$ samples that fall in the overlap
+region with the adversarial population. Takes the **minimum over features**
+(best discriminating feature).
 
 $$f_3(c, j) = \min_f \frac{|\{x \in c : lo_f \le x_f \le hi_f\}|}{|c|}$$
 
@@ -60,16 +76,17 @@ where $lo_f = \max(c_{\min,f},\, j_{\min,f})$ and $hi_f = \min(c_{\max,f},\, j_{
 |---|---|
 | **Complexity** | $O(nd)$ per pair |
 | **Range** | $[0, 1]$ |
-| **→ 0** | At least one feature fully separates cluster $c$ from class $j$ |
+| **→ 0** | At least one feature fully separates cluster $c$ from $j$ |
 | **→ 1** | Every feature has all cluster-$c$ samples inside the overlap region |
 
 ---
 
-### `f4_min` / `f4_mean` / `f4_max`
+### `f4_class_{min,mean,max}` / `f4_cluster_{min,mean,max}`
 
 **Joint-feature overlap fraction**
 
-Fraction of cluster-$c$ samples that fall inside the overlap region on **all features simultaneously**.
+Fraction of cluster-$c$ samples that fall inside the overlap region on **all
+features simultaneously**.
 
 $$f_4(c, j) = \frac{|\{x \in c : \forall f,\; lo_f \le x_f \le hi_f\}|}{|c|}$$
 
@@ -84,104 +101,129 @@ $$f_4(c, j) = \frac{|\{x \in c : \forall f,\; lo_f \le x_f \le hi_f\}|}{|c|}$$
 
 ## Family N — Neighborhood-based
 
-Measures local overlap in the k-NN graph (Gower distance).
-Noise points ($y_{cluster} = -1$) are excluded from cluster membership but may appear as neighbors.
+Measures local overlap in the k-NN graph (Gower distance). Noise points
+($y_{cluster} = -1$) are excluded from cluster membership but may appear as
+neighbours.
 
-### `n1_min` / `n1_mean` / `n1_max`
+### `n1_class_{min,mean,max}` / `n1_cluster_{min,mean,max}`
 
 **MST boundary fraction**
 
-Fraction of cluster-$c$ samples that have at least one edge in the approximate minimum spanning tree connecting them to a sample of class $j$.
+Fraction of cluster-$c$ samples that have at least one edge in the
+approximate minimum spanning tree connecting them to a sample of the
+adversarial population. The MST is built on the symmetrised k-NN graph and a
+bridge edge is added per disconnected component to guarantee connectivity.
 
 $$n_1(c, j) = \frac{|\{x \in c : \exists\, (x, y) \in \text{MST},\; y \in j\}|}{|c|}$$
 
 | | |
 |---|---|
-| **Complexity** | $O(n \log n)$ for MST; $O(n)$ per pair for boundary check |
+| **Complexity** | $O(n \log n)$ for MST; $O(|E|)$ vectorised boundary check |
 | **Range** | $[0, 1]$ |
-| **→ 0** | Cluster $c$ is entirely interior, never adjacent to class $j$ in the MST |
-| **→ 1** | Every sample of cluster $c$ borders class $j$ in the MST |
+| **→ 0** | Cluster $c$ is entirely interior, never adjacent to $j$ in the MST |
+| **→ 1** | Every sample of cluster $c$ borders $j$ in the MST |
 
 ---
 
-### `n2_min` / `n2_mean` / `n2_max`
+### `n2_class_{min,mean,max}` / `n2_cluster_{min,mean,max}`
 
-**Intra/inter nearest-neighbor distance ratio**
+**Intra/inter nearest-neighbour distance ratio**
 
-For each sample $x \in c$, ratio of nearest same-cluster distance to the sum of intra and inter distances:
+For each sample $x \in c$, ratio of nearest same-cluster distance to the sum
+of intra and inter distances:
 
 $$n_2(x) = \frac{d_{\text{intra}}}{d_{\text{intra}} + d_{\text{inter}}}$$
 
-Averaged over all samples in $c$.
+Averaged over all samples in $c$ that have both kinds of neighbour within
+the k-NN.
 
 | | |
 |---|---|
-| **Complexity** | $O(nk)$ per pair |
+| **Complexity** | $O(|c| \cdot k)$ per pair |
 | **Range** | $[0, 1]$ |
-| **→ 0** | Intra-cluster neighbors are far closer than class-$j$ neighbors → well-separated |
+| **→ 0** | Intra-cluster neighbours are far closer than $j$ neighbours → well-separated |
 | **→ 0.5** | Intra and inter distances are equal → no local separation |
-| **→ 1** | Class-$j$ neighbors are much closer than same-cluster neighbors → severe overlap |
+| **→ 1** | $j$ neighbours are much closer than same-cluster neighbours → severe overlap |
 
 ---
 
-### `n3_min` / `n3_mean` / `n3_max`
+### `n3_class_{min,mean,max}` / `n3_cluster_{min,mean,max}`
 
-**1-NN error rate**
+**1-NN error rate restricted to c ∪ j**
 
-For each sample $x \in c$, find its nearest neighbor in $c \cup j$ (excluding $x$ itself). Error if that neighbor belongs to class $j$.
+For each sample $x \in c$, find its nearest neighbour in the k-NN list that
+belongs to $c \cup j$. Misclassified if that neighbour is in $j$.
 
 $$n_3(c, j) = \frac{|\{x \in c : \mathrm{NN}_{c \cup j}(x) \in j\}|}{|c|}$$
 
 | | |
 |---|---|
-| **Complexity** | $O(nk)$ per pair |
+| **Complexity** | $O(|c| \cdot k)$ per pair |
 | **Range** | $[0, 1]$ |
-| **→ 0** | Nearest neighbor is always from the same cluster → clean local boundary |
-| **→ 1** | Nearest neighbor is always from class $j$ → cluster $c$ is embedded inside class $j$ |
+| **→ 0** | Nearest neighbour is always from the same cluster → clean local boundary |
+| **→ 1** | Nearest neighbour is always from $j$ → cluster $c$ is embedded inside $j$ |
+
+> Practical note: this metric is meaningful only if the k-NN list has enough
+> reach to contain at least one $c \cup j$ neighbour for most samples. With
+> the new default `k = 30` this is true for the vast majority of samples on
+> NB15/CIC-IDS-2018.
 
 ---
 
-### `n4_min` / `n4_mean` / `n4_max`
+### `n4_class_{min,mean,max}` / `n4_cluster_{min,mean,max}`
 
 **k-NN majority-vote error rate**
 
-For each sample $x \in c$, count votes from same-cluster vs class-$j$ neighbors. Misclassified if $j$-votes > $c$-votes.
+For each sample $x \in c$, count votes from same-cluster vs $j$ neighbours.
+Misclassified if $j$-votes > $c$-votes.
 
 $$n_4(c, j) = \frac{|\{x \in c : \text{votes}_j(x) > \text{votes}_c(x)\}|}{|c|}$$
 
-where $\text{votes}_j(x) = |\{nb \in NN_k(x) : nb \in j\}|$ and $\text{votes}_c(x) = |\{nb \in NN_k(x) : nb \in c,\; nb \ne x\}|$.
-
 | | |
 |---|---|
-| **Complexity** | $O(nk)$ per pair |
+| **Complexity** | $O(|c| \cdot k)$ per pair |
 | **Range** | $[0, 1]$ |
-| **→ 0** | Majority of neighbors always from same cluster |
-| **→ 1** | Majority of neighbors always from class $j$ |
+| **→ 0** | Majority of neighbours always from same cluster |
+| **→ 1** | Majority of neighbours always from $j$ |
 
 ---
 
 ## Family ND — Network density
 
-### `network_density_min` / `network_density_mean` / `network_density_max`
+### `network_density_class_{min,mean,max}` / `network_density_cluster_{min,mean,max}`
 
-**Cross-class k-NN density**
+**Cross-population k-NN density**
 
-Fraction of k-NN edges from cluster $c$ pointing to samples of class $j$:
+Fraction of k-NN edges from cluster $c$ pointing to samples of the
+adversarial population:
 
 $$\text{density}(c, j) = \frac{\sum_{x \in c} |\{nb \in NN(x) : nb \in j\}|}{|c| \times k}$$
 
 | | |
 |---|---|
-| **Complexity** | $O(nk)$ per pair |
+| **Complexity** | $O(|c| \cdot k)$ per pair |
 | **Range** | $[0, 1]$ |
-| **→ 0** | No k-NN edges cross to class $j$ → isolated cluster |
-| **→ 1** | All k-NN edges from cluster $c$ point to class $j$ → fully intermixed |
+| **→ 0** | No k-NN edges cross to $j$ → isolated cluster |
+| **→ 1** | All k-NN edges from cluster $c$ point to $j$ → fully intermixed |
+
+---
+
+### `cls_coef`
+
+**Local clustering coefficient** within the cluster (intra-cluster
+neighbour pairs that are themselves neighbours, averaged across cluster
+members).
+
+### `hub`
+
+**Mean in-degree** in the reverse k-NN graph (hubness proxy).
 
 ---
 
 ## Family T — Dimensionality
 
-Per-cluster dimensionality measures. Computed on the subset of samples belonging to each cluster.
+Per-cluster dimensionality measures. Computed on the subset of samples
+belonging to each cluster.
 
 ### `t2`
 
@@ -189,31 +231,10 @@ Per-cluster dimensionality measures. Computed on the subset of samples belonging
 
 $$T_2 = \frac{d_{\text{num}} + d_{\text{cat}}}{n_c}$$
 
-| | |
-|---|---|
-| **Complexity** | $O(1)$ per cluster |
-| **Range** | $(0, +\infty)$ (typically $\ll 1$ for large clusters) |
-| **→ 0** | Many more samples than features → low dimensionality risk |
-| **→ large** | More features than cluster samples → curse of dimensionality |
-
----
-
 ### `t3`
 
-**PCA intrinsic dimensionality ratio**
-
-Fraction of numerical features needed to explain 95% of variance within the cluster:
-
-$$T_3 = \frac{n_{\text{PCA}_{95\%}}}{d_{\text{num}}}$$
-
-| | |
-|---|---|
-| **Complexity** | $O(n_c d^2)$ PCA fit per cluster |
-| **Range** | $(0, 1]$ |
-| **→ 0** | High feature redundancy — few PCA components suffice |
-| **→ 1** | Features are nearly independent — most components needed for 95% variance |
-
----
+**PCA intrinsic dimensionality ratio** — fraction of numerical features
+needed to explain 95% of variance within the cluster.
 
 ### `t4`
 
@@ -221,12 +242,8 @@ $$T_3 = \frac{n_{\text{PCA}_{95\%}}}{d_{\text{num}}}$$
 
 $$T_4 = \frac{n_{\text{PCA}_{95\%}}}{n_c}$$
 
-| | |
-|---|---|
-| **Complexity** | $O(n_c d^2)$ PCA fit (shared with T3) per cluster |
-| **Range** | $(0, 1]$ (typically $\ll 1$) |
-| **→ 0** | Cluster is very large relative to its intrinsic dimensionality |
-| **→ 1** | Effective dimensionality is comparable to cluster size → underdetermination risk |
+T-family is computed on numerical features only by design (categorical
+information is captured by the N/ND families).
 
 ---
 
@@ -234,80 +251,33 @@ $$T_4 = \frac{n_{\text{PCA}_{95\%}}}{n_c}$$
 
 Per-cluster geometric properties computed in Euclidean space on `X_num`.
 Silhouette is approximated via stratified sampling (up to 10 000 points).
+G-family is numerical-only by design.
 
 ### `max_dispersion`
 
 Maximum Euclidean distance from any sample in the cluster to its centroid.
 
-$$\text{maxDisp}(c) = \max_{x \in c} \|x - \mu_c\|_2$$
+### `p95_dispersion`
 
-| | |
-|---|---|
-| **Complexity** | $O(|c| \cdot d)$ |
-| **Range** | $[0, +\infty)$ |
-| **→ 0** | All samples are concentrated at the centroid |
-| **→ large** | At least one outlier far from the centroid → diffuse or elongated cluster |
-
----
+95th percentile of the sample → centroid distances. Outlier-robust
+counterpart to `max_dispersion`.
 
 ### `dist_to_nearest_foreign_cluster`
 
-Minimum centroid-to-centroid Euclidean distance from cluster $c$ to any cluster of a different class.
-
-$$d_{\text{foreign}}(c) = \min_{c'\, :\, \text{class}(c') \ne \text{class}(c)} \|\mu_c - \mu_{c'}\|_2$$
-
-| | |
-|---|---|
-| **Complexity** | $O(C^2 d)$ pairwise centroids, computed once |
-| **Range** | $[0, +\infty)$ |
-| **→ 0** | A foreign cluster centroid is almost coincident → high collision risk |
-| **→ large** | Well-separated from all foreign clusters |
-
----
+Minimum centroid-to-centroid Euclidean distance from cluster $c$ to any
+cluster of a different class.
 
 ### `p5_silhouette`
 
-5th percentile of silhouette scores (Euclidean, computed on non-noise points with cluster labels).
-
-$$s(x) = \frac{b(x) - a(x)}{\max(a(x), b(x))}$$
-
-where $a(x)$ = mean intra-cluster distance, $b(x)$ = mean distance to nearest foreign cluster.
-
-| | |
-|---|---|
-| **Complexity** | $O(n^2 d)$ exact; approximated via stratified subsample |
-| **Range** | $[-1, 1]$ |
-| **→ -1** | The worst 5% of samples are strongly misassigned |
-| **→ 1** | Even the worst 5% of samples are well-placed inside their cluster |
-
----
+5th percentile of silhouette scores (Euclidean, computed on non-noise points
+with cluster labels).
 
 ### `frac_at_risk`
 
-Fraction of cluster-$c$ samples with silhouette score $< 0$ (i.e., closer to a foreign cluster centroid than to their own).
-
-$$\text{fracAtRisk}(c) = \frac{|\{x \in c : s(x) < 0\}|}{|c|}$$
-
-| | |
-|---|---|
-| **Complexity** | Same as `p5_silhouette` (shared computation) |
-| **Range** | $[0, 1]$ |
-| **→ 0** | All samples are correctly placed relative to cluster boundaries |
-| **→ 1** | Every sample is closer to a foreign cluster than to its own → severely mixed cluster |
-
----
+Fraction of cluster-$c$ samples with silhouette score $< 0$.
 
 ### `min_sibling_centroid_dist`
 
-Minimum centroid-to-centroid Euclidean distance from cluster $c$ to any other cluster of the **same class** (i.e., a sibling cluster).
-
-$$d_{\text{sibling}}(c) = \min_{c' \ne c\, :\, \text{class}(c') = \text{class}(c)} \|\mu_c - \mu_{c'}\|_2$$
-
-`None` if the class has only one cluster.
-
-| | |
-|---|---|
-| **Complexity** | $O(C^2 d)$ pairwise centroids, shared with `dist_to_nearest_foreign_cluster` |
-| **Range** | $[0, +\infty)$ |
-| **→ 0** | Two sub-clusters of the same class nearly overlap → possible over-segmentation |
-| **→ large** | Sibling clusters are well spread across the feature space |
+Minimum centroid-to-centroid Euclidean distance from cluster $c$ to any
+other cluster of the **same class**. `None` if the class has only one
+cluster.

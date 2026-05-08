@@ -54,14 +54,11 @@ def compute_t_measures(
     Returns {str(cluster_id): {t2: float, t3: float, t4: float}}.
     """
     result: dict[str, dict[str, float]] = {}
-    for cid in tqdm(
-        np.unique(y_cluster), desc="T measures", unit="cluster", leave=False
-    ):
-        mask = y_cluster == cid
-        Xn = X_num[mask]
-        Xc = X_cat[mask] if X_cat is not None else None
+    cluster_ids = [int(cid) for cid in np.unique(y_cluster) if int(cid) != -1]
+    d_cat = X_cat.shape[1] if X_cat is not None else 0
+    for cid in tqdm(cluster_ids, desc="T measures", unit="cluster", leave=False):
+        Xn = X_num[y_cluster == cid]
         n, d_num = Xn.shape
-        d_cat = Xc.shape[1] if Xc is not None else 0
         result[str(cid)] = {
             "t2": t2(n, d_num, d_cat),
             "t3": t3(Xn),

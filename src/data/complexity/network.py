@@ -1,154 +1,146 @@
 import numpy as np
 from tqdm import tqdm
 
+from src.data.complexity.shared import aggregate_min_mean_max
 from ...common.utils import timed
 
 
 def compute_cls_coef(
-    y_cluster: np.ndarray,
+    cluster_mask: dict[str, np.ndarray],
     knn_idx: np.ndarray,
 ) -> dict[str, float]:
-    """Clustering coefficient per cluster: fraction of neighbor pairs that are also neighbors."""
-    mask_valid = y_cluster != -1
-    full_idx = np.where(mask_valid)[0]
-    yk_v = y_cluster[mask_valid]
-    k = knn_idx.shape[1]
+    """Local clustering coefficient per cluster.
+
+    For each cluster c, average over its members the fraction of intra-c
+    neighbour pairs that are themselves connected in the k-NN graph.
+    Vectorised via boolean indexing into `knn_idx[intra_nbs]`.
+    """
     result: dict[str, float] = {}
-    for cid in np.unique(yk_v):
-        c_idx = full_idx[yk_v == cid]
-        c_set = set(c_idx.tolist())
-        coefs = []
-        for xi in c_idx:
-            nbs = {int(nb) for nb in knn_idx[xi] if int(nb) in c_set and int(nb) != xi}
-            if len(nbs) < 2:
-                coefs.append(0.0)
+    for cid, c_mask in cluster_mask.items():
+        c_idx = np.where(c_mask)[0]
+        if c_idx.size == 0:
+            result[cid] = 0.0
+            continue
+        nbs = knn_idx[c_idx]
+        in_c = c_mask[nbs]
+        coefs = np.zeros(c_idx.size, dtype=np.float64)
+        for i, intra_row in enumerate(in_c):
+            intra = nbs[i, intra_row]
+            if intra.size < 2:
                 continue
-            triangles = sum(
-                1
-                for nb in nbs
-                for nb2 in knn_idx[nb]
-                if int(nb2) in nbs and int(nb2) != nb
-            )
-            possible = len(nbs) * (len(nbs) - 1)
-            coefs.append(triangles / possible if possible > 0 else 0.0)
-        result[str(cid)] = float(np.mean(coefs)) if coefs else 0.0
+            triangles = int(np.isin(knn_idx[intra], intra).sum())
+            coefs[i] = triangles / (intra.size * (intra.size - 1))
+        result[cid] = float(coefs.mean())
     return result
 
 
 def compute_hub(
-    y_cluster: np.ndarray,
+    cluster_mask: dict[str, np.ndarray],
     knn_idx: np.ndarray,
 ) -> dict[str, float]:
-    """Hub score per cluster: mean in-degree in the reverse kNN graph (hubness proxy)."""
-    n = knn_idx.shape[0]
-    in_degree = np.zeros(n, dtype=np.int64)
-    for i in range(n):
-        for nb in knn_idx[i]:
-            in_degree[int(nb)] += 1
+    """Hub score per cluster: mean in-degree in the reverse kNN graph (hubness proxy).
 
-    mask_valid = y_cluster != -1
-    full_idx = np.where(mask_valid)[0]
-    yk_v = y_cluster[mask_valid]
-    result: dict[str, float] = {}
-    for cid in np.unique(yk_v):
-        c_idx = full_idx[yk_v == cid]
-        result[str(cid)] = float(np.mean(in_degree[c_idx]))
-    return result
+    Vectorised via np.bincount on the flattened k-NN index matrix.
+    """
+    n = knn_idx.shape[0]
+    in_degree = np.bincount(knn_idx.ravel(), minlength=n)
+    return {
+        cid: float(in_degree[np.where(c_mask)[0]].mean()) if c_mask.any() else 0.0
+        for cid, c_mask in cluster_mask.items()
+    }
+
+
+def _density(nbs: np.ndarray, j_mask: np.ndarray, k: int) -> float:
+    """Cross-class k-NN density for cluster c against population mask j_mask."""
+    return float(j_mask[nbs].sum()) / (nbs.shape[0] * k)
 
 
 def compute_network_density(
-    y_class: np.ndarray,
-    y_cluster: np.ndarray,
     knn_idx: np.ndarray,
+    class_mask: dict[int, np.ndarray],
+    cluster_mask: dict[str, np.ndarray],
+    cluster_to_class: dict[str, int],
+    top_k_map: dict[str, list[str]],
 ) -> dict[str, dict[str, float | None]]:
-    """Cross-class k-NN density per cluster vs each adversarial class.
+    """Cross-class k-NN density per cluster aggregated against (a) adversarial
+    classes and (b) the top-K nearest adversarial clusters.
 
-    network_density(c, j) = Σ_{x ∈ cluster_c} |{nb ∈ NN(x) : nb ∈ class_j}| / (|c| × k)
+    density(c, j) = Σ_{x ∈ cluster_c} |{nb ∈ NN(x) : nb ∈ j}| / (|c| × k)
 
-    Returns {str(cid): {network_density_min: float | None, network_density_mean: float | None, network_density_max: float | None}}.
+    Excludes noise (y_cluster == -1) from both the cluster being scored and
+    from the adversarial population, mirroring the F/N families.
     """
     k = knn_idx.shape[1]
-    mask_valid = y_cluster != -1
-    full_idx = np.where(mask_valid)[0]
-    yc_v = y_class[mask_valid]
-    yk_v = y_cluster[mask_valid]
-    all_classes = np.unique(yc_v)
+    null_row: dict[str, float | None] = {
+        f"network_density_{scope}_{stat}": None
+        for scope in ("class", "cluster")
+        for stat in ("min", "mean", "max")
+    }
 
     result: dict[str, dict[str, float | None]] = {}
-
-    for cid in tqdm(np.unique(yk_v), desc="ND measures", unit="cluster", leave=False):
-        local_mask = yk_v == cid
-        c_full_idx = full_idx[local_mask]
-        cls_c = int(yc_v[local_mask][0])
-        adversarial = [j for j in all_classes if j != cls_c]
-
-        null_row: dict[str, float | None] = {
-            "network_density_min": None,
-            "network_density_mean": None,
-            "network_density_max": None,
-        }
-
-        if not adversarial or len(c_full_idx) == 0:
-            result[str(cid)] = null_row
+    for cid, c_mask in tqdm(
+        cluster_mask.items(), desc="ND measures", unit="cluster", leave=False
+    ):
+        row = dict(null_row)
+        c_idx = np.where(c_mask)[0]
+        if c_idx.size == 0:
+            result[cid] = row
             continue
 
-        densities = []
-        for j in adversarial:
-            j_full_idx = np.where(y_class == j)[0]
-            j_set = set(j_full_idx.tolist())
-            cross_edges = sum(
-                1 for xi in c_full_idx for nb in knn_idx[xi] if int(nb) in j_set
-            )
-            densities.append(cross_edges / (len(c_full_idx) * k))
+        cls_c = cluster_to_class[cid]
+        nbs = knn_idx[c_idx]
 
-        if not densities:
-            result[str(cid)] = null_row
-            continue
+        class_vals = [
+            _density(nbs, m, k)
+            for j, m in class_mask.items()
+            if j != cls_c and m.any()
+        ]
+        cluster_vals = [
+            _density(nbs, cluster_mask[ac], k)
+            for ac in top_k_map.get(cid, [])
+            if ac in cluster_mask and cluster_mask[ac].any()
+        ]
 
-        result[str(cid)] = {
-            "network_density_min": float(np.min(densities)),
-            "network_density_mean": float(np.mean(densities)),
-            "network_density_max": float(np.max(densities)),
-        }
+        for scope, vals in (("class", class_vals), ("cluster", cluster_vals)):
+            mn, me, mx = aggregate_min_mean_max(vals)
+            row[f"network_density_{scope}_min"] = mn
+            row[f"network_density_{scope}_mean"] = me
+            row[f"network_density_{scope}_max"] = mx
+
+        result[cid] = row
 
     return result
 
 
 @timed
 def compute_network_measures(
-    y_class: np.ndarray,
-    y_cluster: np.ndarray,
     knn_idx: np.ndarray,
+    class_mask: dict[int, np.ndarray],
+    cluster_mask: dict[str, np.ndarray],
+    cluster_to_class: dict[str, int],
+    top_k_map: dict[str, list[str]],
 ) -> dict[str, dict[str, float | None]]:
-    """Compute network measures per cluster: density, clustering coefficient, hub score.
-
-    Inputs:
-        y_class    — (n,) int array, class labels (full dataset).
-        y_cluster  — (n,) int array, cluster labels (-1 = noise, excluded from clusters).
-        knn_idx    — (n, k) int array, k-NN indices in the full dataset.
-
-    Noise points (y_cluster == -1) may appear as neighbors in knn_idx but are excluded
-    from cluster membership.
+    """Network-family measures per cluster: density (vs class + vs cluster),
+    clustering coefficient, hub score.
 
     Output keys per cluster:
-        network_density_min   min cross-class k-NN density over adversarial classes
-        network_density_mean  mean cross-class k-NN density over adversarial classes
-        network_density_max   max cross-class k-NN density over adversarial classes
-        cls_coef              local clustering coefficient
-        hub                   mean in-degree in the reverse k-NN graph (hubness proxy)
+        network_density_class_{min,mean,max}    cross-class kNN density vs adv. classes
+        network_density_cluster_{min,mean,max}  cross-class kNN density vs top-K clusters
+        cls_coef                                local clustering coefficient
+        hub                                     mean in-degree (hubness proxy)
     """
-    density_out = compute_network_density(y_class, y_cluster, knn_idx)
-    cls_coef_out = compute_cls_coef(y_cluster, knn_idx)
-    hub_out = compute_hub(y_cluster, knn_idx)
+    density_out = compute_network_density(
+        knn_idx, class_mask, cluster_mask, cluster_to_class, top_k_map
+    )
+    cls_coef_out = compute_cls_coef(cluster_mask, knn_idx)
+    hub_out = compute_hub(cluster_mask, knn_idx)
 
-    all_ids = set(density_out) | set(cls_coef_out) | set(hub_out)
     result: dict[str, dict[str, float | None]] = {}
-    for cid in all_ids:
-        row: dict[str, float | None] = {**density_out.get(cid, {})}
+    for cid, row in density_out.items():
+        merged: dict[str, float | None] = dict(row)
         if cid in cls_coef_out:
-            row["cls_coef"] = cls_coef_out[cid]
+            merged["cls_coef"] = cls_coef_out[cid]
         if cid in hub_out:
-            row["hub"] = hub_out[cid]
-        result[cid] = row
-
+            merged["hub"] = hub_out[cid]
+        result[cid] = merged
     return result

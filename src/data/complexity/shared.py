@@ -6,6 +6,38 @@ from scipy.spatial.distance import cdist
 from ...common.utils import timed
 
 
+def _iqr_scaling(X_num: np.ndarray, eps: float = 1e-8) -> np.ndarray:
+    """Scale numerics by IQR (Q3 - Q1) for outlier-robust Gower distance.
+
+    Replaces the classic max-min range so that heavy-tailed features (byte
+    counts, durations) are not collapsed by a few outliers.
+    """
+    q1 = np.quantile(X_num, 0.25, axis=0)
+    q3 = np.quantile(X_num, 0.75, axis=0)
+    return X_num / np.maximum(q3 - q1, eps)
+
+
+def aggregate_min_mean_max(
+    vals: list[float],
+) -> tuple[float | None, float | None, float | None]:
+    """Aggregate a list of values into (min, mean, max). Returns Nones if empty."""
+    if not vals:
+        return None, None, None
+    arr = np.asarray(vals, dtype=np.float64)
+    return float(arr.min()), float(arr.mean()), float(arr.max())
+
+
+def make_null_row(metric_keys: tuple[str, ...]) -> dict[str, float | None]:
+    """Build a dict of `f"{metric}_{scope}_{stat}": None` for the standard
+    pairwise output schema (scopes class+cluster, stats min/mean/max)."""
+    return {
+        f"{m}_{scope}_{stat}": None
+        for m in metric_keys
+        for scope in ("class", "cluster")
+        for stat in ("min", "mean", "max")
+    }
+
+
 def _gower_row_batch(
     X_num_scaled: np.ndarray,
     X_cat: np.ndarray | None,
@@ -39,14 +71,12 @@ def build_knn_graph(
 
     Returns (indices, distances), both shape (n, k).
     Never materialises the full n×n matrix.
-    Numerics are pre-scaled once before the batch loop.
+    Numerics are pre-scaled by IQR once before the batch loop.
     """
     n = X_num.shape[0]
     effective_k = min(k, n - 1)
 
-    num_ranges = X_num.max(axis=0) - X_num.min(axis=0)
-    safe_ranges = np.where(num_ranges > 0, num_ranges, 1.0)
-    X_num_scaled = X_num / safe_ranges  # precompute once outside the loop
+    X_num_scaled = _iqr_scaling(X_num)
     d_cat = X_cat.shape[1] if X_cat is not None else 0
     d_total = X_num.shape[1] + d_cat
 
@@ -74,22 +104,15 @@ def build_knn_graph(
     return indices, distances
 
 
-def to_sparse_csr(
-    indices: np.ndarray,
-    distances: np.ndarray,
-    n: int,
+def _to_sparse_csr(
+    indices: np.ndarray, distances: np.ndarray, n: int
 ) -> scipy.sparse.csr_matrix:
-    """Symmetrize k-NN graph to CSR matrix for HDBSCAN metric='precomputed'.
-
-    For each pair (i, j) appearing in the graph, keeps the minimum distance.
-    Diagonal is 0.
-    """
+    """Symmetrise the directed k-NN graph keeping the minimum distance per edge."""
     k = indices.shape[1]
     rows = np.repeat(np.arange(n), k)
     cols = indices.ravel()
     data = distances.ravel()
 
-    # include both directed edges; sort ascending by data so first duplicate = min
     sym_rows = np.concatenate([rows, cols])
     sym_cols = np.concatenate([cols, rows])
     sym_data = np.concatenate([data, data])
@@ -99,7 +122,6 @@ def to_sparse_csr(
     sym_cols = sym_cols[order]
     sym_data = sym_data[order]
 
-    # keep only first (minimum) entry per (row, col) pair
     unique_mask = np.ones(len(sym_rows), dtype=bool)
     unique_mask[1:] = (sym_rows[1:] != sym_rows[:-1]) | (sym_cols[1:] != sym_cols[:-1])
 
@@ -112,69 +134,89 @@ def to_sparse_csr(
     return mat
 
 
-def build_approx_mst(
-    knn_indices: np.ndarray,
-    knn_distances: np.ndarray,
-) -> list[tuple[int, int, float]]:
-    """Approximate MST on the sparse k-NN graph. Used by N1."""
-    n = knn_indices.shape[0]
-    graph = to_sparse_csr(knn_indices, knn_distances, n)
-    mst = scipy.sparse.csgraph.minimum_spanning_tree(graph)
-    cx = mst.tocoo()
-    return list(zip(cx.row.tolist(), cx.col.tolist(), cx.data.tolist()))
-
-
-def build_sparse_knn_matrix(
+def _bridge_disconnected(
+    mat: scipy.sparse.csr_matrix,
     X_num: np.ndarray,
     X_cat: np.ndarray | None,
-    k: int,
-    batch_size: int = 256,
 ) -> scipy.sparse.csr_matrix:
-    """Build sparse CSR kNN matrix for HDBSCAN. Wrapper: build_knn_graph → to_sparse_csr.
+    """Add one cross-component bridge edge per disconnected component.
 
-    Ensures graph connectivity (required by HDBSCAN metric='precomputed').
-    When categorical features partition the space, k neighbors may all belong to
-    the same category, leaving other categories unreachable. Strategy:
-      1. Build with requested k. If connected, return immediately.
-      2. Retry with k *= 2 up to 3 times (k capped at n-1).
-      3. If still disconnected, add one bridge edge per component (last resort).
+    Used when the k-NN graph is disconnected (categoricals can partition the
+    space such that the k neighbours of every node sit in the same category).
     """
-    n = X_num.shape[0]
-    current_k = k
+    n_comp, comp_labels = scipy.sparse.csgraph.connected_components(
+        mat, directed=False
+    )
+    if n_comp == 1:
+        return mat
 
-    for _ in range(4):  # up to 3 doublings + original
-        knn_indices, knn_distances = build_knn_graph(
-            X_num, X_cat, current_k, batch_size
-        )
-        mat = to_sparse_csr(knn_indices, knn_distances, n)
-        n_comp, comp_labels = scipy.sparse.csgraph.connected_components(
-            mat, directed=False
-        )
-        if n_comp == 1:
-            return mat
-        next_k = min(current_k * 2, n - 1)
-        if next_k == current_k:
-            break  # already at max k, no point retrying
-        current_k = next_k
-
-    # last resort: add one cross-component bridge edge per disconnected component
-    num_ranges = X_num.max(axis=0) - X_num.min(axis=0)
-    safe_ranges = np.where(num_ranges > 0, num_ranges, 1.0)
-    X_num_scaled = X_num / safe_ranges
+    X_num_scaled = _iqr_scaling(X_num)
     d_cat = X_cat.shape[1] if X_cat is not None else 0
     d_total = X_num.shape[1] + d_cat
     mat = mat.tolil()
+    ref = int(np.where(comp_labels == 0)[0][0])
+    q_num_scaled = X_num_scaled[ref : ref + 1]
+    q_cat = X_cat[ref : ref + 1] if X_cat is not None else None
+    dists_row = _gower_row_batch(X_num_scaled, X_cat, q_num_scaled, q_cat, d_total)[0]
     for ci in range(1, n_comp):
         nodes_ci = np.where(comp_labels == ci)[0]
-        ref = int(np.where(comp_labels == 0)[0][0])
-        q_num_scaled = X_num_scaled[ref : ref + 1]
-        q_cat = X_cat[ref : ref + 1] if X_cat is not None else None
-        dists_row = _gower_row_batch(X_num_scaled, X_cat, q_num_scaled, q_cat, d_total)[
-            0
-        ]
         best_j = int(nodes_ci[dists_row[nodes_ci].argmin()])
         d = max(float(dists_row[best_j]), 1e-10)
         mat[ref, best_j] = d
         mat[best_j, ref] = d
         comp_labels[nodes_ci] = 0
     return mat.tocsr()
+
+
+def build_approx_mst(
+    knn_indices: np.ndarray,
+    knn_distances: np.ndarray,
+    X_num: np.ndarray,
+    X_cat: np.ndarray | None,
+) -> np.ndarray:
+    """Approximate MST on the sparse k-NN graph. Returns an (E, 2) int64 array
+    of MST edges (row, col). One bridge edge is added per disconnected
+    component so the MST connects every cluster.
+    """
+    n = knn_indices.shape[0]
+    graph = _to_sparse_csr(knn_indices, knn_distances, n)
+    graph = _bridge_disconnected(graph, X_num, X_cat)
+    mst = scipy.sparse.csgraph.minimum_spanning_tree(graph).tocoo()
+    if mst.nnz == 0:
+        return np.empty((0, 2), dtype=np.int64)
+    return np.column_stack((mst.row, mst.col)).astype(np.int64, copy=False)
+
+
+def topk_adversarial_clusters(
+    centroid_matrix: np.ndarray,
+    cluster_ids: list[str],
+    id_to_class: dict[str, int],
+    top_k: int,
+) -> dict[str, list[str]]:
+    """For each cluster, return the top-K nearest cluster IDs of a different class.
+
+    Uses Euclidean distances on the precomputed centroid matrix. Result is
+    sorted by ascending centroid distance and capped at `top_k` (or all
+    available adversarial clusters if fewer).
+    """
+    if centroid_matrix.shape[0] == 0:
+        return {}
+    pw = cdist(centroid_matrix, centroid_matrix, metric="euclidean")
+    np.fill_diagonal(pw, np.inf)
+    classes = np.array(
+        [id_to_class.get(cid, -1) for cid in cluster_ids], dtype=np.int64
+    )
+    out: dict[str, list[str]] = {}
+    for i, cid in enumerate(cluster_ids):
+        cls_c = id_to_class.get(cid)
+        if cls_c is None:
+            out[cid] = []
+            continue
+        adv_idx = np.where(classes != cls_c)[0]
+        if adv_idx.size == 0:
+            out[cid] = []
+            continue
+        order = np.argsort(pw[i, adv_idx])
+        take = min(top_k, adv_idx.size)
+        out[cid] = [cluster_ids[int(adv_idx[j])] for j in order[:take]]
+    return out
