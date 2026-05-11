@@ -10,28 +10,30 @@ def t2(n: int, d_num: int, d_cat: int) -> float:
     return (d_num + d_cat) / n if n > 0 else 0.0
 
 
-def t3(X_num: np.ndarray) -> float:
-    """PCA intrinsic dimensionality ratio: n_pca_95 / d_num."""
+def _t3_t4(X_num: np.ndarray) -> tuple[float, float]:
+    """Compute T3 and T4 from a single PCA fit.
+
+    Returns (n_pca_95 / d_num, n_pca_95 / n).
+    """
     n, d_num = X_num.shape
     if d_num < 2 or n < 2:
-        return 1.0
+        return 1.0, (d_num / n if n > 0 else 0.0)
     max_components = min(n, d_num)
-    pca = PCA(n_components=max_components)
-    cumvar = np.cumsum(pca.fit(X_num).explained_variance_ratio_)
+    cumvar = np.cumsum(
+        PCA(n_components=max_components).fit(X_num).explained_variance_ratio_
+    )
     n_pca_95 = min(int(np.searchsorted(cumvar, 0.95)) + 1, max_components)
-    return n_pca_95 / d_num
+    return n_pca_95 / d_num, n_pca_95 / n
+
+
+def t3(X_num: np.ndarray) -> float:
+    """PCA intrinsic dimensionality ratio: n_pca_95 / d_num."""
+    return _t3_t4(X_num)[0]
 
 
 def t4(X_num: np.ndarray) -> float:
     """PCA components-to-sample ratio: n_pca_95 / n."""
-    n, d_num = X_num.shape
-    if d_num < 2 or n < 2:
-        return d_num / n if n > 0 else 0.0
-    max_components = min(n, d_num)
-    pca = PCA(n_components=max_components)
-    cumvar = np.cumsum(pca.fit(X_num).explained_variance_ratio_)
-    n_pca_95 = min(int(np.searchsorted(cumvar, 0.95)) + 1, max_components)
-    return n_pca_95 / n
+    return _t3_t4(X_num)[1]
 
 
 @timed
@@ -59,9 +61,6 @@ def compute_t_measures(
     for cid in tqdm(cluster_ids, desc="T measures", unit="cluster", leave=False):
         Xn = X_num[y_cluster == cid]
         n, d_num = Xn.shape
-        result[str(cid)] = {
-            "t2": t2(n, d_num, d_cat),
-            "t3": t3(Xn),
-            "t4": t4(Xn),
-        }
+        t3_val, t4_val = _t3_t4(Xn)
+        result[str(cid)] = {"t2": t2(n, d_num, d_cat), "t3": t3_val, "t4": t4_val}
     return result

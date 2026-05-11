@@ -97,11 +97,12 @@ def _build_topk_map(
     cluster_to_class: dict[str, int],
     centroids: dict[str, list[float]],
     top_k_clusters: int,
+    metric: str = "euclidean",
 ) -> dict[str, list[str]]:
     """Build the top-K adversarial cluster map keyed by str(cluster_id).
 
     Only clusters present both in `cluster_to_class` and in `centroids` are
-    eligible.
+    eligible.  metric is forwarded to topk_adversarial_clusters.
     """
     present_ids = [cid for cid in cluster_to_class if cid in centroids]
     if not present_ids:
@@ -111,7 +112,7 @@ def _build_topk_map(
     )
     id_to_class = {cid: cluster_to_class[cid] for cid in present_ids}
     return topk_adversarial_clusters(
-        centroid_matrix, present_ids, id_to_class, top_k_clusters
+        centroid_matrix, present_ids, id_to_class, top_k_clusters, metric=metric
     )
 
 
@@ -126,13 +127,16 @@ def compute_all_complexity_measures(
     top_k_clusters: int = 10,
     max_samples: int | None = None,
     min_per_cluster: int = 50,
+    topk_metric: str = "euclidean",
 ) -> dict[str, dict[str, float | None]]:
     """Compute all complexity measures per cluster.
 
-    Builds one k-NN graph (Gower distance, batched) and passes it to all
+    Builds one Gower-cosine hybrid k-NN graph (batched) and passes it to all
     measure functions. F/N/ND families are aggregated both vs adversarial
     classes and vs the top-K nearest adversarial clusters (by centroid
-    Euclidean distance). Returns {cluster_id: {measure_name: value}}.
+    distance under `topk_metric`). G-family cosine variants are always
+    computed (negligible cost) alongside the Euclidean ones.
+    Returns {cluster_id: {measure_name: value}}.
 
     Inputs:
         X_num            — (n, d_num) float array, RobustScaled numericals.
@@ -143,10 +147,11 @@ def compute_all_complexity_measures(
         k                — number of neighbours for the k-NN graph.
         top_k_clusters   — number of nearest adversarial clusters considered
                            in the vs-cluster aggregation of F/N/ND.
-        max_samples      — if set, subsample stratified by cluster (proportional
-                           with floor at `min_per_cluster`) before building the
-                           k-NN graph. None = use all samples.
+        max_samples      — if set, subsample stratified by cluster before
+                           building the k-NN graph. None = use all samples.
         min_per_cluster  — minimum samples per cluster in the subsample.
+        topk_metric      — centroid metric for top-K adversarial selection.
+                           "euclidean" (default) or "cosine".
     """
     if max_samples is not None and len(y_cluster) > max_samples:
         n_orig = len(y_cluster)
@@ -160,13 +165,15 @@ def compute_all_complexity_measures(
             min_per_cluster,
         )
 
-    logger.info("Building k-NN graph (k=%d)...", k)
+    logger.info("Building Gower-cosine hybrid k-NN graph (k=%d)...", k)
     knn_idx, knn_dist = build_knn_graph(X_num, X_cat, k=k)
 
     class_mask, cluster_mask, cluster_to_class = _build_population_masks(
         y_class, y_cluster
     )
-    top_k_map = _build_topk_map(cluster_to_class, centroids, top_k_clusters)
+    top_k_map = _build_topk_map(
+        cluster_to_class, centroids, top_k_clusters, metric=topk_metric
+    )
 
     with tqdm(total=5, desc="complexity families", unit="family") as pbar:
         pbar.set_description("F measures")
@@ -199,7 +206,7 @@ def compute_all_complexity_measures(
         t_out = compute_t_measures(X_num, X_cat, y_cluster)
         pbar.update(1)
 
-        pbar.set_description("G measures")
+        pbar.set_description("G measures (Euclidean + cosine)")
         g_out = compute_cluster_geometry(X_num, y_class, y_cluster, centroids)
         pbar.update(1)
 

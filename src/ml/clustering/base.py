@@ -44,6 +44,28 @@ def _score_silhouette(
         return float("-inf")
 
 
+def _score_dbcv(
+    fit_fn: FitFn,
+    sub_num: np.ndarray,
+    sub_cat: np.ndarray | None,
+    combo: dict,
+    fixed_params: dict,
+) -> tuple[np.ndarray | None, float]:
+    """Fit and score with DBCV (relative_validity_). Returns (labels, score).
+
+    Requires fit_fn to support return_validity=True (i.e. fit_hdbscan).
+    Returns (None, -inf) on any exception or degenerate clustering.
+    """
+    try:
+        result = fit_fn(sub_num, sub_cat, **combo, **fixed_params, return_validity=True)
+    except Exception:
+        return None, float("-inf")
+    if not isinstance(result, tuple):
+        return result, float("-inf")
+    labels, validity = result
+    return labels, validity if np.isfinite(validity) else float("-inf")
+
+
 @timed
 def grid_search(
     X_num: np.ndarray,
@@ -52,19 +74,21 @@ def grid_search(
     param_grid: dict[str, list],
     max_fit_samples: int = 50_000,
     random_state: int = 0,
+    score: str = "dbcv",
     **fixed_params,
 ) -> dict:
-    """Generic grid search over param_grid, scored by silhouette on a subset.
+    """Generic grid search over param_grid, scored by silhouette or DBCV.
 
     Steps:
       1. _subsample(X_num, X_cat, max_fit_samples, random_state)
       2. itertools.product over param_grid values
       3. fit_fn(sub_num, sub_cat, **combo, **fixed_params)
-      4. _score_silhouette on result
+      4. score via DBCV (default) or silhouette
       5. return best combo as flat dict; RuntimeError if no valid clustering found.
 
     fixed_params are forwarded unchanged to fit_fn on every call.
-    X_cat is passed explicitly and determines the Gower vs Euclidean path inside fit_fn.
+    score: "dbcv" uses hdbscan.relative_validity_ (density-based, preferred for
+           HDBSCAN); "silhouette" falls back to Euclidean silhouette.
     """
     sub_num, sub_cat = _subsample(X_num, X_cat, max_fit_samples, random_state)
 
@@ -81,15 +105,22 @@ def grid_search(
         desc="Grid search",
     ):
         combo = dict(zip(keys, combo_values))
-        try:
-            labels = fit_fn(sub_num, sub_cat, **combo, **fixed_params)
-        except Exception:
-            continue
+
+        if score == "dbcv":
+            labels, s = _score_dbcv(fit_fn, sub_num, sub_cat, combo, fixed_params)
+            if labels is None:
+                continue
+        else:
+            try:
+                labels = fit_fn(sub_num, sub_cat, **combo, **fixed_params)
+            except Exception:
+                continue
+            s = _score_silhouette(sub_num, labels)
+
         if fallback_combo is None:
             fallback_combo = combo
-        score = _score_silhouette(sub_num, labels)
-        if score > best_score:
-            best_score = score
+        if s > best_score:
+            best_score = s
             best_combo = combo
 
     if best_combo is None:

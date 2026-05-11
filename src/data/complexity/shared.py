@@ -6,17 +6,6 @@ from scipy.spatial.distance import cdist
 from ...common.utils import timed
 
 
-def _iqr_scaling(X_num: np.ndarray, eps: float = 1e-8) -> np.ndarray:
-    """Scale numerics by IQR (Q3 - Q1) for outlier-robust Gower distance.
-
-    Replaces the classic max-min range so that heavy-tailed features (byte
-    counts, durations) are not collapsed by a few outliers.
-    """
-    q1 = np.quantile(X_num, 0.25, axis=0)
-    q3 = np.quantile(X_num, 0.75, axis=0)
-    return X_num / np.maximum(q3 - q1, eps)
-
-
 def aggregate_min_mean_max(
     vals: list[float],
 ) -> tuple[float | None, float | None, float | None]:
@@ -38,26 +27,41 @@ def make_null_row(metric_keys: tuple[str, ...]) -> dict[str, float | None]:
     }
 
 
-def _gower_row_batch(
-    X_num_scaled: np.ndarray,
+def _l2_normalize(X_num: np.ndarray, eps: float = 1e-8) -> np.ndarray:
+    """Row-wise L2-normalize so that Euclidean on unit vectors maps to cosine."""
+    norms = np.linalg.norm(X_num, axis=1, keepdims=True)
+    return X_num / np.maximum(norms, eps)
+
+
+def _hybrid_row_batch(
+    X_num_norm: np.ndarray,
     X_cat: np.ndarray | None,
-    query_num_scaled: np.ndarray,
+    query_num_norm: np.ndarray,
     query_cat: np.ndarray | None,
-    d_total: int,
+    d_num: int,
+    d_cat: int,
 ) -> np.ndarray:
-    """Batched Gower distance: L1 on pre-scaled numerics, 0/1 for categoricals.
+    """Batched Gower-cosine hybrid distance.
 
-    Numerics computed via scipy cdist (C-level L1 on pre-scaled arrays).
-    Categoricals iterated feature-by-feature to keep memory at O(b × n).
-    Returns shape (b, n) distance matrix.
+    For each (query, ref) pair:
+        d = ( d_num * cos_dist(query_num, ref_num) + Σ_j [query_cat_j != ref_cat_j] ) / (d_num + d_cat)
+
+    where cos_dist = clip(||q/||q|| - r/||r||||^2 / 2, 0, 1) ∈ [0, 1]
+    (cos_dist = 1 - cos(angle) for unit-norm vectors).
+
+    The numeric block is weighted by `d_num` to preserve Gower's original
+    proportionality between numeric and categorical contributions.
+    Returns shape (b, n) distance matrix in [0, 1].
     """
-    dist = cdist(query_num_scaled, X_num_scaled, metric="cityblock")
+    # cosine distance via Euclidean on unit vectors
+    euclid = cdist(query_num_norm, X_num_norm, metric="euclidean")
+    dist = np.clip(euclid**2 / 2, 0.0, 1.0) * d_num
 
-    if X_cat is not None and X_cat.shape[1] > 0:
-        for f in range(X_cat.shape[1]):
+    if X_cat is not None and d_cat > 0:
+        for f in range(d_cat):
             dist += (query_cat[:, f : f + 1] != X_cat[:, f]).astype(np.float64)
 
-    return dist / d_total
+    return dist / (d_num + d_cat)
 
 
 @timed
@@ -67,30 +71,35 @@ def build_knn_graph(
     k: int,
     batch_size: int = 1024,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Build k-NN graph via batched Gower distance.
+    """Build k-NN graph via batched Gower-cosine hybrid distance.
 
-    Returns (indices, distances), both shape (n, k).
-    Never materialises the full n×n matrix.
-    Numerics are pre-scaled by IQR once before the batch loop.
+    Returns (indices, distances), both shape (n, k). Never materialises the
+    full n×n matrix.
+
+    Distance formula:
+        d(x, y) = ( d_num * cos_dist(x_num, y_num) + Σ [x_cat_j != y_cat_j] ) / (d_num + d_cat)
+
+    The numeric block uses cosine (scale-invariant, angular structure), the
+    categorical block uses 0/1 Hamming. Both contributions are in [0, 1] and
+    combined via Gower-style weighted averaging where the numeric block is
+    weighted by `d_num` to preserve the original Gower proportionality.
     """
-    n = X_num.shape[0]
+    n, d_num = X_num.shape
+    d_cat = X_cat.shape[1] if X_cat is not None else 0
     effective_k = min(k, n - 1)
 
-    X_num_scaled = _iqr_scaling(X_num)
-    d_cat = X_cat.shape[1] if X_cat is not None else 0
-    d_total = X_num.shape[1] + d_cat
+    X_num_norm = _l2_normalize(X_num)
 
     indices = np.empty((n, effective_k), dtype=np.int64)
     distances = np.empty((n, effective_k), dtype=np.float64)
 
     for start in range(0, n, batch_size):
         end = min(start + batch_size, n)
-        q_num_scaled = X_num_scaled[start:end]
+        q_num_norm = X_num_norm[start:end]
         q_cat = X_cat[start:end] if X_cat is not None else None
 
-        dists = _gower_row_batch(X_num_scaled, X_cat, q_num_scaled, q_cat, d_total)
+        dists = _hybrid_row_batch(X_num_norm, X_cat, q_num_norm, q_cat, d_num, d_cat)
 
-        # exclude self-distances
         batch_idx = np.arange(end - start)
         dists[batch_idx, start + batch_idx] = np.inf
 
@@ -136,13 +145,16 @@ def _to_sparse_csr(
 
 def _bridge_disconnected(
     mat: scipy.sparse.csr_matrix,
-    X_num: np.ndarray,
+    X_num_norm: np.ndarray,
     X_cat: np.ndarray | None,
+    d_num: int,
+    d_cat: int,
 ) -> scipy.sparse.csr_matrix:
     """Add one cross-component bridge edge per disconnected component.
 
     Used when the k-NN graph is disconnected (categoricals can partition the
     space such that the k neighbours of every node sit in the same category).
+    Distances use the hybrid metric on already-L2-normalized X_num_norm.
     """
     n_comp, comp_labels = scipy.sparse.csgraph.connected_components(
         mat, directed=False
@@ -150,14 +162,13 @@ def _bridge_disconnected(
     if n_comp == 1:
         return mat
 
-    X_num_scaled = _iqr_scaling(X_num)
-    d_cat = X_cat.shape[1] if X_cat is not None else 0
-    d_total = X_num.shape[1] + d_cat
     mat = mat.tolil()
     ref = int(np.where(comp_labels == 0)[0][0])
-    q_num_scaled = X_num_scaled[ref : ref + 1]
+    q_num_norm = X_num_norm[ref : ref + 1]
     q_cat = X_cat[ref : ref + 1] if X_cat is not None else None
-    dists_row = _gower_row_batch(X_num_scaled, X_cat, q_num_scaled, q_cat, d_total)[0]
+    dists_row = _hybrid_row_batch(
+        X_num_norm, X_cat, q_num_norm, q_cat, d_num, d_cat
+    )[0]
     for ci in range(1, n_comp):
         nodes_ci = np.where(comp_labels == ci)[0]
         best_j = int(nodes_ci[dists_row[nodes_ci].argmin()])
@@ -178,9 +189,12 @@ def build_approx_mst(
     of MST edges (row, col). One bridge edge is added per disconnected
     component so the MST connects every cluster.
     """
-    n = knn_indices.shape[0]
+    n, d_num = X_num.shape
+    d_cat = X_cat.shape[1] if X_cat is not None else 0
+
+    X_num_norm = _l2_normalize(X_num)
     graph = _to_sparse_csr(knn_indices, knn_distances, n)
-    graph = _bridge_disconnected(graph, X_num, X_cat)
+    graph = _bridge_disconnected(graph, X_num_norm, X_cat, d_num, d_cat)
     mst = scipy.sparse.csgraph.minimum_spanning_tree(graph).tocoo()
     if mst.nnz == 0:
         return np.empty((0, 2), dtype=np.int64)
@@ -192,16 +206,17 @@ def topk_adversarial_clusters(
     cluster_ids: list[str],
     id_to_class: dict[str, int],
     top_k: int,
+    metric: str = "euclidean",
 ) -> dict[str, list[str]]:
     """For each cluster, return the top-K nearest cluster IDs of a different class.
 
-    Uses Euclidean distances on the precomputed centroid matrix. Result is
-    sorted by ascending centroid distance and capped at `top_k` (or all
-    available adversarial clusters if fewer).
+    Result is sorted by ascending centroid distance and capped at `top_k`
+    (or all available adversarial clusters if fewer).
+    metric: "euclidean" (default) or "cosine".
     """
     if centroid_matrix.shape[0] == 0:
         return {}
-    pw = cdist(centroid_matrix, centroid_matrix, metric="euclidean")
+    pw = cdist(centroid_matrix, centroid_matrix, metric=metric)
     np.fill_diagonal(pw, np.inf)
     classes = np.array(
         [id_to_class.get(cid, -1) for cid in cluster_ids], dtype=np.int64

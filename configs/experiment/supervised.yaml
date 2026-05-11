@@ -6,15 +6,27 @@ defaults:
   - override /optimizer: adamw
   - override /scheduler: one_cycle
 
-k: 30                                     # k for complexity k-NN graph (build_knn_graph)
-top_k_clusters: 10                        # top-K nearest adversarial clusters per cluster (vs-cluster aggregation)
-min_subsample_per_cluster: 50             # minimum samples per cluster in proportional subsampling
-min_cluster_sizes: [30, 50, 100, 150]
-min_samples_list: [10, 30, 50]
-max_fit_samples: 10000
+complexity:
+  k: 30                              # k for hybrid k-NN graph (Gower-cosine)
+  topk_metric: euclidean             # centroid metric for top-K adversarial clusters: euclidean | cosine
+  top_k_clusters: 10                 # top-K nearest adversarial clusters per cluster (vs-cluster aggregation)
+  min_subsample_per_cluster: 50      # minimum samples per cluster in proportional subsampling
+  max_complexity_samples: 200000     # cap on points used to build the k-NN graph
 
+clustering:
+  min_cluster_sizes: [30, 50, 100, 150]
+  min_samples_list: [10, 30, 50]
+  max_fit_samples: 10000
+
+analysis:
+  failure_threshold: 0.0
+
+plots:
+  max_class_pairs: 10
+  tsne_max_samples: 5000
+  pair_tsne_max_samples: 5000
+
+# top-level (cross-cutting)
 n_samples: null
 run_id: 0
-failure_threshold: 0.0
-max_complexity_samples: 200000
 stage: all

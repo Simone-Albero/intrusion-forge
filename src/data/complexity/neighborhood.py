@@ -123,11 +123,6 @@ def compute_n_measures(
     Builds a global approximate MST once (for N1), then derives N2-N4 from the
     k-NN graph using vectorised boolean masks. Noise points (y_cluster == -1)
     are excluded from cluster membership but may appear as neighbours.
-
-    Output keys per cluster (24 total):
-        n{i}_class_{min,mean,max}   — aggregated over adversarial classes
-        n{i}_cluster_{min,mean,max} — aggregated over top-K adversarial clusters
-        for i in {1, 2, 3, 4}.
     """
     edges_uv = build_approx_mst(knn_idx, knn_dist, X_num, X_cat)
 

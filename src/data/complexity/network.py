@@ -66,9 +66,6 @@ def compute_network_density(
     classes and (b) the top-K nearest adversarial clusters.
 
     density(c, j) = Σ_{x ∈ cluster_c} |{nb ∈ NN(x) : nb ∈ j}| / (|c| × k)
-
-    Excludes noise (y_cluster == -1) from both the cluster being scored and
-    from the adversarial population, mirroring the F/N families.
     """
     k = knn_idx.shape[1]
     null_row: dict[str, float | None] = {
@@ -122,12 +119,6 @@ def compute_network_measures(
 ) -> dict[str, dict[str, float | None]]:
     """Network-family measures per cluster: density (vs class + vs cluster),
     clustering coefficient, hub score.
-
-    Output keys per cluster:
-        network_density_class_{min,mean,max}    cross-class kNN density vs adv. classes
-        network_density_cluster_{min,mean,max}  cross-class kNN density vs top-K clusters
-        cls_coef                                local clustering coefficient
-        hub                                     mean in-degree (hubness proxy)
     """
     density_out = compute_network_density(
         knn_idx, class_mask, cluster_mask, cluster_to_class, top_k_map

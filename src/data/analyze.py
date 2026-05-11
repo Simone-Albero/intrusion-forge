@@ -283,10 +283,12 @@ def compute_clusters_metadata(
     label_col: str,
     cluster_col: str,
     centroids: dict,
+    noise_cluster_ids: list[int] | None = None,
 ) -> dict:
     """Aggregate cluster metadata across all splits.
 
-    Returns {class_to_clusters, clusters_distribution, centroids}.
+    Returns {class_to_clusters, clusters_distribution, centroids,
+    noise_cluster_ids}.
     """
     df_ = pd.concat([train_df, val_df, test_df], ignore_index=True)
     encoded_label_col = f"encoded_{label_col}"
@@ -306,4 +308,5 @@ def compute_clusters_metadata(
         "class_to_clusters": class_to_clusters,
         "clusters_distribution": clusters_distribution,
         "centroids": {str(k): v for k, v in centroids.items()},
+        "noise_cluster_ids": sorted(noise_cluster_ids) if noise_cluster_ids else [],
     }

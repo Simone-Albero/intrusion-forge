@@ -22,7 +22,7 @@ from .style import (
 
 def confusion_matrix_to_plot(
     cm: np.ndarray,
-    title: str = "Confusion Matrix",
+    title: str = "",
     class_names: list[str] | None = None,
     cmap: str = "Blues",
     figsize: tuple[float, float] = (8, 6),
@@ -57,9 +57,10 @@ def confusion_matrix_to_plot(
         values_format=values_format,
         colorbar=show_colorbar,
         im_kw={"interpolation": "nearest"},
-        xticks_rotation=45,
+        xticks_rotation=90,
         include_values=True,
     )
+    plt.setp(ax.get_xticklabels(), ha="center")
 
     if show_colorbar and disp.im_ is not None:
         colorbar = disp.im_.colorbar
@@ -69,10 +70,11 @@ def confusion_matrix_to_plot(
                 fontsize=10,
             )
 
-    if is_normalized and "normaliz" not in title.lower():
+    if title and is_normalized and "normaliz" not in title.lower():
         title = f"{title} (Normalized)"
 
-    ax.set_title(title, fontsize=TITLE_FONTSIZE, pad=TITLE_PAD)
+    if title:
+        ax.set_title(title, fontsize=TITLE_FONTSIZE, pad=TITLE_PAD)
     ax.set_xlabel("Predicted label", fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
     ax.set_ylabel("True label", fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
 
@@ -176,12 +178,14 @@ def _samples_plot_2d(
             _make_legend_proxy("lightgray", outline_map[lbl], _n2(lbl))
             for lbl in unique_y2
         ]
-        ax.legend(
-            handles=outline_proxies,
-            loc="upper right",
-            fontsize=LEGEND_FONTSIZE,
-            title="Edge label",
-            framealpha=LEGEND_FRAMEALPHA,
+        ax.add_artist(
+            ax.legend(
+                handles=outline_proxies,
+                loc="upper right",
+                fontsize=LEGEND_FONTSIZE,
+                title="Edge label",
+                framealpha=LEGEND_FRAMEALPHA,
+            )
         )
 
     ncol = max(1, len(legend_proxies) // 12)
@@ -263,12 +267,14 @@ def _samples_plot_3d(
             _make_legend_proxy("lightgray", outline_map[lbl], _n2(lbl))
             for lbl in unique_y2
         ]
-        ax.legend(
-            handles=outline_proxies,
-            loc="upper right",
-            fontsize=LEGEND_FONTSIZE,
-            title="Edge label",
-            framealpha=LEGEND_FRAMEALPHA,
+        ax.add_artist(
+            ax.legend(
+                handles=outline_proxies,
+                loc="upper right",
+                fontsize=LEGEND_FONTSIZE,
+                title="Edge label",
+                framealpha=LEGEND_FRAMEALPHA,
+            )
         )
 
     ncol = max(1, len(legend_proxies) // 12)
@@ -327,7 +333,7 @@ def strip_box_plot(
     edge_label: str = "",
     edge_value_labels: dict | None = None,
     title: str = "",
-    figsize: tuple[float, float] = (12, 6),
+    figsize: tuple[float, float] = (12, 7),
     marker_size: float = 36,
     cmap: str = "RdYlGn_r",
 ) -> Plot:
@@ -450,12 +456,14 @@ def strip_box_plot(
 
     ax.set_xticks(range(len(category_order)))
     ax.set_xticklabels(category_order)
-    ax.set_title(title, fontsize=TITLE_FONTSIZE, pad=TITLE_PAD)
+    if title:
+        ax.set_title(title, fontsize=TITLE_FONTSIZE, pad=TITLE_PAD)
     ax.set_xlabel(x_label, fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
     ax.set_ylabel(y_label, fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-    plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha="right")
+    plt.setp(ax.xaxis.get_majorticklabels(), rotation=90, ha="center")
+    fig.subplots_adjust(bottom=0.25)
     fig.tight_layout()
     return _fig_to_plot(fig)
 
@@ -488,6 +496,7 @@ def violin_box_plot(
 
     fig, ax = plt.subplots(figsize=figsize)
 
+    legend_handles = []
     for side, (cat, color) in enumerate(zip(unique_cats, palette_colors)):
         mask = categories == cat
         vals = values[mask]
@@ -515,13 +524,11 @@ def violin_box_plot(
         sign = -1 if side == 0 else 1
         ax.plot([0, sign * 0.06], [med, med], color=color, lw=2.0, zorder=4)
         ax.vlines(sign * 0.04, q1, q3, color=color, lw=1.5, zorder=4)
+        legend_handles.append(
+            plt.Line2D([], [], color=color, lw=6, alpha=violin_alpha, label=cat)
+        )
 
     ax.axvline(0, color="#aaaaaa", lw=0.8, zorder=2)
-
-    legend_handles = [
-        plt.Line2D([], [], color=c, lw=6, alpha=violin_alpha, label=cat)
-        for cat, c in zip(unique_cats, palette_colors)
-    ]
     ax.legend(
         handles=legend_handles,
         loc="best",
@@ -530,7 +537,8 @@ def violin_box_plot(
     )
 
     ax.set_xticks([])
-    ax.set_title(title, fontsize=TITLE_FONTSIZE, pad=TITLE_PAD)
+    if title:
+        ax.set_title(title, fontsize=TITLE_FONTSIZE, pad=TITLE_PAD)
     ax.set_xlabel(x_label, fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
     ax.set_ylabel(y_label, fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
     ax.spines["top"].set_visible(False)
@@ -545,7 +553,7 @@ def roc_curve_plot(
     fpr: np.ndarray,
     tpr: np.ndarray,
     auc_score: float,
-    title: str = "ROC Curve",
+    title: str = "",
     figsize: tuple[float, float] = (6, 6),
 ) -> Plot:
     """ROC curve with AUC annotation and random-classifier baseline."""
@@ -560,7 +568,8 @@ def roc_curve_plot(
     ax.set_ylim(0.0, 1.05)
     ax.set_xlabel("False Positive Rate", fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
     ax.set_ylabel("True Positive Rate", fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
-    ax.set_title(title, fontsize=TITLE_FONTSIZE, pad=TITLE_PAD)
+    if title:
+        ax.set_title(title, fontsize=TITLE_FONTSIZE, pad=TITLE_PAD)
     ax.legend(loc="lower right", fontsize=LEGEND_FONTSIZE)
     ax.grid(True, alpha=GRID_ALPHA, linestyle="--")
     ax.spines["top"].set_visible(False)
@@ -572,7 +581,7 @@ def roc_curve_plot(
 
 def feature_importance_plot(
     importances: dict[str, float],
-    title: str = "Feature Importances",
+    title: str = "",
     figsize: tuple[float, float] = (12, 8),
 ) -> Plot:
     """Horizontal bar chart of feature importances, sorted descending."""
@@ -582,7 +591,8 @@ def feature_importance_plot(
 
     fig, ax = plt.subplots(figsize=figsize)
     ax.barh(features, values, color="#4E79A7", edgecolor="white", linewidth=0.5)
-    ax.set_title(title, fontsize=TITLE_FONTSIZE, pad=TITLE_PAD)
+    if title:
+        ax.set_title(title, fontsize=TITLE_FONTSIZE, pad=TITLE_PAD)
     ax.set_xlabel("Importance", fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
@@ -633,14 +643,16 @@ def grouped_bar_plot(
 
     ax.axhline(0, color="#888888", linewidth=0.8, linestyle="--")
     ax.set_xticks(x)
-    ax.set_xticklabels(labels, rotation=45, ha="right")
-    ax.set_title(title, fontsize=TITLE_FONTSIZE, pad=TITLE_PAD)
+    ax.set_xticklabels(labels, rotation=90, ha="center")
+    if title:
+        ax.set_title(title, fontsize=TITLE_FONTSIZE, pad=TITLE_PAD)
     ax.set_xlabel(x_label, fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
     ax.set_ylabel(y_label, fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
     ax.legend(fontsize=LEGEND_FONTSIZE, framealpha=LEGEND_FRAMEALPHA)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
 
+    fig.subplots_adjust(bottom=0.25)
     fig.tight_layout()
     return _fig_to_plot(fig)
 
@@ -709,10 +721,218 @@ def cluster_scatter_plot(
 
     ax.set_xlabel(x_label, fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
     ax.set_ylabel(y_label, fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
-    ax.set_title(title, fontsize=TITLE_FONTSIZE, pad=TITLE_PAD)
+    if title:
+        ax.set_title(title, fontsize=TITLE_FONTSIZE, pad=TITLE_PAD)
     ax.tick_params(labelsize=TICK_LABELSIZE)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     ax.grid(True, alpha=GRID_ALPHA)
     fig.tight_layout()
     return _fig_to_plot(fig)
+
+
+def _tsne_scatter(
+    X_2d: np.ndarray,
+    cluster_labels: np.ndarray,
+    noise_clusters: set[int],
+    title: str = "",
+    class_labels: np.ndarray | None = None,
+    failed_clusters: set[int] | None = None,
+    class_names: dict | None = None,
+    figsize: tuple[float, float] = (12, 10),
+    marker_size: float = 45.0,
+) -> Plot:
+    """Core t-SNE scatter: fill color = cluster ID, optional class shape + failure outline.
+
+    Single-class mode (class_labels=None): uniform 'o' markers, thin dark edge, no legend.
+    Pair mode (class_labels provided): shape encodes class, outline encodes failure status;
+    two compact legends are drawn (class shape top-left, failure outline top-right).
+    """
+    X_2d = np.asarray(X_2d)
+    cluster_labels = np.asarray(cluster_labels)
+    if X_2d.ndim != 2 or X_2d.shape[1] != 2:
+        raise ValueError("`X_2d` must have shape (n, 2).")
+
+    valid_ids = sorted(int(c) for c in np.unique(cluster_labels) if c != -1)
+    cmap = _get_fill_cmap(max(len(valid_ids), 1))
+    color_map = {cid: cmap(i) for i, cid in enumerate(valid_ids)}
+    failed = failed_clusters or set()
+
+    pair_mode = class_labels is not None
+    unique_classes: list[int] = []
+    marker_map: dict[int, str] = {}
+    cls_arr = np.empty(0, dtype=int)
+    if pair_mode:
+        cls_arr = np.asarray(class_labels)
+        unique_classes = sorted(int(c) for c in np.unique(cls_arr))
+        _markers = ["o", "^", "s", "D"]
+        marker_map = {
+            cls: _markers[i % len(_markers)] for i, cls in enumerate(unique_classes)
+        }
+
+    def _cname(v: int) -> str:
+        return class_names.get(int(v), str(v)) if class_names else str(v)
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    hdbscan_noise = cluster_labels == -1
+    if hdbscan_noise.any():
+        ax.scatter(
+            X_2d[hdbscan_noise, 0],
+            X_2d[hdbscan_noise, 1],
+            c="#AAAAAA",
+            marker="x",
+            s=marker_size * 1.2,
+            alpha=0.35,
+            linewidths=0.8,
+            zorder=1,
+        )
+
+    if not pair_mode:
+        for cid in valid_ids:
+            mask = cluster_labels == cid
+            is_noise_pseudo = cid in noise_clusters
+            ax.scatter(
+                X_2d[mask, 0],
+                X_2d[mask, 1],
+                c=[color_map[cid]],
+                marker="x" if is_noise_pseudo else "o",
+                s=marker_size,
+                alpha=0.75,
+                edgecolors="none" if is_noise_pseudo else "#222222",
+                linewidths=0 if is_noise_pseudo else 0.4,
+                zorder=2,
+            )
+    else:
+        for cid in valid_ids:
+            is_noise_pseudo = cid in noise_clusters
+            is_failed = cid in failed
+            edge_color = "#CC3333" if is_failed else "#444444"
+            lw = 1.5 if is_failed else 0.6
+            for cls in unique_classes:
+                mask = (cluster_labels == cid) & (cls_arr == cls)
+                if not np.any(mask):
+                    continue
+                mkr = "x" if is_noise_pseudo else marker_map[cls]
+                ax.scatter(
+                    X_2d[mask, 0],
+                    X_2d[mask, 1],
+                    c=[color_map[cid]],
+                    marker=mkr,
+                    s=marker_size,
+                    alpha=0.75,
+                    edgecolors="none" if is_noise_pseudo else edge_color,
+                    linewidths=0 if is_noise_pseudo else lw,
+                    zorder=2,
+                )
+
+        shape_handles = [
+            plt.Line2D(
+                [],
+                [],
+                marker=marker_map[cls],
+                linestyle="",
+                markersize=9,
+                markerfacecolor="#999999",
+                markeredgecolor="#555555",
+                markeredgewidth=1.0,
+                label=_cname(cls),
+            )
+            for cls in unique_classes
+        ]
+        leg1 = ax.legend(
+            handles=shape_handles,
+            loc="upper left",
+            fontsize=LEGEND_FONTSIZE,
+            title="Class",
+            title_fontsize=LEGEND_FONTSIZE,
+            framealpha=LEGEND_FRAMEALPHA,
+        )
+        ax.add_artist(leg1)
+        failure_handles = [
+            plt.Line2D(
+                [],
+                [],
+                marker="o",
+                linestyle="",
+                markersize=9,
+                markerfacecolor="#999999",
+                markeredgecolor="#CC3333",
+                markeredgewidth=1.8,
+                label="failed",
+            ),
+            plt.Line2D(
+                [],
+                [],
+                marker="o",
+                linestyle="",
+                markersize=9,
+                markerfacecolor="#999999",
+                markeredgecolor="#444444",
+                markeredgewidth=1.0,
+                label="correct",
+            ),
+        ]
+        ax.legend(
+            handles=failure_handles,
+            loc="upper right",
+            fontsize=LEGEND_FONTSIZE,
+            title="Cluster",
+            title_fontsize=LEGEND_FONTSIZE,
+            framealpha=LEGEND_FRAMEALPHA,
+        )
+
+    if title:
+        ax.set_title(title, fontsize=TITLE_FONTSIZE, pad=TITLE_PAD)
+    ax.set_xlabel("t-SNE 1", fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
+    ax.set_ylabel("t-SNE 2", fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
+    ax.tick_params(labelsize=TICK_LABELSIZE)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.grid(True, alpha=GRID_ALPHA)
+    fig.tight_layout()
+    return _fig_to_plot(fig)
+
+
+def cluster_tsne_scatter(
+    X_2d: np.ndarray,
+    cluster_labels: np.ndarray,
+    noise_clusters: set[int],
+    title: str = "",
+    figsize: tuple[float, float] = (12, 10),
+    marker_size: float = 45.0,
+) -> Plot:
+    """2D t-SNE scatter colored by cluster ID; title carries class/cluster info."""
+    return _tsne_scatter(
+        X_2d,
+        cluster_labels,
+        noise_clusters,
+        title=title,
+        figsize=figsize,
+        marker_size=marker_size,
+    )
+
+
+def class_pair_tsne_scatter(
+    X_2d: np.ndarray,
+    cluster_labels: np.ndarray,
+    class_labels: np.ndarray,
+    failed_clusters: set[int],
+    noise_clusters: set[int],
+    class_names: dict | None = None,
+    title: str = "",
+    figsize: tuple[float, float] = (12, 10),
+    marker_size: float = 45.0,
+) -> Plot:
+    """2D t-SNE scatter for a class pair: shape encodes class, outline encodes failure."""
+    return _tsne_scatter(
+        X_2d,
+        cluster_labels,
+        noise_clusters,
+        title=title,
+        class_labels=class_labels,
+        failed_clusters=failed_clusters,
+        class_names=class_names,
+        figsize=figsize,
+        marker_size=marker_size,
+    )

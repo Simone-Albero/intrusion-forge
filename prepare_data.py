@@ -6,7 +6,6 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from sklearn.manifold import TSNE
 from ignite.handlers.tensorboard_logger import TensorboardLogger
 
 from src.common.config import load_config, save_config
@@ -18,8 +17,6 @@ from src.common.log import (
     TensorBoardSubscriber,
 )
 from src.common.utils import flush_timing, load_from_json, timed
-from src.plot.array import cluster_scatter_plot
-from src.plot.base import Plot
 
 from src.data.analyze import (
     compute_clusters_metadata,
@@ -47,40 +44,6 @@ from src.ml.clustering import (
 
 setup_logger(log_file="resources/logs.txt")
 logger = logging.getLogger(__name__)
-
-_TSNE_MAX_SAMPLES = 5_000
-
-
-def _tsne_cluster_plot(
-    df: pd.DataFrame,
-    num_cols: list[str],
-    cluster_col: str,
-    title: str = "",
-    random_state: int = 42,
-    max_samples: int = _TSNE_MAX_SAMPLES,
-) -> Plot | None:
-    """Subsample df, fit t-SNE on num_cols, return a cluster_scatter_plot.
-
-    Returns None if the DataFrame is empty or has no numerical columns.
-    """
-    if len(df) == 0 or not num_cols:
-        return None
-    n = len(df)
-    if n > max_samples:
-        df = df.sample(n=max_samples, random_state=random_state)
-    X = df[num_cols].to_numpy(dtype=np.float64)
-    n_samples = len(X)
-    if n_samples < 6:
-        return None
-    perplexity = min(30.0, max(5.0, n_samples / 5))
-    embedding = TSNE(
-        n_components=2,
-        perplexity=perplexity,
-        random_state=random_state,
-        n_jobs=-1,
-    ).fit_transform(X)
-    labels = df[cluster_col].to_numpy()
-    return cluster_scatter_plot(embedding, labels, title=title)
 
 
 def _cluster_per_class(
@@ -115,6 +78,7 @@ def _cluster_per_class(
             param_grid=param_grid,
             max_fit_samples=max_fit_samples,
             random_state=random_state,
+            score="dbcv",
             penalize=False,
         )
         logger.info("Class %s — best params: %s", cls, best_params)
@@ -288,19 +252,20 @@ def prepare(cfg):
 
     logger.info("Running per-class grid search and clustering...")
     param_grid = {
-        "min_cluster_size": list(cfg.min_cluster_sizes),
-        "min_samples": list(cfg.min_samples_list),
+        "min_cluster_size": list(cfg.clustering.min_cluster_sizes),
+        "min_samples": list(cfg.clustering.min_samples_list),
     }
     labels, centroids = _cluster_per_class(
         X_num,
         y_class,
         all_classes,
         param_grid=param_grid,
-        max_fit_samples=cfg.max_fit_samples,
-        random_state=cfg.run_id,
+        max_fit_samples=cfg.clustering.max_fit_samples,
+        random_state=cfg.run_id or 0,
     )
 
     # reassign noise points (-1) to per-class pseudo-clusters
+    noise_cluster_ids: set[int] = set()
     noise_count = int((labels == -1).sum())
     if noise_count > 0:
         labels = labels.copy()
@@ -310,6 +275,7 @@ def prepare(cfg):
             if noise_mask.any():
                 labels[noise_mask] = next_id
                 centroids[next_id] = X_num[noise_mask].mean(axis=0)
+                noise_cluster_ids.add(next_id)
                 next_id += 1
 
     combined["cluster"] = labels
@@ -353,33 +319,12 @@ def prepare(cfg):
         label_col,
         cluster_col="cluster",
         centroids={str(k): v.tolist() for k, v in centroids.items()},
+        noise_cluster_ids=sorted(noise_cluster_ids),
     )
     dispatcher.publish(
         LogBundle.from_dict({"json/data/clusters_meta": clusters_metadata})
     )
     logger.info("Cluster metadata saved.")
-
-    logger.info("Computing t-SNE cluster plots ...")
-    step = cfg.run_id or 0
-    for class_name in combined[label_col].unique():
-        logger.info("Class %s", class_name)
-        plot = _tsne_cluster_plot(
-            combined[combined[label_col] == class_name],
-            num_cols,
-            cluster_col="cluster",
-            random_state=cfg.run_id or 0,
-        )
-        if plot is None:
-            logger.warning(
-                "Skipped t-SNE for class %s (too few samples or no num_cols)",
-                class_name,
-            )
-            continue
-        dispatcher.publish(
-            LogBundle(
-                figures={f"data/cluster_tsne/class_{class_name}": plot}, step=step
-            )
-        )
 
     tb_logger.close()
 

@@ -2,7 +2,7 @@ defaults:
   - data: cic_2018_v2
   - loops: default
   - model: tabular_classifier
-  - loss: classification
+  - loss: focal
   - optimizer: adamw
   - scheduler: one_cycle
   - _self_
