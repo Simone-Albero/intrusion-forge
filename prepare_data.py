@@ -81,7 +81,6 @@ def _cluster_per_class(
             param_grid=param_grid,
             max_fit_samples=max_fit_samples,
             random_state=random_state,
-            score="dbcv",
             penalize=False,
             cluster_selection_method=cluster_selection_method,
             max_cluster_size=max_cluster_size,
