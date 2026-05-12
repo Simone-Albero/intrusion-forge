@@ -32,7 +32,7 @@ from src.common.utils import flush_timing, load_from_json, timed
 from src.data.io import load_df
 from src.data.complexity import compute_all_complexity_measures
 from src.plot.array import (
-    cluster_tsne_scatter,
+    scatter_2d,
     class_pair_tsne_scatter,
     confusion_matrix_to_plot,
     feature_importance_plot,
@@ -46,19 +46,15 @@ setup_logger(log_file="resources/logs.txt")
 logger = logging.getLogger(__name__)
 
 RELEVANT_GEOMETRIC_FEATURES = [
-    # G-family (Euclidean)
+    # G-family
     "max_dispersion",
     "p95_dispersion",
     "dist_to_nearest_foreign_cluster",
+    "min_sibling_centroid_dist",
     "p5_silhouette",
     "frac_at_risk",
-    "min_sibling_centroid_dist",
-    # G-family (cosine — always computed on centroids)
-    "max_dispersion_cosine",
-    "p95_dispersion_cosine",
-    "dist_to_nearest_foreign_cluster_cosine",
-    "p5_silhouette_cosine",
-    "min_sibling_centroid_dist_cosine",
+    "p5_silhouette_class",
+    "frac_at_risk_class",
     # F-family
     "f1_class_mean",
     "f2_class_mean",
@@ -329,6 +325,53 @@ def _plot_rf_evaluation(classifier_results: dict) -> dict[str, Plot]:
     }
 
 
+def _stratified_subsample(
+    y_cluster: np.ndarray,
+    noise_mask: np.ndarray,
+    max_samples: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Pick up to *max_samples* indices, proportional to cluster size.
+
+    Non-noise samples are stratified by cluster (each cluster gets at least
+    one sample). Remaining budget is filled with noise samples. If no
+    subsampling is needed, returns all indices.
+    """
+    n = len(y_cluster)
+    if n <= max_samples:
+        return np.arange(n)
+
+    valid_idx = np.where(~noise_mask)[0]
+    valid_clusters = y_cluster[valid_idx]
+    unique_c, counts = np.unique(valid_clusters, return_counts=True)
+    budget_valid = min(max_samples, len(valid_idx))
+    per_cluster = np.maximum(
+        1, np.round(counts / counts.sum() * budget_valid).astype(int)
+    )
+
+    parts = []
+    for cid, take in zip(unique_c, per_cluster):
+        pool = valid_idx[valid_clusters == cid]
+        parts.append(rng.choice(pool, min(take, len(pool)), replace=False))
+
+    used = sum(len(p) for p in parts)
+    noise_idx = np.where(noise_mask)[0]
+    remaining = max(0, max_samples - used)
+    if remaining and len(noise_idx):
+        parts.append(
+            rng.choice(noise_idx, min(remaining, len(noise_idx)), replace=False)
+        )
+    return np.concatenate(parts)
+
+
+def _tsne_2d(X: np.ndarray) -> np.ndarray:
+    """t-SNE to 2D with a perplexity adapted to sample count."""
+    perplexity = min(30.0, max(5.0, len(X) / 5))
+    return TSNE(
+        n_components=2, perplexity=perplexity, random_state=42, n_jobs=-1
+    ).fit_transform(X)
+
+
 def _plot_class_cluster_tsne(
     X_num: np.ndarray,
     y_class: np.ndarray,
@@ -339,7 +382,7 @@ def _plot_class_cluster_tsne(
 ) -> dict[str, Plot]:
     """t-SNE scatter per class, colored by cluster; title shows class name and cluster count."""
     label_mapping: dict = df_meta.get("label_mapping", {})
-    noise_set = set(noise_cluster_ids)
+    noise_ids = set(noise_cluster_ids)
     rng = np.random.default_rng(42)
 
     result: dict[str, Plot] = {}
@@ -349,37 +392,35 @@ def _plot_class_cluster_tsne(
         y_clust_c = y_cluster[class_mask]
         if len(X_c) < 6:
             continue
-        unique_c = [c for c in np.unique(y_clust_c) if c != -1]
-        if len(X_c) > tsne_max_samples and unique_c:
-            per_cluster = max(1, tsne_max_samples // len(unique_c))
-            idx_parts = []
-            for cid in unique_c:
-                cid_idx = np.where(y_clust_c == cid)[0]
-                take = min(len(cid_idx), per_cluster)
-                idx_parts.append(rng.choice(cid_idx, take, replace=False))
-            noise_idx = np.where(y_clust_c == -1)[0]
-            if len(noise_idx):
-                remaining = max(0, tsne_max_samples - sum(len(p) for p in idx_parts))
-                if remaining:
-                    idx_parts.append(
-                        rng.choice(
-                            noise_idx, min(len(noise_idx), remaining), replace=False
-                        )
-                    )
-            idx = np.concatenate(idx_parts)
-            X_c = X_c[idx]
-            y_clust_c = y_clust_c[idx]
-        n_clusters = len([c for c in np.unique(y_clust_c) if c != -1])
-        class_name = str(label_mapping.get(int(class_id), int(class_id)))
-        title = f"{class_name}  ·  {n_clusters} clusters"
-        perplexity = min(30.0, max(5.0, len(X_c) / 5))
-        embedding = TSNE(
-            n_components=2, perplexity=perplexity, random_state=42, n_jobs=-1
-        ).fit_transform(X_c)
-        result[f"analysis/cluster_tsne/class_{class_name}"] = cluster_tsne_scatter(
-            embedding, y_clust_c, noise_set, title=title
+
+        noise_c = (y_clust_c == -1) | np.isin(y_clust_c, list(noise_ids))
+        idx = _stratified_subsample(y_clust_c, noise_c, tsne_max_samples, rng)
+        X_c, y_clust_c, noise_c = X_c[idx], y_clust_c[idx], noise_c[idx]
+
+        class_name = str(label_mapping.get(str(int(class_id)), int(class_id)))
+        embedding = _tsne_2d(X_c)
+        result[f"analysis/cluster_tsne/class_{class_name}"] = scatter_2d(
+            embedding,
+            y_clust_c,
+            noise_mask=noise_c,
+            x_label="t-SNE 1",
+            y_label="t-SNE 2",
         )
     return result
+
+
+def _top_confused_pairs(cm: np.ndarray, k: int) -> list[tuple[int, int]]:
+    """Return the K class pairs with the highest sum of off-diagonal entries."""
+    pair_scores: dict[tuple[int, int], float] = {}
+    for i in range(cm.shape[0]):
+        for j in range(cm.shape[0]):
+            if i == j:
+                continue
+            key = (min(i, j), max(i, j))
+            pair_scores[key] = pair_scores.get(key, 0.0) + float(cm[i, j])
+    return [
+        p for p, _ in sorted(pair_scores.items(), key=lambda x: x[1], reverse=True)[:k]
+    ]
 
 
 def _plot_class_pairs_tsne(
@@ -390,11 +431,12 @@ def _plot_class_pairs_tsne(
     df_meta: dict,
     paths: "OutputPaths",
     noise_cluster_ids: list[int],
-    failure_threshold: float,
     max_class_pairs: int,
     pair_tsne_max_samples: int,
 ) -> dict[str, Plot]:
-    """t-SNE scatter for top-K confused class pairs from the test confusion matrix."""
+    """For top-K confused class pairs, draw each cluster as a patch:
+    shape = class, fill = cluster ID, edge redness = failure rate.
+    """
     cm_path = paths.pickle / "analysis/confusion_matrices/test.pkl"
     if not cm_path.exists():
         logger.warning(
@@ -402,75 +444,47 @@ def _plot_class_pairs_tsne(
             cm_path,
         )
         return {}
-
     with open(cm_path, "rb") as f:
         cm: np.ndarray = pkl.load(f)
 
     label_mapping: dict = df_meta.get("label_mapping", {})
-    n_classes = cm.shape[0]
-
-    pair_scores: dict[tuple[int, int], float] = {}
-    for i in range(n_classes):
-        for j in range(n_classes):
-            if i == j:
-                continue
-            key = (min(i, j), max(i, j))
-            pair_scores[key] = pair_scores.get(key, 0.0) + float(cm[i, j])
-
-    top_pairs = sorted(pair_scores.items(), key=lambda x: x[1], reverse=True)[
-        :max_class_pairs
-    ]
-
-    failed_clusters = {
-        int(cid)
+    noise_ids = set(noise_cluster_ids)
+    failure_rate_by_cluster = {
+        int(cid): (row.get("failure_rate") or 0.0)
         for cid, row in cluster_summary.items()
-        if row.get("failure_rate") is not None
-        and row["failure_rate"] > failure_threshold
     }
-    noise_set = set(noise_cluster_ids)
     rng = np.random.default_rng(42)
     result: dict[str, Plot] = {}
 
-    for (cls_a, cls_b), _ in top_pairs:
+    for cls_a, cls_b in _top_confused_pairs(cm, max_class_pairs):
         pair_mask = (y_class == cls_a) | (y_class == cls_b)
         X_p = X_num[pair_mask]
         y_clust_p = y_cluster[pair_mask]
         y_cls_p = y_class[pair_mask]
         if len(X_p) < 6:
             continue
-        if len(X_p) > pair_tsne_max_samples:
-            half = pair_tsne_max_samples // 2
-            idx_parts = []
-            for cls in (cls_a, cls_b):
-                cls_idx = np.where(y_cls_p == cls)[0]
-                cls_clusters = [c for c in np.unique(y_clust_p[cls_idx]) if c != -1]
-                if cls_clusters:
-                    per_clu = max(1, half // len(cls_clusters))
-                    for cid in cls_clusters:
-                        cid_idx = cls_idx[y_clust_p[cls_idx] == cid]
-                        take = min(len(cid_idx), per_clu)
-                        idx_parts.append(rng.choice(cid_idx, take, replace=False))
-                else:
-                    take = min(len(cls_idx), half)
-                    idx_parts.append(rng.choice(cls_idx, take, replace=False))
-            idx = np.concatenate(idx_parts)
-            X_p = X_p[idx]
-            y_clust_p = y_clust_p[idx]
-            y_cls_p = y_cls_p[idx]
-        name_a = str(label_mapping.get(int(cls_a), int(cls_a)))
-        name_b = str(label_mapping.get(int(cls_b), int(cls_b)))
-        perplexity = min(30.0, max(5.0, len(X_p) / 5))
-        embedding = TSNE(
-            n_components=2, perplexity=perplexity, random_state=42, n_jobs=-1
-        ).fit_transform(X_p)
+
+        noise_p = (y_clust_p == -1) | np.isin(y_clust_p, list(noise_ids))
+        idx = _stratified_subsample(y_clust_p, noise_p, pair_tsne_max_samples, rng)
+        X_p, y_clust_p, y_cls_p, noise_p = (
+            X_p[idx],
+            y_clust_p[idx],
+            y_cls_p[idx],
+            noise_p[idx],
+        )
+
+        name_a = str(label_mapping.get(str(int(cls_a)), int(cls_a)))
+        name_b = str(label_mapping.get(str(int(cls_b)), int(cls_b)))
+        embedding = _tsne_2d(X_p)
         result[f"analysis/class_pairs/{name_a}__vs__{name_b}"] = (
             class_pair_tsne_scatter(
                 embedding,
                 y_clust_p,
                 y_cls_p,
-                failed_clusters,
-                noise_set,
-                class_names={cls_a: name_a, cls_b: name_b},
+                noise_p,
+                failure_rate_by_cluster,
+                class_names={int(cls_a): name_a, int(cls_b): name_b},
+                title=f"{name_a} vs {name_b}",
             )
         )
     return result
@@ -482,7 +496,6 @@ def assemble_analysis_figures(
     y_class: np.ndarray,
     y_cluster: np.ndarray,
     noise_cluster_ids: list[int],
-    failure_threshold: float,
     max_class_pairs: int = 10,
     tsne_max_samples: int = 5000,
     pair_tsne_max_samples: int = 5000,
@@ -505,7 +518,10 @@ def assemble_analysis_figures(
         )
     logger.info("Building summary visualizations ...")
     summary_df = pd.DataFrame.from_dict(cluster_summary, orient="index")
-    summary_df["class_name"] = summary_df["cluster_class"].map(df_meta["label_mapping"])
+    label_mapping = {str(k): v for k, v in df_meta["label_mapping"].items()}
+    summary_df["class_name"] = (
+        summary_df["cluster_class"].astype(str).map(label_mapping)
+    )
 
     oof_preds = classifier_results.get("oof_predictions", {})
     rf_correct = np.array(
@@ -535,7 +551,6 @@ def assemble_analysis_figures(
             df_meta,
             paths,
             noise_cluster_ids,
-            failure_threshold,
             max_class_pairs,
             pair_tsne_max_samples,
         )
@@ -557,7 +572,8 @@ def run_complexity(
     top_k_clusters: int,
     min_subsample_per_cluster: int,
     max_complexity_samples: int | None,
-    topk_metric: str,
+    metric: str,
+    random_state: int,
     analysis_bus: LogDispatcher,
 ) -> tuple[dict, dict]:
     """Compute complexity measures, build cluster summary, publish to log bus."""
@@ -575,7 +591,9 @@ def run_complexity(
         top_k_clusters=top_k_clusters,
         max_samples=max_complexity_samples,
         min_per_cluster=min_subsample_per_cluster,
-        topk_metric=topk_metric,
+        metric=metric,
+        noise_cluster_ids=set(noise_cluster_ids),
+        random_state=random_state,
     )
 
     cluster_errors = pred_infos["clusters"]["global"]
@@ -587,7 +605,6 @@ def run_complexity(
         mask = y_cluster == cid
         cluster_to_class[str(cid)] = int(y_class[mask][0])
 
-    noise_set: set[int] = set(noise_cluster_ids)
     cluster_summary = {}
     for cid, measures in complexity.items():
         error_entry = (cluster_errors or {}).get(str(cid), {})
@@ -597,7 +614,6 @@ def run_complexity(
             "cluster_class": cluster_to_class.get(str(cid)),
             "failure_rate": failure_rate,
             "is_failed": failure_rate is not None and failure_rate > 0.0,
-            "is_noise_cluster": int(int(cid) in noise_set),
         }
 
     analysis_bus.publish(
@@ -622,7 +638,8 @@ def analyze(
     min_subsample_per_cluster: int,
     max_complexity_samples: int | None = None,
     noise_cluster_ids: list[int] | None = None,
-    topk_metric: str = "euclidean",
+    metric: str = "cosine",
+    random_state: int = 0,
     max_class_pairs: int = 10,
     tsne_max_samples: int = 5000,
     pair_tsne_max_samples: int = 5000,
@@ -637,35 +654,35 @@ def analyze(
     cluster_summary, df_meta, classifier_results = None, None, None
 
     try:
-        # cluster_summary, df_meta = run_complexity(
-        #     paths,
-        #     X_num,
-        #     X_cat,
-        #     y_class,
-        #     y_cluster,
-        #     centroids,
-        #     noise_ids,
-        #     k,
-        #     top_k_clusters,
-        #     min_subsample_per_cluster,
-        #     max_complexity_samples,
-        #     topk_metric,
-        #     analysis_bus,
-        # )
-        # classifier_results = fit_failure_classifier(
-        #     paths,
-        #     RF_PARAM_GRID,
-        #     cluster_stats=cluster_summary,
-        #     failure_threshold=failure_threshold,
-        #     analysis_bus=analysis_bus,
-        # )
+        cluster_summary, df_meta = run_complexity(
+            paths,
+            X_num,
+            X_cat,
+            y_class,
+            y_cluster,
+            centroids,
+            noise_ids,
+            k,
+            top_k_clusters,
+            min_subsample_per_cluster,
+            max_complexity_samples,
+            metric,
+            random_state,
+            analysis_bus,
+        )
+        classifier_results = fit_failure_classifier(
+            paths,
+            RF_PARAM_GRID,
+            cluster_stats=cluster_summary,
+            failure_threshold=failure_threshold,
+            analysis_bus=analysis_bus,
+        )
         assemble_analysis_figures(
             paths=paths,
             X_num=X_num,
             y_class=y_class,
             y_cluster=y_cluster,
             noise_cluster_ids=noise_ids,
-            failure_threshold=failure_threshold,
             max_class_pairs=max_class_pairs,
             tsne_max_samples=tsne_max_samples,
             pair_tsne_max_samples=pair_tsne_max_samples,
@@ -731,7 +748,8 @@ def main():
         min_subsample_per_cluster=cfg.complexity.min_subsample_per_cluster,
         max_complexity_samples=cfg.complexity.max_complexity_samples,
         noise_cluster_ids=noise_cluster_ids,
-        topk_metric=cfg.complexity.topk_metric,
+        metric=cfg.complexity.distance,
+        random_state=cfg.run_id or 0,
         max_class_pairs=cfg.plots.max_class_pairs,
         tsne_max_samples=cfg.plots.tsne_max_samples,
         pair_tsne_max_samples=cfg.plots.pair_tsne_max_samples,

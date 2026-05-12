@@ -9,13 +9,14 @@ def fit_hdbscan(
     X_cat: np.ndarray | None = None,
     min_cluster_size: int = 50,
     min_samples: int | None = None,
-    cluster_selection_method: str = "eom",
+    cluster_selection_method: str = "leaf",
     cluster_selection_epsilon: float = 0.0,
     min_clusters: int = 2,
     max_noise_ratio: float = 0.60,
     min_clustered_ratio: float = 0.20,
     penalize: bool = True,
     max_fit_samples: int = 50_000,
+    max_cluster_size: int | None = None,
     random_state: int = 0,
     return_validity: bool = False,
     **fixed_params,
@@ -54,6 +55,14 @@ def fit_hdbscan(
         labels = clf.labels_
         rv = getattr(clf, "relative_validity_", None)
         validity = float(rv) if rv is not None and np.isfinite(rv) else float("-inf")
+
+    if max_cluster_size is not None:
+        for cid in np.unique(labels[labels != -1]):
+            members = np.where(labels == cid)[0]
+            if len(members) > max_cluster_size:
+                labels[members[max_cluster_size:]] = -1
+        if len(np.unique(labels[labels != -1])) < 2:
+            validity = float("-inf")
 
     if penalize:
         n_clustered = (labels != -1).sum()

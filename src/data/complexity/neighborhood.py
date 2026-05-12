@@ -115,6 +115,7 @@ def compute_n_measures(
     cluster_mask: dict[str, np.ndarray],
     cluster_to_class: dict[str, int],
     top_k_map: dict[str, list[str]],
+    metric: str = "cosine",
 ) -> dict[str, dict[str, float | None]]:
     """Compute N1-N4 per cluster aggregated against (a) adversarial classes and
     (b) the top-K nearest adversarial clusters, returned as min/mean/max for
@@ -123,8 +124,10 @@ def compute_n_measures(
     Builds a global approximate MST once (for N1), then derives N2-N4 from the
     k-NN graph using vectorised boolean masks. Noise points (y_cluster == -1)
     are excluded from cluster membership but may appear as neighbours.
+    metric is forwarded to build_approx_mst to keep the MST consistent with the
+    k-NN graph metric.
     """
-    edges_uv = build_approx_mst(knn_idx, knn_dist, X_num, X_cat)
+    edges_uv = build_approx_mst(knn_idx, knn_dist, X_num, X_cat, metric=metric)
 
     result: dict[str, dict[str, float | None]] = {}
     for cid_str, c_mask in tqdm(

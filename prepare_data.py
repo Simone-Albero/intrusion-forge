@@ -53,12 +53,15 @@ def _cluster_per_class(
     param_grid: dict,
     max_fit_samples: int,
     random_state: int,
-) -> tuple[np.ndarray, dict[int, np.ndarray]]:
-    """Per-class grid search + HDBSCAN fit. Returns (labels, centroids).
+    cluster_selection_method: str = "leaf",
+    max_cluster_size: int | None = None,
+) -> tuple[np.ndarray, dict[int, np.ndarray], set[int]]:
+    """Per-class grid search + HDBSCAN fit. Returns (labels, centroids, noise_cluster_ids).
 
     For each class: grid_search finds best (min_cluster_size, min_samples),
     then fit_hdbscan assigns labels. Cluster IDs are globally unique via offset.
-    Noise points (-1) are left as-is; caller handles reassignment.
+    Noise points (-1) are reassigned to per-class pseudo-clusters; their IDs are
+    collected in noise_cluster_ids so downstream code can flag them.
     """
     n = X_num.shape[0]
     labels = np.full(n, -1, dtype=np.int64)
@@ -80,6 +83,8 @@ def _cluster_per_class(
             random_state=random_state,
             score="dbcv",
             penalize=False,
+            cluster_selection_method=cluster_selection_method,
+            max_cluster_size=max_cluster_size,
         )
         logger.info("Class %s — best params: %s", cls, best_params)
 
@@ -89,6 +94,8 @@ def _cluster_per_class(
             max_fit_samples=max_fit_samples,
             random_state=random_state,
             penalize=False,
+            cluster_selection_method=cluster_selection_method,
+            max_cluster_size=max_cluster_size,
             **best_params,
         )
 
@@ -99,7 +106,20 @@ def _cluster_per_class(
         if len(cluster_ids) > 0:
             offset += int(cluster_ids.max()) + 1
 
-    return labels, centroids
+    # reassign noise points (-1) to per-class pseudo-clusters
+    noise_cluster_ids: set[int] = set()
+    noise_count = int((labels == -1).sum())
+    if noise_count > 0:
+        next_id = max(centroids.keys(), default=-1) + 1
+        for noise_cls in sorted(np.unique(y_class)):
+            noise_mask = (y_class == noise_cls) & (labels == -1)
+            if noise_mask.any():
+                labels[noise_mask] = next_id
+                centroids[next_id] = X_num[noise_mask].mean(axis=0)
+                noise_cluster_ids.add(next_id)
+                next_id += 1
+
+    return labels, centroids, noise_cluster_ids
 
 
 @timed
@@ -255,28 +275,17 @@ def prepare(cfg):
         "min_cluster_size": list(cfg.clustering.min_cluster_sizes),
         "min_samples": list(cfg.clustering.min_samples_list),
     }
-    labels, centroids = _cluster_per_class(
+    labels, centroids, noise_cluster_ids = _cluster_per_class(
         X_num,
         y_class,
         all_classes,
         param_grid=param_grid,
         max_fit_samples=cfg.clustering.max_fit_samples,
         random_state=cfg.run_id or 0,
+        cluster_selection_method=cfg.clustering.cluster_selection_method,
+        max_cluster_size=cfg.clustering.max_cluster_size,
     )
-
-    # reassign noise points (-1) to per-class pseudo-clusters
-    noise_cluster_ids: set[int] = set()
-    noise_count = int((labels == -1).sum())
-    if noise_count > 0:
-        labels = labels.copy()
-        next_id = max(centroids.keys(), default=-1) + 1
-        for noise_cls in sorted(np.unique(y_class)):
-            noise_mask = (y_class == noise_cls) & (labels == -1)
-            if noise_mask.any():
-                labels[noise_mask] = next_id
-                centroids[next_id] = X_num[noise_mask].mean(axis=0)
-                noise_cluster_ids.add(next_id)
-                next_id += 1
+    noise_count = int(np.isin(labels, sorted(noise_cluster_ids)).sum()) if noise_cluster_ids else 0
 
     combined["cluster"] = labels
     train_df = combined.iloc[:n_train].reset_index(drop=True)

@@ -7,7 +7,6 @@ from sklearn.metrics import ConfusionMatrixDisplay
 
 from .base import Plot, _fig_to_plot, _get_fill_cmap
 from .style import (
-    FILL_COLORS,
     OUTLINE_COLORS,
     TITLE_FONTSIZE,
     TITLE_PAD,
@@ -86,240 +85,97 @@ def confusion_matrix_to_plot(
     return _fig_to_plot(fig)
 
 
-def _validate_inputs(
+def scatter_2d(
     X: np.ndarray,
-    y_1: np.ndarray,
-    y_2: np.ndarray | None,
-) -> None:
-    n = len(X)
-    if X.ndim != 2 or X.shape[1] not in (2, 3):
-        raise ValueError("X must have shape (n_samples, 2) or (n_samples, 3).")
-    if len(y_1) != n:
-        raise ValueError("X and y_1 must have the same number of samples.")
-    if y_2 is not None:
-        if len(y_2) != n:
-            raise ValueError("X and y_2 must have the same number of samples.")
-        n_unique_y2 = len(np.unique(y_2))
-        if n_unique_y2 > len(OUTLINE_COLORS):
-            raise ValueError(
-                f"y_2 has {n_unique_y2} unique values; maximum supported is {len(OUTLINE_COLORS)}."
-            )
-
-
-def _make_legend_proxy(fill_color, edge_color, label):
-    """Create a proxy artist for the legend."""
-    return plt.Line2D(
-        [],
-        [],
-        marker="o",
-        linestyle="",
-        markersize=9,
-        markerfacecolor=fill_color,
-        markeredgecolor=edge_color,
-        markeredgewidth=2.0,
-        label=label,
-    )
-
-
-def _samples_plot_2d(
-    X: np.ndarray,
-    y_1: np.ndarray,
-    y_2: np.ndarray | None,
-    y1_names: dict | None = None,
-    y2_names: dict | None = None,
+    labels: np.ndarray,
+    noise_mask: np.ndarray | None = None,
+    highlight_mask: np.ndarray | None = None,
+    names: dict | None = None,
+    x_label: str = "Dim 1",
+    y_label: str = "Dim 2",
+    title: str = "",
+    figsize: tuple[float, float] = (12, 10),
+    marker_size: float = 45.0,
 ) -> Plot:
-    _n1 = lambda v: y1_names.get(int(v), f"Class {v}") if y1_names else f"Class {v}"
-    _n2 = lambda v: y2_names.get(int(v), str(v)) if y2_names else str(v)
+    """2D scatter with fill-color per label, optional noise background and highlight edge.
 
-    unique_y1 = np.unique(y_1)
-    cmap = _get_fill_cmap(len(unique_y1))
-    fill_map = {label: cmap(i) for i, label in enumerate(unique_y1)}
+    Args:
+        X:              (n, 2) array — any 2D embedding.
+        labels:         (n,) integer labels mapped to fill color.
+        noise_mask:     Boolean mask; those samples are drawn as small grey dots (background).
+        highlight_mask: Boolean mask; those samples get a red border (e.g. misclassified).
+        names:          Optional {label_int: str} for a legend. No legend if None.
+        x_label:        X-axis label.
+        y_label:        Y-axis label.
+        title:          Plot title.
+        figsize:        Figure size.
+        marker_size:    Scatter marker area (``s`` parameter).
+    """
+    X = np.asarray(X)
+    labels = np.asarray(labels)
+    if X.ndim != 2 or X.shape[1] != 2:
+        raise ValueError("`X` must have shape (n, 2).")
 
-    fig, ax = plt.subplots(figsize=(10, 8))
-    scatter_kwargs = dict(s=120, alpha=0.75, linewidths=1.8)
-    legend_proxies = []
+    noise = np.asarray(noise_mask, dtype=bool) if noise_mask is not None else np.zeros(len(X), dtype=bool)
+    highlight = np.asarray(highlight_mask, dtype=bool) if highlight_mask is not None else np.zeros(len(X), dtype=bool)
 
-    if y_2 is None:
-        for label in unique_y1:
-            mask = y_1 == label
-            ax.scatter(
-                X[mask, 0],
-                X[mask, 1],
-                color=fill_map[label],
-                edgecolors="#222222",
-                **scatter_kwargs,
-            )
-            legend_proxies.append(
-                _make_legend_proxy(fill_map[label], "#222222", _n1(label))
-            )
-    else:
-        unique_y2 = np.unique(y_2)
-        outline_map = {label: OUTLINE_COLORS[i] for i, label in enumerate(unique_y2)}
-        for label1 in unique_y1:
-            for label2 in unique_y2:
-                mask = (y_1 == label1) & (y_2 == label2)
-                if not np.any(mask):
-                    continue
-                ax.scatter(
-                    X[mask, 0],
-                    X[mask, 1],
-                    color=fill_map[label1],
-                    edgecolors=outline_map[label2],
-                    **scatter_kwargs,
-                )
-                legend_proxies.append(
-                    _make_legend_proxy(
-                        fill_map[label1],
-                        outline_map[label2],
-                        f"{_n1(label1)} · {_n2(label2)}",
-                    )
-                )
-        outline_proxies = [
-            _make_legend_proxy("lightgray", outline_map[lbl], _n2(lbl))
-            for lbl in unique_y2
-        ]
-        ax.add_artist(
-            ax.legend(
-                handles=outline_proxies,
-                loc="upper right",
-                fontsize=LEGEND_FONTSIZE,
-                title="Edge label",
-                framealpha=LEGEND_FRAMEALPHA,
-            )
+    unique_labels = sorted(int(l) for l in np.unique(labels[~noise]))
+    cmap = _get_fill_cmap(max(len(unique_labels), 1))
+    color_map = {lbl: cmap(i) for i, lbl in enumerate(unique_labels)}
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    if noise.any():
+        ax.scatter(
+            X[noise, 0], X[noise, 1],
+            c="#aaaaaa", marker="x", s=marker_size * 0.6,
+            alpha=0.4, linewidths=0.8, zorder=1,
         )
 
-    ncol = max(1, len(legend_proxies) // 12)
-    ax.legend(
-        handles=legend_proxies,
-        loc="upper left",
-        fontsize=LEGEND_FONTSIZE,
-        title="Fill label" if y_2 is None else "Fill · Edge",
-        framealpha=LEGEND_FRAMEALPHA,
-        ncol=ncol,
-    )
-    ax.set_xlabel("D1", fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
-    ax.set_ylabel("D2", fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
-    ax.set_title("2D Sample Plot", fontsize=TITLE_FONTSIZE, pad=TITLE_PAD)
+    for lbl in unique_labels:
+        base = (labels == lbl) & ~noise
+        color = color_map[lbl]
+        normal = base & ~highlight
+        hot = base & highlight
+        if normal.any():
+            ax.scatter(
+                X[normal, 0], X[normal, 1], c=[color], s=marker_size,
+                alpha=0.8, edgecolors="#333333", linewidths=0.4, zorder=2,
+            )
+        if hot.any():
+            ax.scatter(
+                X[hot, 0], X[hot, 1], c=[color], s=marker_size,
+                alpha=0.9, edgecolors="#cc3333", linewidths=1.5, zorder=3,
+            )
+
+    if names is not None:
+        _name = lambda v: names.get(int(v), str(v))
+        handles = [
+            plt.Line2D([], [], marker="o", linestyle="", markersize=9,
+                       markerfacecolor=color_map[lbl], markeredgecolor="#333333",
+                       markeredgewidth=0.8, label=_name(lbl))
+            for lbl in unique_labels
+        ]
+        if highlight_mask is not None:
+            handles.append(
+                plt.Line2D([], [], marker="o", linestyle="", markersize=9,
+                           markerfacecolor="#aaaaaa", markeredgecolor="#cc3333",
+                           markeredgewidth=1.5, label="misclassified")
+            )
+        ncol = max(1, len(handles) // 12)
+        ax.legend(handles=handles, loc="upper left", fontsize=LEGEND_FONTSIZE,
+                  framealpha=LEGEND_FRAMEALPHA, ncol=ncol)
+
+    if title:
+        ax.set_title(title, fontsize=TITLE_FONTSIZE, pad=TITLE_PAD)
+    ax.set_xlabel(x_label, fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
+    ax.set_ylabel(y_label, fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
+    ax.tick_params(labelsize=TICK_LABELSIZE)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     ax.grid(True, alpha=GRID_ALPHA)
     fig.tight_layout()
     return _fig_to_plot(fig)
-
-
-def _samples_plot_3d(
-    X: np.ndarray,
-    y_1: np.ndarray,
-    y_2: np.ndarray | None,
-    y1_names: dict | None = None,
-    y2_names: dict | None = None,
-) -> Plot:
-    _n1 = lambda v: y1_names.get(int(v), f"Class {v}") if y1_names else f"Class {v}"
-    _n2 = lambda v: y2_names.get(int(v), str(v)) if y2_names else str(v)
-
-    unique_y1 = np.unique(y_1)
-    cmap = _get_fill_cmap(len(unique_y1))
-    fill_map = {label: cmap(i) for i, label in enumerate(unique_y1)}
-
-    fig = plt.figure(figsize=(10, 8))
-    ax = fig.add_subplot(111, projection="3d")
-    scatter_kwargs = dict(s=120, alpha=0.75, linewidths=1.8)
-    legend_proxies = []
-
-    if y_2 is None:
-        for label in unique_y1:
-            mask = y_1 == label
-            ax.scatter(
-                X[mask, 0],
-                X[mask, 1],
-                X[mask, 2],
-                color=fill_map[label],
-                edgecolors="#222222",
-                **scatter_kwargs,
-            )
-            legend_proxies.append(
-                _make_legend_proxy(fill_map[label], "#222222", _n1(label))
-            )
-    else:
-        unique_y2 = np.unique(y_2)
-        outline_map = {label: OUTLINE_COLORS[i] for i, label in enumerate(unique_y2)}
-        for label1 in unique_y1:
-            for label2 in unique_y2:
-                mask = (y_1 == label1) & (y_2 == label2)
-                if not np.any(mask):
-                    continue
-                ax.scatter(
-                    X[mask, 0],
-                    X[mask, 1],
-                    X[mask, 2],
-                    color=fill_map[label1],
-                    edgecolors=outline_map[label2],
-                    **scatter_kwargs,
-                )
-                legend_proxies.append(
-                    _make_legend_proxy(
-                        fill_map[label1],
-                        outline_map[label2],
-                        f"{_n1(label1)} · {_n2(label2)}",
-                    )
-                )
-        outline_proxies = [
-            _make_legend_proxy("lightgray", outline_map[lbl], _n2(lbl))
-            for lbl in unique_y2
-        ]
-        ax.add_artist(
-            ax.legend(
-                handles=outline_proxies,
-                loc="upper right",
-                fontsize=LEGEND_FONTSIZE,
-                title="Edge label",
-                framealpha=LEGEND_FRAMEALPHA,
-            )
-        )
-
-    ncol = max(1, len(legend_proxies) // 12)
-    ax.legend(
-        handles=legend_proxies,
-        loc="upper left",
-        fontsize=LEGEND_FONTSIZE,
-        title="Fill label" if y_2 is None else "Fill · Edge",
-        framealpha=LEGEND_FRAMEALPHA,
-        ncol=ncol,
-    )
-    ax.set_xlabel("D1", fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
-    ax.set_ylabel("D2", fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
-    ax.set_zlabel("D3", fontsize=LABEL_FONTSIZE)
-    ax.set_title("3D Sample Plot", fontsize=TITLE_FONTSIZE, pad=TITLE_PAD)
-    ax.grid(True, alpha=GRID_ALPHA)
-    fig.tight_layout()
-    return _fig_to_plot(fig)
-
-
-def samples_plot(
-    X: np.ndarray,
-    y_1: list | np.ndarray,
-    y_2: list | np.ndarray | None = None,
-    y1_names: dict | None = None,
-    y2_names: dict | None = None,
-) -> Plot:
-    """Plot 2D or 3D samples with fill-color and optional outline-color encoding.
-
-    Args:
-        X:        Array of shape (n_samples, 2) or (n_samples, 3).
-        y_1:      Integer labels mapped to fill color.
-        y_2:      Optional integer labels mapped to outline/edge color.
-        y1_names: Optional dict mapping y_1 integer values to legend label strings.
-        y2_names: Optional dict mapping y_2 integer values to legend label strings.
-    """
-    X = np.asarray(X)
-    y_1 = np.asarray(y_1)
-    y_2 = np.asarray(y_2) if y_2 is not None else None
-
-    _validate_inputs(X, y_1, y_2)
-
-    if X.shape[1] == 3:
-        return _samples_plot_3d(X, y_1, y_2, y1_names, y2_names)
-    return _samples_plot_2d(X, y_1, y_2, y1_names, y2_names)
 
 
 def strip_box_plot(
@@ -604,283 +460,86 @@ def feature_importance_plot(
     return _fig_to_plot(fig)
 
 
-def grouped_bar_plot(
-    labels: list[str],
-    groups: dict[str, list[float]],
-    title: str = "",
-    x_label: str = "",
-    y_label: str = "",
-    figsize: tuple[float, float] | None = None,
-    colors: list[str] | None = None,
-) -> Plot:
-    """Grouped bar chart comparing multiple series across the same set of labels.
 
-    Args:
-        labels: Category labels for the x-axis.
-        groups: ``{series_name: [value, ...]}`` — all lists must have the same
-            length as *labels*.
-        title: Chart title.
-        x_label: X-axis label.
-        y_label: Y-axis label.
-        figsize: Figure size. Defaults to ``(max(8, n * 0.9), 5)``.
-        colors: One color per series. Defaults to ``FILL_COLORS``.
-    """
-    n = len(labels)
-    series = list(groups.items())
-    n_series = len(series)
-    width = 0.8 / n_series
-    offsets = np.linspace(-(n_series - 1) / 2, (n_series - 1) / 2, n_series) * width
-    palette = colors or FILL_COLORS
-
-    if figsize is None:
-        figsize = (max(8, n * 0.9), 5)
-
-    x = np.arange(n)
-    fig, ax = plt.subplots(figsize=figsize)
-
-    for (name, values), offset, color in zip(series, offsets, palette):
-        ax.bar(x + offset, values, width, label=name, color=color, alpha=0.85)
-
-    ax.axhline(0, color="#888888", linewidth=0.8, linestyle="--")
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, rotation=90, ha="center")
-    if title:
-        ax.set_title(title, fontsize=TITLE_FONTSIZE, pad=TITLE_PAD)
-    ax.set_xlabel(x_label, fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
-    ax.set_ylabel(y_label, fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
-    ax.legend(fontsize=LEGEND_FONTSIZE, framealpha=LEGEND_FRAMEALPHA)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-
-    fig.subplots_adjust(bottom=0.25)
-    fig.tight_layout()
-    return _fig_to_plot(fig)
-
-
-def cluster_scatter_plot(
-    X: np.ndarray,
-    cluster_labels: np.ndarray,
-    title: str = "",
-    x_label: str = "",
-    y_label: str = "",
-    figsize: tuple[float, float] = (10, 8),
-    marker_size: float = 18.0,
-) -> Plot:
-    """2D scatter of pre-computed embeddings colored by cluster label.
-
-    Noise points (cluster_labels == -1) are rendered as grey crosses.
-    No legend is drawn — color alone distinguishes clusters.
-
-    Args:
-        X:              (n, 2) float array, pre-computed 2D embedding.
-        cluster_labels: (n,) int array; -1 = noise / unassigned.
-        title:          Plot title.
-        x_label:        X-axis label.
-        y_label:        Y-axis label.
-        figsize:        Matplotlib figure size.
-        marker_size:    Marker area (scatter ``s`` parameter).
-    """
-    X = np.asarray(X)
-    cluster_labels = np.asarray(cluster_labels)
-    if X.ndim != 2 or X.shape[1] != 2:
-        raise ValueError("`X` must have shape (n, 2).")
-
-    valid_ids = sorted(int(c) for c in np.unique(cluster_labels) if c != -1)
-    cmap = _get_fill_cmap(max(len(valid_ids), 1))
-    color_map = {cid: cmap(i) for i, cid in enumerate(valid_ids)}
-
-    fig, ax = plt.subplots(figsize=figsize)
-
-    # noise points
-    noise_mask = cluster_labels == -1
-    if noise_mask.any():
-        ax.scatter(
-            X[noise_mask, 0],
-            X[noise_mask, 1],
-            c="#AAAAAA",
-            marker="x",
-            s=marker_size * 1.5,
-            alpha=0.4,
-            linewidths=0.8,
-            zorder=1,
-        )
-
-    # cluster points
-    for cid in valid_ids:
-        mask = cluster_labels == cid
-        ax.scatter(
-            X[mask, 0],
-            X[mask, 1],
-            c=[color_map[cid]],
-            marker="o",
-            s=marker_size,
-            alpha=0.7,
-            linewidths=0,
-            zorder=2,
-        )
-
-    ax.set_xlabel(x_label, fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
-    ax.set_ylabel(y_label, fontsize=LABEL_FONTSIZE, labelpad=LABEL_PAD)
-    if title:
-        ax.set_title(title, fontsize=TITLE_FONTSIZE, pad=TITLE_PAD)
-    ax.tick_params(labelsize=TICK_LABELSIZE)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    ax.grid(True, alpha=GRID_ALPHA)
-    fig.tight_layout()
-    return _fig_to_plot(fig)
-
-
-def _tsne_scatter(
+def class_pair_tsne_scatter(
     X_2d: np.ndarray,
     cluster_labels: np.ndarray,
-    noise_clusters: set[int],
+    class_labels: np.ndarray,
+    noise_mask: np.ndarray,
+    failure_rate_by_cluster: dict[int, float],
+    class_names: dict,
     title: str = "",
-    class_labels: np.ndarray | None = None,
-    failed_clusters: set[int] | None = None,
-    class_names: dict | None = None,
     figsize: tuple[float, float] = (12, 10),
-    marker_size: float = 45.0,
 ) -> Plot:
-    """Core t-SNE scatter: fill color = cluster ID, optional class shape + failure outline.
+    """Each cluster drawn as a circle: fill = class color, edge = failure rate (Reds gradient).
 
-    Single-class mode (class_labels=None): uniform 'o' markers, thin dark edge, no legend.
-    Pair mode (class_labels provided): shape encodes class, outline encodes failure status;
-    two compact legends are drawn (class shape top-left, failure outline top-right).
+    Radius is the 95th-percentile distance of cluster samples to the 2D centroid.
+    Noise samples are drawn as small grey dots behind.
     """
+    from matplotlib.patches import Circle
+
     X_2d = np.asarray(X_2d)
     cluster_labels = np.asarray(cluster_labels)
+    class_labels = np.asarray(class_labels)
+    noise_mask = np.asarray(noise_mask, dtype=bool)
     if X_2d.ndim != 2 or X_2d.shape[1] != 2:
         raise ValueError("`X_2d` must have shape (n, 2).")
 
-    valid_ids = sorted(int(c) for c in np.unique(cluster_labels) if c != -1)
-    cmap = _get_fill_cmap(max(len(valid_ids), 1))
-    color_map = {cid: cmap(i) for i, cid in enumerate(valid_ids)}
-    failed = failed_clusters or set()
+    unique_classes = sorted(int(c) for c in np.unique(class_labels))
+    class_cmap = _get_fill_cmap(len(unique_classes))
+    class_color = {cls: class_cmap(i) for i, cls in enumerate(unique_classes)}
 
-    pair_mode = class_labels is not None
-    unique_classes: list[int] = []
-    marker_map: dict[int, str] = {}
-    cls_arr = np.empty(0, dtype=int)
-    if pair_mode:
-        cls_arr = np.asarray(class_labels)
-        unique_classes = sorted(int(c) for c in np.unique(cls_arr))
-        _markers = ["o", "^", "s", "D"]
-        marker_map = {
-            cls: _markers[i % len(_markers)] for i, cls in enumerate(unique_classes)
-        }
-
-    def _cname(v: int) -> str:
-        return class_names.get(int(v), str(v)) if class_names else str(v)
+    valid_ids = sorted(int(c) for c in np.unique(cluster_labels[~noise_mask]))
+    norm = mcolors.Normalize(vmin=0.0, vmax=1.0)
+    edge_cmap = plt.get_cmap("Reds")
 
     fig, ax = plt.subplots(figsize=figsize)
 
-    hdbscan_noise = cluster_labels == -1
-    if hdbscan_noise.any():
+    if noise_mask.any():
         ax.scatter(
-            X_2d[hdbscan_noise, 0],
-            X_2d[hdbscan_noise, 1],
-            c="#AAAAAA",
-            marker="x",
-            s=marker_size * 1.2,
-            alpha=0.35,
-            linewidths=0.8,
-            zorder=1,
+            X_2d[noise_mask, 0], X_2d[noise_mask, 1],
+            c="#aaaaaa", marker="x", s=18, alpha=0.4, linewidths=0.8, zorder=1,
         )
 
-    if not pair_mode:
-        for cid in valid_ids:
-            mask = cluster_labels == cid
-            is_noise_pseudo = cid in noise_clusters
-            ax.scatter(
-                X_2d[mask, 0],
-                X_2d[mask, 1],
-                c=[color_map[cid]],
-                marker="x" if is_noise_pseudo else "o",
-                s=marker_size,
-                alpha=0.75,
-                edgecolors="none" if is_noise_pseudo else "#222222",
-                linewidths=0 if is_noise_pseudo else 0.4,
-                zorder=2,
-            )
-    else:
-        for cid in valid_ids:
-            is_noise_pseudo = cid in noise_clusters
-            is_failed = cid in failed
-            edge_color = "#CC3333" if is_failed else "#444444"
-            lw = 1.5 if is_failed else 0.6
-            for cls in unique_classes:
-                mask = (cluster_labels == cid) & (cls_arr == cls)
-                if not np.any(mask):
-                    continue
-                mkr = "x" if is_noise_pseudo else marker_map[cls]
-                ax.scatter(
-                    X_2d[mask, 0],
-                    X_2d[mask, 1],
-                    c=[color_map[cid]],
-                    marker=mkr,
-                    s=marker_size,
-                    alpha=0.75,
-                    edgecolors="none" if is_noise_pseudo else edge_color,
-                    linewidths=0 if is_noise_pseudo else lw,
-                    zorder=2,
-                )
+    for cid in valid_ids:
+        mask = (cluster_labels == cid) & ~noise_mask
+        if not np.any(mask):
+            continue
+        pts = X_2d[mask]
+        center = pts.mean(axis=0)
+        dists = np.linalg.norm(pts - center, axis=1)
+        radius = float(np.percentile(dists, 95)) if len(dists) > 1 else 0.5
 
-        shape_handles = [
-            plt.Line2D(
-                [],
-                [],
-                marker=marker_map[cls],
-                linestyle="",
-                markersize=9,
-                markerfacecolor="#999999",
-                markeredgecolor="#555555",
-                markeredgewidth=1.0,
-                label=_cname(cls),
-            )
-            for cls in unique_classes
-        ]
-        leg1 = ax.legend(
-            handles=shape_handles,
-            loc="upper left",
-            fontsize=LEGEND_FONTSIZE,
-            title="Class",
-            title_fontsize=LEGEND_FONTSIZE,
-            framealpha=LEGEND_FRAMEALPHA,
-        )
-        ax.add_artist(leg1)
-        failure_handles = [
-            plt.Line2D(
-                [],
-                [],
-                marker="o",
-                linestyle="",
-                markersize=9,
-                markerfacecolor="#999999",
-                markeredgecolor="#CC3333",
-                markeredgewidth=1.8,
-                label="failed",
-            ),
-            plt.Line2D(
-                [],
-                [],
-                marker="o",
-                linestyle="",
-                markersize=9,
-                markerfacecolor="#999999",
-                markeredgecolor="#444444",
-                markeredgewidth=1.0,
-                label="correct",
-            ),
-        ]
-        ax.legend(
-            handles=failure_handles,
-            loc="upper right",
-            fontsize=LEGEND_FONTSIZE,
-            title="Cluster",
-            title_fontsize=LEGEND_FONTSIZE,
-            framealpha=LEGEND_FRAMEALPHA,
-        )
+        cls = int(class_labels[mask][0])  # clusters are intra-class by construction
+        fr = float(failure_rate_by_cluster.get(cid, 0.0) or 0.0)
+        ax.add_patch(Circle(
+            center, radius,
+            facecolor=class_color[cls],
+            edgecolor=edge_cmap(norm(fr)),
+            linewidth=1.0 + 2.0 * fr,
+            alpha=0.6,
+            zorder=2,
+        ))
+
+    ax.autoscale_view()
+    ax.set_aspect("equal", adjustable="datalim")
+
+    class_handles = [
+        plt.Line2D([], [], marker="o", linestyle="", markersize=11,
+                   markerfacecolor=class_color[cls], markeredgecolor="#333333",
+                   markeredgewidth=1.0, label=class_names.get(cls, str(cls)))
+        for cls in unique_classes
+    ]
+    leg = ax.legend(handles=class_handles, loc="upper left", title="Class",
+                    fontsize=LEGEND_FONTSIZE, title_fontsize=LEGEND_FONTSIZE,
+                    framealpha=LEGEND_FRAMEALPHA)
+    ax.add_artist(leg)
+
+    sm = plt.cm.ScalarMappable(cmap=edge_cmap, norm=norm)
+    sm.set_array([])
+    fig.colorbar(sm, ax=ax, pad=0.02, fraction=0.03).set_label(
+        "Failure rate", fontsize=LABEL_FONTSIZE
+    )
 
     if title:
         ax.set_title(title, fontsize=TITLE_FONTSIZE, pad=TITLE_PAD)
@@ -892,47 +551,3 @@ def _tsne_scatter(
     ax.grid(True, alpha=GRID_ALPHA)
     fig.tight_layout()
     return _fig_to_plot(fig)
-
-
-def cluster_tsne_scatter(
-    X_2d: np.ndarray,
-    cluster_labels: np.ndarray,
-    noise_clusters: set[int],
-    title: str = "",
-    figsize: tuple[float, float] = (12, 10),
-    marker_size: float = 45.0,
-) -> Plot:
-    """2D t-SNE scatter colored by cluster ID; title carries class/cluster info."""
-    return _tsne_scatter(
-        X_2d,
-        cluster_labels,
-        noise_clusters,
-        title=title,
-        figsize=figsize,
-        marker_size=marker_size,
-    )
-
-
-def class_pair_tsne_scatter(
-    X_2d: np.ndarray,
-    cluster_labels: np.ndarray,
-    class_labels: np.ndarray,
-    failed_clusters: set[int],
-    noise_clusters: set[int],
-    class_names: dict | None = None,
-    title: str = "",
-    figsize: tuple[float, float] = (12, 10),
-    marker_size: float = 45.0,
-) -> Plot:
-    """2D t-SNE scatter for a class pair: shape encodes class, outline encodes failure."""
-    return _tsne_scatter(
-        X_2d,
-        cluster_labels,
-        noise_clusters,
-        title=title,
-        class_labels=class_labels,
-        failed_clusters=failed_clusters,
-        class_names=class_names,
-        figsize=figsize,
-        marker_size=marker_size,
-    )

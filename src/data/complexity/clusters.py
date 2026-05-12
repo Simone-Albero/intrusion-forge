@@ -10,6 +10,7 @@ def _approx_silhouette(
     metric: str = "euclidean",
     max_samples: int = 10_000,
     min_per_cluster: int = 50,
+    random_state: int = 42,
 ) -> np.ndarray | None:
     """Approximate silhouette scores with stratified subsampling.
 
@@ -23,7 +24,7 @@ def _approx_silhouette(
     if n <= max_samples:
         idx = np.arange(n)
     else:
-        rng = np.random.default_rng(42)
+        rng = np.random.default_rng(random_state)
         idx_parts: list[np.ndarray] = []
         for lbl in unique_labels:
             members = np.where(labels == lbl)[0]
@@ -84,28 +85,40 @@ def _nearest_sibling(
     return None
 
 
+def _spherical_centroid(X: np.ndarray, eps: float = 1e-8) -> np.ndarray:
+    """Fréchet mean under cosine distance: mean of L2-normalised samples, re-normalised."""
+    norms = np.linalg.norm(X, axis=1, keepdims=True)
+    X_norm = X / np.maximum(norms, eps)
+    sph = X_norm.mean(axis=0)
+    sph_norm = np.linalg.norm(sph)
+    return sph / max(sph_norm, eps)
+
+
 @timed
 def compute_cluster_geometry(
     X_num: np.ndarray,
     y_class: np.ndarray,
     y_cluster: np.ndarray,
     centroids: dict[str, list[float]],
+    metric: str = "cosine",
+    random_state: int = 42,
 ) -> dict[str, dict[str, float | None]]:
-    """Compute geometry measures per cluster.
+    """Compute geometry measures per cluster using a single configured metric.
 
     Inputs:
-        X_num      — (n, d_num) float array, RobustScaled numericals.
-        y_class    — (n,) int array, class labels.
-        y_cluster  — (n,) int array, cluster labels (-1 = noise, excluded).
-        centroids  — {str(cluster_id): [float, ...]} numerical centroids.
+        X_num       — (n, d_num) float array, RobustScaled numericals.
+        y_class     — (n,) int array, class labels.
+        y_cluster   — (n,) int array, cluster labels (-1 = noise, excluded).
+        centroids   — {str(cluster_id): [float, ...]} Euclidean centroids.
+        metric      — "cosine" or "euclidean". Controls centroid type, pairwise
+                      distances, and silhouette computation.
+        random_state — seed for silhouette subsampling.
 
-    Output keys per cluster (Euclidean + cosine variants always computed):
-        max_dispersion / max_dispersion_cosine
-        p95_dispersion / p95_dispersion_cosine
-        dist_to_nearest_foreign_cluster / dist_to_nearest_foreign_cluster_cosine
-        p5_silhouette / p5_silhouette_cosine
-        frac_at_risk
-        min_sibling_centroid_dist / min_sibling_centroid_dist_cosine
+    Output keys per cluster (neutral, no metric suffix):
+        max_dispersion, p95_dispersion
+        dist_to_nearest_foreign_cluster, min_sibling_centroid_dist
+        p5_silhouette, frac_at_risk          (cluster-label silhouette)
+        p5_silhouette_class, frac_at_risk_class  (class-label silhouette)
 
     Noise points (y_cluster == -1) are excluded from all computations.
     """
@@ -118,45 +131,42 @@ def compute_cluster_geometry(
     if not present_ids:
         return {}
 
-    centroid_matrix = np.stack(
-        [np.asarray(centroids[cid], dtype=np.float64) for cid in present_ids]
-    )
-    id_to_idx = {cid: i for i, cid in enumerate(present_ids)}
-
     id_to_class: dict[str, int] = {}
     for cid in present_ids:
         mask_cid = yk_v == int(cid)
         if mask_cid.any():
             id_to_class[cid] = int(yc_v[mask_cid][0])
 
-    # pairwise centroid distances — Euclidean and cosine
-    pw_euc = pairwise_distances(centroid_matrix, metric="euclidean")
-    pw_cos = pairwise_distances(centroid_matrix, metric="cosine")
-    np.fill_diagonal(pw_euc, np.inf)
-    np.fill_diagonal(pw_cos, np.inf)
+    # build centroid matrix appropriate for the metric
+    if metric == "cosine":
+        centroid_matrix = np.stack(
+            [_spherical_centroid(X_v[yk_v == int(cid)]) for cid in present_ids]
+        )
+    else:
+        centroid_matrix = np.stack(
+            [np.asarray(centroids[cid], dtype=np.float64) for cid in present_ids]
+        )
 
-    # silhouette on non-noise points (both metrics)
-    sil_euc = _approx_silhouette(X_v, yk_v, metric="euclidean")
-    sil_cos = _approx_silhouette(X_v, yk_v, metric="cosine")
+    id_to_idx = {cid: i for i, cid in enumerate(present_ids)}
+
+    pw = pairwise_distances(centroid_matrix, metric=metric)
+    np.fill_diagonal(pw, np.inf)
+
+    sil_cluster = _approx_silhouette(X_v, yk_v, metric=metric, random_state=random_state)
+    sil_class = _approx_silhouette(X_v, yc_v, metric=metric, random_state=random_state)
 
     result: dict[str, dict[str, float | None]] = {}
 
     for cid in present_ids:
         idx_c = id_to_idx[cid]
         cls_c = id_to_class.get(cid)
-
         mask_cid = yk_v == int(cid)
         samples = X_v[mask_cid]
         centroid = centroid_matrix[idx_c]
 
-        max_disp_e, p95_disp_e = _dispersion(samples, centroid, "euclidean")
-        max_disp_c, p95_disp_c = _dispersion(samples, centroid, "cosine")
-
-        dist_foreign_e = _nearest_foreign(pw_euc[idx_c], present_ids, id_to_class, cls_c)
-        dist_foreign_c = _nearest_foreign(pw_cos[idx_c], present_ids, id_to_class, cls_c)
-
-        min_sib_e = _nearest_sibling(pw_euc[idx_c], present_ids, id_to_class, cls_c, cid)
-        min_sib_c = _nearest_sibling(pw_cos[idx_c], present_ids, id_to_class, cls_c, cid)
+        max_disp, p95_disp = _dispersion(samples, centroid, metric)
+        dist_foreign = _nearest_foreign(pw[idx_c], present_ids, id_to_class, cls_c)
+        min_sib = _nearest_sibling(pw[idx_c], present_ids, id_to_class, cls_c, cid)
 
         def _p5_frac(sil_values: np.ndarray | None) -> tuple[float | None, float | None]:
             if sil_values is None:
@@ -167,21 +177,18 @@ def compute_cluster_geometry(
                 return None, None
             return float(np.percentile(sil_finite, 5)), float(np.mean(sil_finite < 0))
 
-        p5_sil_e, frac_at_risk = _p5_frac(sil_euc)
-        p5_sil_c, _ = _p5_frac(sil_cos)
+        p5_sil, frac_at_risk = _p5_frac(sil_cluster)
+        p5_sil_class, frac_at_risk_class = _p5_frac(sil_class)
 
         result[cid] = {
-            "max_dispersion": max_disp_e,
-            "p95_dispersion": p95_disp_e,
-            "dist_to_nearest_foreign_cluster": dist_foreign_e,
-            "p5_silhouette": p5_sil_e,
+            "max_dispersion": max_disp,
+            "p95_dispersion": p95_disp,
+            "dist_to_nearest_foreign_cluster": dist_foreign,
+            "min_sibling_centroid_dist": min_sib,
+            "p5_silhouette": p5_sil,
             "frac_at_risk": frac_at_risk,
-            "min_sibling_centroid_dist": min_sib_e,
-            "max_dispersion_cosine": max_disp_c,
-            "p95_dispersion_cosine": p95_disp_c,
-            "dist_to_nearest_foreign_cluster_cosine": dist_foreign_c,
-            "p5_silhouette_cosine": p5_sil_c,
-            "min_sibling_centroid_dist_cosine": min_sib_c,
+            "p5_silhouette_class": p5_sil_class,
+            "frac_at_risk_class": frac_at_risk_class,
         }
 
     return result

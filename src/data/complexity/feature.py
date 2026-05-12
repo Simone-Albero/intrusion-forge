@@ -1,7 +1,7 @@
 import numpy as np
 from tqdm import tqdm
 
-from src.data.complexity.shared import aggregate_min_mean_max, make_null_row
+from src.data.complexity.shared import aggregate_min_mean_max, make_null_row, _l2_normalize
 from ...common.utils import timed
 
 
@@ -88,6 +88,7 @@ def compute_f_measures(
     y_cluster: np.ndarray,
     cluster_to_class: dict[str, int],
     top_k_map: dict[str, list[str]],
+    metric: str = "cosine",
 ) -> dict[str, dict[str, float | None]]:
     """Compute F1-F4 per cluster aggregated against (a) adversarial classes and
     (b) the top-K nearest adversarial clusters, returned as min/mean/max for
@@ -100,17 +101,18 @@ def compute_f_measures(
         cluster_to_class  — {str(cluster_id): class_label} for non-noise clusters.
         top_k_map         — {str(cluster_id): [str(adversarial_cluster_id), ...]}
                             top-K nearest adversarial clusters per cluster.
+        metric            — "cosine": L2-normalise samples before F1-F4 (angular
+                            space, consistent with Gower-cosine k-NN);
+                            "euclidean": raw samples (Cartesian space).
 
     Output keys per cluster (24 total):
         f{i}_class_{min,mean,max}    — aggregated over adversarial classes
         f{i}_cluster_{min,mean,max}  — aggregated over top-K adversarial clusters
         for i in {1, 2, 3, 4}.
-
-    F-family is numerical-only by design (categorical information enters via
-    the N/ND families through the Gower k-NN graph).
     """
     mask_valid = y_cluster != -1
-    X_v = X_num[mask_valid]
+    X_raw = X_num[mask_valid]
+    X_v = _l2_normalize(X_raw) if metric == "cosine" else X_raw
     yc_v = y_class[mask_valid]
     yk_v = y_cluster[mask_valid]
 

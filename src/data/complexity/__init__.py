@@ -2,7 +2,10 @@ import numpy as np
 from tqdm import tqdm
 import logging
 
-from src.data.complexity.shared import build_knn_graph, topk_adversarial_clusters
+from src.data.complexity.shared import (
+    build_knn_graph,
+    topk_adversarial_clusters,
+)
 from src.data.complexity.clusters import compute_cluster_geometry
 from src.data.complexity.feature import compute_f_measures
 from src.data.complexity.neighborhood import compute_n_measures
@@ -97,12 +100,13 @@ def _build_topk_map(
     cluster_to_class: dict[str, int],
     centroids: dict[str, list[float]],
     top_k_clusters: int,
-    metric: str = "euclidean",
+    metric: str = "cosine",
 ) -> dict[str, list[str]]:
     """Build the top-K adversarial cluster map keyed by str(cluster_id).
 
-    Only clusters present both in `cluster_to_class` and in `centroids` are
-    eligible.  metric is forwarded to topk_adversarial_clusters.
+    Selects the K nearest adversarial clusters by centroid distance under
+    `metric`. Only clusters present in both `cluster_to_class` and `centroids`
+    are eligible.
     """
     present_ids = [cid for cid in cluster_to_class if cid in centroids]
     if not present_ids:
@@ -116,6 +120,36 @@ def _build_topk_map(
     )
 
 
+def _compute_analysis_centroids(
+    X_num: np.ndarray,
+    y_cluster: np.ndarray,
+    metric: str,
+    eps: float = 1e-8,
+) -> dict[str, list[float]]:
+    """Compute centroids appropriate for the configured metric.
+
+    metric="cosine": spherical centroid (mean of L2-normalised samples, re-normalised).
+    metric="euclidean": arithmetic mean.
+    Returns {str(cluster_id): centroid_vector}.
+    """
+    result: dict[str, list[float]] = {}
+    for cid in np.unique(y_cluster):
+        if int(cid) == -1:
+            continue
+        X_c = X_num[y_cluster == int(cid)]
+        if len(X_c) == 0:
+            continue
+        if metric == "cosine":
+            norms = np.linalg.norm(X_c, axis=1, keepdims=True)
+            X_c_norm = X_c / np.maximum(norms, eps)
+            sph = X_c_norm.mean(axis=0)
+            sph_norm = np.linalg.norm(sph)
+            result[str(int(cid))] = (sph / max(sph_norm, eps)).tolist()
+        else:
+            result[str(int(cid))] = X_c.mean(axis=0).tolist()
+    return result
+
+
 @timed
 def compute_all_complexity_measures(
     X_num: np.ndarray,
@@ -127,36 +161,42 @@ def compute_all_complexity_measures(
     top_k_clusters: int = 10,
     max_samples: int | None = None,
     min_per_cluster: int = 50,
-    topk_metric: str = "euclidean",
+    metric: str = "cosine",
+    noise_cluster_ids: set[int] | None = None,
+    random_state: int = 42,
 ) -> dict[str, dict[str, float | None]]:
-    """Compute all complexity measures per cluster.
+    """Compute all complexity measures per cluster under a single metric.
 
-    Builds one Gower-cosine hybrid k-NN graph (batched) and passes it to all
-    measure functions. F/N/ND families are aggregated both vs adversarial
-    classes and vs the top-K nearest adversarial clusters (by centroid
-    distance under `topk_metric`). G-family cosine variants are always
-    computed (negligible cost) alongside the Euclidean ones.
-    Returns {cluster_id: {measure_name: value}}.
+    Builds one Gower-hybrid k-NN graph and passes it to all measure families.
+    All families (F, N, ND, G) use the same metric — there are no dual-metric
+    outputs. Output keys are neutral (no _cosine / _euclidean suffix).
 
     Inputs:
         X_num            — (n, d_num) float array, RobustScaled numericals.
         X_cat            — (n, d_cat) int array or None.
         y_class          — (n,) int array, class labels (encoded).
         y_cluster        — (n,) int array, cluster labels (-1 = noise).
-        centroids        — {str(cluster_id): [float, ...]} numerical centroids.
+        centroids        — {str(cluster_id): [float, ...]} Euclidean centroids
+                           (from _cluster_per_class; used only for the Euclidean
+                           path — cosine path recomputes spherical centroids).
         k                — number of neighbours for the k-NN graph.
-        top_k_clusters   — number of nearest adversarial clusters considered
-                           in the vs-cluster aggregation of F/N/ND.
-        max_samples      — if set, subsample stratified by cluster before
-                           building the k-NN graph. None = use all samples.
+        top_k_clusters   — K nearest adversarial clusters for vs-cluster aggregation.
+        max_samples      — if set, subsample stratified by cluster before building
+                           the k-NN graph. None = use all samples.
         min_per_cluster  — minimum samples per cluster in the subsample.
-        topk_metric      — centroid metric for top-K adversarial selection.
-                           "euclidean" (default) or "cosine".
+        metric           — "cosine" or "euclidean". Controls k-NN, MST, F-family,
+                           G-family centroids, pairwise distances, and silhouette.
+        noise_cluster_ids — set of pseudo-cluster IDs (reassigned noise points).
+                           Adds is_noise_cluster flag to the output rows.
+        random_state     — seed for stratified subsampling and silhouette.
+
+    Returns {cluster_id: {measure_name: value}}.
     """
     if max_samples is not None and len(y_cluster) > max_samples:
         n_orig = len(y_cluster)
         X_num, X_cat, y_class, y_cluster = _stratified_subsample(
-            X_num, X_cat, y_class, y_cluster, max_samples, min_per_cluster
+            X_num, X_cat, y_class, y_cluster, max_samples, min_per_cluster,
+            random_state=random_state,
         )
         logger.info(
             "Subsampled %d → %d points (proportional, min %d/cluster)",
@@ -165,20 +205,24 @@ def compute_all_complexity_measures(
             min_per_cluster,
         )
 
-    logger.info("Building Gower-cosine hybrid k-NN graph (k=%d)...", k)
-    knn_idx, knn_dist = build_knn_graph(X_num, X_cat, k=k)
+    logger.info("Building Gower-%s hybrid k-NN graph (k=%d)...", metric, k)
+    knn_idx, knn_dist = build_knn_graph(X_num, X_cat, k=k, metric=metric)
 
     class_mask, cluster_mask, cluster_to_class = _build_population_masks(
         y_class, y_cluster
     )
+
+    # centroids appropriate for the metric (spherical if cosine, Euclidean otherwise)
+    analysis_centroids = _compute_analysis_centroids(X_num, y_cluster, metric=metric)
+
     top_k_map = _build_topk_map(
-        cluster_to_class, centroids, top_k_clusters, metric=topk_metric
+        cluster_to_class, analysis_centroids, top_k_clusters, metric=metric
     )
 
     with tqdm(total=5, desc="complexity families", unit="family") as pbar:
         pbar.set_description("F measures")
         f_out = compute_f_measures(
-            X_num, y_class, y_cluster, cluster_to_class, top_k_map
+            X_num, y_class, y_cluster, cluster_to_class, top_k_map, metric=metric
         )
         pbar.update(1)
 
@@ -193,6 +237,7 @@ def compute_all_complexity_measures(
             cluster_mask,
             cluster_to_class,
             top_k_map,
+            metric=metric,
         )
         pbar.update(1)
 
@@ -206,10 +251,14 @@ def compute_all_complexity_measures(
         t_out = compute_t_measures(X_num, X_cat, y_cluster)
         pbar.update(1)
 
-        pbar.set_description("G measures (Euclidean + cosine)")
-        g_out = compute_cluster_geometry(X_num, y_class, y_cluster, centroids)
+        pbar.set_description("G measures")
+        g_out = compute_cluster_geometry(
+            X_num, y_class, y_cluster, centroids,
+            metric=metric, random_state=random_state,
+        )
         pbar.update(1)
 
+    noise_ids = noise_cluster_ids or set()
     all_ids = set(f_out) | set(n_out) | set(nd_out) | set(t_out) | set(g_out)
 
     result: dict[str, dict[str, float | None]] = {}
@@ -220,6 +269,7 @@ def compute_all_complexity_measures(
         row.update(nd_out.get(cid, {}))
         row.update(t_out.get(cid, {}))
         row.update(g_out.get(cid, {}))
+        row["is_noise_cluster"] = int(cid) in noise_ids
         result[cid] = row
 
     return result
