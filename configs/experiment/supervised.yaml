@@ -11,9 +11,10 @@ complexity:
   k: 30
   top_k_clusters: 10                 # top-K nearest adversarial clusters per cluster (vs-cluster aggregation)
   min_subsample_per_cluster: 50      # minimum samples per cluster in proportional subsampling
-  max_complexity_samples: 200000     # cap on points used to build the k-NN graph
+  max_complexity_samples: 100000     # cap on points used to build the k-NN graph
 
 clustering:
+  distance: cosine                # euclidean | cosine — L2-normalises X_num before HDBSCAN fit when cosine
   min_cluster_sizes: [10, 20, 30, 50]
   min_samples_list: [5, 10, 30]
   cluster_selection_method: leaf     # leaf = fine-grained cohesive clusters; eom = larger merged clusters

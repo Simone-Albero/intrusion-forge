@@ -37,6 +37,7 @@ from src.data.preprocessing import (
     rare_category_filter,
     random_undersample_df,
 )
+from src.data.complexity.shared import _l2_normalize
 from src.ml.clustering import (
     grid_search,
     fit_hdbscan,
@@ -55,6 +56,7 @@ def _cluster_per_class(
     random_state: int,
     cluster_selection_method: str = "leaf",
     max_cluster_size: int | None = None,
+    metric: str = "euclidean",
 ) -> tuple[np.ndarray, dict[int, np.ndarray], set[int]]:
     """Per-class grid search + HDBSCAN fit. Returns (labels, centroids, noise_cluster_ids).
 
@@ -73,9 +75,10 @@ def _cluster_per_class(
         if not mask.any():
             continue
         X_num_cls = X_num[mask]
+        X_fit_cls = _l2_normalize(X_num_cls) if metric == "cosine" else X_num_cls
 
         best_params = grid_search(
-            X_num_cls,
+            X_fit_cls,
             None,
             fit_hdbscan,
             param_grid=param_grid,
@@ -88,7 +91,7 @@ def _cluster_per_class(
         logger.info("Class %s — best params: %s", cls, best_params)
 
         raw_labels = fit_hdbscan(
-            X_num_cls,
+            X_fit_cls,
             None,
             max_fit_samples=max_fit_samples,
             random_state=random_state,
@@ -283,8 +286,13 @@ def prepare(cfg):
         random_state=cfg.run_id or 0,
         cluster_selection_method=cfg.clustering.cluster_selection_method,
         max_cluster_size=cfg.clustering.max_cluster_size,
+        metric=cfg.clustering.distance,
     )
-    noise_count = int(np.isin(labels, sorted(noise_cluster_ids)).sum()) if noise_cluster_ids else 0
+    noise_count = (
+        int(np.isin(labels, sorted(noise_cluster_ids)).sum())
+        if noise_cluster_ids
+        else 0
+    )
 
     combined["cluster"] = labels
     train_df = combined.iloc[:n_train].reset_index(drop=True)

@@ -2,6 +2,7 @@ import numpy as np
 import scipy.sparse
 import scipy.sparse.csgraph
 from scipy.spatial.distance import cdist
+from tqdm import tqdm
 
 from ...common.utils import timed
 
@@ -116,12 +117,16 @@ def build_knn_graph(
     if metric == "cosine":
         X_num_prep = _l2_normalize(X_num)
 
-        for start in range(0, n, batch_size):
+        for start in tqdm(
+            range(0, n, batch_size), desc="k-NN graph", unit="batch", leave=False
+        ):
             end = min(start + batch_size, n)
             q_num_prep = X_num_prep[start:end]
             q_cat = X_cat[start:end] if X_cat is not None else None
 
-            dists = _hybrid_row_batch(X_num_prep, X_cat, q_num_prep, q_cat, d_num, d_cat)
+            dists = _hybrid_row_batch(
+                X_num_prep, X_cat, q_num_prep, q_cat, d_num, d_cat
+            )
             batch_idx = np.arange(end - start)
             dists[batch_idx, start + batch_idx] = np.inf
 
@@ -134,12 +139,16 @@ def build_knn_graph(
     else:  # euclidean
         feat_ranges = X_num.max(axis=0) - X_num.min(axis=0)
 
-        for start in range(0, n, batch_size):
+        for start in tqdm(
+            range(0, n, batch_size), desc="k-NN graph", unit="batch", leave=False
+        ):
             end = min(start + batch_size, n)
             q_num = X_num[start:end]
             q_cat = X_cat[start:end] if X_cat is not None else None
 
-            dists = _hybrid_row_batch_euclidean(X_num, X_cat, q_num, q_cat, d_num, d_cat, feat_ranges)
+            dists = _hybrid_row_batch_euclidean(
+                X_num, X_cat, q_num, q_cat, d_num, d_cat, feat_ranges
+            )
             batch_idx = np.arange(end - start)
             dists[batch_idx, start + batch_idx] = np.inf
 
@@ -197,9 +206,7 @@ def _bridge_disconnected(
     space such that the k neighbours of every node sit in the same category).
     metric controls which distance function is used for bridge distances.
     """
-    n_comp, comp_labels = scipy.sparse.csgraph.connected_components(
-        mat, directed=False
-    )
+    n_comp, comp_labels = scipy.sparse.csgraph.connected_components(mat, directed=False)
     if n_comp == 1:
         return mat
 
@@ -210,13 +217,17 @@ def _bridge_disconnected(
         X_num_norm = _l2_normalize(X_num)
         q_num_prep = X_num_norm[ref : ref + 1]
         q_cat = X_cat[ref : ref + 1] if X_cat is not None else None
-        dists_row = _hybrid_row_batch(X_num_norm, X_cat, q_num_prep, q_cat, d_num, d_cat)[0]
+        dists_row = _hybrid_row_batch(
+            X_num_norm, X_cat, q_num_prep, q_cat, d_num, d_cat
+        )[0]
     else:
         if feat_ranges is None:
             feat_ranges = X_num.max(axis=0) - X_num.min(axis=0)
         q_num = X_num[ref : ref + 1]
         q_cat = X_cat[ref : ref + 1] if X_cat is not None else None
-        dists_row = _hybrid_row_batch_euclidean(X_num, X_cat, q_num, q_cat, d_num, d_cat, feat_ranges)[0]
+        dists_row = _hybrid_row_batch_euclidean(
+            X_num, X_cat, q_num, q_cat, d_num, d_cat, feat_ranges
+        )[0]
 
     for ci in range(1, n_comp):
         nodes_ci = np.where(comp_labels == ci)[0]
@@ -243,10 +254,14 @@ def build_approx_mst(
     n, d_num = X_num.shape
     d_cat = X_cat.shape[1] if X_cat is not None else 0
 
-    feat_ranges = X_num.max(axis=0) - X_num.min(axis=0) if metric == "euclidean" else None
+    feat_ranges = (
+        X_num.max(axis=0) - X_num.min(axis=0) if metric == "euclidean" else None
+    )
 
     graph = _to_sparse_csr(knn_indices, knn_distances, n)
-    graph = _bridge_disconnected(graph, X_num, X_cat, d_num, d_cat, metric=metric, feat_ranges=feat_ranges)
+    graph = _bridge_disconnected(
+        graph, X_num, X_cat, d_num, d_cat, metric=metric, feat_ranges=feat_ranges
+    )
     mst = scipy.sparse.csgraph.minimum_spanning_tree(graph).tocoo()
     if mst.nnz == 0:
         return np.empty((0, 2), dtype=np.int64)

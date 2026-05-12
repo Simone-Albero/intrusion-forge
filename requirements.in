@@ -12,3 +12,4 @@ seaborn
 hdbscan
 pytorch-ignite
 tqdm
+tensorboard

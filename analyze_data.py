@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 from ignite.handlers.tensorboard_logger import TensorboardLogger
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.manifold import TSNE
+from umap import UMAP
 from sklearn.metrics import (
     classification_report,
     confusion_matrix,
@@ -364,11 +364,15 @@ def _stratified_subsample(
     return np.concatenate(parts)
 
 
-def _tsne_2d(X: np.ndarray) -> np.ndarray:
-    """t-SNE to 2D with a perplexity adapted to sample count."""
-    perplexity = min(30.0, max(5.0, len(X) / 5))
-    return TSNE(
-        n_components=2, perplexity=perplexity, random_state=42, n_jobs=-1
+def _umap_2d(X: np.ndarray) -> np.ndarray:
+    """UMAP projection to 2D, with n_neighbors capped to sample count."""
+    n_neighbors = min(15, len(X) - 1)
+    return UMAP(
+        n_components=2,
+        n_neighbors=n_neighbors,
+        random_state=42,
+        n_jobs=-1,
+        verbose=False,
     ).fit_transform(X)
 
 
@@ -398,7 +402,7 @@ def _plot_class_cluster_tsne(
         X_c, y_clust_c, noise_c = X_c[idx], y_clust_c[idx], noise_c[idx]
 
         class_name = str(label_mapping.get(str(int(class_id)), int(class_id)))
-        embedding = _tsne_2d(X_c)
+        embedding = _umap_2d(X_c)
         result[f"analysis/cluster_tsne/class_{class_name}"] = scatter_2d(
             embedding,
             y_clust_c,
@@ -475,7 +479,7 @@ def _plot_class_pairs_tsne(
 
         name_a = str(label_mapping.get(str(int(cls_a)), int(cls_a)))
         name_b = str(label_mapping.get(str(int(cls_b)), int(cls_b)))
-        embedding = _tsne_2d(X_p)
+        embedding = _umap_2d(X_p)
         result[f"analysis/class_pairs/{name_a}__vs__{name_b}"] = (
             class_pair_tsne_scatter(
                 embedding,
