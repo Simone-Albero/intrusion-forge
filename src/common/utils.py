@@ -3,6 +3,7 @@ import json
 import logging
 import math
 import pickle
+import joblib
 import time
 from pathlib import Path
 
@@ -49,6 +50,22 @@ def load_from_pickle(file_path: str | Path) -> object:
     file_path = Path(file_path)
     with open(file_path, "rb") as f:
         data = pickle.load(f)
+    return data
+
+
+def save_to_joblib(obj: object, path: str | Path) -> None:
+    """Persist an object to a joblib file, creating parent directories."""
+    file_path = Path(path)
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(file_path, "wb") as f:
+        joblib.dump(obj, f)
+
+def load_from_joblib(path: str | Path) -> object:
+    """Load an object from a joblib file."""
+    file_path = Path(path)
+    with open(file_path, "rb") as f:
+        data = joblib.load(f)
     return data
 
 
