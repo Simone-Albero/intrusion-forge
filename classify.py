@@ -36,9 +36,10 @@ from src.data.preprocessing import subsample_df
 
 from src.ml.projection import stratified_subsample, tsne_projection
 
-from src.plot.array import confusion_matrix_to_plot, scatter_2d
 from src.plot.base import Plot
-from src.plot.dict import dict_to_bar_plot
+from src.plot.charts import bar_plot, scatter_plot
+from src.plot.metrics import confusion_matrix_plot
+from src.plot.style import apply_plot_style, extended_palette
 
 from torch.utils.data import DataLoader
 
@@ -57,6 +58,7 @@ from src.torch.module.checkpoint import load_best_checkpoint
 from src.ignite.builders import EngineBuilder
 
 setup_logger(log_file="resources/logs.txt")
+apply_plot_style()
 logger = logging.getLogger(__name__)
 
 
@@ -284,8 +286,8 @@ def _build_figures(
     classes = np.unique(y_true)
     class_names = [label_mapping.get(str(int(c)), str(c)) for c in classes]
     cm = confusion_matrix(y_true, y_pred, labels=classes, normalize="true")
-    figures["figure/testing/confusion_matrix"] = confusion_matrix_to_plot(
-        cm, class_names=class_names
+    figures["figure/testing/confusion_matrix"] = confusion_matrix_plot(
+        cm, class_names=class_names, normalize=None
     )
 
     f1_per_class = f1_score(y_true, y_pred, average=None, zero_division=0)
@@ -293,7 +295,14 @@ def _build_figures(
         label_mapping.get(str(int(c)), str(c)): float(v)
         for c, v in zip(classes, f1_per_class)
     }
-    figures["figure/testing/f1_per_class"] = dict_to_bar_plot(f1_dict)
+    figures["figure/testing/f1_per_class"] = bar_plot(
+        list(f1_dict.keys()),
+        list(f1_dict.values()),
+        orientation="v",
+        color=extended_palette(len(f1_dict)),
+        sort=None,
+        ylim=(0, 1),
+    )
 
     names = {int(c): label_mapping.get(str(int(c)), str(c)) for c in classes}
     correct = y_pred == y_true
@@ -301,13 +310,12 @@ def _build_figures(
     for tag, data in (("raw/classes", X), ("latent/classes", z)):
         if data is None:
             continue
-        figures[f"figure/testing/{tag}"] = scatter_2d(
+        figures[f"figure/testing/{tag}"] = scatter_plot(
             tsne_projection(data[vis_idx], n_components=2),
             y_true[vis_idx],
             highlight_mask=~correct[vis_idx],
             names=names,
-            x_label="t-SNE 1",
-            y_label="t-SNE 2",
+            marker_size=12.0,
         )
 
     return figures

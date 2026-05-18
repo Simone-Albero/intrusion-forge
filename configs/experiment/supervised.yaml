@@ -26,8 +26,8 @@ analysis:
 
 plots:
   max_class_pairs: 10
-  tsne_max_samples: 5000
-  pair_tsne_max_samples: 5000
+  projection_max_samples: 5000
+  pair_projection_max_samples: 5000
 
 # top-level (cross-cutting)
 n_samples: null

@@ -66,11 +66,11 @@ def stratified_subsample(
     return np.concatenate(parts) if parts else np.array([], dtype=int)
 
 
-def umap_projection_2d(X: np.ndarray) -> np.ndarray:
-    """Project data to 2D with UMAP, capping n_neighbors to sample count."""
+def umap_projection(X: np.ndarray, n_components: int = 2) -> np.ndarray:
+    """Project data to lower dimensions with UMAP, capping n_neighbors to sample count."""
     n_neighbors = min(15, len(X) - 1)
     return UMAP(
-        n_components=2,
+        n_components=n_components,
         n_neighbors=n_neighbors,
         n_jobs=-1,
         verbose=False,

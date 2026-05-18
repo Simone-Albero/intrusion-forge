@@ -1,7 +1,5 @@
 import logging
-import pickle as pkl
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -26,61 +24,14 @@ from src.common.log import (
     TensorBoardSubscriber,
     setup_logger,
 )
+from src.common.paths import OutputPaths
 from src.common.utils import flush_timing, load_from_json, timed
 
 from src.data.io import load_df
 from src.data.complexity import compute_all_complexity_measures
-from src.ml.projection import stratified_subsample, umap_projection_2d
-from src.plot.array import (
-    scatter_2d,
-    class_pair_scatter,
-    confusion_matrix_to_plot,
-    feature_importance_plot,
-    roc_curve_plot,
-    strip_box_plot,
-    violin_box_plot,
-)
-from src.plot.base import Plot
 
 setup_logger(log_file="resources/logs.txt")
 logger = logging.getLogger(__name__)
-
-RELEVANT_GEOMETRIC_FEATURES = [
-    # G-family
-    "max_dispersion",
-    "p95_dispersion",
-    "dist_to_nearest_foreign_cluster",
-    "min_sibling_centroid_dist",
-    "p5_silhouette",
-    "frac_at_risk",
-    "p5_silhouette_class",
-    "frac_at_risk_class",
-    # F-family
-    "f1_class_mean",
-    "f2_class_mean",
-    "f3_class_mean",
-    "f4_class_mean",
-    "f1_cluster_mean",
-    "f2_cluster_mean",
-    "f3_cluster_mean",
-    "f4_cluster_mean",
-    # N-family (Gower-cosine hybrid)
-    "n1_class_mean",
-    "n2_class_mean",
-    "n3_class_mean",
-    "n4_class_mean",
-    "n1_cluster_mean",
-    "n2_cluster_mean",
-    "n3_cluster_mean",
-    "n4_cluster_mean",
-    # ND-family (Gower-cosine hybrid)
-    "network_density_class_mean",
-    "network_density_cluster_mean",
-    # T-family
-    "t2",
-    "t3",
-    "t4",
-]
 
 RF_PARAM_GRID = {
     "n_estimators": [100, 200, 300, 500],
@@ -88,17 +39,6 @@ RF_PARAM_GRID = {
     "min_samples_leaf": [1, 2, 3, 5],
     "max_features": ["sqrt", 0.5],
 }
-
-
-@dataclass
-class OutputPaths:
-    """Output paths for the analysis pipeline."""
-
-    json_logs: Path
-    tb_logs: Path
-    processed_data: Path
-    configs: Path
-    pickle: Path
 
 
 def _run_outer_fold(
@@ -243,6 +183,10 @@ def fit_failure_classifier(
             str(cid): int(pred == true)
             for cid, pred, true in zip(oof_indices, oof_y_pred, oof_y_true)
         },
+        "oof_risk_proba": {
+            str(cid): float(proba)
+            for cid, proba in zip(oof_indices, oof_y_proba)
+        },
     }
     if analysis_bus is not None:
         analysis_bus.publish(
@@ -254,272 +198,6 @@ def fit_failure_classifier(
         results["roc_auc"],
     )
     return results
-
-
-def _plot_failure_strips(
-    summary_df: pd.DataFrame, rf_correct: np.ndarray
-) -> dict[str, Plot]:
-    """Build failure-rate and RF-prediction strip-box plots."""
-    return {
-        "summary/rf_prediction_strip_box": strip_box_plot(
-            categories=summary_df["class_name"].values,
-            values=summary_df["failure_rate"].values,
-            color_values=summary_df["failure_rate"].values,
-            edge_values=rf_correct,
-            x_label="class",
-            y_label="Failure rate",
-            c_label="Failure rate",
-            edge_label="RF prediction",
-            edge_value_labels={0.0: "failed", 1.0: "correct"},
-        ),
-        "summary/failure_rate_strip_box": strip_box_plot(
-            categories=summary_df["class_name"].values,
-            values=summary_df["failure_rate"].values,
-            color_values=summary_df["failure_rate"].values,
-            x_label="class",
-            y_label="Failure rate",
-            c_label="Failure rate",
-        ),
-    }
-
-
-def _plot_feature_by_outcome(
-    summary_df: pd.DataFrame, features: list[str]
-) -> dict[str, Plot]:
-    """Build per-feature violin-box plots split by failed/correct outcome."""
-    categories = np.where(summary_df["is_failed"], "failed", "correct")
-    return {
-        f"summary/global/{feature}": violin_box_plot(
-            categories=categories,
-            values=summary_df[feature].values,
-            x_label="outcome",
-            y_label=feature,
-            category_order=["correct", "failed"],
-        )
-        for feature in features
-    }
-
-
-def _plot_rf_evaluation(classifier_results: dict) -> dict[str, Plot]:
-    """Build confusion matrix, ROC curve, and feature importance plots."""
-    n_features = len(classifier_results["feature_importances"])
-    max_features_to_plot = min(n_features, 20)
-    top_importances = dict(
-        sorted(
-            classifier_results["feature_importances"].items(),
-            key=lambda x: x[1],
-            reverse=True,
-        )[:max_features_to_plot]
-    )
-    roc_data = classifier_results["roc_curve_data"]
-    return {
-        "summary/correlation/confusion_matrix": confusion_matrix_to_plot(
-            cm=np.array(classifier_results["confusion_matrix"]),
-            class_names=["correct", "failed"],
-            figsize=(6, 5),
-        ),
-        "summary/correlation/roc_curve": roc_curve_plot(
-            fpr=np.array(roc_data["fpr"]),
-            tpr=np.array(roc_data["tpr"]),
-            auc_score=classifier_results["roc_auc"],
-        ),
-        "summary/correlation/feature_importances": feature_importance_plot(
-            importances=top_importances,
-            figsize=(12, max(8, max_features_to_plot * 0.5)),
-        ),
-    }
-
-
-def _plot_class_cluster_umap(
-    X_num: np.ndarray,
-    y_class: np.ndarray,
-    y_cluster: np.ndarray,
-    df_meta: dict,
-    noise_cluster_ids: list[int],
-    umap_max_samples: int,
-) -> dict[str, Plot]:
-    """UMAP scatter per class, colored by cluster; title shows class name and cluster count."""
-    label_mapping: dict = df_meta.get("label_mapping", {})
-    noise_ids = set(noise_cluster_ids)
-    rng = np.random.default_rng(42)
-
-    result: dict[str, Plot] = {}
-    for class_id in np.unique(y_class):
-        class_mask = y_class == class_id
-        X_c = X_num[class_mask]
-        y_clust_c = y_cluster[class_mask]
-        if len(X_c) < 6:
-            continue
-
-        noise_c = (y_clust_c == -1) | np.isin(y_clust_c, list(noise_ids))
-        idx = stratified_subsample(
-            y_clust_c, n_samples=umap_max_samples, noise_mask=noise_c, random_state=rng
-        )
-        X_c, y_clust_c, noise_c = X_c[idx], y_clust_c[idx], noise_c[idx]
-
-        class_name = str(label_mapping.get(str(int(class_id)), int(class_id)))
-        embedding = umap_projection_2d(X_c)
-        result[f"analysis/cluster_tsne/class_{class_name}"] = scatter_2d(
-            embedding,
-            y_clust_c,
-            noise_mask=noise_c,
-            x_label="D1",
-            y_label="D2",
-        )
-    return result
-
-
-def _top_confused_pairs(cm: np.ndarray, k: int) -> list[tuple[int, int]]:
-    """Return the K class pairs with the highest sum of off-diagonal entries."""
-    pair_scores: dict[tuple[int, int], float] = {}
-    for i in range(cm.shape[0]):
-        for j in range(cm.shape[0]):
-            if i == j:
-                continue
-            key = (min(i, j), max(i, j))
-            pair_scores[key] = pair_scores.get(key, 0.0) + float(cm[i, j])
-    return [
-        p for p, _ in sorted(pair_scores.items(), key=lambda x: x[1], reverse=True)[:k]
-    ]
-
-
-def _plot_class_pairs_umap(
-    X_num: np.ndarray,
-    y_class: np.ndarray,
-    y_cluster: np.ndarray,
-    cluster_summary: dict,
-    df_meta: dict,
-    cm: np.ndarray,
-    noise_cluster_ids: list[int],
-    max_class_pairs: int,
-    pair_umap_max_samples: int,
-) -> dict[str, Plot]:
-    """For top-K confused class pairs, draw each cluster as a patch:
-    shape = class, fill = cluster ID, edge redness = failure rate.
-    """
-    label_mapping: dict = df_meta.get("label_mapping", {})
-    noise_ids = set(noise_cluster_ids)
-    failure_rate_by_cluster = {
-        int(cid): (row.get("failure_rate") or 0.0)
-        for cid, row in cluster_summary.items()
-    }
-    rng = np.random.default_rng(42)
-    result: dict[str, Plot] = {}
-
-    for cls_a, cls_b in _top_confused_pairs(cm, max_class_pairs):
-        pair_mask = (y_class == cls_a) | (y_class == cls_b)
-        X_p = X_num[pair_mask]
-        y_clust_p = y_cluster[pair_mask]
-        y_cls_p = y_class[pair_mask]
-        if len(X_p) < 6:
-            continue
-
-        noise_p = (y_clust_p == -1) | np.isin(y_clust_p, list(noise_ids))
-        idx = stratified_subsample(
-            y_clust_p,
-            n_samples=pair_umap_max_samples,
-            noise_mask=noise_p,
-            random_state=rng,
-        )
-        X_p, y_clust_p, y_cls_p, noise_p = (
-            X_p[idx],
-            y_clust_p[idx],
-            y_cls_p[idx],
-            noise_p[idx],
-        )
-
-        name_a = str(label_mapping.get(str(int(cls_a)), int(cls_a)))
-        name_b = str(label_mapping.get(str(int(cls_b)), int(cls_b)))
-        embedding = umap_projection_2d(X_p)
-        result[f"analysis/class_pairs/{name_a}__vs__{name_b}"] = class_pair_scatter(
-            embedding,
-            y_clust_p,
-            y_cls_p,
-            noise_p,
-            failure_rate_by_cluster,
-            class_names={int(cls_a): name_a, int(cls_b): name_b},
-            title=f"{name_a} vs {name_b}",
-        )
-    return result
-
-
-def assemble_analysis_figures(
-    paths: OutputPaths,
-    X_num: np.ndarray,
-    y_class: np.ndarray,
-    y_cluster: np.ndarray,
-    noise_cluster_ids: list[int],
-    max_class_pairs: int = 10,
-    umap_max_samples: int = 5000,
-    pair_umap_max_samples: int = 5000,
-    cluster_summary: dict | None = None,
-    df_meta: dict | None = None,
-    classifier_results: dict | None = None,
-    analysis_bus: LogDispatcher | None = None,
-    step: int = 0,
-) -> dict[str, Plot]:
-    """Build all analysis figures, optionally loading inputs from disk and publishing to log bus."""
-    if cluster_summary is None:
-        cluster_summary = load_from_json(
-            paths.json_logs / "analysis/cluster_summary.json"
-        )
-    if df_meta is None:
-        df_meta = load_from_json(paths.json_logs / "data/df_meta.json")
-    if classifier_results is None:
-        classifier_results = load_from_json(
-            paths.json_logs / "analysis/classifier_results.json"
-        )
-    logger.info("Building summary visualizations ...")
-    summary_df = pd.DataFrame.from_dict(cluster_summary, orient="index")
-    label_mapping = {str(k): v for k, v in df_meta["label_mapping"].items()}
-    summary_df["class_name"] = (
-        summary_df["cluster_class"].astype(str).map(label_mapping)
-    )
-
-    oof_preds = classifier_results.get("oof_predictions", {})
-    rf_correct = np.array(
-        [oof_preds.get(str(cid), np.nan) for cid in summary_df.index], dtype=float
-    )
-
-    figures: dict[str, Plot] = {}
-    figures.update(_plot_failure_strips(summary_df, rf_correct))
-    figures.update(_plot_feature_by_outcome(summary_df, RELEVANT_GEOMETRIC_FEATURES))
-    figures.update(_plot_rf_evaluation(classifier_results))
-    figures.update(
-        _plot_class_cluster_umap(
-            X_num,
-            y_class,
-            y_cluster,
-            df_meta,
-            noise_cluster_ids,
-            umap_max_samples,
-        )
-    )
-    cm_path = paths.pickle / "analysis/confusion_matrices/test.pkl"
-    if not cm_path.exists():
-        logger.warning(
-            "Confusion matrix not found at %s; skipping class-pair UMAP plots.",
-            cm_path,
-        )
-    else:
-        with open(cm_path, "rb") as f:
-            cm: np.ndarray = pkl.load(f)
-        figures.update(
-            _plot_class_pairs_umap(
-                X_num,
-                y_class,
-                y_cluster,
-                cluster_summary,
-                df_meta,
-                cm,
-                noise_cluster_ids,
-                max_class_pairs,
-                pair_umap_max_samples,
-            )
-        )
-    if analysis_bus is not None:
-        analysis_bus.publish(LogBundle(figures=figures, step=step))
-    return figures
 
 
 def run_complexity(
@@ -593,7 +271,6 @@ def analyze(
     y_class: np.ndarray,
     y_cluster: np.ndarray,
     centroids: dict,
-    step: int,
     failure_threshold: float,
     k: int,
     top_k_clusters: int,
@@ -602,21 +279,17 @@ def analyze(
     noise_cluster_ids: list[int] | None = None,
     metric: str = "cosine",
     random_state: int = 0,
-    max_class_pairs: int = 10,
-    umap_max_samples: int = 5000,
-    pair_umap_max_samples: int = 5000,
 ) -> None:
-    """Run data analysis pipeline."""
+    """Run data analysis pipeline (compute only — plotting is handled by render_plots.py)."""
     logger.info("Starting analysis pipeline ...")
     noise_ids = noise_cluster_ids or []
     analysis_bus = LogDispatcher()
     tb_logger = TensorboardLogger(log_dir=paths.tb_logs / "analysis")
     analysis_bus.subscribe(TensorBoardSubscriber(tb_logger.writer))
     analysis_bus.subscribe(JSONSubscriber(paths.json_logs))
-    cluster_summary, df_meta, classifier_results = None, None, None
 
     try:
-        cluster_summary, df_meta = run_complexity(
+        cluster_summary, _ = run_complexity(
             paths,
             X_num,
             X_cat,
@@ -632,27 +305,12 @@ def analyze(
             random_state,
             analysis_bus,
         )
-        classifier_results = fit_failure_classifier(
+        fit_failure_classifier(
             paths,
             RF_PARAM_GRID,
             cluster_stats=cluster_summary,
             failure_threshold=failure_threshold,
             analysis_bus=analysis_bus,
-        )
-        assemble_analysis_figures(
-            paths=paths,
-            X_num=X_num,
-            y_class=y_class,
-            y_cluster=y_cluster,
-            noise_cluster_ids=noise_ids,
-            max_class_pairs=max_class_pairs,
-            umap_max_samples=umap_max_samples,
-            pair_umap_max_samples=pair_umap_max_samples,
-            cluster_summary=cluster_summary,
-            df_meta=df_meta,
-            classifier_results=classifier_results,
-            analysis_bus=analysis_bus,
-            step=step,
         )
     finally:
         tb_logger.close()
@@ -703,7 +361,6 @@ def main():
         y_class=y_class,
         y_cluster=y_cluster,
         centroids=centroids,
-        step=cfg.run_id or 0,
         failure_threshold=cfg.analysis.failure_threshold or 0.0,
         k=cfg.complexity.k,
         top_k_clusters=cfg.complexity.top_k_clusters,
@@ -712,9 +369,6 @@ def main():
         noise_cluster_ids=noise_cluster_ids,
         metric=cfg.complexity.distance,
         random_state=cfg.run_id or 0,
-        max_class_pairs=cfg.plots.max_class_pairs,
-        umap_max_samples=cfg.plots.tsne_max_samples,
-        pair_umap_max_samples=cfg.plots.pair_tsne_max_samples,
     )
     flush_timing(paths.json_logs / "timing.json")
 

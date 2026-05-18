@@ -5,7 +5,8 @@
 #   make prepare  DATA=cic_2018_v2 NAME=my_exp
 #   make classify DATA=cic_2018_v2 NAME=my_exp
 #   make analyze  DATA=cic_2018_v2 NAME=my_exp
-#   make run      DATA=cic_2018_v2 NAME=my_exp    # all three phases
+#   make render   DATA=cic_2018_v2 NAME=my_exp
+#   make run      DATA=cic_2018_v2 NAME=my_exp    # all four phases
 #   make all      NAME=my_exp                      # all datasets
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -33,7 +34,7 @@ HYDRA := experiment=$(EXPERIMENT) data=$(DATA) name=$(NAME) seed=$(SEED) \
          complexity.distance=$(DISTANCE) clustering.distance=$(DISTANCE)
 TB_LOGDIR  := resources/experiments/$(NAME)/$(DATA)_$(SEED)/tb
 
-.PHONY: prepare classify analyze run all generate tensorboard help
+.PHONY: prepare classify analyze render run all generate tensorboard help
 
 ## prepare:            Step 1 — preprocess raw CSV → parquet splits  (DATA, NAME, SEED)
 prepare:
@@ -43,14 +44,18 @@ prepare:
 classify:
 	$(PYTHON) classify.py $(HYDRA)
 
-## analyze:            Step 3 — post-hoc analysis                     (DATA, NAME, SEED)
+## analyze:            Step 3 — post-hoc analysis (compute only)      (DATA, NAME, SEED)
 analyze:
 	$(PYTHON) analyze_data.py $(HYDRA)
 
-## run:                Run all three steps for a single dataset        (DATA, NAME, SEED)
-run: prepare classify analyze
+## render:             Step 4 — render plots from analysis artifacts  (DATA, NAME, SEED)
+render:
+	$(PYTHON) render_plots.py $(HYDRA)
 
-## all:                Run all three steps for every dataset in DATASET_MODELS (NAME, SEED, DISTANCE)
+## run:                Run all four steps for a single dataset         (DATA, NAME, SEED)
+run: prepare classify analyze render
+
+## all:                Run all four steps for every dataset in DATASET_MODELS (NAME, SEED, DISTANCE)
 all:
 	@for entry in $(DATASET_MODELS); do \
 		dataset=$${entry%%:*}; model=$${entry##*:}; \
