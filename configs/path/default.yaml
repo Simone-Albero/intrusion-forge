@@ -8,6 +8,7 @@ models: ${path.out_base_path}/${run_id}/models
 json_logs: ${path.out_base_path}/${run_id}/logs
 pickle: ${path.out_base_path}/${run_id}/pickle
 configs: ${path.out_base_path}/${run_id}/configs
+joblib: ${path.out_base_path}/${run_id}/joblib
 
 # shared across runs (for TensorBoard comparison)
 tb_logs: ${path.out_base_path}/tb
