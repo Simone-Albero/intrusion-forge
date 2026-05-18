@@ -1,7 +1,9 @@
 import numpy as np
 import hdbscan
+from sklearn.cluster import KMeans, SpectralClustering, AgglomerativeClustering
+from sklearn.mixture import GaussianMixture
 
-from src.ml.clustering.base import _subsample
+from src.ml.clustering.base import _subsample, ClusterFn
 
 
 def fit_hdbscan(
@@ -71,3 +73,118 @@ def fit_hdbscan(
             )
 
     return labels
+
+
+def fit_kmeans(
+    X_num: np.ndarray,
+    X_cat: np.ndarray | None = None,
+    n_clusters: int = 8,
+    random_state: int = 0,
+) -> np.ndarray:
+    """Fit K-means on X and return labels (n,)."""
+
+    X_num = np.ascontiguousarray(X_num, dtype=np.float64)
+    model = KMeans(n_clusters=n_clusters, random_state=random_state)
+    labels = model.fit_predict(X_num)
+    return labels
+
+
+def fit_gmm(
+    X_num: np.ndarray,
+    X_cat: np.ndarray | None = None,
+    n_components: int = 4,
+    covariance_type: str = "full",
+    random_state: int = 0,
+) -> np.ndarray:
+    """Fit GMM on X and return predicted cluster labels (n,)."""
+
+    X_num = np.ascontiguousarray(X_num, dtype=np.float64)
+    model = GaussianMixture(n_components=n_components, covariance_type=covariance_type, random_state=random_state)
+    labels = model.fit_predict(X_num)
+    return labels
+
+
+def fit_spectral(
+    X_num: np.ndarray,
+    X_cat: np.ndarray | None = None,
+    n_clusters: int = 8,
+    affinity: str = "rbf",
+    n_components: int | None = None,
+    random_state: int = 0,
+) -> np.ndarray:
+    """Fit SpectralClustering on X and return labels (n,).
+
+    Transductive: no predict method. ClusterFn must refit on each call.
+    """
+
+    X_num = np.ascontiguousarray(X_num, dtype=np.float64)
+    model = SpectralClustering(n_clusters=n_clusters, affinity=affinity, n_components=n_components, random_state=random_state)
+    labels = model.fit_predict(X_num)
+    return labels
+
+
+def fit_agglomerative(
+    X_num: np.ndarray,
+    X_cat: np.ndarray | None = None,
+    n_clusters: int = 8,
+    linkage: str = "ward",
+) -> np.ndarray:
+    """Fit AgglomerativeClustering on X and return labels (n,).
+
+    Transductive: no predict method. ClusterFn must refit on each call.
+    """
+    X_num = np.ascontiguousarray(X_num, dtype=np.float64)
+    model = AgglomerativeClustering(n_clusters=n_clusters, linkage=linkage)
+    labels = model.fit_predict(X_num)
+    return labels
+
+
+def make_hdbscan_cluster_fn(
+    max_fit_samples: int = 50_000,
+    pca_variance: float = 0.8,
+    **best_params,
+) -> ClusterFn:
+    """ClusterFn that calls fit_hdbscan with fixed best_params on every call."""
+
+    def _fn(X: np.ndarray) -> np.ndarray:
+        labels = fit_hdbscan(X, max_fit_samples=max_fit_samples, pca_variance=pca_variance, **best_params)
+        return labels
+
+    return _fn
+
+def make_kmeans_cluster_fn(**best_params) -> ClusterFn:
+    """ClusterFn that calls fit_kmeans with fixed best_params on every call."""
+
+    def _fn(X: np.ndarray) -> np.ndarray:
+        labels = fit_kmeans(X, **best_params)
+        return labels
+
+    return _fn
+
+def make_gmm_cluster_fn(**best_params) -> ClusterFn:
+    """ClusterFn that calls fit_gmm with fixed best_params on every call."""
+
+    def _fn(X: np.ndarray) -> np.ndarray:
+        labels = fit_gmm(X, **best_params)
+        return labels
+
+    return _fn
+
+def make_spectral_cluster_fn(**best_params) -> ClusterFn:
+    """ClusterFn that calls fit_spectral with fixed best_params on every call."""
+
+    def _fn(X: np.ndarray) -> np.ndarray:
+        labels = fit_spectral(X, **best_params)
+        return labels
+
+    return _fn
+
+def make_agglomerative_cluster_fn(**best_params) -> ClusterFn:
+    """ClusterFn that calls fit_agglomerative with fixed best_params on every call."""
+
+    def _fn(X: np.ndarray) -> np.ndarray:
+        labels = fit_agglomerative(X, **best_params)
+        return labels
+
+    return _fn
+
