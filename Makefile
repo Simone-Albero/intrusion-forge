@@ -2,12 +2,14 @@
 # Intrusion Forge — Experiment Runner
 #
 # Usage:
-#   make prepare  DATA=cic_2018_v2 NAME=my_exp
-#   make classify DATA=cic_2018_v2 NAME=my_exp
-#   make analyze  DATA=cic_2018_v2 NAME=my_exp
-#   make render   DATA=cic_2018_v2 NAME=my_exp
-#   make run      DATA=cic_2018_v2 NAME=my_exp    # all four phases
-#   make all      NAME=my_exp                      # all datasets
+#   make prepare       DATA=cic_2018_v2 NAME=my_exp
+#   make dl-classify   DATA=cic_2018_v2 NAME=my_exp
+#   make ml-classify   DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=random_forest
+#   make ml-all        DATA=cic_2018_v2 NAME=my_exp   # every ML classifier
+#   make analyze       DATA=cic_2018_v2 NAME=my_exp
+#   make render        DATA=cic_2018_v2 NAME=my_exp
+#   make run           DATA=cic_2018_v2 NAME=my_exp   # prepare + dl-classify + analyze + render
+#   make all           NAME=my_exp                     # all datasets
 # ──────────────────────────────────────────────────────────────────────────────
 
 PYTHON     := venv/bin/python
@@ -16,7 +18,19 @@ DATA       ?= cic_2018_v2
 NAME       ?= exp
 SEED       ?= 42
 MODEL      ?= tabular_classifier
+CLASSIFIER ?= random_forest
 DISTANCE   ?= cosine
+
+ML_CLASSIFIERS := \
+    naive_bayes \
+    logistic_regression \
+    lda \
+    knn \
+    decision_tree \
+    random_forest \
+    hist_gradient_boosting \
+    svm_rbf \
+    xgboost
 
 DATASET_MODELS := \
     nb15_v2:tabular_classifier \
@@ -32,28 +46,44 @@ DATASET_MODELS := \
 HYDRA := experiment=$(EXPERIMENT) data=$(DATA) name=$(NAME) seed=$(SEED) \
          model=$(MODEL) \
          complexity.distance=$(DISTANCE) clustering.distance=$(DISTANCE)
+HYDRA_ML := data=$(DATA) name=$(NAME) seed=$(SEED) classifier=$(CLASSIFIER) \
+            complexity.distance=$(DISTANCE) clustering.distance=$(DISTANCE)
 TB_LOGDIR  := resources/experiments/$(NAME)/$(DATA)_$(SEED)/tb
 
-.PHONY: prepare classify analyze render run all generate tensorboard help
+.PHONY: prepare dl-classify ml-classify ml-all analyze render run all generate tensorboard help
 
-## prepare:            Step 1 — preprocess raw CSV → parquet splits  (DATA, NAME, SEED)
+## prepare:            Step 1 — preprocess raw CSV → parquet splits           (DATA, NAME, SEED)
 prepare:
 	$(PYTHON) prepare_data.py $(HYDRA)
 
-## classify:           Step 2 — train & evaluate classifier           (DATA, NAME, SEED)
-classify:
-	$(PYTHON) classify.py $(HYDRA)
+## dl-classify:        Step 2 — train & evaluate the DL classifier            (DATA, NAME, SEED, MODEL)
+dl-classify:
+	$(PYTHON) dl_classify.py $(HYDRA)
 
-## analyze:            Step 3 — post-hoc analysis (compute only)      (DATA, NAME, SEED)
+## ml-classify:        Step 2 — train & evaluate one ML classifier            (DATA, NAME, SEED, CLASSIFIER)
+ml-classify:
+	$(PYTHON) ml_classify.py $(HYDRA_ML)
+
+## ml-all:             Step 2 — train & evaluate every ML classifier in turn  (DATA, NAME, SEED)
+ml-all:
+	@for clf in $(ML_CLASSIFIERS); do \
+		echo ""; \
+		echo "── ML classifier: $$clf ─────────────────────────────"; \
+		$(MAKE) --no-print-directory ml-classify \
+			DATA=$(DATA) NAME=$(NAME) SEED=$(SEED) CLASSIFIER=$$clf \
+			DISTANCE=$(DISTANCE) || exit 1; \
+	done
+
+## analyze:            Step 3 — post-hoc analysis (compute only)              (DATA, NAME, SEED)
 analyze:
 	$(PYTHON) analyze_data.py $(HYDRA)
 
-## render:             Step 4 — render plots from analysis artifacts  (DATA, NAME, SEED)
+## render:             Step 4 — render plots from analysis artifacts          (DATA, NAME, SEED)
 render:
 	$(PYTHON) render_plots.py $(HYDRA)
 
-## run:                Run all four steps for a single dataset         (DATA, NAME, SEED)
-run: prepare classify analyze render
+## run:                Run all four steps for a single dataset (DL path)      (DATA, NAME, SEED)
+run: prepare dl-classify analyze render
 
 ## all:                Run all four steps for every dataset in DATASET_MODELS (NAME, SEED, DISTANCE)
 all:

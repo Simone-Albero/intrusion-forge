@@ -14,6 +14,11 @@ name: exp
 device: cpu
 stage: all
 
+# Alias so the per-classifier ${classifier.name} interpolation in path/default.yaml
+# resolves consistently for both DL (model name) and ML (classifier config name).
+classifier:
+  name: ${model.name}
+
 hydra:
   run:
     dir: .

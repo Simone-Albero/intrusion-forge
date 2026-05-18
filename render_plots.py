@@ -458,19 +458,21 @@ def main():
         overrides=sys.argv[1:],
     )
     paths = OutputPaths(
-        json_logs=Path(cfg.path.json_logs),
-        tb_logs=Path(cfg.path.tb_logs),
         processed_data=Path(cfg.path.processed_data),
+        data_logs=Path(cfg.path.data_logs),
+        tb_logs=Path(cfg.path.tb_logs),
         configs=Path(cfg.path.configs),
+        json_logs=Path(cfg.path.json_logs),
         pickle=Path(cfg.path.pickle),
+        models=Path(cfg.path.models),
     )
     save_config(cfg, paths.configs / "config_composed_render.json")
 
-    clusters_meta = load_from_json(paths.json_logs / "data/clusters_meta.json")
+    clusters_meta = load_from_json(paths.data_logs / "data/clusters_meta.json")
     centroids = clusters_meta.get("centroids", {})
 
     cluster_summary = load_from_json(paths.json_logs / "analysis/cluster_summary.json")
-    df_meta = load_from_json(paths.json_logs / "data/df_meta.json")
+    df_meta = load_from_json(paths.data_logs / "data/df_meta.json")
     classifier_results = load_from_json(
         paths.json_logs / "analysis/classifier_results.json"
     )

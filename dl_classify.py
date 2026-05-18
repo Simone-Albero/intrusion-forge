@@ -3,7 +3,6 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 import numpy as np
 import pandas as pd
@@ -12,13 +11,7 @@ import torch.nn as nn
 from ignite.engine import Events
 from ignite.handlers.tensorboard_logger import TensorboardLogger
 from ignite.metrics import Average
-from sklearn.metrics import (
-    accuracy_score,
-    confusion_matrix,
-    f1_score,
-    precision_score,
-    recall_score,
-)
+from sklearn.metrics import confusion_matrix, f1_score
 
 from src.common.config import load_config, save_config
 from src.common.log import (
@@ -29,17 +22,16 @@ from src.common.log import (
     TensorBoardSubscriber,
     setup_logger,
 )
+from src.common.paths import OutputPaths
 from src.common.utils import flush_timing, load_from_json, timed
 
 from src.data.io import load_listed_dfs
 from src.data.preprocessing import subsample_df
 
-from src.ml.projection import stratified_subsample, tsne_projection
+from src.ml.evaluation import compute_classification_metrics, evaluate_predictions
+from src.ml.figures import build_test_figures
 
-from src.plot.base import Plot
-from src.plot.charts import bar_plot, scatter_plot
-from src.plot.metrics import confusion_matrix_plot
-from src.plot.style import apply_plot_style, extended_palette
+from src.plot.style import apply_plot_style
 
 from torch.utils.data import DataLoader
 
@@ -72,23 +64,6 @@ class DataConfig:
     cat_cols: list[str]
     label_col: str
     n_samples: int | None
-
-
-@dataclass
-class OutputPaths:
-    """Output and checkpoint paths for the classification pipeline."""
-
-    models: Path
-    tb_logs: Path
-    json_logs: Path
-    pickle: Path
-
-
-METRIC_CLASSES: list[tuple[str, Callable]] = [
-    ("precision", precision_score),
-    ("recall", recall_score),
-    ("f1", f1_score),
-]
 
 
 def load_data(
@@ -179,168 +154,6 @@ def _build_validator(
     )
 
 
-def _cluster_error_rates(clusters: np.ndarray, error_mask: np.ndarray) -> dict:
-    """Return {cluster_id: {n_error, n_total, error_rate}} sorted by error_rate desc."""
-    failed = clusters[error_mask]
-    stats = {}
-    for c in np.unique(clusters):
-        n_total = int((clusters == c).sum())
-        n_error = int((failed == c).sum())
-        stats[str(c)] = {
-            "n_error": n_error,
-            "n_total": n_total,
-            "error_rate": (n_error / n_total) if n_total > 0 else None,
-        }
-    return dict(
-        sorted(stats.items(), key=lambda x: x[1]["error_rate"] or 0.0, reverse=True)
-    )
-
-
-def evaluate_predictions(
-    y_true: np.ndarray,
-    y_pred: np.ndarray,
-    confidences: np.ndarray,
-    clusters: np.ndarray | None = None,
-) -> dict:
-    """
-    Evaluate per-class prediction quality and cluster-level error rates.
-
-    Returns:
-        {
-            "classes": {
-                "<label>": {
-                    "tot_failures", "tot_samples", "failure_rate",
-                    "mean_confidence", "cluster_in_fn", "cluster_in_tp"
-                }, ...
-            },
-            "clusters": {
-                "global":   {<cluster_id>: {n_error, n_total, error_rate}, ...} | None,
-                "by_class": {<label>: {<cluster_id>: {...}}, ...}              | None,
-            },
-        }
-    """
-    has_cluster = clusters is not None
-    global_error_mask = y_true != y_pred
-
-    cluster_errors_total = (
-        _cluster_error_rates(clusters, global_error_mask) if has_cluster else None
-    )
-    cluster_errors_by_class = {} if has_cluster else None
-
-    classes = {}
-    for label in np.unique(y_true):
-        mask = y_true == label
-        n_total = int(mask.sum())
-        n_errors = int((y_true[mask] != y_pred[mask]).sum())
-        error_mask = mask & global_error_mask
-
-        if has_cluster:
-            wrong_preds = y_pred[error_mask]
-            wrong_clusters = clusters[error_mask]
-            cluster_in_fn = {
-                str(cls): np.unique(wrong_clusters[wrong_preds == cls]).tolist()
-                for cls in np.unique(wrong_preds)
-            }
-            tp_clusters = clusters[mask & ~global_error_mask]
-            cluster_in_tp = np.unique(tp_clusters).tolist()
-
-            class_clusters = clusters[mask]
-            cluster_errors_by_class[str(label)] = _cluster_error_rates(
-                class_clusters, error_mask[mask]
-            )
-        else:
-            cluster_in_fn = cluster_in_tp = None
-
-        classes[str(label)] = {
-            "tot_failures": n_errors,
-            "tot_samples": n_total,
-            "failure_rate": n_errors / n_total if n_total > 0 else None,
-            "mean_confidence": float(confidences[mask].mean()) if n_total > 0 else None,
-            "cluster_in_fn": cluster_in_fn,
-            "cluster_in_tp": cluster_in_tp,
-        }
-
-    classes = dict(
-        sorted(classes.items(), key=lambda x: x[1]["failure_rate"] or 0.0, reverse=True)
-    )
-
-    return {
-        "classes": classes,
-        "clusters": {
-            "global": cluster_errors_total,
-            "by_class": cluster_errors_by_class,
-        },
-    }
-
-
-def _build_figures(
-    X: np.ndarray,
-    y_true: np.ndarray,
-    y_pred: np.ndarray,
-    z: np.ndarray | None,
-    label_mapping: dict,
-) -> dict[str, Plot]:
-    """Build confusion matrix and projection figures. Returns prefixed dict."""
-    figures: dict[str, Plot] = {}
-
-    classes = np.unique(y_true)
-    class_names = [label_mapping.get(str(int(c)), str(c)) for c in classes]
-    cm = confusion_matrix(y_true, y_pred, labels=classes, normalize="true")
-    figures["figure/testing/confusion_matrix"] = confusion_matrix_plot(
-        cm, class_names=class_names, normalize=None
-    )
-
-    f1_per_class = f1_score(y_true, y_pred, average=None, zero_division=0)
-    f1_dict = {
-        label_mapping.get(str(int(c)), str(c)): float(v)
-        for c, v in zip(classes, f1_per_class)
-    }
-    figures["figure/testing/f1_per_class"] = bar_plot(
-        list(f1_dict.keys()),
-        list(f1_dict.values()),
-        orientation="v",
-        color=extended_palette(len(f1_dict)),
-        sort=None,
-        ylim=(0, 1),
-    )
-
-    names = {int(c): label_mapping.get(str(int(c)), str(c)) for c in classes}
-    correct = y_pred == y_true
-    vis_idx = stratified_subsample(y_true, n_samples=2000, stratify=False)
-    for tag, data in (("raw/classes", X), ("latent/classes", z)):
-        if data is None:
-            continue
-        figures[f"figure/testing/{tag}"] = scatter_plot(
-            tsne_projection(data[vis_idx], n_components=2),
-            y_true[vis_idx],
-            highlight_mask=~correct[vis_idx],
-            names=names,
-            marker_size=12.0,
-        )
-
-    return figures
-
-
-def _compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> tuple[dict, dict]:
-    """Compute scalar and full classification metrics from predictions."""
-    acc = accuracy_score(y_true, y_pred)
-    scalars: dict[str, float] = {"scalar/testing/accuracy": acc}
-    full_metrics: dict = {"accuracy": acc}
-
-    for avg in ("macro", "weighted"):
-        for name, fn in METRIC_CLASSES:
-            val = float(fn(y_true, y_pred, average=avg, zero_division=0))
-            scalars[f"scalar/testing/{name}_{avg}"] = val
-            full_metrics[f"{name}_{avg}"] = val
-
-    for name, fn in METRIC_CLASSES:
-        full_metrics[f"{name}_per_class"] = fn(
-            y_true, y_pred, average=None, zero_division=0
-        ).tolist()
-
-    return scalars, full_metrics
-
-
 @timed
 def evaluate(
     model: nn.Module,
@@ -354,9 +167,9 @@ def evaluate(
     """Evaluate the model on the test set.
 
     Accepts pre-extracted tensors and arrays — conversion from df happens at the call site.
-    Computes sklearn metrics via _compute_metrics.
+    Computes sklearn metrics via compute_classification_metrics.
     Calls evaluate_predictions for failure rates and cluster error rates.
-    Calls _build_test_figures for confusion matrix and projection figures.
+    Calls build_test_figures for confusion matrix and projection figures.
     """
     y_true_t, y_pred_t, z_t, confidences_t = get_predictions(model, inputs, y, device)
 
@@ -365,10 +178,10 @@ def evaluate(
     z = z_t.numpy() if z_t is not None else None
     confidences = confidences_t.numpy()
 
-    scalars, full_metrics = _compute_metrics(y_true, y_pred)
+    scalars, full_metrics = compute_classification_metrics(y_true, y_pred)
     pred_infos = evaluate_predictions(y_true, y_pred, confidences, clusters)
     cm = confusion_matrix(y_true, y_pred, labels=np.unique(y_true), normalize="true")
-    figures = _build_figures(X, y_true, y_pred, z, label_mapping)
+    figures = build_test_figures(X, y_true, y_pred, label_mapping, z=z)
 
     return {
         "pred_infos": pred_infos,
@@ -457,12 +270,15 @@ def train(
 def classify(cfg) -> None:
     """Run supervised classification pipeline (training and/or evaluation)."""
     paths = OutputPaths(
-        models=Path(cfg.path.models),
+        processed_data=Path(cfg.path.processed_data),
+        data_logs=Path(cfg.path.data_logs),
         tb_logs=Path(cfg.path.tb_logs),
+        configs=Path(cfg.path.configs),
         json_logs=Path(cfg.path.json_logs),
         pickle=Path(cfg.path.pickle),
+        models=Path(cfg.path.models),
     )
-    df_meta = load_from_json(paths.json_logs / "data/df_meta.json")
+    df_meta = load_from_json(paths.data_logs / "data/df_meta.json")
     cfg.model.params.num_classes = df_meta["num_classes"]
     cfg.loss.params.class_weight = df_meta["class_weights"]
 

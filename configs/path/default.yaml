@@ -1,13 +1,15 @@
 out_base_path: resources/experiments/${name}/${data.file_name}_${seed}
-# inputs
+
+# inputs (shared)
 raw_data: resources/raw_data/${data.dir}/${data.file_name}.csv
 
-# per-run outputs
-processed_data: ${path.out_base_path}/${run_id}/processed_data
-models: ${path.out_base_path}/${run_id}/models
-json_logs: ${path.out_base_path}/${run_id}/logs
-pickle: ${path.out_base_path}/${run_id}/pickle
-configs: ${path.out_base_path}/${run_id}/configs
+# Shared across classifiers (dataset-level)
+processed_data: ${path.out_base_path}/processed_data
+data_logs:      ${path.out_base_path}/data_logs
+tb_logs:        ${path.out_base_path}/tb
 
-# shared across runs (for TensorBoard comparison)
-tb_logs: ${path.out_base_path}/tb
+# Per-classifier (resolved against ${classifier.name})
+models:    ${path.out_base_path}/${classifier.name}/models
+json_logs: ${path.out_base_path}/${classifier.name}/json_logs
+pickle:    ${path.out_base_path}/${classifier.name}/pickle
+configs:   ${path.out_base_path}/${classifier.name}/configs

@@ -196,14 +196,14 @@ def recompute_clusters_metadata(cfg):
     num_cols = list(cfg.data.num_cols) if cfg.data.num_cols else []
     cat_cols = list(cfg.data.cat_cols) if cfg.data.cat_cols else []
     processed_data_path = Path(cfg.path.processed_data)
-    json_logs_path = Path(cfg.path.json_logs)
+    data_logs_path = Path(cfg.path.data_logs)
 
     train_df, val_df, test_df = (
         load_df(str(processed_data_path / f"{split}.{cfg.data.extension}"))
         for split in ("train", "val", "test")
     )
 
-    existing = load_from_json(json_logs_path / "data/clusters_meta.json")
+    existing = load_from_json(data_logs_path / "data/clusters_meta.json")
     centroids = existing.get("centroids", {})
 
     clusters_metadata = compute_clusters_metadata(
@@ -215,7 +215,7 @@ def recompute_clusters_metadata(cfg):
         centroids=centroids,
     )
     dispatcher = LogDispatcher()
-    dispatcher.subscribe(JSONSubscriber(json_logs_path))
+    dispatcher.subscribe(JSONSubscriber(data_logs_path))
     dispatcher.publish(
         LogBundle.from_dict({"json/data/clusters_meta": clusters_metadata})
     )
@@ -231,12 +231,12 @@ def prepare(cfg):
 
     raw_data_path = Path(cfg.path.raw_data)
     processed_data_path = Path(cfg.path.processed_data)
-    json_logs_path = Path(cfg.path.json_logs)
+    data_logs_path = Path(cfg.path.data_logs)
     tb_logs_path = Path(cfg.path.tb_logs)
 
     tb_logger = TensorboardLogger(log_dir=tb_logs_path / "prepare")
     dispatcher = LogDispatcher()
-    dispatcher.subscribe(JSONSubscriber(json_logs_path))
+    dispatcher.subscribe(JSONSubscriber(data_logs_path))
     dispatcher.subscribe(TensorBoardSubscriber(tb_logger.writer))
 
     logger.info("Loading and preprocessing data...")
@@ -354,9 +354,9 @@ def main():
         config_name="config",
         overrides=sys.argv[1:],
     )
-    save_config(cfg, Path(cfg.path.configs) / "config_composed.json")
+    save_config(cfg, Path(cfg.path.data_logs) / "configs/config_composed.json")
     prepare(cfg)
-    flush_timing(Path(cfg.path.json_logs) / "timing.json")
+    flush_timing(Path(cfg.path.data_logs) / "timing.json")
 
 
 if __name__ == "__main__":

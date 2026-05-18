@@ -1,0 +1,8 @@
+# @package classifier
+name: svm_rbf
+params:
+  kernel: rbf
+  random_state: 42
+grid:
+  C: [0.1, 1.0, 10.0]
+  gamma: [scale, 0.01, 0.1]

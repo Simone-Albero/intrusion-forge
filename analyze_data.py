@@ -218,7 +218,7 @@ def run_complexity(
 ) -> tuple[dict, dict]:
     """Compute complexity measures, build cluster summary, publish to log bus."""
     pred_infos = load_from_json(paths.json_logs / "analysis/predictions/test.json")
-    df_meta = load_from_json(paths.json_logs / "data/df_meta.json")
+    df_meta = load_from_json(paths.data_logs / "data/df_meta.json")
 
     logger.info("Computing complexity measures ...")
     complexity = compute_all_complexity_measures(
@@ -324,11 +324,13 @@ def main():
         overrides=sys.argv[1:],
     )
     paths = OutputPaths(
-        json_logs=Path(cfg.path.json_logs),
-        tb_logs=Path(cfg.path.tb_logs),
         processed_data=Path(cfg.path.processed_data),
+        data_logs=Path(cfg.path.data_logs),
+        tb_logs=Path(cfg.path.tb_logs),
         configs=Path(cfg.path.configs),
+        json_logs=Path(cfg.path.json_logs),
         pickle=Path(cfg.path.pickle),
+        models=Path(cfg.path.models),
     )
     save_config(cfg, paths.configs / "config_composed.json")
 
@@ -350,7 +352,7 @@ def main():
     y_class = combined[f"encoded_{cfg.data.label_col}"].to_numpy(dtype=np.int64)
     y_cluster = combined["cluster"].to_numpy(dtype=np.int64)
 
-    clusters_meta = load_from_json(Path(cfg.path.json_logs) / "data/clusters_meta.json")
+    clusters_meta = load_from_json(paths.data_logs / "data/clusters_meta.json")
     centroids = clusters_meta.get("centroids", {})
     noise_cluster_ids = clusters_meta.get("noise_cluster_ids", [])
 

@@ -6,6 +6,8 @@ import pickle
 import time
 from pathlib import Path
 
+import joblib
+
 
 def _nan_to_none(obj: object) -> object:
     """Recursively replace float NaN with None for JSON serialization."""
@@ -50,6 +52,18 @@ def load_from_pickle(file_path: str | Path) -> object:
     with open(file_path, "rb") as f:
         data = pickle.load(f)
     return data
+
+
+def save_to_joblib(data: object, file_path: str | Path) -> None:
+    """Save data (typically a sklearn estimator) via joblib."""
+    file_path = Path(file_path)
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump(data, file_path)
+
+
+def load_from_joblib(file_path: str | Path) -> object:
+    """Load data previously written with save_to_joblib."""
+    return joblib.load(Path(file_path))
 
 
 _TIMING_RECORDS: list[dict] = []
