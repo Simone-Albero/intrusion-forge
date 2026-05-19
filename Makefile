@@ -8,7 +8,7 @@
 #   make dl-all    DATA=cic_2018_v2 NAME=my_exp     # every DL classifier
 #   make analyze   DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=random_forest
 #   make render    DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=random_forest
-#   make run       DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=tabular_classifier
+#   make run       DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=tabular
 #   make all       NAME=my_exp                       # all datasets, default DL classifier
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -16,7 +16,7 @@ PYTHON     := venv/bin/python
 DATA       ?= cic_2018_v2
 NAME       ?= exp
 SEED       ?= 42
-CLASSIFIER ?= tabular_classifier
+CLASSIFIER ?= tabular
 DISTANCE   ?= cosine
 
 ML_CLASSIFIERS := \
@@ -31,20 +31,20 @@ ML_CLASSIFIERS := \
     xgboost
 
 DL_CLASSIFIERS := \
-    tabular_classifier \
-    numerical_classifier \
-    categorical_classifier
+    tabular \
+    numerical \
+    categorical
 
 DATASET_CLASSIFIERS := \
-    nb15_v2:tabular_classifier \
-    bot_iot_v2:tabular_classifier \
-    cic_2018_v2:tabular_classifier \
-    ton_iot_v2:tabular_classifier \
-    bank_marketing:tabular_classifier \
-    covertype:numerical_classifier \
-    letter_recognition:numerical_classifier \
-    statlog_landsat_satellite:numerical_classifier \
-    thyroid_disease:numerical_classifier
+    nb15_v2:tabular \
+    bot_iot_v2:tabular \
+    cic_2018_v2:tabular \
+    ton_iot_v2:tabular \
+    bank_marketing:tabular \
+    covertype:numerical \
+    letter_recognition:numerical \
+    statlog_landsat_satellite:numerical \
+    thyroid_disease:numerical
 
 HYDRA := data=$(DATA) name=$(NAME) seed=$(SEED) classifier=$(CLASSIFIER) \
          complexity.distance=$(DISTANCE) clustering.distance=$(DISTANCE)
@@ -53,11 +53,11 @@ HYDRA := data=$(DATA) name=$(NAME) seed=$(SEED) classifier=$(CLASSIFIER) \
 
 ## prepare:            Step 1 — preprocess raw CSV → parquet splits           (DATA, NAME, SEED)
 prepare:
-	$(PYTHON) prepare_data.py $(HYDRA)
+	PYTHONPATH=. $(PYTHON) pipelines/prepare_data.py $(HYDRA)
 
 ## classify:           Step 2 — train & evaluate one classifier (ML or DL)    (DATA, NAME, SEED, CLASSIFIER)
 classify:
-	$(PYTHON) classify.py $(HYDRA)
+	PYTHONPATH=. $(PYTHON) pipelines/classify.py $(HYDRA)
 
 ## ml-all:             Step 2 — train & evaluate every ML classifier in turn  (DATA, NAME, SEED)
 ml-all:
@@ -81,11 +81,11 @@ dl-all:
 
 ## analyze:            Step 3 — post-hoc analysis (compute only)              (DATA, NAME, SEED, CLASSIFIER)
 analyze:
-	$(PYTHON) analyze_data.py $(HYDRA)
+	PYTHONPATH=. $(PYTHON) pipelines/analyze_data.py $(HYDRA)
 
 ## render:             Step 4 — render plots from analysis artifacts          (DATA, NAME, SEED, CLASSIFIER)
 render:
-	$(PYTHON) render_plots.py $(HYDRA)
+	PYTHONPATH=. $(PYTHON) pipelines/render_plots.py $(HYDRA)
 
 ## run:                Run all four steps for a single (dataset, classifier)  (DATA, NAME, SEED, CLASSIFIER)
 run: prepare classify analyze render

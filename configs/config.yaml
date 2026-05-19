@@ -1,6 +1,6 @@
 defaults:
   - data: cic_2018_v2
-  - classifier: tabular_classifier
+  - classifier: tabular
   - loss: focal             # consumed only by DL classifiers; harmless for ML
   - optimizer: adamw        # consumed only by DL classifiers
   - scheduler: one_cycle    # consumed only by DL classifiers
