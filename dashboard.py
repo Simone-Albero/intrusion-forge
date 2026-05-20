@@ -657,9 +657,6 @@ def panel_complexity_vs_failure(
         width="stretch",
         key=_wkey(key_prefix, "sc_chart", record),
     )
-    render_figure_if_present(
-        record, "summary/failure_rate_strip_box.png", "summary/failure_rate_strip_box.png"
-    )
 
 
 def panel_failure_rate_distribution(
@@ -964,10 +961,26 @@ def render_gallery(records: list[ExperimentRecord], seed: int) -> None:
         st.info("No records at the selected seed.")
         return
 
-    col_v, col_d, col_c, col_cat = st.columns([1, 1, 1, 1])
+    col_v, col_mode = st.columns([1, 2])
     variants = sorted({r.variant for r in rs})
     variant = col_v.selectbox("Variant", variants, key="gal_variant")
     rs_v = [r for r in rs if r.variant == variant]
+
+    mode = col_mode.radio(
+        "Mode",
+        ["Single experiment", "Cross-experiment"],
+        horizontal=True,
+        key="gal_mode",
+    )
+
+    if mode == "Single experiment":
+        _render_gallery_single(rs_v)
+    else:
+        _render_gallery_cross(rs_v)
+
+
+def _render_gallery_single(rs_v: list[ExperimentRecord]) -> None:
+    col_d, col_c, col_cat = st.columns([1, 1, 1])
     datasets = sorted({r.file_name for r in rs_v})
     dataset = col_d.selectbox("Dataset", datasets, key="gal_dataset")
     rs_vd = [r for r in rs_v if r.file_name == dataset]
@@ -998,6 +1011,71 @@ def render_gallery(records: list[ExperimentRecord], seed: int) -> None:
         for col, rel in zip(cols, rels[i : i + 3]):
             with col:
                 st.image(figures[rel], caption=rel, width="stretch")
+
+
+def _render_gallery_cross(rs_v: list[ExperimentRecord]) -> None:
+    all_datasets = sorted({r.file_name for r in rs_v})
+    all_classifiers = sorted({r.classifier for r in rs_v})
+
+    col_d, col_c = st.columns([1, 1])
+    sel_datasets = col_d.multiselect("Datasets", all_datasets, default=all_datasets, key="gal_x_datasets")
+    sel_classifiers = col_c.multiselect("Classifiers", all_classifiers, default=all_classifiers, key="gal_x_classifiers")
+
+    if not sel_datasets or not sel_classifiers:
+        st.warning("Select at least one dataset and one classifier.")
+        return
+
+    rs_filtered = [
+        r for r in rs_v
+        if r.file_name in sel_datasets and r.classifier in sel_classifiers
+    ]
+    if not rs_filtered:
+        st.warning("No experiments match the current selection.")
+        return
+
+    # Union of figure paths across all filtered records, indexed by (dataset|classifier)
+    all_fig_paths: set[str] = set()
+    fig_index: dict[str, dict[str, str]] = {}
+    for r in rs_filtered:
+        for rel, abs_ in load_figure_index(str(r.root)).items():
+            all_fig_paths.add(rel)
+            fig_index.setdefault(rel, {})[f"{r.file_name}|{r.classifier}"] = abs_
+
+    if not all_fig_paths:
+        st.info("No figures found in the selected experiments.")
+        return
+
+    col_fig, col_cat = st.columns([2, 1])
+    category = col_cat.selectbox("Category", ["all", *GALLERY_CATEGORIES], key="gal_x_category")
+    rels_all = sorted(all_fig_paths)
+    if category != "all":
+        rels_all = [p for p in rels_all if p.startswith(category + "/") or p == category + ".png"]
+    if not rels_all:
+        st.info(f"No PNGs matching category `{category}`.")
+        return
+
+    figure_path = col_fig.selectbox("Figure", rels_all, key="gal_x_figure")
+
+    st.markdown(f"**`{figure_path}`**")
+    cell_map = fig_index.get(figure_path, {})
+
+    # Header row
+    header_cols = st.columns([1] + [2] * len(sel_classifiers))
+    header_cols[0].markdown("**Dataset \\ Classifier**")
+    for i, clf in enumerate(sel_classifiers):
+        header_cols[i + 1].markdown(f"**{clf}**")
+
+    # One row per dataset
+    for ds in sel_datasets:
+        row_cols = st.columns([1] + [2] * len(sel_classifiers))
+        row_cols[0].markdown(f"`{ds}`")
+        for i, clf in enumerate(sel_classifiers):
+            abs_path = cell_map.get(f"{ds}|{clf}")
+            with row_cols[i + 1]:
+                if abs_path:
+                    st.image(abs_path, width="stretch")
+                else:
+                    st.caption("—")
 
 
 # ══════════════════════════════ Sidebar ══════════════════════════════════════
