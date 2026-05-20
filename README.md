@@ -1,8 +1,8 @@
 # Intrusion Forge
 
-Tabular deep learning framework for network traffic classification. Supports supervised training, inference diagnostics, and post-hoc analysis on cybersecurity datasets (UNSW-NB15, BoT-IoT, CIC-IDS-2018, ToN-IoT).
+Tabular classification framework for network traffic — supports both classical ML (sklearn, XGBoost) and deep learning (PyTorch + Ignite) classifiers on cybersecurity datasets (UNSW-NB15, BoT-IoT, CIC-IDS-2018, ToN-IoT) and a handful of generic tabular benchmarks (Bank Marketing, Covertype, Letter Recognition, Statlog Landsat Satellite, Thyroid Disease).
 
-The pipeline covers data preparation, model training, inference, and result analysis — all driven by a declarative Hydra configuration system.
+The pipeline covers data preparation, classifier training, per-cluster complexity analysis, failure prediction, and plot rendering — all driven by a declarative Hydra configuration system.
 
 ---
 
@@ -10,50 +10,54 @@ The pipeline covers data preparation, model training, inference, and result anal
 
 ```
 intrusion-forge/
-├── prepare_data.py          # Step 1: preprocess raw CSV → parquet splits
-├── classify.py              # Step 2: train and evaluate supervised classifier
-├── analyze_data.py          # Step 3: post-hoc analysis of model predictions
-├── generate_synthetic.py    # Generate synthetic test dataset
-├── Makefile                 # Experiment runner (prepare / classify / analyze / generate / all)
+├── pipelines/                       # Pipeline entry points (Hydra-driven)
+│   ├── prepare_data.py              # Step 1 — preprocess raw CSV → parquet splits + per-class HDBSCAN
+│   ├── classify.py                  # Step 2 — train & evaluate one ML or DL classifier
+│   ├── compute_complexity.py        # Step 3a — per-cluster complexity measures (shared)
+│   ├── fit_failure_classifier.py    # Step 3b — Random Forest predicting cluster failure
+│   └── render_plots.py              # Step 4 — render figures from analysis artifacts
+├── generate_synthetic.py            # Generate the synthetic test dataset
+├── dashboard.py                     # Streamlit dashboard for browsing experiment outputs
+├── Makefile                         # Experiment runner (prepare / classify / complexity / …)
 │
-├── configs/                 # Hydra configuration hierarchy
-│   ├── config.yaml          # Root config with defaults
-│   ├── data/                # Dataset definitions (columns, splits, filtering)
-│   ├── experiment/          # Experiment presets (e.g. supervised)
-│   ├── loops/               # Training/validation/test loop settings
-│   ├── model/               # Model architectures
-│   ├── loss/                # Loss functions (cross-entropy, focal)
-│   ├── optimizer/           # Optimizer configs
-│   ├── scheduler/           # LR scheduler configs
-│   └── path/                # Output path templates
+├── configs/                         # Hydra configuration hierarchy
+│   ├── config.yaml                  # Root config + global parameters
+│   ├── data/                        # Dataset definitions (columns, splits, filtering)
+│   ├── classifier/                  # ML and DL classifier configs
+│   ├── loops/                       # DL training/validation loop settings
+│   ├── loss/                        # DL loss functions (cross-entropy, focal)
+│   ├── optimizer/                   # DL optimizer configs
+│   ├── scheduler/                   # DL LR scheduler configs
+│   └── path/                        # Output path templates
 │
-├── docs/                    # Reference documentation
-│   ├── cluster_features.md  # Feature selection rationale for clustering
-│   └── synthetic_dataset.md # Synthetic dataset class specifications
+├── docs/                            # Reference documentation
+│   ├── approach.md                  # Methodological description of the pipeline
+│   ├── complexity_measures.md       # Per-cluster complexity measures (F, N, ND, T, G families)
+│   ├── synthetic_dataset.md         # Synthetic dataset class specifications
+│   └── pipeline.png                 # Pipeline overview diagram
 │
-├── src/                     # Library code
-│   ├── common/              # Config loading, logging, factory, utilities
-│   ├── data/                # I/O, preprocessing, analysis functions
-│   ├── ml/                  # Clustering, dimensionality reduction
-│   ├── plot/                # Plotting helpers (confusion matrix, bar charts)
-│   ├── torch/               # PyTorch models, losses, dataset, engine steps
-│   └── ignite/              # Ignite engine builder, custom metrics
+├── src/                             # Pure library code (no cfg, no logger, no I/O)
+│   ├── core/                        # Config loading, factory, logging, I/O, paths, utilities
+│   ├── domain/                      # Domain logic
+│   │   ├── analysis/                # Complexity measures, separability, metadata
+│   │   ├── clustering/              # HDBSCAN clustering with grid search
+│   │   ├── data/                    # Preprocessing (cleaning, scaling, encoding, sampling)
+│   │   ├── plot/                    # Matplotlib helpers (charts, metrics, style)
+│   │   ├── training/                # ML and DL training loops
+│   │   └── projection.py            # t-SNE / UMAP projection
+│   ├── engine/                      # Classifier engines
+│   │   ├── dl/                      # PyTorch models, losses, datasets, Ignite engine
+│   │   └── ml/                      # sklearn / XGBoost models and preprocessing
+│   └── registries.py                # Factory registries (auto-imported)
 │
 └── resources/
-    ├── raw_data/dataset_v2/     # Input CSV files (one per dataset)
-    ├── raw_data/synthetic/      # Generated synthetic CSV
-    └── experiments/             # Experiment outputs (per name/dataset/seed/run)
+    ├── raw_data/                    # Input CSV files (one subdir per dataset family)
+    └── experiments/                 # Experiment outputs (per name/dataset/seed)
 ```
 
 ---
 
 ## Setup
-
-### Requirements
-
-Python 3.12+.
-
-### Installation
 
 ```bash
 python -m venv venv
@@ -61,13 +65,13 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-The pinned dependencies are in [requirements.txt](requirements.txt). The unpinned source list is in [requirements.in](requirements.in).
+The pinned dependencies are in [requirements.txt](requirements.txt); the unpinned source list is in [requirements.in](requirements.in). All commands below assume the venv is active.
 
 ---
 
 ## Input Data
 
-Place raw CSV files under `resources/raw_data/`. Each dataset config in `configs/data/` declares its label column, numerical/categorical feature columns, split fractions, and filtering rules. The raw CSV path is resolved automatically via:
+Place raw CSV files under `resources/raw_data/`. Each dataset config in [configs/data/](configs/data/) declares its label column, numerical/categorical feature columns, split fractions, and filtering rules. The raw CSV path is resolved automatically via:
 
 ```
 resources/raw_data/${data.dir}/${data.file_name}.csv
@@ -78,7 +82,7 @@ resources/raw_data/${data.dir}/${data.file_name}.csv
 A synthetic dataset is included for local testing without real data:
 
 ```bash
-make generate          # default: ~102,500 rows
+make generate              # default: ~102,500 rows
 make generate ROWS=50000
 ```
 
@@ -93,239 +97,216 @@ The project uses [Hydra](https://hydra.cc/) (Compose API) for configuration mana
 ```yaml
 defaults:
   - data: cic_2018_v2
-  - loops: default
-  - model: tabular_classifier
-  - loss: cross_entropy
-  - optimizer: adamw
-  - scheduler: one_cycle
-  - experiment: supervised
+  - classifier: tabular
+  - loss: focal             # consumed only by DL classifiers
+  - optimizer: adamw        # consumed only by DL classifiers
+  - scheduler: one_cycle    # consumed only by DL classifiers
+  - loops: default          # consumed only by DL classifiers
+  - _self_
   - path: default
 ```
 
 ### Config Groups
 
 | Group | Options | Description |
-|-------|---------|-------------|
-| `data` | `nb15_v2`, `bot_iot_v2`, `cic_2018_v2`, `cic_2018_f`, `ton_iot_v2` | Dataset definition: columns, split ratios, filtering |
-| `model` | `numerical_classifier`, `categorical_classifier`, `tabular_classifier` | Model architecture and hyperparameters |
-| `loss` | `cross_entropy`, `focal` | Loss functions|
-| `optimizer` | `adamw` | Optimizer settings |
-| `scheduler` | `one_cycle` | Learning rate scheduler |
-| `loops` | `default` | Epochs (30), batch size (512), early stopping (patience 5) |
-| `experiment` | `supervised` | Experiment preset — overrides model, loss, and analysis settings |
+|---|---|---|
+| `data` | `nb15_v2`, `bot_iot_v2`, `cic_2018_v2`, `cic_2018_f`, `ton_iot_v2`, `bank_marketing`, `covertype`, `letter_recognition`, `statlog_landsat_satellite`, `thyroid_disease`, `synthetic_test` | Dataset definition: columns, split ratios, filtering |
+| `classifier` | DL: `tabular`, `numerical`, `categorical` &nbsp;·&nbsp; ML: `decision_tree`, `random_forest`, `hist_gradient_boosting`, `xgboost`, `knn`, `lda`, `logistic_regression`, `naive_bayes`, `svm_rbf` | Classifier kind (`ml` / `dl`), name, hyperparameters, optional grid-search grid |
+| `loss` | `cross_entropy`, `focal` | DL loss functions |
+| `optimizer` | `adamw` | DL optimizer settings |
+| `scheduler` | `one_cycle` | DL learning-rate scheduler |
+| `loops` | `default` | DL training loop (epochs, batch size, early stopping) |
 | `path` | `default` | Output directory template |
 
 ### Key Global Parameters
 
 | Parameter | Default | Description |
-|-----------|---------|-------------|
-| `seed` | 42 | Random seed for reproducibility |
-| `name` | `exp` | Experiment name (part of output path) |
-| `device` | `cpu` | Device for training (`cpu`, `cuda`) |
-| `stage` | `all` | Which stages to run: `training`, `testing`, or `all` |
-| `run_id` | 0 | Run index within an experiment (set by `experiment` config) |
-| `n_samples` | `null` | Optional training set subsampling size |
-| `failure_threshold` | 0.1 | Cluster failure rate threshold for analysis (set by `experiment` config) |
+|---|---|---|
+| `seed` | `42` | Random seed for reproducibility |
+| `name` | `exp` | Experiment name (component of the output path) |
+| `device` | `cpu` | Device for DL training (`cpu`, `cuda`) |
+| `stage` | `all` | DL only — which stages to run: `training`, `testing`, or `all` |
+| `n_samples` | `null` | Optional training set subsampling cap |
+| `grid_search.enabled` | `false` | Enable sklearn `GridSearchCV` over `classifier.grid` (ML only) |
+| `prepare.force` | `false` | Re-run preprocessing + clustering even if shared outputs exist |
+| `complexity.distance` | `cosine` | Distance metric for the complexity graph (`euclidean` / `cosine`) |
+| `complexity.k` | `30` | k for the shared k-NN graph |
+| `complexity.top_k_clusters` | `10` | Top-K nearest adversarial clusters per cluster |
+| `complexity.force` | `false` | Re-run complexity computation even if shared output exists |
+| `clustering.distance` | `cosine` | Distance metric for HDBSCAN (`cosine` L2-normalises `X_num`) |
+| `failure_classifier.threshold` | `0.0` | A cluster is "failed" when `failure_rate > threshold` |
+
+The full set of nested parameters (clustering grid, failure-classifier nested CV grid, plot caps) lives in [configs/config.yaml](configs/config.yaml).
 
 Any parameter can be overridden from the command line:
 
 ```bash
-python prepare_data.py data=bot_iot_v2 name=my_experiment seed=123 device=cuda
+make classify DATA=bot_iot_v2 NAME=my_experiment SEED=123 CLASSIFIER=random_forest
+# or via Hydra directly:
+PYTHONPATH=. python pipelines/classify.py data=bot_iot_v2 name=my_experiment seed=123 classifier=random_forest
 ```
 
 ---
 
 ## Pipeline
 
-The pipeline consists of four sequential steps. Each script reads the Hydra config and produces outputs under:
+The pipeline has four steps, driven by [pipelines/](pipelines/) entry points or the [Makefile](Makefile). Outputs are organised under:
 
 ```
-resources/experiments/${name}/${data.file_name}_${seed}/${run_id}/
+resources/experiments/${name}/${data.file_name}_${seed}/
+├── processed_data/                  # train.parquet, val.parquet, test.parquet (shared)
+├── shared/                          # df_meta, clusters_meta, complexity metrics (shared across classifiers)
+└── ${classifier.name}/              # per-classifier subtree
+    ├── configs/                     # resolved Hydra config snapshot
+    ├── models/                      # checkpoints / serialized estimators
+    ├── outputs/                     # JSON outputs (training, testing, analysis)
+    ├── pickle/                      # binary side artifacts (confusion matrices, …)
+    └── figures/                     # rendered PNGs
 ```
 
 ### Step 1 — Data Preparation
 
 ```bash
-python prepare_data.py data=cic_2018_v2 experiment=supervised name=my_exp
+make prepare DATA=cic_2018_v2 NAME=my_exp
 ```
 
-Loads the raw CSV, applies preprocessing (NaN removal, rare category filtering, log-scaling, optional hash encoding), performs a stratified train/val/test split (80/10/10), balances classes via random undersampling, and encodes labels.
+Loads the raw CSV, applies preprocessing (NaN removal, rare category filtering, log-scaling, robust scaling, optional top-N hash encoding), runs a stratified train/val/test split, balances classes via random undersampling, encodes labels, and runs per-class HDBSCAN to assign every sample a globally unique cluster id (noise points are merged into a per-class pseudo-cluster).
 
-**Outputs:**
+**Shared outputs (dataset-level):**
 
 ```
-{run_id}/
-├── processed_data/
-│   ├── train.parquet
-│   ├── val.parquet
-│   └── test.parquet
-├── logs/data/
-│   ├── df_info.json          # Basic DataFrame stats
-│   └── df_meta.json          # Label mapping, class weights, split sizes
-└── configs/
-    └── config_composed.json  # Resolved Hydra config for reproducibility
+processed_data/                      # train.parquet, val.parquet, test.parquet
+shared/
+├── df_info.json                     # basic DataFrame stats
+├── df_meta.json                     # label mapping, class weights, split sizes
+└── clusters_meta.json               # cluster ids per split, centroids, noise ids
 ```
 
-### Step 2 — Training & Testing
+This step is idempotent: existing outputs are reused unless `prepare.force=true` (or `make ... FORCE=1`).
+
+### Step 2 — Classifier Training
 
 ```bash
-make classify DATA=cic_2018_v2 NAME=my_exp
-# or: python classify.py experiment=supervised data=cic_2018_v2 name=my_exp
+make classify DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=random_forest
+make ml-all   DATA=cic_2018_v2 NAME=my_exp     # every ML classifier in turn
+make dl-all   DATA=cic_2018_v2 NAME=my_exp     # every DL classifier in turn
 ```
 
-Trains a classifier using PyTorch Ignite (with early stopping and best-model checkpointing), then runs evaluation on the test set. Metrics: accuracy, precision, recall, F1 (macro, weighted, per-class).
+Trains and evaluates a single classifier (ML or DL, selected via the `classifier` config group), then writes per-class metrics and per-sample predictions used downstream by the failure classifier.
 
-The `stage` parameter controls execution: `training` (train only), `testing` (test only, requires existing checkpoint), or `all` (train + test).
-
-**Outputs:**
+**Per-classifier outputs:**
 
 ```
-{run_id}/
-├── models/
-│   └── model_{epoch}_loss={loss}.pt     # Best model checkpoint
-├── logs/testing/
-│   └── summary.json                     # All scalar metrics
-└── logs/analysis/
-    └── predictions/
-        └── test.json                    # Per-class failure analysis
-tb/
-├── training/    # TensorBoard events (loss, grad norm, epoch duration)
-├── validation/  # TensorBoard events (loss)
-└── testing/     # TensorBoard events (confusion matrix, per-class F1, projections)
+${classifier.name}/
+├── models/                          # checkpoint (DL) or serialized estimator (ML)
+├── outputs/
+│   ├── training/                    # training-set metrics (and predictions where applicable)
+│   ├── testing/                     # test-set metrics
+│   └── analysis/predictions/        # per-sample predictions + per-cluster failure rates
+└── configs/config_composed.json     # resolved Hydra config
 ```
 
-### Step 3 — Analysis
+For DL classifiers, the `stage` parameter controls execution: `training` (train only), `testing` (test only, requires existing checkpoint), or `all` (train + test). For ML classifiers, `grid_search.enabled=true` switches to `GridSearchCV` over `classifier.grid`.
+
+### Step 3a — Complexity Computation
 
 ```bash
-make analyze DATA=cic_2018_v2 NAME=my_exp
-# or: python analyze_data.py experiment=supervised data=cic_2018_v2 name=my_exp
+make complexity DATA=cic_2018_v2 NAME=my_exp
 ```
 
-Performs post-hoc analysis on the model outputs. The specific analyses depend on the experiment configuration (see [Experiments](#experiments)).
+Builds the shared k-NN complexity graph (Gower-style mixed-distance, with `complexity.distance` governing the metric on numerical features) and computes per-cluster complexity measures grouped into five families: F (feature), N (neighbourhood), ND (network density), T (dimensionality), G (geometry). See [docs/complexity_measures.md](docs/complexity_measures.md) for definitions.
 
-**Outputs:**
+**Shared outputs:**
 
 ```
-{run_id}/logs/
-├── data/              # Data-level analysis results
-└── analysis/          # Prediction-level analysis results
+shared/
+├── complexity_metrics.json          # per-cluster complexity vector
+└── (k-NN cache and auxiliary pickle artifacts)
 ```
+
+This step is dataset-level (classifier-independent) and idempotent: existing outputs are reused unless `complexity.force=true`.
+
+### Step 3b — Failure Classification
+
+```bash
+make failure-classify DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=random_forest
+```
+
+Builds a per-cluster summary by joining the complexity vector (Step 3a) with the classifier's per-cluster failure rate (Step 2). A Random Forest is then trained — with nested stratified cross-validation (5 outer × 5 inner folds) — to predict whether a cluster's failure rate exceeds `failure_classifier.threshold`. Reports out-of-fold metrics, ROC curves, and feature importances.
+
+**Per-classifier outputs:**
+
+```
+${classifier.name}/outputs/analysis/
+├── cluster_summary.json             # complexity + failure rate per cluster
+└── failure_classifier_results.json  # nested-CV scores, feature importances, ROC data
+```
+
+### Step 4 — Plot Rendering
+
+```bash
+make render DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=random_forest
+```
+
+Renders figures from the JSON / pickle artifacts produced by the previous steps (confusion matrices, per-class F1, complexity distributions, ROC curves, failure–complexity scatters). All figures land under `${classifier.name}/figures/`.
+
+### Full Pipeline Shortcuts
+
+```bash
+make run DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=tabular       # prepare → classify → failure-classify → render
+make all NAME=my_exp                                            # every dataset, default classifier per dataset
+```
+
+The `all` target iterates over the `DATASET_CLASSIFIERS` list in the [Makefile](Makefile); override `SEED`, `DISTANCE` (`euclidean` / `cosine`), or add `FORCE=1` to recompute cached shared stages.
 
 ---
 
-## Running All Datasets
-
-Use the `all` Makefile target to run the full pipeline on every dataset:
+## Dashboard
 
 ```bash
-make all NAME=my_experiment
+make dashboard
 ```
 
-This runs `prepare → classify → analyze` for each dataset in `DATASETS` (`nb15_v2`, `bot_iot_v2`, `cic_2018_v2`, `ton_iot_v2`). Override `SEED` and `EXPERIMENT` as needed:
-
-```bash
-make all NAME=my_experiment SEED=123 EXPERIMENT=supervised
-```
-
-Individual steps can also be run with `make prepare`, `make classify`, `make analyze`.
-
----
-
-## Experiments
-
-The framework supports pluggable experiment configurations. Each experiment preset (in `configs/experiment/`) can override model, loss, and pipeline-specific settings.
-
-### Cluster Separability
-
-The current experiment (`supervised`) extends the base pipeline with HDBSCAN clustering and cluster-level analysis:
-
-- **Data preparation** optionally runs HDBSCAN clustering on processed features, assigning each sample to a cluster and saving cluster metadata (distributions, centroids).
-- **Inference** computes per-cluster failure rates alongside per-class metrics.
-- **Analysis** (`analyze_data.py`) computes pairwise cluster separability (inter/intra-cluster distance ratios), builds a per-cluster summary combining separability scores with inference failure rates, and runs a Random Forest grid search to identify which cluster properties correlate with model errors.
-
-Additional outputs produced by this experiment:
-
-```
-{run_id}/logs/
-├── data/
-│   └── clusters_meta.json             # Cluster distributions and centroids
-└── analysis/
-    ├── cluster_summary.json           # Aggregated per-cluster summary
-    ├── classifier_results.json        # RF grid search results, feature importances
-    └── separability/
-        ├── cluster_train.json         # Pairwise separability (train)
-        └── cluster_test.json          # Pairwise separability (test)
-```
-
----
-
-## Output Directory Layout
-
-All outputs are organized under `resources/experiments/` following this structure:
-
-```
-resources/experiments/{name}/{data.file_name}_{seed}/
-├── {run_id}/
-│   ├── processed_data/       # train.parquet, val.parquet, test.parquet
-│   ├── models/               # Best model checkpoint (.pt)
-│   ├── logs/
-│   │   ├── data/             # df_info, df_meta, experiment-specific logs
-│   │   ├── testing/          # summary.json (test metrics)
-│   │   └── analysis/         # predictions/, cluster_summary, separability, RF results
-│   └── configs/              # Resolved config snapshot
-└── tb/                       # TensorBoard logs (shared across runs)
-    ├── training/
-    ├── validation/
-    ├── testing/
-    └── analysis/
-```
-
-To view TensorBoard logs:
-
-```bash
-make tensorboard NAME=my_experiment DATA=cic_2018_v2
-```
+Launches a Streamlit dashboard ([dashboard.py](dashboard.py)) for browsing experiment outputs across datasets, classifiers, and seeds.
 
 ---
 
 ## Library Packages (`src/`)
 
-### `src/common`
+`src/` is a pure library — no `cfg`, no `logger`, no I/O. All side effects live in [pipelines/](pipelines/).
 
-- **config.py** — Load Hydra config via Compose API (`load_config`)
-- **factory.py** — Generic Factory with `@register` decorator (used by models and losses)
-- **log.py** — Logger setup (`setup_logger`), `LogBundle`, `LogDispatcher`, and subscribers (`TensorBoardSubscriber`, `JSONSubscriber`, `PickleSubscriber`)
-- **utils.py** — JSON/pickle save/load helpers, `timed` decorator, `flush_timing`
+### `src/core`
 
-### `src/data`
+- **config.py** — `load_config`, `save_config`, `to_container` (Hydra Compose API)
+- **factory.py** — Generic `Factory[T]` with `@register` decorator; `discover_and_import_modules` for auto-registration
+- **log.py** — `setup_logger`, `LogBundle`, `LogDispatcher`, and subscribers (`JSONSubscriber`, `PickleSubscriber`, `FilesystemFigureSubscriber`)
+- **io.py** — Format-agnostic DataFrame I/O (`load_df`, `save_df`, `load_listed_dfs`) for CSV / Parquet / Pickle
+- **paths.py** — `OutputPaths` dataclass holding the resolved output layout
+- **utils.py** — JSON / pickle / joblib helpers, `timed` decorator, `flush_timing`, `skip_if_exists`
 
-- **io.py** — Format-agnostic DataFrame I/O (CSV, Parquet, Pickle)
-- **preprocessing.py** — Cleaning (NaN removal, rare category filtering), sampling (stratified split, undersampling), transformers (`LogTransformer`, `TopNHashEncoder`), sklearn `ColumnTransformer` builder
-- **analyze.py** — DataFrame metadata, cluster statistics, pairwise separability, summary aggregation
+### `src/domain`
 
-### `src/ml`
-
-- **clustering.py** — HDBSCAN clustering with grid search and silhouette scoring
+- **data/preprocessing.py** — Cleaning (`drop_nans`, `rare_category_filter`, `query_filter`), splitting / sampling (`ml_split`, `random_undersample_df`, `subsample_df`), transformers (`LogTransformer`, `TopNHashEncoder`), `build_preprocessor`, `encode_labels`
+- **clustering/** — HDBSCAN clustering with grid search (`fit_hdbscan`, `grid_search`)
+- **analysis/metadata.py** — `compute_df_metadata`, `compute_clusters_metadata`, `get_df_info`
+- **analysis/separability.py** — Pairwise cluster separability scores
+- **analysis/complexity/** — F / N / ND / T / G complexity families (`feature`, `neighborhood`, `network`, `dimensionality`, `clusters`)
 - **projection.py** — t-SNE projection, stratified subsampling
+- **plot/** — `Plot` dataclass, charts (`bar_plot`, `line_plot`, `scatter_plot`, `heatmap_plot`, `ridgeline_plot`, `strip_plot`, `violin_plot`), metric plots (`confusion_matrix_plot`, `roc_plot`), shared palette and `style.py`
+- **training/ml.py** — `fit_classifier`, `grid_search_classifier`, `predict_with_proba`, `save_model`, `load_model` for ML pipelines
+- **training/dl.py** — DL training loop built on PyTorch Ignite (`fit_classifier`, `predict_with_proba`, `save_model`, `load_model`)
 
-### `src/plot`
+### `src/engine`
 
-- **base.py** — `Plot` dataclass wrapping a rendered PNG buffer
-- **style.py** — Shared color palettes and Matplotlib style helpers
-- **array.py** — Confusion matrix, scatter/strip/violin/bar plots from arrays
-- **dict.py** — Bar charts and table plots from dictionaries
+- **dl/model/** — `NumericalClassifier`, `CategoricalClassifier`, `TabularClassifier` (registered via `DLClassifierFactory`)
+- **dl/module/** — Encoder, decoder, MLP, embedding building blocks; checkpoint utilities
+- **dl/loss/** — `CrossEntropyLoss`, `FocalLoss` (registered via `LossFactory`)
+- **dl/data/** — `TabularDataset` (numerical + categorical), custom collate
+- **dl/ignite_builder.py** — `EngineBuilder` fluent builder for Ignite engines (metrics, early stopping, checkpointing)
+- **dl/ignite_metrics.py** — Per-class F1 / Precision / Recall wrappers for Ignite
+- **ml/model/** — sklearn / XGBoost classifiers (`ensemble`, `linear`, `naive_bayes`, `neighbors`, `svm`, `tree`, `xgboost`), all registered via `MLClassifierFactory`
+- **ml/preprocessing.py** — ML-specific column preprocessing helpers
 
-### `src/torch`
+### `src/registries.py`
 
-- **builders.py** — Factory functions for dataset, dataloader, model, loss, optimizer, scheduler
-- **engine.py** — Training, evaluation, and test step functions
-- **infer.py** — DataFrame-to-tensor conversion, model inference, prediction extraction
-- **data/** — `TabularDataset` (numerical + categorical features), custom collate
-- **model/** — `NumericalClassifier`, `CategoricalClassifier`, `TabularClassifier` (encoder + head architecture, registered via `ModelFactory`)
-- **loss/** — `CrossEntropyLoss`, `FocalLoss` with label smoothing and class weighting (registered via `LossFactory`)
-- **module/** — Encoder, decoder, MLP, embedding, and checkpoint utilities
-
-### `src/ignite`
-
-- **builders.py** — `EngineBuilder`: fluent builder for Ignite engines (metrics, early stopping, checkpointing, TensorBoard)
-- **metrics.py** — Per-class F1, Precision, Recall wrappers for Ignite
+Central re-export of `DLClassifierFactory`, `MLClassifierFactory`, and `LossFactory`. Import factories from here so the owning packages stay free to move.

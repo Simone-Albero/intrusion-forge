@@ -13,11 +13,20 @@ The pairwise families (F, N, ND) are aggregated against two scopes:
 For each scope the final value is the **min** (worst case), **mean**, and
 **max** (best case) over the populations considered.
 
-The k-NN graph is built once using **Gower distance** (batched, mixed
-numerical + categorical). Numerical features are pre-scaled by their **IQR
-(Q3 − Q1)** to keep the metric robust to heavy-tailed outliers. Defaults:
-`k = 30`, `top_k_clusters = 10`. Both are configurable via
-`configs/experiment/supervised.yaml`.
+The k-NN graph is built once using a **Gower-hybrid distance** (batched,
+mixed numerical + categorical). The numerical contribution is configurable
+via `complexity.distance`:
+
+- `cosine` (default): cosine distance on RobustScaled numerical features
+  (computed via L2-normalisation + Euclidean), combined with Hamming-style
+  indicators on categoricals.
+- `euclidean`: per-feature range-normalised Manhattan on RobustScaled
+  numerical features, combined with Hamming-style indicators on categoricals.
+
+Both modes normalise every per-feature contribution to $[0, 1]$, so the
+overall distance stays in $[0, 1]$. Defaults: `complexity.k = 30`,
+`complexity.top_k_clusters = 10`. Both are configurable via
+[../configs/config.yaml](../configs/config.yaml).
 
 ---
 

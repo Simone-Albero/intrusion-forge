@@ -8,7 +8,10 @@ Usage:
 from __future__ import annotations
 
 import json
+import pickle
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, Literal
 
 import numpy as np
 import pandas as pd
@@ -16,1223 +19,1062 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-# ─────────────────────────────── constants ────────────────────────────────────
 
-EXPERIMENTS_ROOT = Path(__file__).parent / "resources" / "experiments"
-_NON_FEATURE_COLS = frozenset(
-    {"cluster_id", "cluster_class", "is_noise_cluster", "failure_rate", "is_failed"}
+# ══════════════════════════════ Constants ════════════════════════════════════
+
+EXPERIMENTS_ROOT_DEFAULT = str(Path(__file__).parent / "resources" / "experiments")
+
+RESERVED_DIRS = frozenset({"shared", "processed_data", "tb"})
+
+HEATMAP_METRICS: dict[str, str] = {
+    "f1_macro": "Test F1 macro",
+    "f1_weighted": "Test F1 weighted",
+    "accuracy": "Test accuracy",
+    "precision_macro": "Test precision macro",
+    "recall_macro": "Test recall macro",
+    "fc_f1": "Failure-classifier F1",
+    "fc_auc": "Failure-classifier ROC AUC",
+}
+
+GALLERY_CATEGORIES: list[str] = [
+    "testing",
+    "training",
+    "summary",
+    "summary/correlation",
+    "summary/global",
+]
+
+CLUSTER_NON_FEATURE_COLS = frozenset(
+    {
+        "cluster_id",
+        "cluster_class",
+        "is_noise_cluster",
+        "is_failed",
+        "failure_rate",
+    }
 )
 
-# ─────────────────────────────── data loading ─────────────────────────────────
+
+# ══════════════════════════════ Schema ═══════════════════════════════════════
 
 
-def _read_json(path: Path) -> dict | None:
+@dataclass(frozen=True)
+class ExperimentRecord:
+    """Lightweight handle to one (variant, dataset, seed, classifier) experiment.
+
+    Headline metrics are pre-parsed so the heatmap can be rendered without
+    loading the heavy detail JSON/pickle.
+    """
+
+    variant: str
+    dataset_dir: str
+    file_name: str
+    seed: int
+    classifier: str
+    family: Literal["ml", "dl"]
+    root: Path
+    shared: Path
+    accuracy: float | None
+    f1_macro: float | None
+    f1_weighted: float | None
+    precision_macro: float | None
+    recall_macro: float | None
+    fc_f1: float | None
+    fc_auc: float | None
+
+    @property
+    def key(self) -> str:
+        return f"{self.variant}|{self.dataset_dir}|{self.classifier}"
+
+    @property
+    def label(self) -> str:
+        return f"{self.variant} · {self.file_name} · {self.classifier}"
+
+
+@dataclass
+class ExperimentDetail:
+    """All heavy artifacts for one experiment, loaded lazily."""
+
+    testing: dict | None = None
+    classifier_results: dict | None = None
+    cluster_summary: pd.DataFrame | None = None
+    predictions: dict | None = None
+    confusion_matrix: np.ndarray | None = None
+    grid_search: dict | None = None
+    df_meta: dict = field(default_factory=dict)
+    df_info: dict = field(default_factory=dict)
+    complexity: dict = field(default_factory=dict)
+    clusters_meta: dict = field(default_factory=dict)
+
+
+# ══════════════════════════════ IO helpers ═══════════════════════════════════
+
+
+def _read_json(path: Path) -> dict | list | None:
     try:
-        with open(path) as f:
+        with path.open() as f:
             return json.load(f)
-    except FileNotFoundError:
+    except (FileNotFoundError, json.JSONDecodeError):
         return None
 
 
-def _load_experiment(variant_path: Path, dataset_dir: str, run: int = 0) -> dict | None:
-    """Load all JSON logs for one dataset / run. Returns None if no data found."""
-    logs = variant_path / dataset_dir / str(run) / "logs"
-
-    testing = _read_json(logs / "testing" / "summary.json")
-    classifier = _read_json(logs / "analysis" / "classifier_results.json")
-    cluster_raw = _read_json(logs / "analysis" / "cluster_summary.json")
-    predictions = _read_json(logs / "analysis" / "predictions" / "test.json")
-    meta = _read_json(logs / "data" / "df_meta.json")
-
-    if testing is None and classifier is None:
+def _read_pickle(path: Path) -> Any:
+    try:
+        with path.open("rb") as f:
+            return pickle.load(f)
+    except (FileNotFoundError, pickle.UnpicklingError):
         return None
 
-    clusters_df: pd.DataFrame | None = None
-    if cluster_raw:
-        rows = [
-            {"cluster_id": cid, **features} for cid, features in cluster_raw.items()
-        ]
-        clusters_df = pd.DataFrame(rows)
 
+def _safe_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        f = float(value)
+        return f if np.isfinite(f) else None
+    except (TypeError, ValueError):
+        return None
+
+
+# ══════════════════════════════ Discovery ════════════════════════════════════
+
+
+def _parse_dataset_dir(name: str) -> tuple[str, int] | None:
+    """Split `{file_name}_{seed}` → (file_name, seed). Returns None on failure."""
+    head, _, tail = name.rpartition("_")
+    if not head or not tail.isdigit():
+        return None
+    return head, int(tail)
+
+
+def _classifier_family(classifier_dir: Path) -> Literal["ml", "dl"]:
+    """Infer ML vs DL from config_composed.json::classifier.kind (fallback: model file)."""
+    cfg = _read_json(classifier_dir / "configs" / "config_composed.json")
+    if isinstance(cfg, dict):
+        kind = cfg.get("classifier", {}).get("kind")
+        if kind in {"ml", "dl"}:
+            return kind  # type: ignore[return-value]
+    if (classifier_dir / "models" / "model.joblib").exists():
+        return "ml"
+    if any((classifier_dir / "models").glob("*.pt")):
+        return "dl"
+    return "ml"
+
+
+def _extract_headline_metrics(classifier_dir: Path) -> dict[str, float | None]:
+    """Read summary.json + classifier_results.json and return the seven heatmap metrics."""
+    summary = _read_json(classifier_dir / "outputs" / "testing" / "summary.json") or {}
+    fc = _read_json(classifier_dir / "outputs" / "analysis" / "classifier_results.json") or {}
     return {
-        "testing": testing,
-        "classifier": classifier,
-        "clusters_df": clusters_df,
-        "predictions": predictions,
-        "meta": meta,
+        "accuracy": _safe_float(summary.get("accuracy")),
+        "f1_macro": _safe_float(summary.get("f1_macro")),
+        "f1_weighted": _safe_float(summary.get("f1_weighted")),
+        "precision_macro": _safe_float(summary.get("precision_macro")),
+        "recall_macro": _safe_float(summary.get("recall_macro")),
+        "fc_f1": _safe_float(fc.get("f1_score")),
+        "fc_auc": _safe_float(fc.get("roc_auc")),
     }
 
 
-@st.cache_data
-def load_all_experiments(experiments_root: str) -> dict[str, dict[str, dict]]:
-    """Discover all variant folders and datasets, return nested dict.
+def _is_classifier_dir(path: Path) -> bool:
+    """Heuristic: a classifier dir has either an outputs/ or a configs/config_composed.json."""
+    if not path.is_dir():
+        return False
+    if path.name in RESERVED_DIRS or path.name.startswith("."):
+        return False
+    return (path / "outputs").exists() or (path / "configs" / "config_composed.json").exists()
 
-    Structure: variant_name -> dataset_dir -> experiment_dict.
+
+@st.cache_data(show_spinner="Scanning experiments…")
+def discover_experiments(root: str) -> tuple[list[ExperimentRecord], int]:
+    """Walk `root/<variant>/<dataset_dir>/` and emit one record per classifier.
+
+    A variant/dataset is considered valid only when `shared/df_meta.json` exists,
+    which excludes the legacy `{run_id}/logs/...` layout automatically.
+
+    Returns `(records, n_skipped_legacy)`.
     """
-    root = Path(experiments_root)
-    variants = sorted(
-        d.name for d in root.iterdir() if d.is_dir() and not d.name.startswith(".")
+    root_path = Path(root)
+    records: list[ExperimentRecord] = []
+    skipped = 0
+
+    if not root_path.is_dir():
+        return [], 0
+
+    for variant_dir in sorted(root_path.iterdir()):
+        if not variant_dir.is_dir() or variant_dir.name.startswith("."):
+            continue
+        for dataset_dir in sorted(variant_dir.iterdir()):
+            if not dataset_dir.is_dir() or dataset_dir.name.startswith("."):
+                continue
+            parsed = _parse_dataset_dir(dataset_dir.name)
+            if parsed is None:
+                continue
+            file_name, seed = parsed
+            shared = dataset_dir / "shared"
+            if not (shared / "df_meta.json").exists():
+                skipped += 1
+                continue
+
+            for classifier_dir in sorted(dataset_dir.iterdir()):
+                if not _is_classifier_dir(classifier_dir):
+                    continue
+                family = _classifier_family(classifier_dir)
+                metrics = _extract_headline_metrics(classifier_dir)
+                records.append(
+                    ExperimentRecord(
+                        variant=variant_dir.name,
+                        dataset_dir=dataset_dir.name,
+                        file_name=file_name,
+                        seed=seed,
+                        classifier=classifier_dir.name,
+                        family=family,
+                        root=classifier_dir,
+                        shared=shared,
+                        **metrics,
+                    )
+                )
+
+    return records, skipped
+
+
+# ══════════════════════════════ Detail loaders ═══════════════════════════════
+
+
+def _cluster_summary_df(data: dict | None) -> pd.DataFrame | None:
+    if not data:
+        return None
+    rows = []
+    for cluster_id, row in data.items():
+        rows.append({"cluster_id": cluster_id, **row})
+    df = pd.DataFrame(rows)
+    if "failure_rate" in df.columns:
+        df = df.sort_values("failure_rate", ascending=False).reset_index(drop=True)
+    return df
+
+
+@st.cache_data(show_spinner=False)
+def load_experiment_detail(record_root: str, record_shared: str) -> ExperimentDetail:
+    """Load every heavy artifact for one experiment. Returns empty fields when missing."""
+    root = Path(record_root)
+    shared = Path(record_shared)
+    detail = ExperimentDetail(
+        testing=_read_json(root / "outputs" / "testing" / "summary.json"),
+        classifier_results=_read_json(root / "outputs" / "analysis" / "classifier_results.json"),
+        predictions=_read_json(root / "outputs" / "analysis" / "predictions" / "test.json"),
+        grid_search=_read_json(root / "outputs" / "training" / "grid_search.json"),
+        df_meta=_read_json(shared / "df_meta.json") or {},
+        df_info=_read_json(shared / "df_info.json") or {},
+        complexity=_read_json(shared / "complexity.json") or {},
+        clusters_meta=_read_json(shared / "clusters_meta.json") or {},
+    )
+    cs = _read_json(root / "outputs" / "analysis" / "cluster_summary.json")
+    detail.cluster_summary = _cluster_summary_df(cs if isinstance(cs, dict) else None)
+    cm = _read_pickle(root / "pickle" / "analysis" / "confusion_matrices" / "test.pkl")
+    if isinstance(cm, np.ndarray):
+        detail.confusion_matrix = cm
+    elif isinstance(cm, list):
+        detail.confusion_matrix = np.asarray(cm)
+    return detail
+
+
+@st.cache_data(show_spinner=False)
+def load_figure_index(record_root: str) -> dict[str, str]:
+    """Return `{relative_posix_path: absolute_path}` for every PNG under `figures/`."""
+    figures_dir = Path(record_root) / "figures"
+    if not figures_dir.is_dir():
+        return {}
+    out: dict[str, str] = {}
+    for png in sorted(figures_dir.rglob("*.png")):
+        rel = png.relative_to(figures_dir).as_posix()
+        out[rel] = str(png)
+    return out
+
+
+# ══════════════════════════════ Selectors ════════════════════════════════════
+
+
+def records_to_df(records: list[ExperimentRecord]) -> pd.DataFrame:
+    """Flat DataFrame view of records (one row per (variant, dataset, classifier))."""
+    if not records:
+        return pd.DataFrame()
+    return pd.DataFrame(
+        [
+            {
+                "variant": r.variant,
+                "dataset": r.file_name,
+                "seed": r.seed,
+                "classifier": r.classifier,
+                "family": r.family,
+                "accuracy": r.accuracy,
+                "f1_macro": r.f1_macro,
+                "f1_weighted": r.f1_weighted,
+                "precision_macro": r.precision_macro,
+                "recall_macro": r.recall_macro,
+                "fc_f1": r.fc_f1,
+                "fc_auc": r.fc_auc,
+                "key": r.key,
+            }
+            for r in records
+        ]
     )
 
-    result: dict[str, dict[str, dict]] = {}
-    for variant in variants:
-        variant_path = root / variant
-        datasets = sorted(
-            d.name
-            for d in variant_path.iterdir()
-            if d.is_dir() and not d.name.startswith(".")
-        )
-        result[variant] = {}
-        for ds_dir in datasets:
-            exp = _load_experiment(variant_path, ds_dir)
-            if exp is not None:
-                result[variant][ds_dir] = exp
 
-    return result
-
-
-def _dataset_label(ds_dir: str) -> str:
-    """Strip trailing _<seed> suffix: 'bank_marketing_42' -> 'bank_marketing'."""
-    parts = ds_dir.rsplit("_", 1)
-    return parts[0] if len(parts) == 2 and parts[1].isdigit() else ds_dir
+def filter_records(
+    records: list[ExperimentRecord],
+    *,
+    variants: list[str] | None = None,
+    seed: int | None = None,
+    datasets: list[str] | None = None,
+    classifiers: list[str] | None = None,
+) -> list[ExperimentRecord]:
+    out = records
+    if variants is not None:
+        out = [r for r in out if r.variant in variants]
+    if seed is not None:
+        out = [r for r in out if r.seed == seed]
+    if datasets is not None:
+        out = [r for r in out if r.file_name in datasets]
+    if classifiers is not None:
+        out = [r for r in out if r.classifier in classifiers]
+    return out
 
 
-def _class_name(label_map: dict, class_int: int) -> str:
-    return label_map.get(str(class_int), f"class {class_int}")
+def find_record(records: list[ExperimentRecord], key: str) -> ExperimentRecord | None:
+    for r in records:
+        if r.key == key:
+            return r
+    return None
 
 
-# ─────────────────────────────── summary builder ──────────────────────────────
+# ══════════════════════════════ Figure utilities ═════════════════════════════
 
 
-def _build_summary_df(variant_data: dict[str, dict]) -> pd.DataFrame:
-    rows = []
-    for ds_dir, exp in variant_data.items():
-        meta = exp.get("meta") or {}
-        testing = exp.get("testing") or {}
-        clf = exp.get("classifier") or {}
-        cdf: pd.DataFrame | None = exp.get("clusters_df")
-
-        sizes = meta.get("dataset_sizes", {})
-        total_samples = sum(sizes.values()) if sizes else None
-        n_clusters = len(cdf) if cdf is not None else None
-        n_failed = (
-            int(cdf["is_failed"].sum())
-            if cdf is not None and "is_failed" in cdf.columns
-            else None
-        )
-
-        rows.append(
-            {
-                "dataset": _dataset_label(ds_dir),
-                "ds_dir": ds_dir,
-                "num_classes": meta.get("num_classes"),
-                "total_samples": total_samples,
-                "num_clusters": n_clusters,
-                "num_failed_clusters": n_failed,
-                "nn_accuracy": testing.get("accuracy"),
-                "nn_f1_macro": testing.get("f1_macro"),
-                "nn_f1_weighted": testing.get("f1_weighted"),
-                "fc_f1": clf.get("f1_score"),
-                "fc_f1_std": clf.get("f1_score_std"),
-                "clf_auc": clf.get("roc_auc"),
-                "clf_auc_std": clf.get("roc_auc_std"),
-            }
-        )
-    return pd.DataFrame(rows)
+def find_figure(record: ExperimentRecord, relative: str) -> Path | None:
+    candidate = record.root / "figures" / relative
+    return candidate if candidate.is_file() else None
 
 
-def _build_nn_metrics_df(variant_data: dict[str, dict]) -> pd.DataFrame:
-    rows = []
-    for ds_dir, exp in variant_data.items():
-        t = exp.get("testing") or {}
-        rows.append(
-            {
-                "dataset": _dataset_label(ds_dir),
-                "precision_macro": t.get("precision_macro"),
-                "recall_macro": t.get("recall_macro"),
-                "f1_macro": t.get("f1_macro"),
-                "precision_weighted": t.get("precision_weighted"),
-                "recall_weighted": t.get("recall_weighted"),
-                "f1_weighted": t.get("f1_weighted"),
-            }
-        )
-    return pd.DataFrame(rows)
+def render_figure_if_present(record: ExperimentRecord, relative: str, caption: str) -> bool:
+    path = find_figure(record, relative)
+    if path is None:
+        return False
+    st.image(str(path), caption=caption, width="stretch")
+    return True
 
 
-def _build_fc_metrics_df(variant_data: dict[str, dict]) -> pd.DataFrame:
-    rows = []
-    for ds_dir, exp in variant_data.items():
-        clf = exp.get("classifier") or {}
-        report = clf.get("classification_report") or {}
-        cm = clf.get("confusion_matrix")
-
-        macro = report.get("macro avg") or {}
-        weighted = report.get("weighted avg") or {}
-
-        tn = fp = fn = tp = None
-        if cm and len(cm) == 2:
-            tn, fp = cm[0][0], cm[0][1]
-            fn, tp = cm[1][0], cm[1][1]
-
-        rows.append(
-            {
-                "dataset": _dataset_label(ds_dir),
-                "precision_macro": macro.get("precision"),
-                "recall_macro": macro.get("recall"),
-                "f1_macro": macro.get("f1-score"),
-                "precision_weighted": weighted.get("precision"),
-                "recall_weighted": weighted.get("recall"),
-                "f1_weighted": weighted.get("f1-score"),
-                "TP": tp,
-                "FP": fp,
-                "TN": tn,
-                "FN": fn,
-            }
-        )
-    return pd.DataFrame(rows)
+# ══════════════════════════════ Plot builders ════════════════════════════════
 
 
-# ─────────────────────────────── plot helpers ─────────────────────────────────
-
-
-def _bar_chart(
-    df: pd.DataFrame, x: str, y: str, err: str | None, title: str, color: str
+def heatmap_fig(
+    pivot: pd.DataFrame,
+    *,
+    title: str,
+    metric_label: str,
 ) -> go.Figure:
+    z = pivot.values.astype(float)
+    text = np.where(np.isnan(z), "", np.vectorize(lambda v: f"{v:.3f}")(z))
     fig = go.Figure(
-        go.Bar(
-            x=df[x],
-            y=df[y],
-            error_y=(
-                dict(type="data", array=df[err].fillna(0).tolist())
-                if err and err in df
-                else {}
-            ),
-            marker_color=color,
+        go.Heatmap(
+            z=z,
+            x=list(pivot.columns),
+            y=list(pivot.index),
+            colorscale="Viridis",
+            zmin=0.0,
+            zmax=1.0,
+            text=text,
+            texttemplate="%{text}",
+            hovertemplate="dataset=%{y}<br>classifier=%{x}<br>"
+            + metric_label
+            + "=%{z:.4f}<extra></extra>",
+            colorbar=dict(title=metric_label),
         )
     )
-    fig.update_layout(title=title, xaxis_title="Dataset", yaxis_title=y, height=360)
+    fig.update_layout(
+        title=title,
+        xaxis_title="Classifier",
+        yaxis_title="Dataset",
+        height=max(280, 40 + 28 * len(pivot.index)),
+        margin=dict(l=120, r=40, t=60, b=80),
+    )
+    fig.update_xaxes(tickangle=-30)
     return fig
 
 
-def _stripe_rows(styler: "pd.io.formats.style.Styler") -> "pd.io.formats.style.Styler":
-    """Alternating row background shading for readability."""
-    return styler.apply(
-        lambda row: pd.Series(
-            [
-                (
-                    "background-color: rgba(128, 128, 128, 0.08)"
-                    if row.name % 2 == 0
-                    else ""
-                )
-                for _ in row
-            ],
-            index=row.index,
-        ),
-        axis=1,
-    )
-
-
-def _confusion_matrix_fig(cm: list[list[int]], labels: list[str]) -> go.Figure:
+def confusion_matrix_fig(cm: np.ndarray, labels: list[str], *, title: str = "") -> go.Figure:
+    is_normalized = cm.dtype.kind == "f" and cm.max() <= 1.0 + 1e-6
+    text_fmt = "%{z:.2f}" if is_normalized else "%{z:d}"
     fig = go.Figure(
         go.Heatmap(
             z=cm,
             x=labels,
             y=labels,
             colorscale="Blues",
-            showscale=True,
             text=cm,
-            texttemplate="%{text}",
+            texttemplate=text_fmt,
+            hovertemplate="true=%{y}<br>pred=%{x}<br>value=%{z}<extra></extra>",
         )
     )
     fig.update_layout(
+        title=title,
         xaxis_title="Predicted",
         yaxis_title="True",
         yaxis=dict(autorange="reversed"),
-        height=350,
+        height=360,
     )
     return fig
 
 
-def _strip_box_fig(
-    cdf: pd.DataFrame,
-    label_map: dict,
-    oof_preds: dict,
+def per_class_bar_fig(
+    *,
+    classes: list[str],
+    f1: list[float],
+    precision: list[float],
+    recall: list[float],
 ) -> go.Figure:
-    """Strip-box plot: failure_rate per class, points colored by failure_rate,
-    marker border colored by RF prediction correctness."""
-    plot_df = cdf[["cluster_id", "cluster_class", "failure_rate"]].copy()
-    plot_df["class_name"] = plot_df["cluster_class"].map(
-        lambda c: _class_name(label_map, c)
-    )
-    plot_df["rf_correct"] = plot_df["cluster_id"].apply(
-        lambda cid: oof_preds.get(str(cid), float("nan"))
-    )
-
-    class_order = sorted(plot_df["class_name"].unique())
-    class_to_x = {c: i for i, c in enumerate(class_order)}
-    rng = np.random.default_rng(42)
-    plot_df["x_pos"] = [
-        class_to_x[c] + rng.uniform(-0.25, 0.25) for c in plot_df["class_name"]
-    ]
-
     fig = go.Figure()
-
-    # box per class — distribution only, no individual points
-    for cls in class_order:
-        mask = plot_df["class_name"] == cls
-        fig.add_trace(
-            go.Box(
-                x=[class_to_x[cls]] * int(mask.sum()),
-                y=plot_df.loc[mask, "failure_rate"].tolist(),
-                name=cls,
-                showlegend=False,
-                boxpoints=False,
-                line_color="rgba(100,100,100,0.55)",
-                fillcolor="rgba(200,200,200,0.15)",
-                width=0.35,
-            )
-        )
-
-    # scatter points — colored by RF prediction (grey=correct, red=wrong)
-    fill_color = [
-        "#d62728" if v == 0.0 else ("#aaaaaa" if v == 1.0 else "#cccccc")
-        for v in plot_df["rf_correct"]
-    ]
-    fig.add_trace(
-        go.Scatter(
-            x=plot_df["x_pos"].tolist(),
-            y=plot_df["failure_rate"].tolist(),
-            mode="markers",
-            text=plot_df["cluster_id"].astype(str).tolist(),
-            customdata=plot_df[["class_name", "rf_correct"]].values.tolist(),
-            hovertemplate=(
-                "<b>Cluster %{text}</b><br>"
-                "Class: %{customdata[0]}<br>"
-                "Failure rate: %{y:.3f}<br>"
-                "RF prediction: %{customdata[1]}<extra></extra>"
-            ),
-            marker=dict(
-                color=fill_color,
-                size=9,
-                line=dict(color="white", width=1),
-            ),
-            showlegend=False,
-            name="",
-        )
-    )
-
-    # legend entries
-    for label, color in [
-        ("RF correct", "#aaaaaa"),
-        ("RF wrong", "#d62728"),
-        ("RF: n/a", "#cccccc"),
-    ]:
-        fig.add_trace(
-            go.Scatter(
-                x=[None],
-                y=[None],
-                mode="markers",
-                marker=dict(size=9, color=color, line=dict(color="white", width=1)),
-                name=label,
-                showlegend=True,
-            )
-        )
-
+    fig.add_trace(go.Bar(name="F1", x=classes, y=f1, marker_color="#1f77b4"))
+    fig.add_trace(go.Bar(name="Precision", x=classes, y=precision, marker_color="#9ecae1"))
+    fig.add_trace(go.Bar(name="Recall", x=classes, y=recall, marker_color="#6baed6"))
     fig.update_layout(
-        title="Failure Rate per Class",
-        xaxis=dict(
-            tickmode="array",
-            tickvals=list(range(len(class_order))),
-            ticktext=class_order,
-            tickangle=-30,
-        ),
-        yaxis_title="Failure Rate",
+        barmode="group",
+        height=360,
+        yaxis_title="Score",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        height=430,
+    )
+    fig.update_yaxes(range=[0, 1.05])
+    fig.update_xaxes(tickangle=-30)
+    return fig
+
+
+def feature_importance_bar(importances: dict, *, top_k: int = 20) -> go.Figure:
+    pairs = sorted(importances.items(), key=lambda kv: kv[1], reverse=True)[:top_k]
+    names = [p[0] for p in pairs][::-1]
+    values = [p[1] for p in pairs][::-1]
+    fig = go.Figure(go.Bar(x=values, y=names, orientation="h", marker_color="#2ca02c"))
+    fig.update_layout(
+        height=max(280, 22 * len(pairs)),
+        xaxis_title="Importance",
+        yaxis_title="",
+        margin=dict(l=160, r=40, t=20, b=40),
     )
     return fig
 
 
-# ══════════════════════════════════ APP ═══════════════════════════════════════
+def roc_curve_fig(roc_data: dict) -> go.Figure:
+    fpr = roc_data.get("fpr", [])
+    tpr = roc_data.get("tpr", [])
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=fpr, y=tpr, mode="lines", name="ROC", line=dict(color="#d62728")))
+    fig.add_trace(
+        go.Scatter(x=[0, 1], y=[0, 1], mode="lines", name="Chance", line=dict(dash="dash", color="grey"))
+    )
+    fig.update_layout(
+        height=360,
+        xaxis_title="FPR",
+        yaxis_title="TPR",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    return fig
 
-st.set_page_config(
-    page_title="Intrusion Forge — Experiments",
-    layout="wide",
-)
-st.title("Experiment Dashboard")
 
-with st.spinner("Loading experiments…"):
-    all_data = load_all_experiments(str(EXPERIMENTS_ROOT))
+def complexity_vs_failure_scatter(cluster_df: pd.DataFrame, feature: str) -> go.Figure:
+    df = cluster_df.dropna(subset=[feature, "failure_rate"])
+    fig = px.scatter(
+        df,
+        x=feature,
+        y="failure_rate",
+        color="is_failed" if "is_failed" in df.columns else None,
+        hover_data=["cluster_id", "cluster_class"],
+        color_discrete_map={True: "#d62728", False: "#1f77b4"},
+    )
+    fig.update_layout(
+        height=400,
+        xaxis_title=feature,
+        yaxis_title="Failure rate",
+    )
+    return fig
 
-if not all_data:
-    st.error(f"No experiment variants found in `{EXPERIMENTS_ROOT}`")
-    st.stop()
 
-variants = list(all_data.keys())
+def failure_rate_strip(cluster_df: pd.DataFrame, label_map: dict) -> go.Figure:
+    plot_df = cluster_df[["cluster_id", "cluster_class", "failure_rate"]].copy()
+    plot_df["class_name"] = plot_df["cluster_class"].map(
+        lambda c: label_map.get(str(int(c)), str(int(c)))
+    )
+    fig = px.strip(
+        plot_df,
+        x="class_name",
+        y="failure_rate",
+        color="class_name",
+        hover_data=["cluster_id"],
+        stripmode="overlay",
+    )
+    fig.update_layout(height=380, showlegend=False, yaxis_title="Failure rate")
+    fig.update_xaxes(tickangle=-30, title_text="Class")
+    return fig
 
-tab_overview, tab_drilldown, tab_comparison = st.tabs(
-    ["Overview", "Drill-Down", "Variant Comparison"]
-)
 
-# ══════════════════════════ TAB 1 — OVERVIEW ══════════════════════════════════
+# ══════════════════════════════ Panels ═══════════════════════════════════════
 
-with tab_overview:
-    st.subheader("Cross-dataset summary")
 
-    variant_ov = st.selectbox("Variant", variants, key="ov_variant")
-    vdata_ov = all_data[variant_ov]
-    summary_df = _build_summary_df(vdata_ov)
+def _wkey(prefix: str, name: str, record: ExperimentRecord) -> str:
+    """Stable element/widget key. Including `prefix` (view) + record.key prevents
+    DuplicateElementId/DuplicateWidgetID when the same panel is rendered in
+    multiple tabs or columns (e.g. side-by-side)."""
+    return f"{prefix}_{name}_{record.key}"
 
-    # ── Table 1 — high-level summary ──────────────────────────────────────────
-    display_df = summary_df[
-        [
-            "dataset",
-            "num_classes",
-            "total_samples",
-            "num_clusters",
-            "num_failed_clusters",
-            "nn_f1_macro",
-            "fc_f1",
-        ]
-    ].rename(columns={"nn_f1_macro": "nn_f1", "fc_f1": "fc_f1"})
-    st.dataframe(
-        _stripe_rows(
-            display_df.style.format({"nn_f1": "{:.3f}", "fc_f1": "{:.3f}"}, na_rep="—")
-        ),
-        use_container_width=True,
-        hide_index=True,
+
+def panel_test_performance(
+    record: ExperimentRecord, detail: ExperimentDetail, key_prefix: str = "drill"
+) -> None:
+    st.markdown("**Test performance**")
+    if detail.testing is None:
+        st.caption("No `outputs/testing/summary.json` for this run.")
+        return
+    cols = st.columns(4)
+    cols[0].metric("Accuracy", f"{detail.testing.get('accuracy', float('nan')):.4f}")
+    cols[1].metric("F1 macro", f"{detail.testing.get('f1_macro', float('nan')):.4f}")
+    cols[2].metric("F1 weighted", f"{detail.testing.get('f1_weighted', float('nan')):.4f}")
+    cols[3].metric("Recall macro", f"{detail.testing.get('recall_macro', float('nan')):.4f}")
+    render_figure_if_present(record, "testing/f1_per_class.png", "f1_per_class.png")
+
+
+def panel_confusion_matrix(
+    record: ExperimentRecord, detail: ExperimentDetail, key_prefix: str = "drill"
+) -> None:
+    st.markdown("**Confusion matrix**")
+    labels = list((detail.df_meta.get("label_mapping") or {}).values())
+    if detail.confusion_matrix is not None:
+        if not labels or len(labels) != detail.confusion_matrix.shape[0]:
+            labels = [str(i) for i in range(detail.confusion_matrix.shape[0])]
+        st.plotly_chart(
+            confusion_matrix_fig(detail.confusion_matrix, labels),
+            width="stretch",
+            key=_wkey(key_prefix, "cm", record),
+        )
+        return
+    if not render_figure_if_present(record, "testing/confusion_matrix.png", "confusion_matrix.png"):
+        st.caption("No confusion matrix available.")
+
+
+def panel_failure_classifier(
+    record: ExperimentRecord, detail: ExperimentDetail, key_prefix: str = "drill"
+) -> None:
+    st.markdown("**Failure classifier (RF on cluster complexity)**")
+    fc = detail.classifier_results
+    if fc is None:
+        st.caption("No `classifier_results.json` for this run.")
+        return
+    cols = st.columns(3)
+    cols[0].metric(
+        "F1",
+        f"{fc.get('f1_score', float('nan')):.4f}",
+        delta=f"± {fc.get('f1_score_std', 0):.3f}",
+    )
+    cols[1].metric(
+        "ROC AUC",
+        f"{fc.get('roc_auc', float('nan')):.4f}",
+        delta=f"± {fc.get('roc_auc_std', 0):.3f}",
+    )
+    cols[2].metric("CV folds", f"{len(fc.get('f1_scores_per_fold', []))}")
+    if fc.get("roc_curve_data"):
+        st.plotly_chart(
+            roc_curve_fig(fc["roc_curve_data"]),
+            width="stretch",
+            key=_wkey(key_prefix, "roc", record),
+        )
+
+
+def panel_feature_importances(
+    record: ExperimentRecord, detail: ExperimentDetail, key_prefix: str = "drill"
+) -> None:
+    st.markdown("**Feature importances (failure classifier)**")
+    fc = detail.classifier_results
+    if not fc or "feature_importances" not in fc:
+        st.caption("No feature_importances in classifier_results.json.")
+        return
+    top_k = st.slider(
+        "Top-K features", 5, 50, 20, key=_wkey(key_prefix, "fi_topk", record)
+    )
+    st.plotly_chart(
+        feature_importance_bar(fc["feature_importances"], top_k=top_k),
+        width="stretch",
+        key=_wkey(key_prefix, "fi_chart", record),
     )
 
-    col1, col2 = st.columns(2)
-    with col1:
-        st.plotly_chart(
-            _bar_chart(
-                summary_df,
-                "dataset",
-                "clf_auc",
-                "clf_auc_std",
-                "Failure Classifier AUC",
-                "#636EFA",
-            ),
-            use_container_width=True,
-        )
-    with col2:
-        st.plotly_chart(
-            _bar_chart(
-                summary_df,
-                "dataset",
-                "nn_f1_macro",
-                None,
-                "NN Classifier Macro-F1",
-                "#EF553B",
-            ),
-            use_container_width=True,
-        )
 
-    # ── Table 2 — NN aggregated metrics ───────────────────────────────────────
-    st.subheader("Neural Network — aggregated metrics")
-    nn_metrics_df = _build_nn_metrics_df(vdata_ov)
-    nn_fmt = {c: "{:.3f}" for c in nn_metrics_df.columns if c != "dataset"}
-    st.dataframe(
-        _stripe_rows(nn_metrics_df.style.format(nn_fmt, na_rep="—")),
-        use_container_width=True,
-        hide_index=True,
+def panel_feature_distribution(
+    record: ExperimentRecord, detail: ExperimentDetail, key_prefix: str = "drill"
+) -> None:
+    st.markdown("**Feature distribution across clusters**")
+    cdf = detail.cluster_summary
+    if cdf is None or cdf.empty:
+        st.caption("No cluster_summary.json for this run.")
+        return
+    candidates = [c for c in cdf.columns if c not in CLUSTER_NON_FEATURE_COLS]
+    if not candidates:
+        st.caption("No complexity features in cluster_summary.")
+        return
+    default = "p5_silhouette" if "p5_silhouette" in candidates else candidates[0]
+    feature = st.selectbox(
+        "Feature",
+        candidates,
+        index=candidates.index(default),
+        key=_wkey(key_prefix, "fd_feat", record),
+    )
+    fig = px.violin(
+        cdf.dropna(subset=[feature]),
+        y=feature,
+        box=True,
+        points="all",
+        color="is_failed" if "is_failed" in cdf.columns else None,
+        color_discrete_map={True: "#d62728", False: "#1f77b4"},
+    )
+    fig.update_layout(height=380, yaxis_title=feature)
+    st.plotly_chart(fig, width="stretch", key=_wkey(key_prefix, "fd_chart", record))
+    png_name = f"summary/global/{feature}.png"
+    render_figure_if_present(record, png_name, png_name)
+
+
+def panel_complexity_vs_failure(
+    record: ExperimentRecord, detail: ExperimentDetail, key_prefix: str = "drill"
+) -> None:
+    st.markdown("**Complexity feature → failure rate**")
+    cdf = detail.cluster_summary
+    if cdf is None or cdf.empty or "failure_rate" not in cdf.columns:
+        st.caption("Need cluster_summary with `failure_rate`.")
+        return
+    candidates = [c for c in cdf.columns if c not in CLUSTER_NON_FEATURE_COLS]
+    default = "p5_silhouette" if "p5_silhouette" in candidates else candidates[0]
+    feature = st.selectbox(
+        "X axis",
+        candidates,
+        index=candidates.index(default),
+        key=_wkey(key_prefix, "sc_feat", record),
+    )
+    st.plotly_chart(
+        complexity_vs_failure_scatter(cdf, feature),
+        width="stretch",
+        key=_wkey(key_prefix, "sc_chart", record),
+    )
+    render_figure_if_present(
+        record, "summary/failure_rate_strip_box.png", "summary/failure_rate_strip_box.png"
     )
 
-    # ── Table 3 — Failure Classifier aggregated metrics ───────────────────────
-    st.subheader("Failure Classifier — aggregated metrics")
-    fc_metrics_df = _build_fc_metrics_df(vdata_ov)
-    fc_float_cols = [
+
+def panel_failure_rate_distribution(
+    record: ExperimentRecord, detail: ExperimentDetail, key_prefix: str = "drill"
+) -> None:
+    st.markdown("**Failure rate distribution**")
+    cdf = detail.cluster_summary
+    if cdf is None or cdf.empty or "failure_rate" not in cdf.columns:
+        st.caption("No cluster_summary with `failure_rate`.")
+        return
+    label_map = detail.df_meta.get("label_mapping") or {}
+    st.plotly_chart(
+        failure_rate_strip(cdf, label_map),
+        width="stretch",
+        key=_wkey(key_prefix, "fr_chart", record),
+    )
+    render_figure_if_present(
+        record, "summary/rf_prediction_strip_box.png", "summary/rf_prediction_strip_box.png"
+    )
+
+
+def panel_per_class_breakdown(
+    record: ExperimentRecord, detail: ExperimentDetail, key_prefix: str = "drill"
+) -> None:
+    st.markdown("**Per-class breakdown**")
+    if detail.testing is None:
+        st.caption("No `summary.json` for per-class metrics.")
+        return
+    f1 = detail.testing.get("f1_per_class") or []
+    prec = detail.testing.get("precision_per_class") or []
+    rec = detail.testing.get("recall_per_class") or []
+    label_map = detail.df_meta.get("label_mapping") or {}
+    classes = [label_map.get(str(i), str(i)) for i in range(len(f1))]
+    st.plotly_chart(
+        per_class_bar_fig(classes=classes, f1=f1, precision=prec, recall=rec),
+        width="stretch",
+        key=_wkey(key_prefix, "pc_chart", record),
+    )
+
+
+def panel_cluster_table(
+    record: ExperimentRecord, detail: ExperimentDetail, key_prefix: str = "drill"
+) -> None:
+    st.markdown("**Cluster table** (sorted by failure rate desc)")
+    cdf = detail.cluster_summary
+    if cdf is None or cdf.empty:
+        st.caption("No cluster_summary.json.")
+        return
+    label_map = detail.df_meta.get("label_mapping") or {}
+    show_cols = ["cluster_id", "cluster_class", "failure_rate", "is_failed", "is_noise_cluster"]
+    show_cols += [c for c in ["p5_silhouette", "frac_at_risk", "f1_class_min", "n1_class_max"] if c in cdf.columns]
+    view = cdf[[c for c in show_cols if c in cdf.columns]].copy()
+    if "cluster_class" in view.columns:
+        view["class_name"] = view["cluster_class"].map(lambda c: label_map.get(str(int(c)), str(int(c))))
+    st.dataframe(
+        view, width="stretch", hide_index=True, key=_wkey(key_prefix, "cluster_tbl", record)
+    )
+    render_figure_if_present(
+        record, "summary/cluster_risk_heatmap.png", "summary/cluster_risk_heatmap.png"
+    )
+
+
+def panel_sibling_classifiers(
+    record: ExperimentRecord,
+    all_records: list[ExperimentRecord],
+    key_prefix: str = "drill",
+) -> None:
+    st.markdown(f"**Other classifiers on {record.file_name} (seed {record.seed})**")
+    siblings = [
+        r
+        for r in all_records
+        if r.variant == record.variant and r.file_name == record.file_name and r.seed == record.seed
+    ]
+    df = records_to_df(siblings)
+    if df.empty:
+        st.caption("No sibling classifiers found.")
+        return
+    view_cols = [
+        "classifier",
+        "family",
+        "accuracy",
+        "f1_macro",
+        "f1_weighted",
         "precision_macro",
         "recall_macro",
-        "f1_macro",
-        "precision_weighted",
-        "recall_weighted",
-        "f1_weighted",
+        "fc_f1",
+        "fc_auc",
     ]
-    fc_fmt = {c: "{:.3f}" for c in fc_float_cols}
-    fc_fmt.update({"TP": "{:.0f}", "FP": "{:.0f}", "TN": "{:.0f}", "FN": "{:.0f}"})
+    view = df[view_cols].sort_values("f1_macro", ascending=False, na_position="last")
+    styled = view.style.highlight_max(
+        subset=[c for c in ["accuracy", "f1_macro", "f1_weighted", "fc_f1", "fc_auc"] if c in view.columns],
+        color="rgba(46, 160, 67, 0.25)",
+    ).format({c: "{:.4f}" for c in view.columns if view[c].dtype.kind == "f"}, na_rep="—")
     st.dataframe(
-        _stripe_rows(fc_metrics_df.style.format(fc_fmt, na_rep="—")),
-        use_container_width=True,
-        hide_index=True,
+        styled, width="stretch", hide_index=True, key=_wkey(key_prefix, "siblings_tbl", record)
     )
 
-# ══════════════════════════ TAB 2 — DRILL-DOWN ════════════════════════════════
 
-with tab_drilldown:
-    col_v, col_d = st.columns([1, 3])
-    with col_v:
-        variant_dd = st.selectbox("Variant", variants, key="dd_variant")
-    with col_d:
-        datasets_dd = list(all_data[variant_dd].keys())
-        ds_sel = st.selectbox(
-            "Dataset", datasets_dd, format_func=_dataset_label, key="dd_dataset"
-        )
+def panel_training_curve(record: ExperimentRecord) -> None:
+    st.markdown("**Training curve (DL)**")
+    if not render_figure_if_present(record, "training/loss_curve.png", "training/loss_curve.png"):
+        st.caption("Training figure not produced for this run.")
 
-    exp = all_data[variant_dd][ds_sel]
-    testing = exp.get("testing") or {}
-    clf = exp.get("classifier") or {}
-    cdf: pd.DataFrame | None = exp.get("clusters_df")
-    meta = exp.get("meta") or {}
-    predictions = exp.get("predictions") or {}
-    label_map: dict = meta.get("label_mapping", {})
 
-    # ── Panel A — NN Test Performance ─────────────────────────────────────────
-    st.divider()
-    st.subheader("Neural Network Test Performance")
+def panel_grid_search(record: ExperimentRecord, detail: ExperimentDetail) -> None:
+    st.markdown("**Grid search (ML)**")
+    if not detail.grid_search:
+        st.caption("Grid search not run for this classifier.")
+        return
+    st.json(detail.grid_search, expanded=False)
 
-    if testing:
-        n_classes = len(testing.get("f1_per_class", []))
-        class_labels = [label_map.get(str(i), str(i)) for i in range(n_classes)]
 
-        per_class_df = pd.DataFrame(
-            {
-                "class": class_labels,
-                "precision": testing.get("precision_per_class", []),
-                "recall": testing.get("recall_per_class", []),
-                "f1": testing.get("f1_per_class", []),
-            }
-        )
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            fig = px.bar(
-                per_class_df.melt(
-                    id_vars="class", value_vars=["precision", "recall", "f1"]
-                ),
-                x="class",
-                y="value",
-                color="variable",
-                barmode="group",
-                title="Per-class Precision / Recall / F1",
-                labels={"value": "Score", "variable": "Metric", "class": "Class"},
-                color_discrete_map={
-                    "precision": "#636EFA",
-                    "recall": "#EF553B",
-                    "f1": "#00CC96",
-                },
-            )
-            fig.update_layout(height=380)
-            fig.update_xaxes(tickangle=-30)
-            st.plotly_chart(fig, use_container_width=True)
-        with col2:
-            st.metric("Accuracy", f"{testing.get('accuracy') or 0:.3f}")
-            st.metric("Macro F1", f"{testing.get('f1_macro') or 0:.3f}")
-            st.metric("Weighted F1", f"{testing.get('f1_weighted') or 0:.3f}")
+# ══════════════════════════════ Tabs ═════════════════════════════════════════
 
-        with st.expander("Compare with other datasets"):
-            _odss_all = [d for d in datasets_dd if d != ds_sel]
-            _odss = st.multiselect(
-                "Datasets", _odss_all, default=_odss_all, key="cmp_ds_a"
-            )
-            if _odss:
-                _ccols = st.columns(min(3, len(_odss)))
-                for _i, _ods in enumerate(_odss):
-                    _ot = all_data[variant_dd][_ods].get("testing") or {}
-                    _om = all_data[variant_dd][_ods].get("meta") or {}
-                    _olm = _om.get("label_mapping", {})
-                    _n = len(_ot.get("f1_per_class", []))
-                    with _ccols[_i % len(_ccols)]:
-                        if _n:
-                            _cpd = pd.DataFrame(
-                                {
-                                    "class": [
-                                        _olm.get(str(j), str(j)) for j in range(_n)
-                                    ],
-                                    "precision": _ot.get("precision_per_class", []),
-                                    "recall": _ot.get("recall_per_class", []),
-                                    "f1": _ot.get("f1_per_class", []),
-                                }
-                            )
-                            _fig = px.bar(
-                                _cpd.melt(
-                                    id_vars="class",
-                                    value_vars=["precision", "recall", "f1"],
-                                ),
-                                x="class",
-                                y="value",
-                                color="variable",
-                                barmode="group",
-                                title=_dataset_label(_ods),
-                                color_discrete_map={
-                                    "precision": "#636EFA",
-                                    "recall": "#EF553B",
-                                    "f1": "#00CC96",
-                                },
-                            )
-                            _fig.update_layout(height=260, showlegend=(_i == 0))
-                            _fig.update_xaxes(tickangle=-30)
-                            st.plotly_chart(_fig, use_container_width=True)
-                        else:
-                            st.caption(f"{_dataset_label(_ods)}: no data")
-    else:
-        st.info("No `testing/summary.json` found for this experiment.")
 
-    # ── Panel B — Failure Classifier ──────────────────────────────────────────
-    st.divider()
-    st.subheader("Failure Classifier")
+def render_overview(
+    records: list[ExperimentRecord],
+    selected_variants: list[str],
+    seed: int,
+    metric: str,
+) -> None:
+    if not selected_variants:
+        st.info("Pick at least one variant in the sidebar.")
+        return
 
-    if clf:
-        col1, col2, col3 = st.columns([2, 2, 1])
+    metric_label = HEATMAP_METRICS[metric]
+    for variant in selected_variants:
+        rs = filter_records(records, variants=[variant], seed=seed)
+        if not rs:
+            st.warning(f"No records for variant `{variant}` at seed {seed}.")
+            continue
 
-        with col1:
-            roc = clf.get("roc_curve_data", {})
-            if roc:
-                fig = go.Figure()
-                fig.add_scatter(
-                    x=roc["fpr"],
-                    y=roc["tpr"],
-                    mode="lines",
-                    name=f"ROC (AUC={clf.get('roc_auc') or 0:.3f})",
-                    line=dict(color="#636EFA", width=2),
-                )
-                fig.add_scatter(
-                    x=[0, 1],
-                    y=[0, 1],
-                    mode="lines",
-                    line=dict(color="gray", dash="dash"),
-                    name="Random",
-                )
-                fig.update_layout(
-                    title="ROC Curve",
-                    xaxis_title="False Positive Rate",
-                    yaxis_title="True Positive Rate",
-                    height=350,
-                )
-                st.plotly_chart(fig, use_container_width=True)
+        df = records_to_df(rs)
+        all_datasets = sorted(df["dataset"].unique())
+        all_classifiers = sorted(df["classifier"].unique())
+        pivot = df.pivot_table(index="dataset", columns="classifier", values=metric, aggfunc="first")
+        pivot = pivot.reindex(index=all_datasets, columns=all_classifiers)
 
-        with col2:
-            cm = clf.get("confusion_matrix")
-            if cm:
-                fig = _confusion_matrix_fig(cm, labels=["Correct", "Failed"])
-                fig.update_layout(title="Confusion Matrix (OOF predictions)")
-                st.plotly_chart(fig, use_container_width=True)
-
-        with col3:
-            auc = clf.get("roc_auc") or 0
-            auc_std = clf.get("roc_auc_std") or 0
-            f1 = clf.get("f1_score") or 0
-            f1_std = clf.get("f1_score_std") or 0
-            st.metric("AUC", f"{auc:.3f}", delta=f"±{auc_std:.3f}")
-            st.metric("F1", f"{f1:.3f}", delta=f"±{f1_std:.3f}")
-            folds = clf.get("f1_scores_per_fold", [])
-            if folds:
-                st.caption("F1 per fold")
-                for i, v in enumerate(folds):
-                    st.caption(f"  fold {i+1}: {v:.3f}")
-
-        with st.expander("Compare with other datasets"):
-            _odss_all = [d for d in datasets_dd if d != ds_sel]
-            _odss = st.multiselect(
-                "Datasets", _odss_all, default=_odss_all, key="cmp_ds_b"
-            )
-            if _odss:
-                _ccols = st.columns(min(3, len(_odss)))
-                for _i, _ods in enumerate(_odss):
-                    _oc = all_data[variant_dd][_ods].get("classifier") or {}
-                    _or = _oc.get("roc_curve_data", {})
-                    _cm = _oc.get("confusion_matrix")
-                    with _ccols[_i % len(_ccols)]:
-                        if _or or _cm:
-                            st.caption(_dataset_label(_ods))
-                            if _or:
-                                _fig = go.Figure()
-                                _fig.add_scatter(
-                                    x=_or["fpr"],
-                                    y=_or["tpr"],
-                                    mode="lines",
-                                    name=f"AUC={_oc.get('roc_auc') or 0:.3f}",
-                                    line=dict(color="#636EFA", width=2),
-                                )
-                                _fig.add_scatter(
-                                    x=[0, 1],
-                                    y=[0, 1],
-                                    mode="lines",
-                                    line=dict(color="gray", dash="dash"),
-                                    showlegend=False,
-                                )
-                                _fig.update_layout(
-                                    title="ROC",
-                                    xaxis_title="FPR",
-                                    yaxis_title="TPR",
-                                    height=240,
-                                    showlegend=True,
-                                )
-                                st.plotly_chart(_fig, use_container_width=True)
-                            if _cm:
-                                _fig2 = _confusion_matrix_fig(
-                                    _cm, labels=["Correct", "Failed"]
-                                )
-                                _fig2.update_layout(
-                                    title="Confusion Matrix", height=220
-                                )
-                                st.plotly_chart(_fig2, use_container_width=True)
-                        else:
-                            st.caption(f"{_dataset_label(_ods)}: no data")
-    else:
-        st.info("No `classifier_results.json` found for this experiment.")
-
-    # ── Panel C — Feature Importances ─────────────────────────────────────────
-    st.divider()
-    st.subheader("Complexity Feature Importances")
-
-    fi = (clf or {}).get("feature_importances")
-    if fi:
-        fi_df = pd.DataFrame(
-            {"feature": list(fi.keys()), "importance": list(fi.values())}
-        ).sort_values("importance", ascending=True)
-        eps = max(fi_df["importance"].max() * 0.02, 1e-4)
-
-        fig_c = go.Figure()
-        fig_c.add_trace(
-            go.Bar(
-                x=fi_df["importance"].tolist(),
-                y=fi_df["feature"].tolist(),
-                orientation="h",
-                base=-eps,
-                marker=dict(
-                    color=fi_df["importance"].tolist(),
-                    colorscale="Blues",
-                    colorbar=dict(title="Importance", thickness=12, len=0.7),
-                ),
-                hovertemplate="<b>%{y}</b><br>Importance: %{x:.4f}<extra></extra>",
-                name="",
-            )
-        )
-        fig_c.update_layout(
-            title="Feature Importances",
-            xaxis_range=[-eps * 2, fi_df["importance"].max() * 1.1],
-            height=max(450, len(fi_df) * 22),
-            showlegend=False,
-        )
-        st.plotly_chart(fig_c, use_container_width=True)
-
-        with st.expander("Compare with other datasets"):
-            _odss_all = [d for d in datasets_dd if d != ds_sel]
-            _odss = st.multiselect(
-                "Datasets", _odss_all, default=_odss_all, key="cmp_ds_c"
-            )
-            if _odss:
-                _ccols = st.columns(min(3, len(_odss)))
-                for _i, _ods in enumerate(_odss):
-                    _ofi = (all_data[variant_dd][_ods].get("classifier") or {}).get(
-                        "feature_importances"
-                    ) or {}
-                    with _ccols[_i % len(_ccols)]:
-                        if _ofi:
-                            _cfi = pd.DataFrame(
-                                {
-                                    "feature": list(_ofi.keys()),
-                                    "importance": list(_ofi.values()),
-                                }
-                            ).sort_values("importance", ascending=True)
-                            _ceps = max(_cfi["importance"].max() * 0.02, 1e-4)
-                            _fig = go.Figure(
-                                go.Bar(
-                                    x=_cfi["importance"].tolist(),
-                                    y=_cfi["feature"].tolist(),
-                                    orientation="h",
-                                    base=-_ceps,
-                                    marker=dict(
-                                        color=_cfi["importance"].tolist(),
-                                        colorscale="Blues",
-                                    ),
-                                )
-                            )
-                            _fig.update_layout(
-                                title=_dataset_label(_ods),
-                                xaxis_range=[
-                                    -_ceps * 2,
-                                    _cfi["importance"].max() * 1.1,
-                                ],
-                                height=max(250, len(_cfi) * 15),
-                                showlegend=False,
-                            )
-                            st.plotly_chart(_fig, use_container_width=True)
-                        else:
-                            st.caption(f"{_dataset_label(_ods)}: no data")
-    else:
-        st.info("Feature importances not available.")
-
-    # ── Feature Distribution by Outcome ───────────────────────────────────────
-    st.divider()
-    st.subheader("Feature Distribution by Outcome")
-
-    if fi and cdf is not None:
-        _feat_opts = [
-            f for f in sorted(fi, key=fi.get, reverse=True) if f in cdf.columns
-        ]
-        if _feat_opts:
-            sel_violin_feat = st.selectbox("Feature", _feat_opts, key="violin_feat_sel")
-            _vdf = cdf.copy()
-            _vdf["status"] = _vdf["is_failed"].map({True: "Failed", False: "Correct"})
-            fig_violin = px.violin(
-                _vdf,
-                x="status",
-                y=sel_violin_feat,
-                color="status",
-                box=True,
-                points="all",
-                color_discrete_map={"Failed": "#EF553B", "Correct": "#636EFA"},
-                title=f"{sel_violin_feat} \u2014 distribution by cluster status",
-                labels={"status": "Status", sel_violin_feat: sel_violin_feat},
-            )
-            fig_violin.update_layout(height=380, showlegend=False)
-            st.plotly_chart(fig_violin, use_container_width=True)
-
-            with st.expander("Compare with other datasets"):
-                _odss_all = [d for d in datasets_dd if d != ds_sel]
-                _odss = st.multiselect(
-                    "Datasets", _odss_all, default=_odss_all, key="cmp_ds_v"
-                )
-                if _odss:
-                    _ccols = st.columns(min(3, len(_odss)))
-                    for _i, _ods in enumerate(_odss):
-                        _ocdf = all_data[variant_dd][_ods].get("clusters_df")
-                        with _ccols[_i % len(_ccols)]:
-                            if _ocdf is not None and sel_violin_feat in _ocdf.columns:
-                                _cvdf = _ocdf.copy()
-                                _cvdf["status"] = _cvdf["is_failed"].map(
-                                    {True: "Failed", False: "Correct"}
-                                )
-                                _fig = px.violin(
-                                    _cvdf,
-                                    x="status",
-                                    y=sel_violin_feat,
-                                    color="status",
-                                    box=True,
-                                    points="all",
-                                    color_discrete_map={
-                                        "Failed": "#EF553B",
-                                        "Correct": "#636EFA",
-                                    },
-                                    title=_dataset_label(_ods),
-                                )
-                                _fig.update_layout(height=280, showlegend=False)
-                                st.plotly_chart(_fig, use_container_width=True)
-                            else:
-                                st.caption(f"{_dataset_label(_ods)}: no data")
-    else:
-        st.info("No classifier results available for feature distribution.")
-
-    # ── Panel D — Per-cluster scatter ─────────────────────────────────────────
-    st.divider()
-    st.subheader("Complexity \u2192 Failure Rate")
-
-    if cdf is not None and not cdf.empty and "failure_rate" in cdf.columns:
-        feature_cols = sorted(
-            c
-            for c in cdf.columns
-            if c not in _NON_FEATURE_COLS and pd.api.types.is_numeric_dtype(cdf[c])
-        )
-
-        # default x: top feature importance if available, else frac_at_risk
-        default_x = "frac_at_risk"
-        if fi:
-            top_fi = [
-                k for k in sorted(fi, key=fi.get, reverse=True) if k in feature_cols
-            ]
-            if top_fi:
-                default_x = top_fi[0]
-
-        x_feat = st.selectbox(
-            "X axis — complexity feature",
-            feature_cols,
-            index=feature_cols.index(default_x) if default_x in feature_cols else 0,
-            key="scatter_x",
-        )
-
-        scatter_df = cdf.copy()
-        scatter_df["class_name"] = scatter_df["cluster_class"].map(
-            lambda c: _class_name(label_map, c)
-        )
-
-        oof_preds_d = (clf or {}).get("oof_predictions") or {}
-        scatter_df["rf_correct"] = scatter_df["cluster_id"].apply(
-            lambda cid: oof_preds_d.get(str(cid), float("nan"))
-        )
-        scatter_df["rf_label"] = scatter_df["rf_correct"].apply(
-            lambda v: (
-                "RF wrong" if v == 0.0 else ("RF correct" if v == 1.0 else "Not in OOF")
-            )
-        )
-
-        fig = px.scatter(
-            scatter_df,
-            x=x_feat,
-            y="failure_rate",
-            color="rf_label",
-            hover_data={"cluster_id": True, "class_name": True, "failure_rate": ":.3f"},
-            color_discrete_map={
-                "RF wrong": "#d62728",
-                "RF correct": "#aaaaaa",
-                "Not in OOF": "#cccccc",
-            },
-            title=f"{x_feat}  vs  Failure Rate per Cluster",
-            labels={"failure_rate": "Failure Rate", "rf_label": "RF prediction"},
-        )
-        fig.update_layout(height=420)
+        st.subheader(f"Variant: {variant}")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Datasets", len(all_datasets))
+        c2.metric("Classifiers", len(all_classifiers))
+        missing = int(pivot.isna().sum().sum())
+        c3.metric("Empty cells", missing)
 
         event = st.plotly_chart(
-            fig, use_container_width=True, on_select="rerun", key="scatter_d"
+            heatmap_fig(pivot, title=metric_label, metric_label=metric),
+            width="stretch",
+            key=f"heatmap_{variant}",
+            on_select="rerun",
+            selection_mode="points",
         )
 
-        # ── Panel D2 — Cluster detail on click ────────────────────────────────
-        selected_points = event.selection.points if event and event.selection else []
-        if selected_points:
-            pt_idx = selected_points[0].get("point_index")
-            if pt_idx is not None and pt_idx < len(scatter_df):
-                row = scatter_df.iloc[pt_idx]
-                cid = str(row["cluster_id"])
+        clicked = _heatmap_click_target(event, pivot, variant, rs)
+        if clicked is not None:
+            st.session_state["drill_target"] = clicked
+            st.toast(f"Drill-down armed → {clicked['variant']} · {clicked['dataset']} · {clicked['classifier']}")
 
-                with st.container(border=True):
-                    st.markdown(
-                        f"**Cluster {cid}** — class `{row['class_name']}` — "
-                        f"failure rate `{(row.get('failure_rate') or 0):.3f}` — "
-                        + ("❌ Failed" if row.get("is_failed") else "✅ Correct")
-                        + (" · noise cluster" if row.get("is_noise_cluster") else "")
-                    )
-
-                    # TP / FN membership
-                    cls_key = str(int(row["cluster_class"]))
-                    cls_preds = (predictions.get("classes") or {}).get(cls_key, {})
-                    tp_ids = {str(c) for c in cls_preds.get("cluster_in_tp", [])}
-                    fn_ids = {
-                        str(c)
-                        for pred_list in cls_preds.get("cluster_in_fn", {}).values()
-                        for c in pred_list
-                    }
-                    membership = []
-                    if cid in tp_ids:
-                        membership.append("✅ present in **TP** samples")
-                    if cid in fn_ids:
-                        membership.append("❌ present in **FN** samples")
-                    if membership:
-                        st.caption("Test set: " + "  |  ".join(membership))
-
-                    # complexity profile
-                    profile_vals = {
-                        c: row[c]
-                        for c in feature_cols
-                        if c in row.index and pd.notna(row[c])
-                    }
-                    profile_df = pd.DataFrame(
-                        {
-                            "feature": list(profile_vals.keys()),
-                            "value": list(profile_vals.values()),
-                        }
-                    ).sort_values("value")
-                    fig2 = px.bar(
-                        profile_df,
-                        x="value",
-                        y="feature",
-                        orientation="h",
-                        title=f"Cluster {cid} — Full Complexity Profile",
-                        color="value",
-                        color_continuous_scale="RdYlGn_r",
-                    )
-                    fig2.update_layout(
-                        height=max(300, len(profile_vals) * 14), showlegend=False
-                    )
-                    st.plotly_chart(fig2, use_container_width=True)
-
-        with st.expander("Compare with other datasets"):
-            _odss_all = [d for d in datasets_dd if d != ds_sel]
-            _odss = st.multiselect(
-                "Datasets", _odss_all, default=_odss_all, key="cmp_ds_d"
+        with st.expander("Show data", expanded=False):
+            st.dataframe(
+                pivot.style.background_gradient(cmap="viridis", vmin=0, vmax=1).format("{:.4f}", na_rep="—"),
+                width="stretch",
             )
-            if _odss:
-                _ccols = st.columns(min(3, len(_odss)))
-                for _i, _ods in enumerate(_odss):
-                    _ocdf = all_data[variant_dd][_ods].get("clusters_df")
-                    with _ccols[_i % len(_ccols)]:
-                        if (
-                            _ocdf is not None
-                            and x_feat in _ocdf.columns
-                            and "failure_rate" in _ocdf.columns
-                        ):
-                            _cscatter = _ocdf.copy()
-                            _ooof = (
-                                all_data[variant_dd][_ods].get("classifier") or {}
-                            ).get("oof_predictions") or {}
-                            _cscatter["rf_correct"] = _cscatter["cluster_id"].apply(
-                                lambda cid: _ooof.get(str(cid), float("nan"))
-                            )
-                            _cscatter["rf_label"] = _cscatter["rf_correct"].apply(
-                                lambda v: (
-                                    "RF wrong"
-                                    if v == 0.0
-                                    else ("RF correct" if v == 1.0 else "Not in OOF")
-                                )
-                            )
-                            _fig = px.scatter(
-                                _cscatter,
-                                x=x_feat,
-                                y="failure_rate",
-                                color="rf_label",
-                                color_discrete_map={
-                                    "RF wrong": "#d62728",
-                                    "RF correct": "#aaaaaa",
-                                    "Not in OOF": "#cccccc",
-                                },
-                                title=_dataset_label(_ods),
-                                labels={"failure_rate": "Failure Rate"},
-                            )
-                            _fig.update_layout(height=260, showlegend=False)
-                            st.plotly_chart(_fig, use_container_width=True)
-                        else:
-                            st.caption(f"{_dataset_label(_ods)}: no data")
-    else:
-        st.info("No `cluster_summary.json` found for this experiment.")
 
-    # ── Panel E — Failure rate distribution ───────────────────────────────────
-    st.divider()
-    st.subheader("Failure Rate Distribution")
 
-    if cdf is not None and "failure_rate" in cdf.columns and "is_failed" in cdf.columns:
-        hist_df = cdf.copy()
-        hist_df["status"] = hist_df["is_failed"].map({True: "Failed", False: "Correct"})
-        fig = px.histogram(
-            hist_df,
-            x="failure_rate",
-            color="status",
-            nbins=30,
-            barmode="overlay",
-            opacity=0.75,
-            color_discrete_map={"Failed": "#EF553B", "Correct": "#636EFA"},
-            title="Distribution of Cluster Failure Rates",
-            labels={"failure_rate": "Failure Rate", "status": "Status"},
+def _heatmap_click_target(
+    event: Any,
+    pivot: pd.DataFrame,
+    variant: str,
+    records: list[ExperimentRecord],
+) -> dict | None:
+    """Extract (variant, dataset, classifier) from a plotly_chart selection event."""
+    try:
+        selection = event.selection  # type: ignore[attr-defined]
+        points = selection.get("points") if isinstance(selection, dict) else None
+        if not points:
+            return None
+        p = points[0]
+        dataset = pivot.index[int(p["y"])] if isinstance(p.get("y"), (int, np.integer)) else p.get("y")
+        classifier = (
+            pivot.columns[int(p["x"])] if isinstance(p.get("x"), (int, np.integer)) else p.get("x")
         )
-        fig.update_layout(height=320)
-        st.plotly_chart(fig, use_container_width=True)
-
-        with st.expander("Compare with other datasets"):
-            _odss_all = [d for d in datasets_dd if d != ds_sel]
-            _odss = st.multiselect(
-                "Datasets", _odss_all, default=_odss_all, key="cmp_ds_e"
-            )
-            if _odss:
-                _ccols = st.columns(min(3, len(_odss)))
-                for _i, _ods in enumerate(_odss):
-                    _ocdf = all_data[variant_dd][_ods].get("clusters_df")
-                    with _ccols[_i % len(_ccols)]:
-                        if _ocdf is not None and "failure_rate" in _ocdf.columns:
-                            _chist = _ocdf.copy()
-                            _chist["status"] = _chist["is_failed"].map(
-                                {True: "Failed", False: "Correct"}
-                            )
-                            _fig = px.histogram(
-                                _chist,
-                                x="failure_rate",
-                                color="status",
-                                nbins=20,
-                                barmode="overlay",
-                                opacity=0.75,
-                                color_discrete_map={
-                                    "Failed": "#EF553B",
-                                    "Correct": "#636EFA",
-                                },
-                                title=_dataset_label(_ods),
-                            )
-                            _fig.update_layout(height=240, showlegend=False)
-                            st.plotly_chart(_fig, use_container_width=True)
-                        else:
-                            st.caption(f"{_dataset_label(_ods)}: no data")
-
-    # ── Panel F — Per-class cluster breakdown ─────────────────────────────────
-    st.divider()
-    st.subheader("Failure Rate per Class")
-
-    if (
-        cdf is not None
-        and "cluster_class" in cdf.columns
-        and "failure_rate" in cdf.columns
-    ):
-        cls_df = cdf.copy()
-        cls_df["class_name"] = cls_df["cluster_class"].map(
-            lambda c: _class_name(label_map, c)
+        if dataset is None or classifier is None:
+            return None
+        match = next(
+            (r for r in records if r.file_name == dataset and r.classifier == classifier),
+            None,
         )
+        if match is None:
+            return None
+        return {"variant": variant, "dataset": match.file_name, "classifier": classifier, "key": match.key}
+    except (AttributeError, KeyError, IndexError, ValueError, TypeError):
+        return None
 
-        oof_preds_f = (clf or {}).get("oof_predictions") or {}
-        st.plotly_chart(
-            _strip_box_fig(cls_df, label_map, oof_preds_f),
-            use_container_width=True,
-        )
 
-        with st.expander("Compare with other datasets"):
-            _odss_all = [d for d in datasets_dd if d != ds_sel]
-            _odss = st.multiselect(
-                "Datasets", _odss_all, default=_odss_all, key="cmp_ds_f"
-            )
-            if _odss:
-                _ccols = st.columns(min(3, len(_odss)))
-                for _i, _ods in enumerate(_odss):
-                    _oexp = all_data[variant_dd][_ods]
-                    _ocdf = _oexp.get("clusters_df")
-                    _olm = (_oexp.get("meta") or {}).get("label_mapping", {})
-                    _ooof = (_oexp.get("classifier") or {}).get("oof_predictions") or {}
-                    with _ccols[_i % len(_ccols)]:
-                        if _ocdf is not None and "cluster_class" in _ocdf.columns:
-                            _ccls = _ocdf.copy()
-                            _ccls["class_name"] = _ccls["cluster_class"].map(
-                                lambda c: _class_name(_olm, c)
-                            )
-                            _fig = _strip_box_fig(_ccls, _olm, _ooof)
-                            _fig.update_layout(title=_dataset_label(_ods), height=280)
-                            st.plotly_chart(_fig, use_container_width=True)
-                        else:
-                            st.caption(f"{_dataset_label(_ods)}: no data")
+def render_drilldown(records: list[ExperimentRecord], seed: int) -> None:
+    if not records:
+        st.info("No records to drill into.")
+        return
 
-    # ── Panel G — Cluster table ────────────────────────────────────────────────
+    target = st.session_state.get("drill_target")
+    variants = sorted({r.variant for r in records})
+    pre_variant = target["variant"] if target and target["variant"] in variants else variants[0]
+
+    col_v, col_d, col_c = st.columns(3)
+    variant = col_v.selectbox("Variant", variants, index=variants.index(pre_variant), key="dd_variant")
+
+    rs_v = filter_records(records, variants=[variant], seed=seed)
+    datasets = sorted({r.file_name for r in rs_v})
+    if not datasets:
+        st.warning("No datasets for this variant at the selected seed.")
+        return
+    pre_dataset = target["dataset"] if target and target.get("dataset") in datasets else datasets[0]
+    dataset = col_d.selectbox("Dataset", datasets, index=datasets.index(pre_dataset), key="dd_dataset")
+
+    rs_vd = filter_records(rs_v, datasets=[dataset])
+    classifiers = sorted({r.classifier for r in rs_vd})
+    if not classifiers:
+        st.warning("No classifier for this (variant, dataset, seed).")
+        return
+    pre_clf = target["classifier"] if target and target.get("classifier") in classifiers else classifiers[0]
+    classifier = col_c.selectbox("Classifier", classifiers, index=classifiers.index(pre_clf), key="dd_classifier")
+
+    record = next(r for r in rs_vd if r.classifier == classifier)
+    detail = load_experiment_detail(str(record.root), str(record.shared))
+
+    st.caption(f"`{record.root}` · family `{record.family}` · seed `{record.seed}`")
+
+    # Pair the panels into rows. One st.columns(2) per row keeps left/right
+    # aligned at the top of each row, even if the panels above had unequal
+    # heights. Pairs are picked so the two panels in each row carry roughly the
+    # same content (metrics+image, plotly+plotly, scatter+strip, plotly+plotly).
+    row_pairs = [
+        (panel_test_performance, panel_confusion_matrix),
+        (panel_failure_classifier, panel_feature_importances),
+        (panel_complexity_vs_failure, panel_failure_rate_distribution),
+        (panel_per_class_breakdown, panel_feature_distribution),
+    ]
+    for left_panel, right_panel in row_pairs:
+        left, right = st.columns(2, gap="medium")
+        with left:
+            with st.container(border=True):
+                left_panel(record, detail)
+        with right:
+            with st.container(border=True):
+                right_panel(record, detail)
+
     st.divider()
-    st.subheader("Cluster Table")
+    with st.container(border=True):
+        panel_sibling_classifiers(record, records)
 
-    if cdf is not None and not cdf.empty:
-        # order features by importance if available
-        if fi:
-            ordered_feats = [
-                f for f in sorted(fi, key=fi.get, reverse=True) if f in cdf.columns
-            ]
+    st.divider()
+    with st.container(border=True):
+        if record.family == "dl":
+            panel_training_curve(record)
         else:
-            ordered_feats = [c for c in cdf.columns if c not in _NON_FEATURE_COLS]
+            panel_grid_search(record, detail)
 
-        top_n = st.slider(
-            "Top-N complexity features", 5, min(30, len(ordered_feats)), 10, key="topn"
-        )
+    st.divider()
+    with st.container(border=True):
+        panel_cluster_table(record, detail)
 
-        table_df = cdf[["cluster_id", "cluster_class"]].copy()
-        table_df.insert(
-            1,
-            "class_name",
-            cdf["cluster_class"].map(lambda c: _class_name(label_map, c)),
-        )
-        for col in ordered_feats[:top_n]:
-            table_df[col] = cdf[col]
-        table_df["failure_rate"] = cdf["failure_rate"]
-        table_df["is_failed"] = cdf["is_failed"]
 
-        num_fmt = {c: "{:.4f}" for c in ordered_feats[:top_n]}
-        num_fmt["failure_rate"] = "{:.3f}"
+def render_side_by_side(records: list[ExperimentRecord], seed: int) -> None:
+    rs = [r for r in records if r.seed == seed]
+    if not rs:
+        st.info("No records at the selected seed.")
+        return
+    options = {r.key: r.label for r in rs}
+    selected_keys = st.multiselect(
+        "Pick 2–4 experiments to compare",
+        options=list(options.keys()),
+        format_func=lambda k: options[k],
+        max_selections=4,
+        key="sbs_keys",
+    )
+    if len(selected_keys) < 2:
+        st.caption("Select at least two experiments to start comparing.")
+        return
 
-        search_cid = st.text_input(
-            "Search cluster ID", value="", key="g_search_cid"
-        ).strip()
-        if search_cid:
-            _match = table_df[table_df["cluster_id"].astype(str) == search_cid]
-            if not _match.empty:
-                with st.container(border=True):
-                    st.markdown(f"**Cluster {search_cid}**")
-                    st.dataframe(
-                        _stripe_rows(_match.style.format(num_fmt, na_rep="—")),
-                        use_container_width=True,
-                        hide_index=True,
-                    )
-                _rest = table_df[table_df["cluster_id"].astype(str) != search_cid]
-                table_df = pd.concat([_match, _rest], ignore_index=True)
-            else:
-                st.warning(f"Cluster ID `{search_cid}` not found.")
+    selected = [find_record(records, k) for k in selected_keys]
+    selected = [r for r in selected if r is not None]
+    details = [load_experiment_detail(str(r.root), str(r.shared)) for r in selected]
 
-        st.dataframe(
-            _stripe_rows(table_df.style.format(num_fmt, na_rep="—")),
-            use_container_width=True,
-            hide_index=True,
-        )
+    cols = st.columns(len(selected))
+    for i, (col, record, detail) in enumerate(zip(cols, selected, details)):
+        prefix = f"sbs{i}"
+        with col:
+            st.markdown(f"### {record.label}")
+            st.caption(f"family `{record.family}` · seed `{record.seed}`")
+            panel_test_performance(record, detail, key_prefix=prefix)
+            panel_confusion_matrix(record, detail, key_prefix=prefix)
+            panel_failure_classifier(record, detail, key_prefix=prefix)
+            panel_per_class_breakdown(record, detail, key_prefix=prefix)
+            st.divider()
+            panel_cluster_table(record, detail, key_prefix=prefix)
 
-        oof_preds_g = (clf or {}).get("oof_predictions") or {}
-        rf_failed_ids = {cid for cid, val in oof_preds_g.items() if val == 0}
-        if rf_failed_ids:
-            rf_failed_df = table_df[
-                table_df["cluster_id"].astype(str).isin(rf_failed_ids)
-            ]
-            if not rf_failed_df.empty:
-                st.markdown("**RF failed clusters**")
-                st.dataframe(
-                    _stripe_rows(
-                        rf_failed_df.reset_index(drop=True).style.format(
-                            num_fmt, na_rep="—"
-                        )
-                    ),
-                    use_container_width=True,
-                    hide_index=True,
-                )
 
-# ══════════════════════════ TAB 3 — VARIANT COMPARISON ════════════════════════
+def render_gallery(records: list[ExperimentRecord], seed: int) -> None:
+    rs = [r for r in records if r.seed == seed]
+    if not rs:
+        st.info("No records at the selected seed.")
+        return
 
-with tab_comparison:
-    st.subheader("Variant Comparison")
+    col_v, col_d, col_c, col_cat = st.columns([1, 1, 1, 1])
+    variants = sorted({r.variant for r in rs})
+    variant = col_v.selectbox("Variant", variants, key="gal_variant")
+    rs_v = [r for r in rs if r.variant == variant]
+    datasets = sorted({r.file_name for r in rs_v})
+    dataset = col_d.selectbox("Dataset", datasets, key="gal_dataset")
+    rs_vd = [r for r in rs_v if r.file_name == dataset]
+    classifiers = sorted({r.classifier for r in rs_vd})
+    if not classifiers:
+        st.warning("No classifier outputs for this selection.")
+        return
+    classifier = col_c.selectbox("Classifier", classifiers, key="gal_classifier")
+    category = col_cat.selectbox("Category", ["all", *GALLERY_CATEGORIES], key="gal_category")
 
-    if len(variants) < 2:
-        st.info("Only one variant found — nothing to compare.")
+    record = next(r for r in rs_vd if r.classifier == classifier)
+    figures = load_figure_index(str(record.root))
+    if not figures:
+        st.info(f"No PNGs under `{record.root / 'figures'}`.")
+        return
+
+    if category != "all":
+        figures = {rel: abs_ for rel, abs_ in figures.items() if rel.startswith(category + "/") or rel == category + ".png"}
+
+    if not figures:
+        st.info(f"No PNGs matching category `{category}`.")
+        return
+
+    st.caption(f"{len(figures)} figure(s) in `{record.root.name}/figures/`")
+    rels = sorted(figures.keys())
+    for i in range(0, len(rels), 3):
+        cols = st.columns(3)
+        for col, rel in zip(cols, rels[i : i + 3]):
+            with col:
+                st.image(figures[rel], caption=rel, width="stretch")
+
+
+# ══════════════════════════════ Sidebar ══════════════════════════════════════
+
+
+def render_sidebar(records: list[ExperimentRecord], n_skipped: int) -> tuple[str, list[str], int, str]:
+    st.sidebar.title("Filters")
+
+    root = st.sidebar.text_input("Experiments root", value=EXPERIMENTS_ROOT_DEFAULT)
+
+    variants = sorted({r.variant for r in records})
+    selected_variants = st.sidebar.multiselect("Variants", variants, default=variants, key="sb_variants")
+
+    seeds = sorted({r.seed for r in records if r.variant in selected_variants})
+    default_seed = 42 if 42 in seeds else (seeds[0] if seeds else 42)
+    if seeds:
+        seed = st.sidebar.selectbox("Seed", seeds, index=seeds.index(default_seed), key="sb_seed")
     else:
-        selected_variants = st.multiselect(
-            "Variants to compare", variants, default=variants, key="cmp_variants"
+        seed = default_seed
+        st.sidebar.warning("No seeds found.")
+
+    metric = st.sidebar.selectbox(
+        "Heatmap metric",
+        list(HEATMAP_METRICS.keys()),
+        format_func=lambda k: HEATMAP_METRICS[k],
+        index=0,
+        key="sb_metric",
+    )
+
+    st.sidebar.divider()
+    if st.sidebar.button("Refresh", width="stretch"):
+        st.cache_data.clear()
+        st.rerun()
+
+    with st.sidebar.expander("Debug", expanded=False):
+        st.write(f"Valid records: **{len(records)}**")
+        st.write(f"Legacy folders skipped: **{n_skipped}**")
+        st.write(f"Variants: {len(variants)} · Datasets: {len({r.file_name for r in records})}")
+
+    return root, selected_variants, seed, metric
+
+
+# ══════════════════════════════ Entrypoint ═══════════════════════════════════
+
+
+def main() -> None:
+    st.set_page_config(page_title="Intrusion Forge — Experiments", layout="wide")
+    st.title("Experiment Dashboard")
+
+    initial_root = EXPERIMENTS_ROOT_DEFAULT
+    records, n_skipped = discover_experiments(initial_root)
+
+    root, selected_variants, seed, metric = render_sidebar(records, n_skipped)
+
+    if root != initial_root:
+        records, n_skipped = discover_experiments(root)
+
+    if not records:
+        st.error(
+            "No valid experiments found. The dashboard probes for "
+            "`shared/df_meta.json` under each `<variant>/<dataset>_<seed>/`. "
+            f"Scanned root: `{root}`"
         )
+        st.stop()
 
-        if not selected_variants:
-            st.warning("Select at least one variant.")
-        else:
-            combined = pd.concat(
-                [
-                    _build_summary_df(all_data[v]).assign(variant=v)
-                    for v in selected_variants
-                ],
-                ignore_index=True,
-            )
+    tab_overview, tab_drill, tab_sbs, tab_gallery = st.tabs(
+        ["Overview", "Drill-Down", "Side-by-Side", "Gallery"]
+    )
 
-            col1, col2 = st.columns(2)
-            with col1:
-                fig = px.bar(
-                    combined,
-                    x="dataset",
-                    y="nn_f1_macro",
-                    color="variant",
-                    barmode="group",
-                    title="NN Macro-F1 by Variant",
-                    labels={"nn_f1_macro": "Macro F1", "dataset": "Dataset"},
-                )
-                fig.update_layout(height=380)
-                st.plotly_chart(fig, use_container_width=True)
+    with tab_overview:
+        render_overview(records, selected_variants, seed, metric)
+    with tab_drill:
+        render_drilldown(filter_records(records, variants=selected_variants), seed)
+    with tab_sbs:
+        render_side_by_side(filter_records(records, variants=selected_variants), seed)
+    with tab_gallery:
+        render_gallery(filter_records(records, variants=selected_variants), seed)
 
-            with col2:
-                fig = px.bar(
-                    combined,
-                    x="dataset",
-                    y="fc_f1",
-                    color="variant",
-                    barmode="group",
-                    error_y="fc_f1_std",
-                    title="Failure Classifier F1 by Variant",
-                    labels={"fc_f1": "F1", "dataset": "Dataset"},
-                )
-                fig.update_layout(height=380)
-                st.plotly_chart(fig, use_container_width=True)
 
-            # delta table — only for exactly 2 variants
-            if len(selected_variants) == 2:
-                st.subheader(
-                    f"Delta  ({selected_variants[1]} − {selected_variants[0]})"
-                )
-                metric_cols = [
-                    "nn_accuracy",
-                    "nn_f1_macro",
-                    "nn_f1_weighted",
-                    "fc_f1",
-                    "clf_auc",
-                ]
-                df_a = _build_summary_df(all_data[selected_variants[0]]).set_index(
-                    "dataset"
-                )
-                df_b = _build_summary_df(all_data[selected_variants[1]]).set_index(
-                    "dataset"
-                )
-                common = df_a.index.intersection(df_b.index)
-                delta = (
-                    df_b.loc[common, metric_cols] - df_a.loc[common, metric_cols]
-                ).reset_index()
-                delta.columns = ["dataset"] + [f"Δ {c}" for c in metric_cols]
-                delta_fmt = {c: "{:+.4f}" for c in delta.columns if c != "dataset"}
-                st.dataframe(
-                    _stripe_rows(delta.style.format(delta_fmt, na_rep="—")),
-                    use_container_width=True,
-                    hide_index=True,
-                )
+main()

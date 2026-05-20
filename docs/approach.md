@@ -38,15 +38,15 @@ The first step partitions each class into a set of compact, internally coherent 
 
 ## Step 2 — Complexity Measures
 
-Each cluster $c$ is characterised by a vector of 26 complexity measures, organised into five families. All measures are computed on the processed feature representations (after log-scaling and robust normalisation of numerical features, and hash encoding of categoricals), making them directly comparable across datasets and runs.
+Each cluster $c$ is characterised by a vector of complexity measures, organised into five families (F, N, ND, T, G). All measures are computed on the processed feature representations (after log-scaling and robust normalisation of numerical features, and hash encoding of categoricals), making them directly comparable across datasets and runs.
 
 For measures that are inherently pairwise — defined with respect to a specific adversarial class $j \ne \text{class}(c)$ — the cluster-level value is reported as the **minimum** (worst-case adversary), **mean** (average difficulty), and optionally **maximum** (easiest adversary) over all adversarial classes. Reporting the minimum is particularly important: a cluster may be easy to separate from most classes but critically exposed to one specific adversary, and this worst case is the one most likely to drive classifier failure.
 
-**Distance metric for neighbourhood families.** The neighbourhood-based families (N, ND) require a dissimilarity measure that covers both numerical and categorical features. **Gower distance** is used for this purpose, as it handles mixed feature types by normalising each contribution to $[0, 1]$:
+**Distance metric for neighbourhood families.** The neighbourhood-based families (N, ND) require a dissimilarity measure that covers both numerical and categorical features. A **Gower-hybrid distance** is used: the numerical component is configurable (cosine or Euclidean, set via `complexity.distance`) and is combined with a Hamming-style indicator contribution on categoricals, with each contribution normalised to $[0, 1]$:
 
-$$d_\text{Gower}(x, x') = \frac{1}{d_\text{num} + d_\text{cat}} \left( \sum_{f=1}^{d_\text{num}} \frac{|x_f - x'_f|}{R_f} + \sum_{f=1}^{d_\text{cat}} \mathbb{1}[x_f \ne x'_f] \right)$$
+$$d_\text{hybrid}(x, x') = \frac{1}{d_\text{num} + d_\text{cat}} \left( \sum_{f=1}^{d_\text{num}} \delta_\text{num}(x_f, x'_f) + \sum_{f=1}^{d_\text{cat}} \mathbb{1}[x_f \ne x'_f] \right)$$
 
-where $R_f$ is the observed range of feature $f$. Computing the full pairwise Gower matrix would be $O(n^2 d)$, which is prohibitive at dataset scale. Instead, only a sparse $k$-nearest-neighbour graph ($k = 5$) is materialised — distances are computed in row batches and only the $k$ closest neighbours per sample are retained. This graph is constructed once and shared across all neighbourhood-based families, amortising its cost.
+Computing the full pairwise distance matrix would be $O(n^2 d)$, which is prohibitive at dataset scale. Instead, only a sparse $k$-nearest-neighbour graph (default `complexity.k = 30`) is materialised — distances are computed in row batches and only the $k$ closest neighbours per sample are retained. This graph is constructed once and shared across all neighbourhood-based families, amortising its cost.
 
 ### Family F — Feature-Based Separability
 
@@ -112,11 +112,13 @@ $$T_4 = \frac{n_{\text{PCA}_{95\%}}}{n_c}$$
 
 ### Family G — Cluster Geometry
 
-These five measures characterise geometric properties of the cluster in Euclidean space (numerical features only). Silhouette-based quantities are approximated via stratified subsampling (at most 10,000 points) to manage the $O(n^2 d)$ cost of exact pairwise distance computation.
+These six measures characterise geometric properties of the cluster in the metric space configured via `complexity.distance` (numerical features only). Silhouette-based quantities are approximated via stratified subsampling (at most 10,000 points) to manage the $O(n^2 d)$ cost of exact pairwise distance computation.
 
-**Maximum dispersion.** Maximum Euclidean distance from any cluster sample to the centroid $\mu_c$. Indicates whether the cluster is compact or diffuse.
+**Maximum dispersion.** Maximum distance from any cluster sample to the centroid $\mu_c$. Indicates whether the cluster is compact or diffuse.
 
-$$\text{maxDisp}(c) = \max_{x \in c} \|x - \mu_c\|_2$$
+$$\text{maxDisp}(c) = \max_{x \in c} \|x - \mu_c\|$$
+
+**95th-percentile dispersion.** Outlier-robust counterpart to maximum dispersion — the 95th percentile of sample-to-centroid distances.
 
 **Distance to nearest foreign cluster.** Minimum centroid-to-centroid Euclidean distance from $c$ to any cluster of a different class. A small value indicates high spatial collision risk.
 
@@ -138,7 +140,7 @@ $$d_{\text{sibling}}(c) = \min_{c' \ne c\, :\, \text{class}(c') = \text{class}(c
 
 ## Step 3 — Classifier Training
 
-A deep neural network classifier is trained on the preprocessed dataset using a standard supervised learning procedure, with early stopping on validation loss and best-model checkpointing. Training is intentionally performed **after** the complexity analysis is complete: the complexity measures are a pre-training diagnostic and carry no information from the classifier.
+A downstream classifier is trained on the preprocessed dataset using a standard supervised learning procedure. The pipeline supports both classical ML estimators (sklearn, XGBoost) and deep neural networks (PyTorch + Ignite, with early stopping on validation loss and best-model checkpointing); the choice is controlled by the `classifier` config group. Training is intentionally performed **after** the complexity analysis is complete: the complexity measures are a pre-training diagnostic and carry no information from the classifier.
 
 **Failure rate per cluster.** After evaluation on the held-out test set, a failure rate is computed for each cluster as the fraction of test samples in that cluster for which the classifier produces an incorrect prediction:
 
