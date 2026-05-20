@@ -10,12 +10,16 @@
 #   make failure-classify  DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=random_forest
 #   make render            DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=random_forest
 #   make run               DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=tabular
-#   make all               NAME=my_exp                       # all datasets, default DL classifier
+#   make run-all           DATA=cic_2018_v2 NAME=my_exp      # one dataset, all compatible classifiers
+#   make all               NAME=my_exp                       # all datasets, all compatible classifiers
 #
 # Add FORCE=1 to recompute cached shared stages (prepare, complexity).
 # ──────────────────────────────────────────────────────────────────────────────
 
-PYTHON     := venv/bin/python
+# Use venv if present; falls back to the active conda (or system) python otherwise.
+# Override explicitly: make <target> PYTHON=python
+PYTHON    ?= $(if $(wildcard venv/bin/python),venv/bin/python,python)
+STREAMLIT ?= $(if $(wildcard venv/bin/streamlit),venv/bin/streamlit,streamlit)
 DATA       ?= cic_2018_v2
 NAME       ?= exp
 SEED       ?= 42
@@ -34,17 +38,15 @@ ML_CLASSIFIERS := \
     svm_rbf \
     xgboost
 
-DL_CLASSIFIERS := \
-    tabular \
-    numerical \
-    categorical
+DL_CLASSIFIERS_MIXED     := tabular
+DL_CLASSIFIERS_NUMERICAL := numerical
 
-DATASET_CLASSIFIERS := \
-    nb15_v2:tabular \
-    bot_iot_v2:tabular \
-    cic_2018_v2:tabular \
-    ton_iot_v2:tabular \
-    bank_marketing:tabular \
+DATASET_FORMATS := \
+    nb15_v2:mixed \
+    bot_iot_v2:mixed \
+    cic_2018_v2:mixed \
+    ton_iot_v2:mixed \
+    bank_marketing:mixed \
     covertype:numerical \
     letter_recognition:numerical \
     statlog_landsat_satellite:numerical \
@@ -54,7 +56,7 @@ HYDRA := data=$(DATA) name=$(NAME) seed=$(SEED) classifier=$(CLASSIFIER) \
          complexity.distance=$(DISTANCE) clustering.distance=$(DISTANCE)
 FORCE_FLAG := $(if $(FORCE),prepare.force=true complexity.force=true,)
 
-.PHONY: prepare classify ml-all dl-all complexity failure-classify render run all generate dashboard help
+.PHONY: prepare classify ml-all dl-all complexity failure-classify render run run-all all generate dashboard help
 
 ## prepare:            Step 1 — preprocess raw CSV → parquet splits           (DATA, NAME, SEED, FORCE)
 prepare:
@@ -74,9 +76,22 @@ ml-all:
 			DISTANCE=$(DISTANCE) || exit 1; \
 	done
 
-## dl-all:             Step 2 — train & evaluate every DL classifier in turn  (DATA, NAME, SEED)
+## dl-all:             Step 2 — train & evaluate every compatible DL classifier  (DATA, NAME, SEED)
 dl-all:
-	@for clf in $(DL_CLASSIFIERS); do \
+	@format=""; \
+	for entry in $(DATASET_FORMATS); do \
+		ds=$${entry%%:*}; fmt=$${entry##*:}; \
+		if [ "$$ds" = "$(DATA)" ]; then format=$$fmt; break; fi; \
+	done; \
+	if [ -z "$$format" ]; then \
+		echo "ERROR: DATA='$(DATA)' not found in DATASET_FORMATS."; exit 1; \
+	fi; \
+	if [ "$$format" = "mixed" ]; then \
+		dl_list="$(DL_CLASSIFIERS_MIXED)"; \
+	else \
+		dl_list="$(DL_CLASSIFIERS_NUMERICAL)"; \
+	fi; \
+	for clf in $$dl_list; do \
 		echo ""; \
 		echo "── DL classifier: $$clf ─────────────────────────────"; \
 		$(MAKE) --no-print-directory classify \
@@ -99,17 +114,71 @@ render:
 ## run:                Run all steps for a single (dataset, classifier)       (DATA, NAME, SEED, CLASSIFIER)
 run: prepare classify failure-classify render
 
-## all:                Run the full pipeline for every dataset                (NAME, SEED, DISTANCE)
+## run-all:            Run all steps for a single dataset, all compatible classifiers (DATA, NAME, SEED)
+run-all:
+	@format=""; \
+	for entry in $(DATASET_FORMATS); do \
+		ds=$${entry%%:*}; fmt=$${entry##*:}; \
+		if [ "$$ds" = "$(DATA)" ]; then format=$$fmt; break; fi; \
+	done; \
+	if [ -z "$$format" ]; then \
+		echo "ERROR: DATA='$(DATA)' not found in DATASET_FORMATS."; exit 1; \
+	fi; \
+	if [ "$$format" = "mixed" ]; then \
+		dl_list="$(DL_CLASSIFIERS_MIXED)"; \
+	else \
+		dl_list="$(DL_CLASSIFIERS_NUMERICAL)"; \
+	fi; \
+	echo ""; \
+	echo "══════════════════════════════════════════════"; \
+	echo " Dataset: $(DATA)  |  format=$$format  |  name=$(NAME)  seed=$(SEED)"; \
+	echo "══════════════════════════════════════════════"; \
+	$(MAKE) --no-print-directory prepare \
+		DATA=$(DATA) NAME=$(NAME) SEED=$(SEED) \
+		DISTANCE=$(DISTANCE) $(FORCE_FLAG) || exit 1; \
+	for clf in $(ML_CLASSIFIERS) $$dl_list; do \
+		echo ""; \
+		echo "── classifier: $$clf ─────────────────────────────"; \
+		$(MAKE) --no-print-directory classify \
+			DATA=$(DATA) NAME=$(NAME) SEED=$(SEED) CLASSIFIER=$$clf \
+			DISTANCE=$(DISTANCE) || exit 1; \
+		$(MAKE) --no-print-directory failure-classify \
+			DATA=$(DATA) NAME=$(NAME) SEED=$(SEED) CLASSIFIER=$$clf \
+			DISTANCE=$(DISTANCE) || exit 1; \
+		$(MAKE) --no-print-directory render \
+			DATA=$(DATA) NAME=$(NAME) SEED=$(SEED) CLASSIFIER=$$clf \
+			DISTANCE=$(DISTANCE) || exit 1; \
+	done
+
+## all:                Run the full pipeline for every dataset (all ML + compatible DL classifiers) (NAME, SEED)
 all:
-	@for entry in $(DATASET_CLASSIFIERS); do \
-		dataset=$${entry%%:*}; classifier=$${entry##*:}; \
+	@for entry in $(DATASET_FORMATS); do \
+		dataset=$${entry%%:*}; format=$${entry##*:}; \
+		if [ "$$format" = "mixed" ]; then \
+			dl_list="$(DL_CLASSIFIERS_MIXED)"; \
+		else \
+			dl_list="$(DL_CLASSIFIERS_NUMERICAL)"; \
+		fi; \
 		echo ""; \
 		echo "══════════════════════════════════════════════"; \
-		echo " Dataset: $$dataset  |  classifier=$$classifier  |  name=$(NAME)  seed=$(SEED)"; \
+		echo " Dataset: $$dataset  |  format=$$format  |  name=$(NAME)  seed=$(SEED)"; \
 		echo "══════════════════════════════════════════════"; \
-		$(MAKE) --no-print-directory run \
-			DATA=$$dataset CLASSIFIER=$$classifier NAME=$(NAME) SEED=$(SEED) \
-			DISTANCE=$(DISTANCE); \
+		$(MAKE) --no-print-directory prepare \
+			DATA=$$dataset NAME=$(NAME) SEED=$(SEED) \
+			DISTANCE=$(DISTANCE) $(FORCE_FLAG) || exit 1; \
+		for clf in $(ML_CLASSIFIERS) $$dl_list; do \
+			echo ""; \
+			echo "── classifier: $$clf ─────────────────────────────"; \
+			$(MAKE) --no-print-directory classify \
+				DATA=$$dataset NAME=$(NAME) SEED=$(SEED) CLASSIFIER=$$clf \
+				DISTANCE=$(DISTANCE) || exit 1; \
+			$(MAKE) --no-print-directory failure-classify \
+				DATA=$$dataset NAME=$(NAME) SEED=$(SEED) CLASSIFIER=$$clf \
+				DISTANCE=$(DISTANCE) || exit 1; \
+			$(MAKE) --no-print-directory render \
+				DATA=$$dataset NAME=$(NAME) SEED=$(SEED) CLASSIFIER=$$clf \
+				DISTANCE=$(DISTANCE) || exit 1; \
+		done; \
 	done
 	@echo ""
 	@echo "All datasets processed."
@@ -120,7 +189,7 @@ generate:
 
 ## dashboard:          Open the experiment dashboard in browser
 dashboard:
-	venv/bin/streamlit run dashboard.py
+	$(STREAMLIT) run dashboard.py
 
 ## help:               Show this help message
 help:
@@ -130,6 +199,8 @@ help:
 	@grep -E '^## ' Makefile | sed 's/## /  /'
 	@echo ""
 	@echo "Defaults:  DATA=$(DATA)  NAME=$(NAME)  SEED=$(SEED)  CLASSIFIER=$(CLASSIFIER)  DISTANCE=$(DISTANCE)"
-	@echo "ML classifiers:  $(ML_CLASSIFIERS)"
-	@echo "DL classifiers:  $(DL_CLASSIFIERS)"
-	@echo "Datasets:        $(DATASET_CLASSIFIERS)"
+	@echo "Python:    $(PYTHON)  (override with PYTHON=)"
+	@echo "ML classifiers:         $(ML_CLASSIFIERS)"
+	@echo "DL classifiers (mixed): $(DL_CLASSIFIERS_MIXED)"
+	@echo "DL classifiers (num):   $(DL_CLASSIFIERS_NUMERICAL)"
+	@echo "Datasets (format):      $(DATASET_FORMATS)"
