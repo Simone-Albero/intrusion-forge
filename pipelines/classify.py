@@ -295,10 +295,22 @@ def _prepare_train_payload(
     feat_cols: list[str],
     label_col: str,
 ) -> tuple[object, object]:
-    """Shape (X, y) for the training module: ndarray pair for ML, df + None for DL."""
+    """Shape (X, y) for the training module.
+
+    ML: ``X`` is a DataFrame slice (named columns are needed by ColumnTransformer);
+    ``y`` is a numpy array.
+    DL: ``X`` is the full DataFrame (label_col still inside it); ``y`` unused.
+    """
     if kind == "ml":
-        return df[feat_cols].to_numpy(), df[label_col].to_numpy()
+        return df[feat_cols], df[label_col].to_numpy()
     return df, None
+
+
+def _build_ml_context(
+    num_cols: list[str], cat_cols: list[str]
+) -> dict:
+    """Pack the column groups needed by ML preprocessing pipeline."""
+    return {"num_cols": num_cols, "cat_cols": cat_cols}
 
 
 @timed
@@ -320,7 +332,7 @@ def _train_stage(
     context = (
         _build_dl_context(cfg, paths, df_meta, num_cols, cat_cols, label_col)
         if kind == "dl"
-        else None
+        else _build_ml_context(num_cols, cat_cols)
     )
 
     X, y = _prepare_train_payload(kind, train_df, feat_cols, label_col)
@@ -393,16 +405,13 @@ def _evaluate_stage(
     context = (
         _build_dl_context(cfg, paths, df_meta, num_cols, cat_cols, label_col)
         if kind == "dl"
-        else None
+        else _build_ml_context(num_cols, cat_cols)
     )
 
     logger.info("Loading model from %s ...", paths.models)
     model = training_mod.load_model(paths.models, context=context)
 
-    if kind == "ml":
-        X = test_df[feat_cols].to_numpy()
-    else:
-        X = test_df
+    X = test_df[feat_cols] if kind == "ml" else test_df
     y_pred, y_proba = training_mod.predict_with_proba(model, X, context=context)
 
     y_true = test_df[label_col].to_numpy()

@@ -105,9 +105,7 @@ def fit_failure_classifier(
     out-of-fold (OOF) predictions.
     """
     if cluster_stats is None:
-        cluster_stats = load_from_json(
-            paths.outputs / "analysis/cluster_summary.json"
-        )
+        cluster_stats = load_from_json(paths.outputs / "analysis/cluster_summary.json")
     logger.info("Running failure classifier ...")
     df = pd.DataFrame.from_dict(cluster_stats, orient="index")
     if feature_cols is None:
@@ -120,11 +118,25 @@ def fit_failure_classifier(
 
     y = df["failure_rate"].apply(lambda x: 1 if x > failure_threshold else 0)
 
+    n_positives = int(y.sum())
+    actual_outer_splits = min(n_outer_splits, max(2, n_positives // 3))
+    n_train_positives = int(n_positives * (1 - 1 / actual_outer_splits))
+    actual_inner_splits = min(n_inner_splits, max(2, n_train_positives // 3))
+    if actual_outer_splits < n_outer_splits or actual_inner_splits < n_inner_splits:
+        logger.warning(
+            "Adapting CV splits (only %d positive examples): outer %d→%d, inner %d→%d.",
+            n_positives,
+            n_outer_splits,
+            actual_outer_splits,
+            n_inner_splits,
+            actual_inner_splits,
+        )
+
     outer_cv = StratifiedKFold(
-        n_splits=n_outer_splits, shuffle=True, random_state=random_state
+        n_splits=actual_outer_splits, shuffle=True, random_state=random_state
     )
     inner_cv = StratifiedKFold(
-        n_splits=n_inner_splits, shuffle=True, random_state=random_state
+        n_splits=actual_inner_splits, shuffle=True, random_state=random_state
     )
 
     fold_f1s: list[float] = []
@@ -136,7 +148,7 @@ def fit_failure_classifier(
     oof_indices: list = []
 
     for train_idx, test_idx in tqdm(
-        outer_cv.split(X, y), total=n_outer_splits, desc="Outer CV"
+        outer_cv.split(X, y), total=actual_outer_splits, desc="Outer CV"
     ):
         fold = _run_outer_fold(
             X.iloc[train_idx],
@@ -162,11 +174,16 @@ def fit_failure_classifier(
     fpr, tpr, _ = roc_curve(oof_y_true_arr, oof_y_proba_arr)
     mean_importances = np.mean(fold_importances, axis=0)
 
+    try:
+        oof_auc = float(roc_auc_score(oof_y_true_arr, oof_y_proba_arr))
+    except ValueError:
+        oof_auc = float("nan")
+
     results = {
-        "f1_score": float(np.mean(fold_f1s)),
+        "f1_score": float(f1_score(oof_y_true_arr, oof_y_pred_arr)),
         "f1_score_std": float(np.std(fold_f1s)),
         "f1_scores_per_fold": fold_f1s,
-        "roc_auc": float(np.nanmean(fold_aucs)),
+        "roc_auc": oof_auc,
         "roc_auc_std": float(np.nanstd(fold_aucs)),
         "roc_auc_per_fold": fold_aucs,
         "roc_curve_data": {"fpr": fpr.tolist(), "tpr": tpr.tolist()},
@@ -183,8 +200,7 @@ def fit_failure_classifier(
             for cid, pred, true in zip(oof_indices, oof_y_pred, oof_y_true)
         },
         "oof_risk_proba": {
-            str(cid): float(proba)
-            for cid, proba in zip(oof_indices, oof_y_proba)
+            str(cid): float(proba) for cid, proba in zip(oof_indices, oof_y_proba)
         },
     }
     if analysis_bus is not None:

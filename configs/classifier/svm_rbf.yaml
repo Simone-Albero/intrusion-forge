@@ -3,6 +3,7 @@ kind: ml
 name: svm_rbf
 params:
   kernel: rbf
+  probability: true
   random_state: 42
 grid:
   C: [0.1, 1.0, 10.0]
