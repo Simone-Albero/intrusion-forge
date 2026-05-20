@@ -1,7 +1,6 @@
 """Pairwise class separability helpers.
 
-Not wired into the current pipeline; kept here for future re-introduction in
-analyze_data without re-deriving the algorithm.
+Not wired into the current pipeline; kept here for future re-introduction.
 """
 
 from itertools import combinations

@@ -11,7 +11,7 @@ defaults:
 seed: 42
 name: exp
 device: cpu
-stage: testing
+stage: all
 n_samples: null
 
 grid_search:
@@ -19,12 +19,16 @@ grid_search:
   scoring: f1_macro
   cv: 5
 
+prepare:
+  force: false                       # re-run preprocessing+clustering even if shared outputs exist
+
 complexity:
   distance: cosine                   # euclidean | cosine — governs all complexity analysis (k-NN, MST, F/N/ND/G families)
   k: 30
   top_k_clusters: 10                 # top-K nearest adversarial clusters per cluster (vs-cluster aggregation)
   min_subsample_per_cluster: 50      # minimum samples per cluster in proportional subsampling
   max_complexity_samples: 100000     # cap on points used to build the k-NN graph
+  force: false                       # re-run complexity computation even if shared output exists
 
 clustering:
   distance: cosine                   # euclidean | cosine — L2-normalises X_num before HDBSCAN fit when cosine
@@ -34,8 +38,15 @@ clustering:
   max_cluster_size: null             # optional hard-cap on cluster size (null = disabled)
   max_fit_samples: 10000
 
-analysis:
-  failure_threshold: 0.0
+failure_classifier:
+  threshold: 0.0                     # cluster is "failed" when failure_rate > threshold
+  n_outer_splits: 5
+  n_inner_splits: 5
+  param_grid:
+    n_estimators: [100, 200, 300, 500]
+    max_depth: [null, 3, 5, 10, 20]
+    min_samples_leaf: [1, 2, 3, 5]
+    max_features: [sqrt, 0.5]
 
 plots:
   max_class_pairs: 10

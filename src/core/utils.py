@@ -5,6 +5,7 @@ import math
 import pickle
 import time
 from pathlib import Path
+from typing import Iterable
 
 import joblib
 
@@ -92,3 +93,18 @@ def flush_timing(path: str | Path) -> None:
     existing = load_from_json(path) if path.exists() else []
     save_to_json(existing + _TIMING_RECORDS, path)
     _TIMING_RECORDS.clear()
+
+
+def skip_if_exists(
+    markers: Path | Iterable[Path], force: bool, stage_name: str
+) -> bool:
+    """Return True (and log) when all marker paths exist and force is False."""
+    if force:
+        return False
+    paths = [markers] if isinstance(markers, Path) else list(markers)
+    if paths and all(Path(p).exists() for p in paths):
+        logging.getLogger(__name__).info(
+            "Skipping %s — outputs present (force=true to recompute).", stage_name
+        )
+        return True
+    return False

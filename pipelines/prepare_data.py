@@ -13,7 +13,7 @@ from src.core.log import (
     LogDispatcher,
     setup_logger,
 )
-from src.core.utils import flush_timing, timed
+from src.core.utils import flush_timing, skip_if_exists, timed
 
 from src.domain.analysis.metadata import (
     compute_clusters_metadata,
@@ -308,9 +308,18 @@ def main():
         config_name="config",
         overrides=sys.argv[1:],
     )
-    save_config(cfg, Path(cfg.path.shared) / "configs/config_composed.json")
+
+    ext = cfg.data.extension
+    processed = Path(cfg.path.processed_data)
+    shared = Path(cfg.path.shared)
+    markers = [processed / f"{s}.{ext}" for s in ("train", "val", "test")]
+    markers.append(shared / "clusters_meta.json")
+    if skip_if_exists(markers, cfg.prepare.force, "prepare"):
+        return
+
+    save_config(cfg, shared / "configs/config_composed.json")
     prepare(cfg)
-    flush_timing(Path(cfg.path.shared) / "timing.json")
+    flush_timing(shared / "timing.json")
 
 
 if __name__ == "__main__":

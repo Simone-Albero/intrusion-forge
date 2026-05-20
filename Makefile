@@ -2,14 +2,17 @@
 # Intrusion Forge — Experiment Runner
 #
 # Usage:
-#   make prepare   DATA=cic_2018_v2 NAME=my_exp
-#   make classify  DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=random_forest
-#   make ml-all    DATA=cic_2018_v2 NAME=my_exp     # every ML classifier
-#   make dl-all    DATA=cic_2018_v2 NAME=my_exp     # every DL classifier
-#   make analyze   DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=random_forest
-#   make render    DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=random_forest
-#   make run       DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=tabular
-#   make all       NAME=my_exp                       # all datasets, default DL classifier
+#   make prepare           DATA=cic_2018_v2 NAME=my_exp
+#   make classify          DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=random_forest
+#   make ml-all            DATA=cic_2018_v2 NAME=my_exp     # every ML classifier
+#   make dl-all            DATA=cic_2018_v2 NAME=my_exp     # every DL classifier
+#   make complexity        DATA=cic_2018_v2 NAME=my_exp     # shared, dataset-level
+#   make failure-classify  DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=random_forest
+#   make render            DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=random_forest
+#   make run               DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=tabular
+#   make all               NAME=my_exp                       # all datasets, default DL classifier
+#
+# Add FORCE=1 to recompute cached shared stages (prepare, complexity).
 # ──────────────────────────────────────────────────────────────────────────────
 
 PYTHON     := venv/bin/python
@@ -18,6 +21,7 @@ NAME       ?= exp
 SEED       ?= 42
 CLASSIFIER ?= tabular
 DISTANCE   ?= cosine
+FORCE      ?=
 
 ML_CLASSIFIERS := \
     naive_bayes \
@@ -48,12 +52,13 @@ DATASET_CLASSIFIERS := \
 
 HYDRA := data=$(DATA) name=$(NAME) seed=$(SEED) classifier=$(CLASSIFIER) \
          complexity.distance=$(DISTANCE) clustering.distance=$(DISTANCE)
+FORCE_FLAG := $(if $(FORCE),prepare.force=true complexity.force=true,)
 
-.PHONY: prepare classify ml-all dl-all analyze render run all generate dashboard help
+.PHONY: prepare classify ml-all dl-all complexity failure-classify render run all generate dashboard help
 
-## prepare:            Step 1 — preprocess raw CSV → parquet splits           (DATA, NAME, SEED)
+## prepare:            Step 1 — preprocess raw CSV → parquet splits           (DATA, NAME, SEED, FORCE)
 prepare:
-	PYTHONPATH=. $(PYTHON) pipelines/prepare_data.py $(HYDRA)
+	PYTHONPATH=. $(PYTHON) pipelines/prepare_data.py $(HYDRA) $(FORCE_FLAG)
 
 ## classify:           Step 2 — train & evaluate one classifier (ML or DL)    (DATA, NAME, SEED, CLASSIFIER)
 classify:
@@ -79,16 +84,20 @@ dl-all:
 			DISTANCE=$(DISTANCE) || exit 1; \
 	done
 
-## analyze:            Step 3 — post-hoc analysis (compute only)              (DATA, NAME, SEED, CLASSIFIER)
-analyze:
-	PYTHONPATH=. $(PYTHON) pipelines/analyze_data.py $(HYDRA)
+## complexity:         Step 3a — per-cluster complexity (shared, idempotent)  (DATA, NAME, SEED, FORCE)
+complexity:
+	PYTHONPATH=. $(PYTHON) pipelines/compute_complexity.py $(HYDRA) $(FORCE_FLAG)
+
+## failure-classify:   Step 3b — RF to detect problematic clusters            (DATA, NAME, SEED, CLASSIFIER)
+failure-classify: complexity
+	PYTHONPATH=. $(PYTHON) pipelines/fit_failure_classifier.py $(HYDRA)
 
 ## render:             Step 4 — render plots from analysis artifacts          (DATA, NAME, SEED, CLASSIFIER)
 render:
 	PYTHONPATH=. $(PYTHON) pipelines/render_plots.py $(HYDRA)
 
-## run:                Run all four steps for a single (dataset, classifier)  (DATA, NAME, SEED, CLASSIFIER)
-run: prepare classify analyze render
+## run:                Run all steps for a single (dataset, classifier)       (DATA, NAME, SEED, CLASSIFIER)
+run: prepare classify failure-classify render
 
 ## all:                Run the full pipeline for every dataset                (NAME, SEED, DISTANCE)
 all:
