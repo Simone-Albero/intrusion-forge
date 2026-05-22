@@ -382,11 +382,11 @@ def main():
     )
     save_config(cfg, paths.configs / "config_composed_render.json")
 
-    clusters_meta = load_from_json(paths.shared / "clusters_meta.json")
+    clusters_meta = load_from_json(paths.shared / "metadata/clusters_meta.json")
     centroids = clusters_meta.get("centroids", {})
 
     cluster_summary = load_from_json(paths.outputs / "analysis/cluster_summary.json")
-    df_meta = load_from_json(paths.shared / "df_meta.json")
+    df_meta = load_from_json(paths.shared / "metadata/df_meta.json")
     classifier_results = load_from_json(
         paths.outputs / "analysis/classifier_results.json"
     )

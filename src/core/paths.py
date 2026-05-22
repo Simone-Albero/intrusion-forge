@@ -8,7 +8,7 @@ class OutputPaths:
 
     Shared across classifiers (dataset-level):
       - `processed_data`: train/val/test files written by prepare_data
-      - `shared`:         df_meta, clusters_meta, complexity metrics
+      - `shared`:         complexity, config snapshot, timing; `metadata/` holds df_meta, df_info, clusters_meta
 
     Per-classifier (resolved against `${classifier.name}`):
       - `configs`:  composed Hydra configs snapshot

@@ -446,7 +446,7 @@ def classify(cfg) -> None:
         models=Path(cfg.path.models),
         figures=Path(cfg.path.figures),
     )
-    df_meta = load_from_json(paths.shared / "df_meta.json")
+    df_meta = load_from_json(paths.shared / "metadata/df_meta.json")
     save_config(cfg, paths.configs / "config_composed.json")
 
     num_cols = list(cfg.data.num_cols) if cfg.data.num_cols else []

@@ -5,4 +5,3 @@ params:
   in_features: ${data.num_numerical}
   hidden_dims: [128, 64, 32, 16]
   dropout: 0.1
-  num_classes: 11

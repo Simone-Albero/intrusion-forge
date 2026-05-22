@@ -189,7 +189,7 @@ def _is_classifier_dir(path: Path) -> bool:
 def discover_experiments(root: str) -> tuple[list[ExperimentRecord], int]:
     """Walk `root/<variant>/<dataset_dir>/` and emit one record per classifier.
 
-    A variant/dataset is considered valid only when `shared/df_meta.json` exists,
+    A variant/dataset is considered valid only when `shared/metadata/df_meta.json` exists,
     which excludes the legacy `{run_id}/logs/...` layout automatically.
 
     Returns `(records, n_skipped_legacy)`.
@@ -212,7 +212,7 @@ def discover_experiments(root: str) -> tuple[list[ExperimentRecord], int]:
                 continue
             file_name, seed = parsed
             shared = dataset_dir / "shared"
-            if not (shared / "df_meta.json").exists():
+            if not (shared / "metadata/df_meta.json").exists():
                 skipped += 1
                 continue
 
@@ -263,10 +263,10 @@ def load_experiment_detail(record_root: str, record_shared: str) -> ExperimentDe
         classifier_results=_read_json(root / "outputs" / "analysis" / "classifier_results.json"),
         predictions=_read_json(root / "outputs" / "analysis" / "predictions" / "test.json"),
         grid_search=_read_json(root / "outputs" / "training" / "grid_search.json"),
-        df_meta=_read_json(shared / "df_meta.json") or {},
-        df_info=_read_json(shared / "df_info.json") or {},
+        df_meta=_read_json(shared / "metadata/df_meta.json") or {},
+        df_info=_read_json(shared / "metadata/df_info.json") or {},
         complexity=_read_json(shared / "complexity.json") or {},
-        clusters_meta=_read_json(shared / "clusters_meta.json") or {},
+        clusters_meta=_read_json(shared / "metadata/clusters_meta.json") or {},
     )
     cs = _read_json(root / "outputs" / "analysis" / "cluster_summary.json")
     detail.cluster_summary = _cluster_summary_df(cs if isinstance(cs, dict) else None)
@@ -1136,7 +1136,7 @@ def main() -> None:
     if not records:
         st.error(
             "No valid experiments found. The dashboard probes for "
-            "`shared/df_meta.json` under each `<variant>/<dataset>_<seed>/`. "
+            "`shared/metadata/df_meta.json` under each `<variant>/<dataset>_<seed>/`. "
             f"Scanned root: `{root}`"
         )
         st.stop()

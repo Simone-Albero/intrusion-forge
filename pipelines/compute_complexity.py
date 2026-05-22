@@ -91,8 +91,6 @@ def main():
     if skip_if_exists(marker, cfg.complexity.force, "complexity"):
         return
 
-    save_config(cfg, paths.shared / "configs/config_composed_complexity.json")
-
     num_cols = list(cfg.data.num_cols) if cfg.data.num_cols else []
     cat_cols = list(cfg.data.cat_cols) if cfg.data.cat_cols else []
     ext = cfg.data.extension
@@ -111,7 +109,7 @@ def main():
     y_class = combined[f"encoded_{cfg.data.label_col}"].to_numpy(dtype=np.int64)
     y_cluster = combined["cluster"].to_numpy(dtype=np.int64)
 
-    clusters_meta = load_from_json(paths.shared / "clusters_meta.json")
+    clusters_meta = load_from_json(paths.shared / "metadata/clusters_meta.json")
     centroids = clusters_meta.get("centroids", {})
     noise_cluster_ids = clusters_meta.get("noise_cluster_ids", [])
 
@@ -135,7 +133,7 @@ def main():
     bus.publish(LogBundle.from_dict({"json/complexity": complexity}))
     logger.info("Complexity published to %s.", marker)
 
-    flush_timing(paths.shared / "timing_complexity.json")
+    flush_timing(paths.shared / "timing.json")
 
 
 if __name__ == "__main__":

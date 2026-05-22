@@ -195,7 +195,7 @@ def prepare(cfg):
     data_logs_path = Path(cfg.path.shared)
 
     dispatcher = LogDispatcher()
-    dispatcher.subscribe(JSONSubscriber(data_logs_path))
+    dispatcher.subscribe(JSONSubscriber(data_logs_path / "metadata"))
 
     logger.info("Loading and preprocessing data...")
     df = load_df(str(raw_data_path))
@@ -313,11 +313,11 @@ def main():
     processed = Path(cfg.path.processed_data)
     shared = Path(cfg.path.shared)
     markers = [processed / f"{s}.{ext}" for s in ("train", "val", "test")]
-    markers.append(shared / "clusters_meta.json")
+    markers.append(shared / "metadata/clusters_meta.json")
     if skip_if_exists(markers, cfg.prepare.force, "prepare"):
         return
 
-    save_config(cfg, shared / "configs/config_composed.json")
+    save_config(cfg, shared / "config_composed.json")
     prepare(cfg)
     flush_timing(shared / "timing.json")
 

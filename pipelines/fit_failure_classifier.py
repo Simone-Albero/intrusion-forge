@@ -263,7 +263,7 @@ def main():
         analysis_bus=bus,
     )
 
-    flush_timing(paths.outputs / "timing_failure_classifier.json")
+    flush_timing(paths.outputs / "timing.json")
 
 
 if __name__ == "__main__":
