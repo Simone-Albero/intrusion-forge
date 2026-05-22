@@ -615,7 +615,7 @@ def panel_feature_distribution(
     if not candidates:
         st.caption("No complexity features in cluster_summary.")
         return
-    default = "p5_silhouette" if "p5_silhouette" in candidates else candidates[0]
+    default = "cluster_p5_silhouette" if "cluster_p5_silhouette" in candidates else candidates[0]
     feature = st.selectbox(
         "Feature",
         candidates,
@@ -645,7 +645,7 @@ def panel_complexity_vs_failure(
         st.caption("Need cluster_summary with `failure_rate`.")
         return
     candidates = [c for c in cdf.columns if c not in CLUSTER_NON_FEATURE_COLS]
-    default = "p5_silhouette" if "p5_silhouette" in candidates else candidates[0]
+    default = "cluster_p5_silhouette" if "cluster_p5_silhouette" in candidates else candidates[0]
     feature = st.selectbox(
         "X axis",
         candidates,
@@ -707,7 +707,7 @@ def panel_cluster_table(
         return
     label_map = detail.df_meta.get("label_mapping") or {}
     show_cols = ["cluster_id", "cluster_class", "failure_rate", "is_failed", "is_noise_cluster"]
-    show_cols += [c for c in ["p5_silhouette", "frac_at_risk", "f1_class_min", "n1_class_max"] if c in cdf.columns]
+    show_cols += [c for c in ["cluster_p5_silhouette", "cluster_frac_at_risk", "class_f1_min", "class_n1_max"] if c in cdf.columns]
     view = cdf[[c for c in show_cols if c in cdf.columns]].copy()
     if "cluster_class" in view.columns:
         view["class_name"] = view["cluster_class"].map(lambda c: label_map.get(str(int(c)), str(int(c))))

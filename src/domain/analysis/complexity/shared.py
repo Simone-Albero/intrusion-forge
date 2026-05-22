@@ -18,12 +18,11 @@ def aggregate_min_mean_max(
 
 
 def make_null_row(metric_keys: tuple[str, ...]) -> dict[str, float | None]:
-    """Build a dict of `f"{metric}_{scope}_{stat}": None` for the standard
-    pairwise output schema (scopes class+cluster, stats min/mean/max)."""
+    """Build a dict of `f"{metric}_{stat}": None` for the standard pairwise
+    output schema (stats min/mean/max)."""
     return {
-        f"{m}_{scope}_{stat}": None
+        f"{m}_{stat}": None
         for m in metric_keys
-        for scope in ("class", "cluster")
         for stat in ("min", "mean", "max")
     }
 

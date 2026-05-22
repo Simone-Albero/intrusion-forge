@@ -73,17 +73,42 @@ def _run_outer_fold(
 
 def build_cluster_summary(
     complexity: dict,
+    class_complexity: dict,
     predictions: dict,
     failure_threshold: float,
 ) -> dict:
-    """Merge per-cluster complexity with per-classifier failure rates."""
+    """Merge per-cluster complexity with class-level complexity (joined on the
+    cluster's class via `cluster_class`) and per-classifier failure rates.
+
+    Output schema per cluster:
+        cluster_<measure>  — cluster-level complexity (vs top-K adversarial clusters)
+        class_<measure>    — class-level complexity of the cluster's class
+        cluster_class, is_noise_cluster, failure_rate, is_failed
+    """
     cluster_errors = predictions.get("clusters", {}).get("global", {}) or {}
     summary: dict[str, dict] = {}
-    for cid, measures in complexity.items():
+    for cid, cluster_measures in complexity.items():
+        class_id = cluster_measures.get("cluster_class")
+        class_measures = (
+            class_complexity.get(str(class_id), {}) if class_id is not None else {}
+        )
+        cluster_feats = {
+            f"cluster_{k}": v
+            for k, v in cluster_measures.items()
+            if k not in ("cluster_class", "is_noise_cluster")
+        }
+        class_feats = {
+            f"class_{k}": v
+            for k, v in class_measures.items()
+            if k != "is_noise_cluster"
+        }
         error_entry = cluster_errors.get(str(cid), {})
         failure_rate = error_entry.get("error_rate")
         summary[str(cid)] = {
-            **measures,
+            **cluster_feats,
+            **class_feats,
+            "cluster_class": class_id,
+            "is_noise_cluster": cluster_measures.get("is_noise_cluster", False),
             "failure_rate": failure_rate,
             "is_failed": failure_rate is not None and failure_rate > failure_threshold,
         }
@@ -236,16 +261,19 @@ def main():
     save_config(cfg, paths.configs / "config_composed.json")
 
     complexity_path = paths.shared / "complexity.json"
-    if not complexity_path.exists():
-        raise FileNotFoundError(
-            f"Missing complexity artifact at {complexity_path}. "
-            "Run `make complexity` (or `pipelines/compute_complexity.py`) first."
-        )
+    class_complexity_path = paths.shared / "class_complexity.json"
+    for p in (complexity_path, class_complexity_path):
+        if not p.exists():
+            raise FileNotFoundError(
+                f"Missing complexity artifact at {p}. "
+                "Run `make complexity` first."
+            )
     complexity = load_from_json(complexity_path)
+    class_complexity = load_from_json(class_complexity_path)
     predictions = load_from_json(paths.outputs / "analysis/predictions/test.json")
 
     cluster_summary = build_cluster_summary(
-        complexity, predictions, cfg.failure_classifier.threshold
+        complexity, class_complexity, predictions, cfg.failure_classifier.threshold
     )
 
     bus = LogDispatcher()

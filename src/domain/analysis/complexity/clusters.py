@@ -59,30 +59,12 @@ def _dispersion(
     return float(np.max(dists)), float(np.percentile(dists, 95))
 
 
-def _nearest_foreign(
-    pw_row: np.ndarray, present_ids: list[str], id_to_class: dict[str, int], cls_c: int | None
-) -> float | None:
-    """Min centroid distance to a cluster of a different class."""
-    foreign_mask = np.array(
-        [id_to_class.get(c) != cls_c for c in present_ids], dtype=bool
-    )
-    foreign_dists = pw_row[foreign_mask]
-    if foreign_mask.any() and np.isfinite(foreign_dists).any():
-        return float(np.min(foreign_dists))
-    return None
-
-
-def _nearest_sibling(
-    pw_row: np.ndarray, present_ids: list[str], id_to_class: dict[str, int], cls_c: int | None, cid: str
-) -> float | None:
-    """Min centroid distance to a cluster of the same class."""
-    sibling_mask = np.array(
-        [id_to_class.get(c) == cls_c and c != cid for c in present_ids], dtype=bool
-    )
-    sibling_dists = pw_row[sibling_mask]
-    if sibling_mask.any() and np.isfinite(sibling_dists).any():
-        return float(np.min(sibling_dists))
-    return None
+def _nearest_other(pw_row: np.ndarray) -> float | None:
+    """Min centroid distance to any other cluster (diagonal already set to inf)."""
+    finite = pw_row[np.isfinite(pw_row)]
+    if finite.size == 0:
+        return None
+    return float(np.min(finite))
 
 
 def _spherical_centroid(X: np.ndarray, eps: float = 1e-8) -> np.ndarray:
@@ -97,7 +79,6 @@ def _spherical_centroid(X: np.ndarray, eps: float = 1e-8) -> np.ndarray:
 @timed
 def compute_cluster_geometry(
     X_num: np.ndarray,
-    y_class: np.ndarray,
     y_cluster: np.ndarray,
     centroids: dict[str, list[float]],
     *,
@@ -108,7 +89,6 @@ def compute_cluster_geometry(
 
     Inputs:
         X_num       — (n, d_num) float array, RobustScaled numericals.
-        y_class     — (n,) int array, class labels.
         y_cluster   — (n,) int array, cluster labels (-1 = noise, excluded).
         centroids   — {str(cluster_id): [float, ...]} Euclidean centroids.
         metric      — "cosine" or "euclidean". Controls centroid type, pairwise
@@ -117,28 +97,19 @@ def compute_cluster_geometry(
 
     Output keys per cluster (neutral, no metric suffix):
         max_dispersion, p95_dispersion
-        dist_to_nearest_foreign_cluster, min_sibling_centroid_dist
-        p5_silhouette, frac_at_risk          (cluster-label silhouette)
-        p5_silhouette_class, frac_at_risk_class  (class-label silhouette)
+        dist_to_nearest_centroid
+        p5_silhouette, frac_at_risk
 
     Noise points (y_cluster == -1) are excluded from all computations.
     """
     mask_valid = y_cluster != -1
     X_v = X_num[mask_valid]
-    yc_v = y_class[mask_valid]
     yk_v = y_cluster[mask_valid]
 
     present_ids = [str(cid) for cid in np.unique(yk_v) if str(cid) in centroids]
     if not present_ids:
         return {}
 
-    id_to_class: dict[str, int] = {}
-    for cid in present_ids:
-        mask_cid = yk_v == int(cid)
-        if mask_cid.any():
-            id_to_class[cid] = int(yc_v[mask_cid][0])
-
-    # build centroid matrix appropriate for the metric
     if metric == "cosine":
         centroid_matrix = np.stack(
             [_spherical_centroid(X_v[yk_v == int(cid)]) for cid in present_ids]
@@ -153,43 +124,36 @@ def compute_cluster_geometry(
     pw = pairwise_distances(centroid_matrix, metric=metric)
     np.fill_diagonal(pw, np.inf)
 
-    sil_cluster = _approx_silhouette(X_v, yk_v, metric=metric, random_state=random_state)
-    sil_class = _approx_silhouette(X_v, yc_v, metric=metric, random_state=random_state)
+    sil = _approx_silhouette(X_v, yk_v, metric=metric, random_state=random_state)
 
     result: dict[str, dict[str, float | None]] = {}
 
     for cid in present_ids:
         idx_c = id_to_idx[cid]
-        cls_c = id_to_class.get(cid)
         mask_cid = yk_v == int(cid)
         samples = X_v[mask_cid]
         centroid = centroid_matrix[idx_c]
 
         max_disp, p95_disp = _dispersion(samples, centroid, metric)
-        dist_foreign = _nearest_foreign(pw[idx_c], present_ids, id_to_class, cls_c)
-        min_sib = _nearest_sibling(pw[idx_c], present_ids, id_to_class, cls_c, cid)
+        dist_nearest = _nearest_other(pw[idx_c])
 
-        def _p5_frac(sil_values: np.ndarray | None) -> tuple[float | None, float | None]:
-            if sil_values is None:
-                return None, None
-            sil_c = sil_values[mask_cid]
+        if sil is None:
+            p5_sil, frac_at_risk = None, None
+        else:
+            sil_c = sil[mask_cid]
             sil_finite = sil_c[np.isfinite(sil_c)]
             if len(sil_finite) == 0:
-                return None, None
-            return float(np.percentile(sil_finite, 5)), float(np.mean(sil_finite < 0))
-
-        p5_sil, frac_at_risk = _p5_frac(sil_cluster)
-        p5_sil_class, frac_at_risk_class = _p5_frac(sil_class)
+                p5_sil, frac_at_risk = None, None
+            else:
+                p5_sil = float(np.percentile(sil_finite, 5))
+                frac_at_risk = float(np.mean(sil_finite < 0))
 
         result[cid] = {
             "max_dispersion": max_disp,
             "p95_dispersion": p95_disp,
-            "dist_to_nearest_foreign_cluster": dist_foreign,
-            "min_sibling_centroid_dist": min_sib,
+            "dist_to_nearest_centroid": dist_nearest,
             "p5_silhouette": p5_sil,
             "frac_at_risk": frac_at_risk,
-            "p5_silhouette_class": p5_sil_class,
-            "frac_at_risk_class": frac_at_risk_class,
         }
 
     return result

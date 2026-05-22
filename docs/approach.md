@@ -22,7 +22,7 @@ The procedure is classifier-agnostic and is designed to handle tabular datasets 
 
 The first step partitions each class into a set of compact, internally coherent sub-regions, which become the atomic units of all subsequent analysis.
 
-**Why not analyse at the class level.** Many real-world classes are multimodal: a single class may occupy multiple disconnected or geometrically distinct sub-regions of the feature space, each with different proximity relationships to other classes. Aggregating complexity measures at the class level would conflate these differences and produce a single, uninformative summary. By operating at the cluster level, the procedure can separately characterise the easy sub-regions of a class (well-separated from all other classes) and the hard ones (interleaved with foreign samples), providing a much finer-grained diagnostic.
+**Why analyse at the cluster level (and use the class level only as a complementary reference).** Many real-world classes are multimodal: a single class may occupy multiple disconnected or geometrically distinct sub-regions of the feature space, each with different proximity relationships to other classes. Aggregating complexity measures only at the class level would conflate these differences and produce a single, uninformative summary. By operating primarily at the cluster level, the procedure can separately characterise the easy sub-regions of a class (well-separated from all other classes) and the hard ones (interleaved with foreign samples), providing a much finer-grained diagnostic. A parallel class-level computation (under the same neutral schema) is also produced as a coarse-grained reference: in Step 4 the failure classifier receives both, joining each cluster's row with the class-level row of its parent class (`cluster_*` and `class_*` feature prefixes).
 
 **Why not analyse at the instance level.** Pushing the granularity to individual samples is equally problematic, for the opposite reason. Instance-level complexity measures are highly sensitive to noise and local density fluctuations: a single outlier or mislabelled sample can appear critically difficult while being entirely unrepresentative of any broader structural problem. More importantly, the complexity measures of interest — silhouette, MST boundary fraction, Fisher ratio — are inherently statistical quantities defined over populations of samples; they are either undefined or degenerate when applied to a single point. Clusters provide the minimum meaningful resolution at which these measures can be estimated reliably, while remaining compact enough to localise difficulty within the data space.
 
@@ -40,7 +40,7 @@ The first step partitions each class into a set of compact, internally coherent 
 
 Each cluster $c$ is characterised by a vector of complexity measures, organised into five families (F, N, ND, T, G). All measures are computed on the processed feature representations (after log-scaling and robust normalisation of numerical features, and hash encoding of categoricals), making them directly comparable across datasets and runs.
 
-For measures that are inherently pairwise — defined with respect to a specific adversarial class $j \ne \text{class}(c)$ — the cluster-level value is reported as the **minimum** (worst-case adversary), **mean** (average difficulty), and optionally **maximum** (easiest adversary) over all adversarial classes. Reporting the minimum is particularly important: a cluster may be easy to separate from most classes but critically exposed to one specific adversary, and this worst case is the one most likely to drive classifier failure.
+For measures that are inherently pairwise — defined with respect to a specific adversarial partition $j$ (i.e., a partition of a different class) — the value is reported as the **minimum** (worst-case adversary), **mean** (average difficulty), and **maximum** (easiest adversary) over the **top-K nearest adversarial partitions**, ranked by centroid distance under `complexity.distance`. Reporting the minimum is particularly important: a partition may be easy to separate from most adversaries but critically exposed to one specific one, and this worst case is the one most likely to drive classifier failure. The same aggregation logic is applied identically at the cluster level (`complexity.json`) and at the class level (`class_complexity.json`).
 
 **Distance metric for neighbourhood families.** The neighbourhood-based families (N, ND) require a dissimilarity measure that covers both numerical and categorical features. A **Gower-hybrid distance** is used: the numerical component is configurable (cosine or Euclidean, set via `complexity.distance`) and is combined with a Hamming-style indicator contribution on categoricals, with each contribution normalised to $[0, 1]$:
 
@@ -120,21 +120,17 @@ $$\text{maxDisp}(c) = \max_{x \in c} \|x - \mu_c\|$$
 
 **95th-percentile dispersion.** Outlier-robust counterpart to maximum dispersion — the 95th percentile of sample-to-centroid distances.
 
-**Distance to nearest foreign cluster.** Minimum centroid-to-centroid Euclidean distance from $c$ to any cluster of a different class. A small value indicates high spatial collision risk.
+**Distance to nearest centroid.** Minimum centroid-to-centroid distance from partition $c$ to any other partition (under `complexity.distance`). A small value indicates high spatial collision risk with at least one neighbouring partition.
 
-$$d_{\text{foreign}}(c) = \min_{c'\, :\, \text{class}(c') \ne \text{class}(c)} \|\mu_c - \mu_{c'}\|_2$$
+$$d_{\text{nearest}}(c) = \min_{c' \ne c} \|\mu_c - \mu_{c'}\|$$
 
-**5th-percentile silhouette score.** The 5th percentile of the silhouette distribution within the cluster, computed on non-noise samples. Focusing on the 5th percentile rather than the mean highlights the most boundary-exposed samples.
+**5th-percentile silhouette score.** The 5th percentile of the silhouette distribution within the partition, computed on non-noise samples under the configured metric. Focusing on the 5th percentile rather than the mean highlights the most boundary-exposed samples.
 
-$$s(x) = \frac{b(x) - a(x)}{\max(a(x), b(x))}, \quad a(x) = \text{mean intra-cluster dist}, \quad b(x) = \text{mean dist to nearest foreign cluster}$$
+$$s(x) = \frac{b(x) - a(x)}{\max(a(x), b(x))}, \quad a(x) = \text{mean intra-partition dist}, \quad b(x) = \text{mean dist to nearest other partition}$$
 
-**Fraction at risk.** Fraction of cluster samples with silhouette score $< 0$, i.e., samples closer to a foreign cluster than to their own centroid. Directly quantifies the proportion of boundary-ambiguous samples.
+**Fraction at risk.** Fraction of partition samples with silhouette score $< 0$, i.e., samples closer to another partition than to their own centroid. Directly quantifies the proportion of boundary-ambiguous samples.
 
 $$\text{fracAtRisk}(c) = \frac{|\{x \in c : s(x) < 0\}|}{|c|}$$
-
-**Minimum sibling centroid distance.** Minimum centroid distance from $c$ to any other cluster of the same class. Small values indicate that the class is internally fragmented into closely-spaced sub-regions, which may reflect genuine multimodality or simply the effect of HDBSCAN over-segmentation.
-
-$$d_{\text{sibling}}(c) = \min_{c' \ne c\, :\, \text{class}(c') = \text{class}(c)} \|\mu_c - \mu_{c'}\|_2$$
 
 ---
 

@@ -99,7 +99,7 @@ dl-all:
 			DISTANCE=$(DISTANCE) || exit 1; \
 	done
 
-## complexity:         Step 3a — per-cluster complexity (shared, idempotent)  (DATA, NAME, SEED, FORCE)
+## complexity:         Step 3a — cluster + class complexity (shared, idempotent)  (DATA, NAME, SEED, FORCE)
 complexity:
 	PYTHONPATH=. $(PYTHON) pipelines/compute_complexity.py $(HYDRA) $(FORCE_FLAG)
 

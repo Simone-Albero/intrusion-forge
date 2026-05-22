@@ -106,25 +106,21 @@ def _aggregate_pairs(
 
 @timed
 def compute_n_measures(
-    y_cluster: np.ndarray,
     knn_idx: np.ndarray,
     knn_dist: np.ndarray,
     X_num: np.ndarray,
     X_cat: np.ndarray | None,
-    class_mask: dict[int, np.ndarray],
     cluster_mask: dict[str, np.ndarray],
-    cluster_to_class: dict[str, int],
     top_k_map: dict[str, list[str]],
     *,
     metric: str = "cosine",
 ) -> dict[str, dict[str, float | None]]:
-    """Compute N1-N4 per cluster aggregated against (a) adversarial classes and
-    (b) the top-K nearest adversarial clusters, returned as min/mean/max for
-    each scope.
+    """Compute N1-N4 per cluster aggregated against the top-K nearest
+    adversarial clusters, returned as min/mean/max.
 
     Builds a global approximate MST once (for N1), then derives N2-N4 from the
-    k-NN graph using vectorised boolean masks. Noise points (y_cluster == -1)
-    are excluded from cluster membership but may appear as neighbours.
+    k-NN graph using vectorised boolean masks. Noise points (excluded from
+    cluster_mask) may still appear as neighbours.
     metric is forwarded to build_approx_mst to keep the MST consistent with the
     k-NN graph metric.
     """
@@ -140,22 +136,19 @@ def compute_n_measures(
             result[cid_str] = row
             continue
 
-        cls_c = cluster_to_class[cid_str]
         nbs = knn_idx[c_full_idx]
         nb_dists = knn_dist[c_full_idx]
 
-        class_pops = [m for j, m in class_mask.items() if j != cls_c]
         cluster_pops = [
             cluster_mask[ac] for ac in top_k_map.get(cid_str, []) if ac in cluster_mask
         ]
 
-        for scope, pops in (("class", class_pops), ("cluster", cluster_pops)):
-            agg = _aggregate_pairs(nbs, nb_dists, c_mask, pops, edges_uv)
-            for nk in _N_KEYS:
-                mn, me, mx = aggregate_min_mean_max(agg[nk])
-                row[f"{nk}_{scope}_min"] = mn
-                row[f"{nk}_{scope}_mean"] = me
-                row[f"{nk}_{scope}_max"] = mx
+        agg = _aggregate_pairs(nbs, nb_dists, c_mask, cluster_pops, edges_uv)
+        for nk in _N_KEYS:
+            mn, me, mx = aggregate_min_mean_max(agg[nk])
+            row[f"{nk}_min"] = mn
+            row[f"{nk}_mean"] = me
+            row[f"{nk}_max"] = mx
 
         result[cid_str] = row
 

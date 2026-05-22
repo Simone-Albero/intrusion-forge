@@ -72,11 +72,10 @@ def _stratified_subsample(
 
 def _build_population_masks(
     y_class: np.ndarray, y_cluster: np.ndarray
-) -> tuple[dict[int, np.ndarray], dict[str, np.ndarray], dict[str, int]]:
-    """Build boolean masks reused by all pairwise families.
+) -> tuple[dict[str, np.ndarray], dict[str, int]]:
+    """Build cluster boolean masks reused by all pairwise families.
 
     Returns:
-        class_mask        : {class_label: (n,) bool}, restricted to non-noise points.
         cluster_mask      : {str(cluster_id): (n,) bool}, restricted to non-noise points.
         cluster_to_class  : {str(cluster_id): class_label} for non-noise clusters.
     """
@@ -84,16 +83,13 @@ def _build_population_masks(
     yc_v = y_class[mask_valid]
     yk_v = y_cluster[mask_valid]
 
-    class_mask = {
-        int(j): (y_class == int(j)) & mask_valid for j in np.unique(yc_v)
-    }
     cluster_mask: dict[str, np.ndarray] = {}
     cluster_to_class: dict[str, int] = {}
     for cid in np.unique(yk_v):
         cid_str = str(int(cid))
         cluster_mask[cid_str] = y_cluster == int(cid)
         cluster_to_class[cid_str] = int(yc_v[yk_v == cid][0])
-    return class_mask, cluster_mask, cluster_to_class
+    return cluster_mask, cluster_to_class
 
 
 def _build_topk_map(
@@ -166,32 +162,37 @@ def compute_all_complexity_measures(
     noise_cluster_ids: set[int] | None = None,
     random_state: int = 42,
 ) -> dict[str, dict[str, float | None]]:
-    """Compute all complexity measures per cluster under a single metric.
+    """Compute all complexity measures per partition under a single metric.
 
-    Builds one Gower-hybrid k-NN graph and passes it to all measure families.
-    All families (F, N, ND, G) use the same metric — there are no dual-metric
-    outputs. Output keys are neutral (no _cosine / _euclidean suffix).
+    The partition is determined by `y_cluster`: passing cluster IDs gives
+    cluster-level measures; passing class IDs (with y_class == y_cluster) gives
+    class-level measures. All aggregations are vs the top-K nearest adversarial
+    partitions (no dual scope). Output keys are neutral (no _class_ / _cluster_
+    suffix, no _cosine / _euclidean suffix).
 
     Inputs:
         X_num            — (n, d_num) float array, RobustScaled numericals.
         X_cat            — (n, d_cat) int array or None.
-        y_class          — (n,) int array, class labels (encoded).
-        y_cluster        — (n,) int array, cluster labels (-1 = noise).
-        centroids        — {str(cluster_id): [float, ...]} Euclidean centroids
-                           (from _cluster_per_class; used only for the Euclidean
-                           path — cosine path recomputes spherical centroids).
+        y_class          — (n,) int array, class labels (encoded). Used by
+                           _build_topk_map to identify "adversarial" partitions
+                           (different class). For class-level analysis pass
+                           the same array as y_cluster.
+        y_cluster        — (n,) int array, partition labels (-1 = noise).
+        centroids        — {str(partition_id): [float, ...]} Euclidean centroids.
+                           Used only by the Euclidean G-family path; the cosine
+                           path recomputes spherical centroids.
         k                — number of neighbours for the k-NN graph.
-        top_k_clusters   — K nearest adversarial clusters for vs-cluster aggregation.
-        max_samples      — if set, subsample stratified by cluster before building
-                           the k-NN graph. None = use all samples.
-        min_per_cluster  — minimum samples per cluster in the subsample.
+        top_k_clusters   — K nearest adversarial partitions for aggregation.
+        max_samples      — if set, subsample stratified by partition before
+                           building the k-NN graph. None = use all samples.
+        min_per_cluster  — minimum samples per partition in the subsample.
         metric           — "cosine" or "euclidean". Controls k-NN, MST, F-family,
                            G-family centroids, pairwise distances, and silhouette.
-        noise_cluster_ids — set of pseudo-cluster IDs (reassigned noise points).
+        noise_cluster_ids — set of pseudo-partition IDs (reassigned noise points).
                            Adds is_noise_cluster flag to the output rows.
         random_state     — seed for stratified subsampling and silhouette.
 
-    Returns {cluster_id: {measure_name: value}}.
+    Returns {partition_id: {measure_name: value}}.
     """
     if max_samples is not None and len(y_cluster) > max_samples:
         n_orig = len(y_cluster)
@@ -209,9 +210,7 @@ def compute_all_complexity_measures(
     logger.info("Building Gower-%s hybrid k-NN graph (k=%d)...", metric, k)
     knn_idx, knn_dist = build_knn_graph(X_num, X_cat, k=k, metric=metric)
 
-    class_mask, cluster_mask, cluster_to_class = _build_population_masks(
-        y_class, y_cluster
-    )
+    cluster_mask, cluster_to_class = _build_population_masks(y_class, y_cluster)
 
     # centroids appropriate for the metric (spherical if cosine, Euclidean otherwise)
     analysis_centroids = _compute_analysis_centroids(X_num, y_cluster, metric=metric)
@@ -223,29 +222,24 @@ def compute_all_complexity_measures(
     with tqdm(total=5, desc="complexity families", unit="family") as pbar:
         pbar.set_description("F measures")
         f_out = compute_f_measures(
-            X_num, y_class, y_cluster, cluster_to_class, top_k_map, metric=metric
+            X_num, y_cluster, top_k_map, metric=metric
         )
         pbar.update(1)
 
         pbar.set_description("N measures")
         n_out = compute_n_measures(
-            y_cluster,
             knn_idx,
             knn_dist,
             X_num,
             X_cat,
-            class_mask,
             cluster_mask,
-            cluster_to_class,
             top_k_map,
             metric=metric,
         )
         pbar.update(1)
 
         pbar.set_description("ND measures")
-        nd_out = compute_network_measures(
-            knn_idx, class_mask, cluster_mask, cluster_to_class, top_k_map
-        )
+        nd_out = compute_network_measures(knn_idx, cluster_mask, top_k_map)
         pbar.update(1)
 
         pbar.set_description("T measures")
@@ -254,7 +248,7 @@ def compute_all_complexity_measures(
 
         pbar.set_description("G measures")
         g_out = compute_cluster_geometry(
-            X_num, y_class, y_cluster, centroids,
+            X_num, y_cluster, centroids,
             metric=metric, random_state=random_state,
         )
         pbar.update(1)

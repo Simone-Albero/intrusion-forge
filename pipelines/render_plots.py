@@ -219,15 +219,15 @@ def _plot_class_separability_ridgeline(
 ) -> dict[str, Plot]:
     """Ridgeline of inter/intra neighbourhood ratios per class, split correct vs failed.
 
-    Ratio = 1 − n2_class_min. Low ratio means even the easiest adversary sits inside
-    the cluster's local neighbourhood.
+    Ratio = 1 − class_n2_min. Low ratio means even the easiest adversary class
+    sits inside the cluster's local neighbourhood.
     One row per class with at least one correct and one failed cluster.
     """
-    required = {"n2_class_min", "is_failed", "class_name", "failure_rate"}
+    required = {"class_n2_min", "is_failed", "class_name", "failure_rate"}
     if not required.issubset(summary_df.columns):
         return {}
 
-    ratio = 1.0 - summary_df["n2_class_min"].astype(float)
+    ratio = 1.0 - summary_df["class_n2_min"].astype(float)
 
     valid = (
         summary_df["failure_rate"].notna()
@@ -264,7 +264,7 @@ def _plot_class_separability_ridgeline(
             order=order,
             legend_labels=("correct", "failed"),
             colors=(CORRECT_COLOR, FAILED_COLOR),
-            x_label="1 - n2_class_min",
+            x_label="1 - class_n2_min",
         ),
     }
 

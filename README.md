@@ -13,7 +13,7 @@ intrusion-forge/
 ├── pipelines/                       # Pipeline entry points (Hydra-driven)
 │   ├── prepare_data.py              # Step 1 — preprocess raw CSV → parquet splits + per-class HDBSCAN
 │   ├── classify.py                  # Step 2 — train & evaluate one ML or DL classifier
-│   ├── compute_complexity.py        # Step 3a — per-cluster complexity measures (shared)
+│   ├── compute_complexity.py        # Step 3a — per-cluster + per-class complexity (shared)
 │   ├── fit_failure_classifier.py    # Step 3b — Random Forest predicting cluster failure
 │   └── render_plots.py              # Step 4 — render figures from analysis artifacts
 ├── generate_synthetic.py            # Generate the synthetic test dataset
@@ -155,7 +155,7 @@ The pipeline has four steps, driven by [pipelines/](pipelines/) entry points or 
 ```
 resources/experiments/${name}/${data.file_name}_${seed}/
 ├── processed_data/                  # train.parquet, val.parquet, test.parquet (shared)
-├── shared/                          # df_meta, clusters_meta, complexity metrics (shared across classifiers)
+├── shared/                          # df_meta, clusters_meta, complexity & class_complexity metrics
 └── ${classifier.name}/              # per-classifier subtree
     ├── configs/                     # resolved Hydra config snapshot
     ├── models/                      # checkpoints / serialized estimators
@@ -214,14 +214,19 @@ For DL classifiers, the `stage` parameter controls execution: `training` (train 
 make complexity DATA=cic_2018_v2 NAME=my_exp
 ```
 
-Builds the shared k-NN complexity graph (Gower-style mixed-distance, with `complexity.distance` governing the metric on numerical features) and computes per-cluster complexity measures grouped into five families: F (feature), N (neighbourhood), ND (network density), T (dimensionality), G (geometry). See [docs/complexity_measures.md](docs/complexity_measures.md) for definitions.
+Computes complexity measures at **two parallel partition levels** under a single neutral schema:
+
+- **Cluster-level** (`complexity.json`): each cluster aggregated against its top-K nearest adversarial clusters.
+- **Class-level** (`class_complexity.json`): each class aggregated against its top-K nearest adversarial classes.
+
+Both levels share the same Gower-style mixed-distance k-NN backbone (governed by `complexity.distance`) and the same five families: F (feature), N (neighbourhood), ND (network density), T (dimensionality), G (geometry). The two outputs are independent and can be compared row-wise. See [docs/complexity_measures.md](docs/complexity_measures.md) for definitions.
 
 **Shared outputs:**
 
 ```
 shared/
-├── complexity_metrics.json          # per-cluster complexity vector
-└── (k-NN cache and auxiliary pickle artifacts)
+├── complexity.json                  # per-cluster complexity vector
+└── class_complexity.json            # per-class complexity vector (same schema)
 ```
 
 This step is dataset-level (classifier-independent) and idempotent: existing outputs are reused unless `complexity.force=true`.
@@ -232,7 +237,7 @@ This step is dataset-level (classifier-independent) and idempotent: existing out
 make failure-classify DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=random_forest
 ```
 
-Builds a per-cluster summary by joining the complexity vector (Step 3a) with the classifier's per-cluster failure rate (Step 2). A Random Forest is then trained — with nested stratified cross-validation (5 outer × 5 inner folds) — to predict whether a cluster's failure rate exceeds `failure_classifier.threshold`. Reports out-of-fold metrics, ROC curves, and feature importances.
+Builds a per-cluster summary by joining (a) the cluster-level complexity vector, (b) the class-level complexity vector of the cluster's class (`cluster_*` / `class_*` feature prefixes), and (c) the classifier's per-cluster failure rate (Step 2). A Random Forest is then trained — with nested stratified cross-validation (5 outer × 5 inner folds) — to predict whether a cluster's failure rate exceeds `failure_classifier.threshold`. Reports out-of-fold metrics, ROC curves, and feature importances.
 
 **Per-classifier outputs:**
 

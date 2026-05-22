@@ -27,7 +27,7 @@ def _f2_pair(X_c: np.ndarray, X_j: np.ndarray, eps: float = 1e-8) -> float:
 def _f3_pair(X_c: np.ndarray, X_j: np.ndarray) -> float:
     """F3: min over features of the fraction of cluster-c samples in the overlap region.
 
-    Measures how well a single feature can separate cluster c from class j.
+    Measures how well a single feature can separate cluster c from cluster j.
     Higher = harder (no single feature separates well).
     """
     min_c, max_c = X_c.min(axis=0), X_c.max(axis=0)
@@ -53,7 +53,6 @@ def _f4_pair(X_c: np.ndarray, X_j: np.ndarray) -> float:
     min_j, max_j = X_j.min(axis=0), X_j.max(axis=0)
     lo = np.maximum(min_c, min_j)
     hi = np.minimum(max_c, max_j)
-    # if any feature has no overlap, no sample can be in the joint region
     if np.any(hi < lo):
         return 0.0
     in_all = np.ones(len(X_c), dtype=bool)
@@ -84,42 +83,31 @@ def _pair_block(X_c: np.ndarray, X_others: list[np.ndarray]) -> dict[str, list[f
 @timed
 def compute_f_measures(
     X_num: np.ndarray,
-    y_class: np.ndarray,
     y_cluster: np.ndarray,
-    cluster_to_class: dict[str, int],
     top_k_map: dict[str, list[str]],
     *,
     metric: str = "cosine",
 ) -> dict[str, dict[str, float | None]]:
-    """Compute F1-F4 per cluster aggregated against (a) adversarial classes and
-    (b) the top-K nearest adversarial clusters, returned as min/mean/max for
-    each scope.
+    """Compute F1-F4 per cluster aggregated against the top-K nearest
+    adversarial clusters, returned as min/mean/max.
 
     Inputs:
         X_num             — (n, d_num) float array, RobustScaled numericals.
-        y_class           — (n,) int array, class labels.
         y_cluster         — (n,) int array, cluster labels (-1 = noise, excluded).
-        cluster_to_class  — {str(cluster_id): class_label} for non-noise clusters.
         top_k_map         — {str(cluster_id): [str(adversarial_cluster_id), ...]}
                             top-K nearest adversarial clusters per cluster.
         metric            — "cosine": L2-normalise samples before F1-F4 (angular
                             space, consistent with Gower-cosine k-NN);
                             "euclidean": raw samples (Cartesian space).
 
-    Output keys per cluster (24 total):
-        f{i}_class_{min,mean,max}    — aggregated over adversarial classes
-        f{i}_cluster_{min,mean,max}  — aggregated over top-K adversarial clusters
-        for i in {1, 2, 3, 4}.
+    Output keys per cluster (12 total):
+        f{i}_{min,mean,max}   for i in {1, 2, 3, 4}.
     """
     mask_valid = y_cluster != -1
     X_raw = X_num[mask_valid]
     X_v = _l2_normalize(X_raw) if metric == "cosine" else X_raw
-    yc_v = y_class[mask_valid]
     yk_v = y_cluster[mask_valid]
 
-    class_block: dict[int, np.ndarray] = {
-        int(j): X_v[yc_v == j] for j in np.unique(yc_v)
-    }
     cluster_block: dict[str, np.ndarray] = {
         str(int(cid)): X_v[yk_v == cid] for cid in np.unique(yk_v)
     }
@@ -133,21 +121,18 @@ def compute_f_measures(
             result[cid_str] = row
             continue
 
-        cls_c = cluster_to_class[cid_str]
-        class_blocks = [b for j, b in class_block.items() if j != cls_c]
         cluster_blocks = [
             cluster_block[ac]
             for ac in top_k_map.get(cid_str, [])
             if ac in cluster_block
         ]
 
-        for scope, blocks in (("class", class_blocks), ("cluster", cluster_blocks)):
-            vals = _pair_block(X_c, blocks)
-            for fk in _F_KEYS:
-                mn, me, mx = aggregate_min_mean_max(vals[fk])
-                row[f"{fk}_{scope}_min"] = mn
-                row[f"{fk}_{scope}_mean"] = me
-                row[f"{fk}_{scope}_max"] = mx
+        vals = _pair_block(X_c, cluster_blocks)
+        for fk in _F_KEYS:
+            mn, me, mx = aggregate_min_mean_max(vals[fk])
+            row[f"{fk}_min"] = mn
+            row[f"{fk}_mean"] = me
+            row[f"{fk}_max"] = mx
 
         result[cid_str] = row
 
