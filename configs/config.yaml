@@ -1,7 +1,7 @@
 defaults:
   - data: cic_2018_v2
   - classifier: tabular
-  - clustering: hdbscan
+  - clustering: ensemble
   - loss: focal             # consumed only by DL classifiers
   - optimizer: adamw        # consumed only by DL classifiers
   - scheduler: one_cycle    # consumed only by DL classifiers

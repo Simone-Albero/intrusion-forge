@@ -38,8 +38,13 @@ def build_cluster_fn(
     consensus_threshold: float,
     max_fit_samples: int,
     random_state: int,
+    min_consensus_size: int = 1,
 ) -> ClusterFn:
-    """Build a ClusterFn from {algorithm_name: params}; ensembles when >1 key."""
+    """Build a ClusterFn from {algorithm_name: params}; ensembles when >1 key.
+
+    `min_consensus_size` pools sub-threshold consensus clusters into noise; it
+    only applies to the ensemble path (ignored for a single algorithm).
+    """
     if not algorithms:
         raise ValueError("build_cluster_fn: algorithms is empty")
     fns = [
@@ -48,4 +53,6 @@ def build_cluster_fn(
     ]
     if len(fns) == 1:
         return fns[0]
-    return make_ensemble_cluster_fn(fns, threshold=consensus_threshold)
+    return make_ensemble_cluster_fn(
+        fns, threshold=consensus_threshold, min_size=min_consensus_size
+    )

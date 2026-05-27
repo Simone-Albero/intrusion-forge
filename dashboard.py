@@ -293,6 +293,19 @@ def load_figure_index(record_root: str) -> dict[str, str]:
     return out
 
 
+@st.cache_data(show_spinner=False)
+def count_clusters(record_shared: str) -> int | None:
+    """Total number of clusters for a dataset, read from shared clusters_meta.json."""
+    meta = _read_json(Path(record_shared) / "metadata/clusters_meta.json")
+    if not isinstance(meta, dict):
+        return None
+    dist = meta.get("clusters_distribution")
+    if isinstance(dist, dict) and dist:
+        return len(dist)
+    centroids = meta.get("centroids")
+    return len(centroids) if isinstance(centroids, dict) and centroids else None
+
+
 # ══════════════════════════════ Selectors ════════════════════════════════════
 
 
@@ -396,10 +409,54 @@ def heatmap_fig(
         title=title,
         xaxis_title="Classifier",
         yaxis_title="Dataset",
-        height=max(280, 40 + 28 * len(pivot.index)),
+        height=max(380, 60 + 46 * len(pivot.index)),
         margin=dict(l=120, r=40, t=60, b=80),
     )
     fig.update_xaxes(tickangle=-30)
+    fig.update_yaxes(
+        tickmode="array",
+        tickvals=list(pivot.index),
+        ticktext=[str(v) for v in pivot.index],
+    )
+    return fig
+
+
+def count_heatmap_fig(
+    pivot: pd.DataFrame,
+    *,
+    title: str,
+    value_label: str = "clusters",
+) -> go.Figure:
+    """Integer-valued heatmap (auto colour range), for counts like clusters-per-dataset."""
+    z = pivot.values.astype(float)
+    text = np.vectorize(lambda v: "" if not np.isfinite(v) else f"{int(round(v)):d}")(z)
+    fig = go.Figure(
+        go.Heatmap(
+            z=z,
+            x=list(pivot.columns),
+            y=list(pivot.index),
+            colorscale="Blues",
+            text=text,
+            texttemplate="%{text}",
+            hovertemplate="dataset=%{y}<br>variant=%{x}<br>"
+            + value_label
+            + "=%{z:.0f}<extra></extra>",
+            colorbar=dict(title=value_label),
+        )
+    )
+    fig.update_layout(
+        title=title,
+        xaxis_title="Variant",
+        yaxis_title="Dataset",
+        height=max(380, 60 + 46 * len(pivot.index)),
+        margin=dict(l=120, r=40, t=60, b=80),
+    )
+    fig.update_xaxes(tickangle=-30)
+    fig.update_yaxes(
+        tickmode="array",
+        tickvals=list(pivot.index),
+        ticktext=[str(v) for v in pivot.index],
+    )
     return fig
 
 
@@ -797,6 +854,24 @@ def render_overview(
     if not selected_variants:
         st.info("Pick at least one variant in the sidebar.")
         return
+
+    cluster_rows = [
+        {"dataset": r.file_name, "variant": variant, "n_clusters": count_clusters(str(r.shared))}
+        for variant in selected_variants
+        for r in filter_records(records, variants=[variant], seed=seed)
+    ]
+    if cluster_rows:
+        cdf = pd.DataFrame(cluster_rows).drop_duplicates(subset=["dataset", "variant"])
+        cluster_pivot = cdf.pivot_table(
+            index="dataset", columns="variant", values="n_clusters", aggfunc="first"
+        ).reindex(index=sorted(cdf["dataset"].unique()), columns=selected_variants)
+        st.subheader("Clusters per dataset")
+        st.plotly_chart(
+            count_heatmap_fig(cluster_pivot, title="Total clusters per dataset"),
+            width="stretch",
+            key="cluster_count_heatmap",
+        )
+        st.divider()
 
     metric_label = HEATMAP_METRICS[metric]
     for variant in selected_variants:

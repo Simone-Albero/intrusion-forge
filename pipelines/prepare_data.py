@@ -208,6 +208,7 @@ def prepare(cfg):
         consensus_threshold=cfg.clustering.consensus_threshold,
         max_fit_samples=cfg.clustering.max_fit_samples,
         random_state=cfg.seed,
+        min_consensus_size=cfg.clustering.min_consensus_size,
     )
     labels, centroids, noise_cluster_ids = _cluster_per_class(
         X_num,
