@@ -16,4 +16,4 @@ tqdm
 umap-learn
 streamlit
 plotly
-shap
+shap>=0.44

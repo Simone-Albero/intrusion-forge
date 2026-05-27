@@ -48,8 +48,10 @@ plots:
   pair_projection_max_samples: 5000
 
 explain:
-  generate: true
-  num_samples: 100
+  generate: false                    # opt-in: train an extra complexity-extended classifier + SHAP
+  num_samples: 100                   # test instances explained per run
+  background_samples: 100            # background rows for the KernelExplainer
+  max_display: 20                    # top features shown in the beeswarm
 
 
 hydra:

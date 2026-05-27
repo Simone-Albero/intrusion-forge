@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 from src.core.config import load_config
-from src.core.io import load_df
+from src.core.io import load_df, save_df
 from src.core.log import (
     JSONSubscriber,
     LogBundle,
@@ -17,6 +17,11 @@ from src.core.paths import OutputPaths
 from src.core.utils import flush_timing, load_from_json, skip_if_exists, timed
 
 from src.domain.analysis.complexity import compute_all_complexity_measures
+from src.domain.data.preprocessing import (
+    attach_cluster_features,
+    cluster_feature_columns,
+    scale_columns_on_train,
+)
 
 setup_logger(log_file="resources/logs.txt")
 logger = logging.getLogger(__name__)
@@ -159,9 +164,11 @@ def main():
 
     cluster_marker = paths.shared / "complexity.json"
     class_marker = paths.shared / "class_complexity.json"
+    meta_marker = paths.shared / "complexity_meta.json"
     run_cluster = not skip_if_exists(cluster_marker, cfg.complexity.force, "complexity")
     run_class = not skip_if_exists(class_marker, cfg.complexity.force, "class_complexity")
-    if not (run_cluster or run_class):
+    run_extend = not skip_if_exists(meta_marker, cfg.complexity.force, "complexity_extend")
+    if not (run_cluster or run_class or run_extend):
         return
 
     num_cols = list(cfg.data.num_cols) if cfg.data.num_cols else []
@@ -226,6 +233,40 @@ def main():
         )
         bus.publish(LogBundle.from_dict({"json/class_complexity": class_complexity}))
         logger.info("Class complexity published to %s.", class_marker)
+
+    if run_extend:
+        cluster_features = (
+            cluster_complexity if run_cluster else load_from_json(cluster_marker)
+        )
+        complexity_cols = cluster_feature_columns(cluster_features)
+        if not complexity_cols:
+            logger.warning("No complexity columns to attach; skipping dataset extension.")
+        else:
+            splits = {"train": train_df, "val": val_df, "test": test_df}
+            extended: dict[str, pd.DataFrame] = {}
+            for name, split_df in splits.items():
+                merged = attach_cluster_features(split_df, cluster_features)
+                before = len(merged)
+                merged = merged.dropna(subset=complexity_cols, how="all")
+                if before - len(merged):
+                    logger.info(
+                        "Extend %s: dropped %d/%d rows with no cluster match",
+                        name,
+                        before - len(merged),
+                        before,
+                    )
+                extended[name] = merged
+            extended = scale_columns_on_train(extended, complexity_cols)
+            for name, split_df in extended.items():
+                save_df(split_df, paths.processed_data / f"{name}.{ext}")
+            bus.publish(
+                LogBundle.from_dict({"json/complexity_meta": {"columns": complexity_cols}})
+            )
+            logger.info(
+                "Extended splits with %d complexity columns; meta -> %s",
+                len(complexity_cols),
+                meta_marker,
+            )
 
     flush_timing(paths.shared / "timing.json")
 

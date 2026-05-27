@@ -12,8 +12,10 @@
 #   make run               DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=tabular
 #   make run-all           DATA=cic_2018_v2 NAME=my_exp      # one dataset, all compatible classifiers
 #   make all               NAME=my_exp                       # all datasets, all compatible classifiers
+#   make explain           DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=tabular   # extended classify + SHAP + render
 #
 # Add FORCE=1 to recompute cached shared stages (prepare, complexity).
+# Add EXPLAIN=1 to run/run-all/all to also train a complexity-extended classifier + SHAP.
 # ──────────────────────────────────────────────────────────────────────────────
 
 # Use venv if present; falls back to the active conda (or system) python otherwise.
@@ -26,6 +28,8 @@ SEED       ?= 42
 CLASSIFIER ?= tabular
 DISTANCE   ?= euclidean
 FORCE      ?=
+EXPLAIN    ?=
+export EXPLAIN
 
 ML_CLASSIFIERS := \
     naive_bayes \
@@ -55,8 +59,9 @@ DATASET_FORMATS := \
 HYDRA := data=$(DATA) name=$(NAME) seed=$(SEED) classifier=$(CLASSIFIER) \
          complexity.distance=$(DISTANCE) clustering.distance=$(DISTANCE)
 FORCE_FLAG := $(if $(FORCE),prepare.force=true complexity.force=true,)
+EXPLAIN_FLAG := $(if $(EXPLAIN),explain.generate=true,)
 
-.PHONY: prepare classify ml-all dl-all complexity failure-classify render run run-all all generate dashboard help
+.PHONY: prepare classify classify-extended explain ml-all dl-all complexity failure-classify render run run-all all generate dashboard help
 
 ## prepare:            Step 1 — preprocess raw CSV → parquet splits           (DATA, NAME, SEED, FORCE)
 prepare:
@@ -65,6 +70,13 @@ prepare:
 ## classify:           Step 2 — train & evaluate one classifier (ML or DL)    (DATA, NAME, SEED, CLASSIFIER)
 classify:
 	PYTHONPATH=. $(PYTHON) pipelines/classify.py $(HYDRA)
+
+## classify-extended:  Step 2b — train classifier on complexity-extended features + SHAP  (DATA, NAME, SEED, CLASSIFIER)
+classify-extended:
+	PYTHONPATH=. $(PYTHON) pipelines/classify.py $(HYDRA) explain.generate=true
+
+## explain:            Complexity-extended classify (+SHAP) then render, one classifier (assumes prepare done)  (DATA, NAME, SEED, CLASSIFIER)
+explain: complexity classify-extended render
 
 ## ml-all:             Step 2 — train & evaluate every ML classifier in turn  (DATA, NAME, SEED)
 ml-all:
@@ -111,10 +123,10 @@ failure-classify: complexity
 render:
 	PYTHONPATH=. $(PYTHON) pipelines/render_plots.py $(HYDRA)
 
-## run:                Run all steps for a single (dataset, classifier)       (DATA, NAME, SEED, CLASSIFIER)
-run: prepare classify failure-classify render
+## run:                Run all steps for a single (dataset, classifier)       (DATA, NAME, SEED, CLASSIFIER, EXPLAIN)
+run: prepare complexity classify failure-classify $(if $(EXPLAIN),classify-extended,) render
 
-## run-all:            Run all steps for a single dataset, all compatible classifiers (DATA, NAME, SEED)
+## run-all:            Run all steps for a single dataset, all compatible classifiers (DATA, NAME, SEED, EXPLAIN)
 run-all:
 	@format=""; \
 	for entry in $(DATASET_FORMATS); do \
@@ -136,6 +148,9 @@ run-all:
 	$(MAKE) --no-print-directory prepare \
 		DATA=$(DATA) NAME=$(NAME) SEED=$(SEED) \
 		DISTANCE=$(DISTANCE) $(FORCE_FLAG) || exit 1; \
+	$(MAKE) --no-print-directory complexity \
+		DATA=$(DATA) NAME=$(NAME) SEED=$(SEED) \
+		DISTANCE=$(DISTANCE) $(FORCE_FLAG) || exit 1; \
 	for clf in $(ML_CLASSIFIERS) $$dl_list; do \
 		echo ""; \
 		echo "── classifier: $$clf ─────────────────────────────"; \
@@ -145,12 +160,17 @@ run-all:
 		$(MAKE) --no-print-directory failure-classify \
 			DATA=$(DATA) NAME=$(NAME) SEED=$(SEED) CLASSIFIER=$$clf \
 			DISTANCE=$(DISTANCE) || exit 1; \
+		if [ -n "$(EXPLAIN)" ]; then \
+			$(MAKE) --no-print-directory classify-extended \
+				DATA=$(DATA) NAME=$(NAME) SEED=$(SEED) CLASSIFIER=$$clf \
+				DISTANCE=$(DISTANCE) || exit 1; \
+		fi; \
 		$(MAKE) --no-print-directory render \
 			DATA=$(DATA) NAME=$(NAME) SEED=$(SEED) CLASSIFIER=$$clf \
 			DISTANCE=$(DISTANCE) || exit 1; \
 	done
 
-## all:                Run the full pipeline for every dataset (all ML + compatible DL classifiers) (NAME, SEED)
+## all:                Run the full pipeline for every dataset (all ML + compatible DL classifiers) (NAME, SEED, EXPLAIN)
 all:
 	@for entry in $(DATASET_FORMATS); do \
 		dataset=$${entry%%:*}; format=$${entry##*:}; \
@@ -166,6 +186,9 @@ all:
 		$(MAKE) --no-print-directory prepare \
 			DATA=$$dataset NAME=$(NAME) SEED=$(SEED) \
 			DISTANCE=$(DISTANCE) $(FORCE_FLAG) || exit 1; \
+		$(MAKE) --no-print-directory complexity \
+			DATA=$$dataset NAME=$(NAME) SEED=$(SEED) \
+			DISTANCE=$(DISTANCE) $(FORCE_FLAG) || exit 1; \
 		for clf in $(ML_CLASSIFIERS) $$dl_list; do \
 			echo ""; \
 			echo "── classifier: $$clf ─────────────────────────────"; \
@@ -175,6 +198,11 @@ all:
 			$(MAKE) --no-print-directory failure-classify \
 				DATA=$$dataset NAME=$(NAME) SEED=$(SEED) CLASSIFIER=$$clf \
 				DISTANCE=$(DISTANCE) || exit 1; \
+			if [ -n "$(EXPLAIN)" ]; then \
+				$(MAKE) --no-print-directory classify-extended \
+					DATA=$$dataset NAME=$(NAME) SEED=$(SEED) CLASSIFIER=$$clf \
+					DISTANCE=$(DISTANCE) || exit 1; \
+			fi; \
 			$(MAKE) --no-print-directory render \
 				DATA=$$dataset NAME=$(NAME) SEED=$(SEED) CLASSIFIER=$$clf \
 				DISTANCE=$(DISTANCE) || exit 1; \

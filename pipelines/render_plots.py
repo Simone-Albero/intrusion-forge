@@ -1,4 +1,5 @@
 import logging
+import re
 import sys
 from pathlib import Path
 
@@ -14,10 +15,11 @@ from src.core.log import (
     LogDispatcher,
     setup_logger,
 )
-from src.core.paths import OutputPaths
-from src.core.utils import flush_timing, load_from_json, timed
+from src.core.paths import OutputPaths, with_variant
+from src.core.utils import flush_timing, load_from_json, load_from_pickle, timed
 from src.domain.plot.charts import (
     bar_plot,
+    beeswarm_plot,
     heatmap_plot,
     ridgeline_plot,
     strip_count_panel_plot,
@@ -375,6 +377,34 @@ def assemble_analysis_figures(
     return figures
 
 
+def assemble_explain_figures(
+    shap_payload: dict,
+    explain_meta: dict,
+    *,
+    max_display: int = 20,
+    explain_bus: LogDispatcher | None = None,
+) -> dict[str, Plot]:
+    """Build one SHAP beeswarm per class from persisted SHAP values."""
+    values = np.asarray(shap_payload["values"])  # (n, f, c)
+    data = np.asarray(shap_payload["data"])  # (n, f)
+    feature_names = explain_meta["feature_names"]
+    class_names = explain_meta["class_names"]
+
+    figures: dict[str, Plot] = {}
+    for k, name in enumerate(class_names):
+        slug = re.sub(r"[^0-9A-Za-z._-]+", "_", str(name)).strip("_") or str(k)
+        figures[f"figure/explain/beeswarm_{slug}"] = beeswarm_plot(
+            values[:, :, k],
+            data,
+            feature_names,
+            max_display=max_display,
+            title=f"SHAP — class '{name}'",
+        )
+    if explain_bus is not None:
+        explain_bus.publish(LogBundle.from_dict(figures))
+    return figures
+
+
 def main():
     """Main entry point for plot rendering."""
     cfg = load_config(
@@ -393,27 +423,46 @@ def main():
     )
     save_config(cfg, paths.configs / "config_composed_render.json")
 
-    clusters_meta = load_from_json(paths.shared / "metadata/clusters_meta.json")
-    centroids = clusters_meta.get("centroids", {})
-
-    cluster_summary = load_from_json(paths.outputs / "analysis/cluster_summary.json")
-    df_meta = load_from_json(paths.shared / "metadata/df_meta.json")
-    classifier_results = load_from_json(
-        paths.outputs / "analysis/classifier_results.json"
-    )
-
     analysis_bus = LogDispatcher()
     analysis_bus.subscribe(JSONSubscriber(paths.outputs))
     analysis_bus.subscribe(FilesystemFigureSubscriber(paths.figures))
 
-    assemble_analysis_figures(
-        cluster_summary=cluster_summary,
-        centroids=centroids,
-        df_meta=df_meta,
-        classifier_results=classifier_results,
-        metric=cfg.complexity.distance,
-        analysis_bus=analysis_bus,
-    )
+    summary_path = paths.outputs / "analysis/cluster_summary.json"
+    results_path = paths.outputs / "analysis/classifier_results.json"
+    if summary_path.exists() and results_path.exists():
+        clusters_meta = load_from_json(paths.shared / "metadata/clusters_meta.json")
+        assemble_analysis_figures(
+            cluster_summary=load_from_json(summary_path),
+            centroids=clusters_meta.get("centroids", {}),
+            df_meta=load_from_json(paths.shared / "metadata/df_meta.json"),
+            classifier_results=load_from_json(results_path),
+            metric=cfg.complexity.distance,
+            analysis_bus=analysis_bus,
+        )
+    else:
+        logger.warning(
+            "[STAGE-SKIP] Missing failure-analysis artifacts in %s; skipping summary figures.",
+            paths.outputs / "analysis",
+        )
+
+    explained = with_variant(paths, "explained")
+    shap_path = explained.pickle / "explain/shap_values.pkl"
+    meta_path = explained.outputs / "explain/meta.json"
+    if shap_path.exists() and meta_path.exists():
+        explain_bus = LogDispatcher()
+        explain_bus.subscribe(FilesystemFigureSubscriber(explained.figures))
+        assemble_explain_figures(
+            load_from_pickle(shap_path),
+            load_from_json(meta_path),
+            max_display=cfg.explain.max_display,
+            explain_bus=explain_bus,
+        )
+    else:
+        logger.warning(
+            "[STAGE-SKIP] Missing SHAP artifacts under %s; skipping beeswarm figures.",
+            explained.pickle / "explain",
+        )
+
     flush_timing(paths.outputs / "timing.json")
 
 

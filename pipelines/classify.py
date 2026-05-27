@@ -26,9 +26,10 @@ from src.core.log import (
     PickleSubscriber,
     setup_logger,
 )
-from src.core.paths import OutputPaths
+from src.core.paths import OutputPaths, with_variant
 from src.core.utils import flush_timing, load_from_json, timed
 from src.core.io import load_listed_dfs
+from src.domain.analysis.explain import kernel_shap_values
 from src.domain.data.preprocessing import subsample_df
 from src.domain.projection import stratified_subsample, tsne_projection
 from src.domain.plot.base import Plot
@@ -472,6 +473,69 @@ def _evaluate_stage(
 
 
 @timed
+def _explain_stage(
+    cfg,
+    paths: OutputPaths,
+    train_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    feat_cols: list[str],
+    label_col: str,
+    df_meta: dict,
+    num_cols: list[str],
+    cat_cols: list[str],
+    bus: LogDispatcher,
+) -> None:
+    """Compute model-agnostic SHAP values on a test subsample and publish raw arrays."""
+    kind = cfg.classifier.kind
+    training_mod = _resolve_training_module(kind)
+    context = (
+        _build_dl_context(cfg, paths, df_meta, num_cols, cat_cols, label_col)
+        if kind == "dl"
+        else _build_ml_context(num_cols, cat_cols)
+    )
+
+    logger.info("Loading model from %s for explanation ...", paths.models)
+    model = training_mod.load_model(paths.models, context=context)
+
+    X_train, _ = _prepare_train_payload(kind, train_df, feat_cols, label_col)
+    X_ref = X_train if kind == "ml" else X_train[feat_cols]
+    feature_names = list(X_ref.columns)
+    feature_dtypes = X_ref.dtypes.to_dict()
+
+    def predict_fn(x: np.ndarray) -> np.ndarray:
+        batch = pd.DataFrame(x, columns=feature_names).astype(feature_dtypes)
+        _, proba = training_mod.predict_with_proba(model, batch, context=context)
+        return proba.detach().cpu().numpy() if hasattr(proba, "detach") else np.asarray(proba)
+
+    background = X_ref.sample(
+        n=min(cfg.explain.background_samples, len(X_ref)), random_state=cfg.seed
+    )
+    eval_samples = test_df[feat_cols].sample(
+        n=min(cfg.explain.num_samples, len(test_df)), random_state=cfg.seed
+    )
+
+    values = kernel_shap_values(predict_fn, background, eval_samples)
+    label_mapping = df_meta["label_mapping"]
+    class_names = [label_mapping.get(str(k), str(k)) for k in range(values.shape[-1])]
+
+    bus.publish(
+        LogBundle.from_dict(
+            {
+                "pickle/explain/shap_values": {
+                    "values": values,
+                    "data": eval_samples.to_numpy(),
+                },
+                "json/explain/meta": {
+                    "feature_names": feature_names,
+                    "class_names": class_names,
+                },
+            }
+        )
+    )
+    logger.info("SHAP values published: shape %s", tuple(values.shape))
+
+
+@timed
 def classify(cfg) -> None:
     """Run the supervised classification pipeline for a single classifier."""
     paths = OutputPaths(
@@ -483,12 +547,19 @@ def classify(cfg) -> None:
         models=Path(cfg.path.models),
         figures=Path(cfg.path.figures),
     )
+    if cfg.explain.generate:
+        paths = with_variant(paths, "explained")
+
     df_meta = load_from_json(paths.shared / "metadata/df_meta.json")
     save_config(cfg, paths.configs / "config_composed.json")
 
     num_cols = list(cfg.data.num_cols) if cfg.data.num_cols else []
     cat_cols = list(cfg.data.cat_cols) if cfg.data.cat_cols else []
     label_col = "encoded_" + cfg.data.label_col
+    if cfg.explain.generate:
+        complexity_cols = load_from_json(paths.shared / "complexity_meta.json")["columns"]
+        num_cols = num_cols + complexity_cols
+        logger.info("Explainable path: +%d complexity columns", len(complexity_cols))
     feat_cols = num_cols + cat_cols
 
     data = DataConfig(
@@ -540,6 +611,20 @@ def classify(cfg) -> None:
         _evaluate_stage(
             cfg,
             paths,
+            test_df,
+            feat_cols,
+            label_col,
+            df_meta,
+            num_cols,
+            cat_cols,
+            bus,
+        )
+
+    if cfg.explain.generate:
+        _explain_stage(
+            cfg,
+            paths,
+            train_df,
             test_df,
             feat_cols,
             label_col,

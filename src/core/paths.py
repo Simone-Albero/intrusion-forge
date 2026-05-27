@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 
@@ -25,3 +25,22 @@ class OutputPaths:
     pickle: Path
     models: Path
     figures: Path
+
+
+def with_variant(paths: OutputPaths, variant: str) -> OutputPaths:
+    """Nest per-classifier dirs under `variant`; dataset-level paths unchanged.
+
+    e.g. ``models  .../tabular/models  ->  .../tabular/{variant}/models``. The
+    shared dataset-level paths (``processed_data``, ``shared``) are kept as-is.
+    """
+    def nest(p: Path) -> Path:
+        return p.parent / variant / p.name
+
+    return replace(
+        paths,
+        configs=nest(paths.configs),
+        outputs=nest(paths.outputs),
+        pickle=nest(paths.pickle),
+        models=nest(paths.models),
+        figures=nest(paths.figures),
+    )
