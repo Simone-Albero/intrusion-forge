@@ -36,29 +36,56 @@ from src.domain.data.preprocessing import (
     random_undersample_df,
 )
 from src.domain.analysis.complexity.shared import _l2_normalize
-from src.domain.clustering import ClusterFn, build_cluster_fn
+from src.domain.clustering import build_cluster_fn
+from src.domain.clustering.base import cluster_size_balance
 
 setup_logger(log_file="resources/logs.txt")
 logger = logging.getLogger(__name__)
+
+
+def _rekey_consensus_by_algo_name(diagnostics: dict, algo_names: list[str]) -> dict:
+    """Rewrite `pairwise_algo_agreement_idx` and `algorithm_consensus_ari_idx` to use names."""
+    out = {k: v for k, v in diagnostics.items() if not k.endswith("_idx")}
+    pairwise_idx = diagnostics.get("pairwise_algo_agreement_idx", {})
+    out["pairwise_algo_agreement"] = {
+        f"{algo_names[int(k.split('-')[0])]}-{algo_names[int(k.split('-')[1])]}": v
+        for k, v in pairwise_idx.items()
+    }
+    ari_idx = diagnostics.get("algorithm_consensus_ari_idx", [])
+    out["algorithm_consensus_ari"] = {
+        algo_names[i]: ari_idx[i] for i in range(len(ari_idx))
+    }
+    return out
 
 
 def _cluster_per_class(
     X_num: np.ndarray,
     y_class: np.ndarray,
     classes: list,
-    cluster_fn: ClusterFn,
+    *,
+    algorithms: dict[str, dict],
+    consensus_threshold: float,
+    max_fit_samples: int,
+    min_consensus_size,
+    random_state: int,
     metric: str = "euclidean",
-) -> tuple[np.ndarray, dict[int, np.ndarray], set[int]]:
-    """Per-class clustering. Returns (labels, centroids, noise_cluster_ids).
+) -> tuple[np.ndarray, dict[int, np.ndarray], set[int], dict[str, dict]]:
+    """Per-class clustering. Returns (labels, centroids, noise_cluster_ids, report).
 
-    Cluster IDs are globally unique via offset. Residual -1 noise points (single
-    HDBSCAN runs only — ensemble output never has -1) are reassigned to per-class
-    pseudo-clusters; their IDs are collected in noise_cluster_ids.
+    Cluster IDs are globally unique via offset. Residual -1 noise points (from
+    single-HDBSCAN runs, ensemble HDBSCAN(precomputed), or low-confidence
+    out-of-sample propagation) are reassigned to per-class pseudo-clusters;
+    their IDs are collected in noise_cluster_ids.
+
+    `report` is keyed by stringified class id; each entry has
+    `{n_samples, algorithms: {algo: {best, sweep}}, consensus: {...}}`.
     """
     n = X_num.shape[0]
     labels = np.full(n, -1, dtype=np.int64)
     centroids: dict[int, np.ndarray] = {}
     offset = 0
+    report: dict[str, dict] = {}
+    algo_names = list(algorithms.keys())
 
     for cls in tqdm(classes, desc="Clustering classes"):
         mask = y_class == cls
@@ -67,7 +94,42 @@ def _cluster_per_class(
         X_num_cls = X_num[mask]
         X_fit_cls = _l2_normalize(X_num_cls) if metric == "cosine" else X_num_cls
 
+        algo_reports: dict[str, dict] = {}
+        consensus_diag: dict = {}
+
+        def _reporter(name: str, result: dict, _store=algo_reports) -> None:
+            _store[name] = result
+
+        def _consensus_reporter(diag: dict, _store=consensus_diag) -> None:
+            _store.update(diag)
+
+        cluster_fn = build_cluster_fn(
+            algorithms=algorithms,
+            consensus_threshold=consensus_threshold,
+            max_fit_samples=max_fit_samples,
+            random_state=random_state,
+            min_consensus_size=min_consensus_size,
+            reporter=_reporter,
+            consensus_reporter=_consensus_reporter,
+        )
         raw_labels = cluster_fn(X_fit_cls, None)
+
+        n_cls = int(raw_labels.shape[0])
+        n_noise_cls = int((raw_labels == -1).sum())
+        consensus_block = {
+            "n_clusters": int(np.unique(raw_labels[raw_labels != -1]).size),
+            "n_noise": n_noise_cls,
+            "noise_ratio": n_noise_cls / n_cls if n_cls > 0 else 0.0,
+            "size_balance": cluster_size_balance(raw_labels),
+        }
+        if consensus_diag:
+            consensus_block.update(_rekey_consensus_by_algo_name(consensus_diag, algo_names))
+
+        report[str(int(cls))] = {
+            "n_samples": n_cls,
+            "algorithms": algo_reports,
+            "consensus": consensus_block,
+        }
 
         cluster_ids = np.unique(raw_labels[raw_labels != -1])
         labels[mask] = np.where(raw_labels == -1, -1, raw_labels + offset)
@@ -89,7 +151,7 @@ def _cluster_per_class(
                 noise_cluster_ids.add(next_id)
                 next_id += 1
 
-    return labels, centroids, noise_cluster_ids
+    return labels, centroids, noise_cluster_ids, report
 
 
 @timed
@@ -203,20 +265,21 @@ def prepare(cfg):
 
     logger.info("Running per-class clustering...")
     algorithms = OmegaConf.to_container(cfg.clustering.algorithms, resolve=True)
-    cluster_fn = build_cluster_fn(
-        algorithms=algorithms,
-        consensus_threshold=cfg.clustering.consensus_threshold,
-        max_fit_samples=cfg.clustering.max_fit_samples,
-        random_state=cfg.seed,
-        min_consensus_size=cfg.clustering.min_consensus_size,
-    )
-    labels, centroids, noise_cluster_ids = _cluster_per_class(
+    min_consensus_size = OmegaConf.to_container(
+        cfg.clustering.min_consensus_size, resolve=True
+    ) if not isinstance(cfg.clustering.min_consensus_size, (int, float)) else cfg.clustering.min_consensus_size
+    labels, centroids, noise_cluster_ids, clustering_report = _cluster_per_class(
         X_num,
         y_class,
         all_classes,
-        cluster_fn=cluster_fn,
+        algorithms=algorithms,
+        consensus_threshold=cfg.clustering.consensus_threshold,
+        max_fit_samples=cfg.clustering.max_fit_samples,
+        min_consensus_size=min_consensus_size,
+        random_state=cfg.seed,
         metric=cfg.clustering.distance,
     )
+    dispatcher.publish(LogBundle.from_dict({"json/clustering_report": clustering_report}))
     noise_count = (
         int(np.isin(labels, sorted(noise_cluster_ids)).sum())
         if noise_cluster_ids

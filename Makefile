@@ -1,21 +1,26 @@
 # ──────────────────────────────────────────────────────────────────────────────
 # Intrusion Forge — Experiment Runner
 #
-# Usage:
+# One parametric command for sweeps. Variables passed on the command line are
+# FIXED; those omitted are ITERATED.
+#
+#   make run            NAME=my_exp                                # all datasets × ML + format-compatible DL
+#   make run            NAME=my_exp DATA=letter_recognition        # 1 dataset × all compatible classifiers
+#   make run            NAME=my_exp CLASSIFIER=random_forest       # all datasets × 1 classifier
+#   make run            NAME=my_exp DATA=cic_2018_v2 CLASSIFIER=tabular   # single (ds, clf)
+#
+# Single-stage targets (DATA + CLASSIFIER explicit):
 #   make prepare           DATA=cic_2018_v2 NAME=my_exp
 #   make classify          DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=random_forest
-#   make ml-all            DATA=cic_2018_v2 NAME=my_exp     # every ML classifier
-#   make dl-all            DATA=cic_2018_v2 NAME=my_exp     # every DL classifier
-#   make complexity        DATA=cic_2018_v2 NAME=my_exp     # shared, dataset-level
+#   make complexity        DATA=cic_2018_v2 NAME=my_exp                     # shared, dataset-level
 #   make failure-classify  DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=random_forest
 #   make render            DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=random_forest
-#   make run               DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=tabular
-#   make run-all           DATA=cic_2018_v2 NAME=my_exp      # one dataset, all compatible classifiers
-#   make all               NAME=my_exp                       # all datasets, all compatible classifiers
-#   make explain           DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=tabular   # extended classify + SHAP + render
+#   make explain           DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=tabular  # complexity + classify-extended + render
 #
-# Add FORCE=1 to recompute cached shared stages (prepare, complexity).
-# Add EXPLAIN=1 to run/run-all/all to also train a complexity-extended classifier + SHAP.
+# Flags:
+#   FORCE=1               re-run shared stages (prepare, complexity), ignoring skip markers
+#   EXPLAIN=1             in `run`, adds classify-extended (SHAP) to the flow for every (ds, clf)
+#   CLUSTERING=<name>     select clustering strategy (ensemble/kmeans/hdbscan/gmm/birch/spectral)
 # ──────────────────────────────────────────────────────────────────────────────
 
 # Use venv if present; falls back to the active conda (or system) python otherwise.
@@ -27,9 +32,14 @@ NAME       ?= exp_euc
 SEED       ?= 42
 CLASSIFIER ?= tabular
 DISTANCE   ?= euclidean
+CLUSTERING ?= ensemble
 FORCE      ?=
 EXPLAIN    ?=
 export EXPLAIN
+
+# `run` distinguishes "passed on the command line" from "default" via $(origin).
+DATA_GIVEN := $(if $(filter command line,$(origin DATA)),1,)
+CLF_GIVEN  := $(if $(filter command line,$(origin CLASSIFIER)),1,)
 
 ML_CLASSIFIERS := \
     naive_bayes \
@@ -57,11 +67,12 @@ DATASET_FORMATS := \
     thyroid_disease:numerical
 
 HYDRA := data=$(DATA) name=$(NAME) seed=$(SEED) classifier=$(CLASSIFIER) \
+         clustering=$(CLUSTERING) \
          complexity.distance=$(DISTANCE) clustering.distance=$(DISTANCE)
 FORCE_FLAG := $(if $(FORCE),prepare.force=true complexity.force=true,)
 EXPLAIN_FLAG := $(if $(EXPLAIN),explain.generate=true,)
 
-.PHONY: prepare classify classify-extended explain ml-all dl-all complexity failure-classify render run run-all all generate dashboard help
+.PHONY: prepare classify classify-extended explain complexity failure-classify render run generate dashboard help
 
 ## prepare:            Step 1 — preprocess raw CSV → parquet splits           (DATA, NAME, SEED, FORCE)
 prepare:
@@ -78,39 +89,6 @@ classify-extended:
 ## explain:            Complexity-extended classify (+SHAP) then render, one classifier (assumes prepare done)  (DATA, NAME, SEED, CLASSIFIER)
 explain: complexity classify-extended render
 
-## ml-all:             Step 2 — train & evaluate every ML classifier in turn  (DATA, NAME, SEED)
-ml-all:
-	@for clf in $(ML_CLASSIFIERS); do \
-		echo ""; \
-		echo "── ML classifier: $$clf ─────────────────────────────"; \
-		$(MAKE) --no-print-directory classify \
-			DATA=$(DATA) NAME=$(NAME) SEED=$(SEED) CLASSIFIER=$$clf \
-			DISTANCE=$(DISTANCE) || exit 1; \
-	done
-
-## dl-all:             Step 2 — train & evaluate every compatible DL classifier  (DATA, NAME, SEED)
-dl-all:
-	@format=""; \
-	for entry in $(DATASET_FORMATS); do \
-		ds=$${entry%%:*}; fmt=$${entry##*:}; \
-		if [ "$$ds" = "$(DATA)" ]; then format=$$fmt; break; fi; \
-	done; \
-	if [ -z "$$format" ]; then \
-		echo "ERROR: DATA='$(DATA)' not found in DATASET_FORMATS."; exit 1; \
-	fi; \
-	if [ "$$format" = "mixed" ]; then \
-		dl_list="$(DL_CLASSIFIERS_MIXED)"; \
-	else \
-		dl_list="$(DL_CLASSIFIERS_NUMERICAL)"; \
-	fi; \
-	for clf in $$dl_list; do \
-		echo ""; \
-		echo "── DL classifier: $$clf ─────────────────────────────"; \
-		$(MAKE) --no-print-directory classify \
-			DATA=$(DATA) NAME=$(NAME) SEED=$(SEED) CLASSIFIER=$$clf \
-			DISTANCE=$(DISTANCE) || exit 1; \
-	done
-
 ## complexity:         Step 3a — cluster + class complexity (shared, idempotent)  (DATA, NAME, SEED, FORCE)
 complexity:
 	PYTHONPATH=. $(PYTHON) pipelines/compute_complexity.py $(HYDRA) $(FORCE_FLAG)
@@ -123,93 +101,73 @@ failure-classify: complexity
 render:
 	PYTHONPATH=. $(PYTHON) pipelines/render_plots.py $(HYDRA)
 
-## run:                Run all steps for a single (dataset, classifier)       (DATA, NAME, SEED, CLASSIFIER, EXPLAIN)
-run: prepare complexity classify failure-classify $(if $(EXPLAIN),classify-extended,) render
-
-## run-all:            Run all steps for a single dataset, all compatible classifiers (DATA, NAME, SEED, EXPLAIN)
-run-all:
-	@format=""; \
-	for entry in $(DATASET_FORMATS); do \
-		ds=$${entry%%:*}; fmt=$${entry##*:}; \
-		if [ "$$ds" = "$(DATA)" ]; then format=$$fmt; break; fi; \
-	done; \
-	if [ -z "$$format" ]; then \
-		echo "ERROR: DATA='$(DATA)' not found in DATASET_FORMATS."; exit 1; \
-	fi; \
-	if [ "$$format" = "mixed" ]; then \
-		dl_list="$(DL_CLASSIFIERS_MIXED)"; \
-	else \
-		dl_list="$(DL_CLASSIFIERS_NUMERICAL)"; \
-	fi; \
-	echo ""; \
-	echo "══════════════════════════════════════════════"; \
-	echo " Dataset: $(DATA)  |  format=$$format  |  name=$(NAME)  seed=$(SEED)"; \
-	echo "══════════════════════════════════════════════"; \
-	$(MAKE) --no-print-directory prepare \
-		DATA=$(DATA) NAME=$(NAME) SEED=$(SEED) \
-		DISTANCE=$(DISTANCE) $(FORCE_FLAG) || exit 1; \
-	$(MAKE) --no-print-directory complexity \
-		DATA=$(DATA) NAME=$(NAME) SEED=$(SEED) \
-		DISTANCE=$(DISTANCE) $(FORCE_FLAG) || exit 1; \
-	for clf in $(ML_CLASSIFIERS) $$dl_list; do \
-		echo ""; \
-		echo "── classifier: $$clf ─────────────────────────────"; \
-		$(MAKE) --no-print-directory classify \
-			DATA=$(DATA) NAME=$(NAME) SEED=$(SEED) CLASSIFIER=$$clf \
-			DISTANCE=$(DISTANCE) || exit 1; \
-		$(MAKE) --no-print-directory failure-classify \
-			DATA=$(DATA) NAME=$(NAME) SEED=$(SEED) CLASSIFIER=$$clf \
-			DISTANCE=$(DISTANCE) || exit 1; \
-		if [ -n "$(EXPLAIN)" ]; then \
-			$(MAKE) --no-print-directory classify-extended \
-				DATA=$(DATA) NAME=$(NAME) SEED=$(SEED) CLASSIFIER=$$clf \
-				DISTANCE=$(DISTANCE) || exit 1; \
+## run:                Parametric sweep — fix passed vars, iterate the rest   (DATA?, CLASSIFIER?, NAME, SEED, FORCE, EXPLAIN)
+run:
+	@data_given="$(DATA_GIVEN)"; \
+	clf_given="$(CLF_GIVEN)"; \
+	requested_data="$(DATA)"; \
+	requested_clf="$(CLASSIFIER)"; \
+	if [ -n "$$data_given" ]; then \
+		pairs=""; \
+		for entry in $(DATASET_FORMATS); do \
+			ds=$${entry%%:*}; \
+			if [ "$$ds" = "$$requested_data" ]; then pairs="$$entry"; break; fi; \
+		done; \
+		if [ -z "$$pairs" ]; then \
+			echo "ERROR: DATA='$$requested_data' not in DATASET_FORMATS."; exit 1; \
 		fi; \
-		$(MAKE) --no-print-directory render \
-			DATA=$(DATA) NAME=$(NAME) SEED=$(SEED) CLASSIFIER=$$clf \
-			DISTANCE=$(DISTANCE) || exit 1; \
-	done
-
-## all:                Run the full pipeline for every dataset (all ML + compatible DL classifiers) (NAME, SEED, EXPLAIN)
-all:
-	@for entry in $(DATASET_FORMATS); do \
-		dataset=$${entry%%:*}; format=$${entry##*:}; \
-		if [ "$$format" = "mixed" ]; then \
-			dl_list="$(DL_CLASSIFIERS_MIXED)"; \
+	else \
+		pairs="$(DATASET_FORMATS)"; \
+	fi; \
+	for entry in $$pairs; do \
+		ds=$${entry%%:*}; fmt=$${entry##*:}; \
+		if [ -n "$$clf_given" ]; then \
+			skip=""; \
+			if [ "$$requested_clf" = "tabular" ]   && [ "$$fmt" != "mixed" ];     then skip=1; fi; \
+			if [ "$$requested_clf" = "numerical" ] && [ "$$fmt" != "numerical" ]; then skip=1; fi; \
+			if [ -n "$$skip" ]; then \
+				echo "skip: $$requested_clf not compatible with $$ds ($$fmt)"; \
+				continue; \
+			fi; \
+			clf_list="$$requested_clf"; \
 		else \
-			dl_list="$(DL_CLASSIFIERS_NUMERICAL)"; \
+			if [ "$$fmt" = "mixed" ]; then \
+				clf_list="$(ML_CLASSIFIERS) $(DL_CLASSIFIERS_MIXED)"; \
+			else \
+				clf_list="$(ML_CLASSIFIERS) $(DL_CLASSIFIERS_NUMERICAL)"; \
+			fi; \
 		fi; \
 		echo ""; \
 		echo "══════════════════════════════════════════════"; \
-		echo " Dataset: $$dataset  |  format=$$format  |  name=$(NAME)  seed=$(SEED)"; \
+		echo " Dataset: $$ds  |  format=$$fmt  |  name=$(NAME)  seed=$(SEED)"; \
 		echo "══════════════════════════════════════════════"; \
 		$(MAKE) --no-print-directory prepare \
-			DATA=$$dataset NAME=$(NAME) SEED=$(SEED) \
+			DATA=$$ds NAME=$(NAME) SEED=$(SEED) \
 			DISTANCE=$(DISTANCE) $(FORCE_FLAG) || exit 1; \
 		$(MAKE) --no-print-directory complexity \
-			DATA=$$dataset NAME=$(NAME) SEED=$(SEED) \
+			DATA=$$ds NAME=$(NAME) SEED=$(SEED) \
 			DISTANCE=$(DISTANCE) $(FORCE_FLAG) || exit 1; \
-		for clf in $(ML_CLASSIFIERS) $$dl_list; do \
+		for clf in $$clf_list; do \
 			echo ""; \
 			echo "── classifier: $$clf ─────────────────────────────"; \
 			$(MAKE) --no-print-directory classify \
-				DATA=$$dataset NAME=$(NAME) SEED=$(SEED) CLASSIFIER=$$clf \
+				DATA=$$ds NAME=$(NAME) SEED=$(SEED) CLASSIFIER=$$clf \
 				DISTANCE=$(DISTANCE) || exit 1; \
 			$(MAKE) --no-print-directory failure-classify \
-				DATA=$$dataset NAME=$(NAME) SEED=$(SEED) CLASSIFIER=$$clf \
+				DATA=$$ds NAME=$(NAME) SEED=$(SEED) CLASSIFIER=$$clf \
 				DISTANCE=$(DISTANCE) || exit 1; \
 			if [ -n "$(EXPLAIN)" ]; then \
 				$(MAKE) --no-print-directory classify-extended \
-					DATA=$$dataset NAME=$(NAME) SEED=$(SEED) CLASSIFIER=$$clf \
+					DATA=$$ds NAME=$(NAME) SEED=$(SEED) CLASSIFIER=$$clf \
 					DISTANCE=$(DISTANCE) || exit 1; \
 			fi; \
 			$(MAKE) --no-print-directory render \
-				DATA=$$dataset NAME=$(NAME) SEED=$(SEED) CLASSIFIER=$$clf \
+				DATA=$$ds NAME=$(NAME) SEED=$(SEED) CLASSIFIER=$$clf \
 				DISTANCE=$(DISTANCE) || exit 1; \
 		done; \
 	done
 	@echo ""
-	@echo "All datasets processed."
+	@echo "Done."
 
 ## generate:           Generate synthetic test dataset                        (ROWS)
 generate:
@@ -226,9 +184,16 @@ help:
 	@echo "Targets:"
 	@grep -E '^## ' Makefile | sed 's/## /  /'
 	@echo ""
-	@echo "Defaults:  DATA=$(DATA)  NAME=$(NAME)  SEED=$(SEED)  CLASSIFIER=$(CLASSIFIER)  DISTANCE=$(DISTANCE)"
+	@echo "Defaults:  DATA=$(DATA)  NAME=$(NAME)  SEED=$(SEED)  CLASSIFIER=$(CLASSIFIER)  DISTANCE=$(DISTANCE)  CLUSTERING=$(CLUSTERING)"
 	@echo "Python:    $(PYTHON)  (override with PYTHON=)"
 	@echo "ML classifiers:         $(ML_CLASSIFIERS)"
 	@echo "DL classifiers (mixed): $(DL_CLASSIFIERS_MIXED)"
 	@echo "DL classifiers (num):   $(DL_CLASSIFIERS_NUMERICAL)"
+	@echo "Clustering strategies:  ensemble kmeans hdbscan gmm birch spectral"
 	@echo "Datasets (format):      $(DATASET_FORMATS)"
+	@echo ""
+	@echo "Run examples:"
+	@echo "  make run NAME=x                                      # everything on everything"
+	@echo "  make run NAME=x DATA=letter_recognition              # 1 dataset, all compatible classifiers"
+	@echo "  make run NAME=x CLASSIFIER=random_forest             # all datasets, 1 classifier"
+	@echo "  make run NAME=x DATA=cic_2018_v2 CLASSIFIER=tabular  # single"

@@ -3,9 +3,9 @@ max_fit_samples: 10000
 consensus_threshold: 0.5            # inert for a single algorithm
 min_consensus_size: 1               # inert for a single algorithm
 algorithms:
-  birch:
+  spectral:
     n_clusters:
       rel: [0.005, 0.01, 0.02, 0.05]
       min: 4
       max: 64
-    branching_factor: 50
+    affinity: rbf

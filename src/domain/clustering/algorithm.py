@@ -1,7 +1,8 @@
 import numpy as np
 import hdbscan
-from sklearn.cluster import Birch, KMeans
+from sklearn.cluster import Birch, KMeans, SpectralClustering
 from sklearn.mixture import GaussianMixture
+from sklearn.neighbors import NearestNeighbors
 
 from src.domain.clustering import ClusteringFactory
 from src.domain.clustering.base import _subsample
@@ -113,19 +114,21 @@ def fit_birch(
     X_num: np.ndarray,
     *,
     X_cat: np.ndarray | None = None,
+    n_clusters: int = 8,
     threshold: float = 0.5,
     branching_factor: int = 50,
     max_fit_samples: int = 50_000,
     random_state: int = 0,
     **_,
 ) -> np.ndarray:
-    """Fit BIRCH with variable k (n_clusters=None) and return labels (n,)."""
+    """Fit BIRCH with `n_clusters` (AgglomerativeClustering on CF-tree leaves)."""
     n = X_num.shape[0]
+    n_clusters = max(2, min(int(n_clusters), n - 1))
     X_num = np.ascontiguousarray(X_num, dtype=np.float64)
     clf = Birch(
         threshold=threshold,
         branching_factor=branching_factor,
-        n_clusters=None,
+        n_clusters=n_clusters,
     )
     if n > max_fit_samples:
         sub_num, _sub = _subsample(X_num, None, max_fit_samples, random_state)
@@ -135,3 +138,43 @@ def fit_birch(
         clf.fit(X_num)
         labels = clf.labels_
     return labels
+
+
+@ClusteringFactory.register("spectral")
+def fit_spectral(
+    X_num: np.ndarray,
+    *,
+    X_cat: np.ndarray | None = None,
+    n_clusters: int = 8,
+    affinity: str = "rbf",
+    gamma: float | None = None,
+    n_neighbors: int = 10,
+    max_fit_samples: int = 10_000,
+    random_state: int = 0,
+    **_,
+) -> np.ndarray:
+    """Spectral clustering; subsample + 1-NN propagation in feature space for n > max_fit_samples."""
+    n = X_num.shape[0]
+    n_clusters = max(2, min(int(n_clusters), n - 1))
+    X_num = np.ascontiguousarray(X_num, dtype=np.float64)
+
+    spec_kwargs = dict(
+        n_clusters=n_clusters,
+        affinity=affinity,
+        assign_labels="kmeans",
+        random_state=random_state,
+        eigen_solver="arpack",
+    )
+    if gamma is not None and affinity == "rbf":
+        spec_kwargs["gamma"] = float(gamma)
+    if affinity == "nearest_neighbors":
+        spec_kwargs["n_neighbors"] = int(n_neighbors)
+
+    if n <= max_fit_samples:
+        return SpectralClustering(**spec_kwargs).fit_predict(X_num)
+
+    sub_num, _ = _subsample(X_num, None, max_fit_samples, random_state)
+    sub_labels = SpectralClustering(**spec_kwargs).fit_predict(sub_num)
+    nn = NearestNeighbors(n_neighbors=1, algorithm="auto").fit(sub_num)
+    _, idx = nn.kneighbors(X_num, n_neighbors=1, return_distance=True)
+    return sub_labels[idx.ravel()]
