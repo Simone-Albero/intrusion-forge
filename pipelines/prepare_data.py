@@ -125,7 +125,7 @@ def _cluster_per_class(
         if consensus_diag:
             consensus_block.update(_rekey_consensus_by_algo_name(consensus_diag, algo_names))
 
-        report[str(int(cls))] = {
+        report[str(cls)] = {
             "n_samples": n_cls,
             "algorithms": algo_reports,
             "consensus": consensus_block,

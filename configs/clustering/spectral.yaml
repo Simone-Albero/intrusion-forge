@@ -7,5 +7,6 @@ algorithms:
     n_clusters:
       rel: [0.005, 0.01, 0.02, 0.05]
       min: 4
-      max: 64
-    affinity: rbf
+      max: 16
+    affinity: nearest_neighbors
+    n_neighbors: 10
