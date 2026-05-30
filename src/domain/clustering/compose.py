@@ -102,12 +102,20 @@ def _make_single_cluster_fn(
             "random_state": random_state,
             **fixed,
         }
-        if grid:
-            result = grid_search(X_num, X_cat, fit_fn, grid, **common)
+        try:
+            if grid:
+                result = grid_search(X_num, X_cat, fit_fn, grid, **common)
+                if reporter is not None:
+                    reporter(name, result)
+                return fit_fn(X_num, X_cat=X_cat, **result["best"]["combo"], **common)
+            return fit_fn(X_num, X_cat=X_cat, **common)
+        except Exception as e:
+            # Graceful degradation: this algorithm abstains from the ensemble vote.
+            # Co-association (noise = no-vote, variable denominator) handles -1 cleanly,
+            # so the consensus continues with M-1 effective voters.
             if reporter is not None:
-                reporter(name, result)
-            return fit_fn(X_num, X_cat=X_cat, **result["best"]["combo"], **common)
-        return fit_fn(X_num, X_cat=X_cat, **common)
+                reporter(name, {"best": None, "sweep": [], "error": f"{type(e).__name__}: {e}"})
+            return np.full(X_num.shape[0], -1, dtype=np.int64)
 
     return _fn
 

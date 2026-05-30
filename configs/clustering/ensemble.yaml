@@ -1,41 +1,31 @@
 distance: cosine
 max_fit_samples: 10000
-consensus_threshold: 0.5            # HDBSCAN(precomputed) cluster_selection_epsilon = 1 - threshold
+consensus_threshold: 0.5            # with M=3, threshold 0.5 = >= 2/3 votes (true majority)
 min_consensus_size:                  # min_cluster_size on the co-association matrix
   rel: 0.005
   min: 5
 algorithms:
-  kmeans:
+  kmeans:                            # centroid-based
     n_clusters:
       rel: [0.005, 0.01, 0.02, 0.05]
       min: 4
       max: 64
-  gmm:
-    n_components:
-      rel: [0.005, 0.01, 0.02, 0.05]
-      min: 4
-      max: 64
-    covariance_type: full
-  hdbscan:
+  hdbscan:                           # density-based, handles noise natively
     min_cluster_size:
-      rel_inv: [0.005, 0.01, 0.02, 0.05]
+      rel: [0.005, 0.01, 0.02]
       min: 5
+      max: 100
     min_samples:
-      rel_inv: [0.0025, 0.005]
-      min: 5
-    cluster_selection_method: leaf
+      rel: [0.0025, 0.005, 0.01]
+      min: 3
+      max: 50
+    cluster_selection_method: leaf          # eom tested: regressed on overlapping blobs (NIDS-like) → reverted
     max_cluster_size: null
     penalize: false
-  birch:
-    n_clusters:
-      rel: [0.005, 0.01, 0.02, 0.05]
+  spectral:                          # graph-based (k-NN), captures non-convex structure
+    n_clusters:                      # min=2 tested: spectral selected K=2 on overlapping blobs
+      rel: [0.005, 0.01, 0.02, 0.05] #   via silhouette, collapsing consensus → regressed, reverted
       min: 4
-      max: 64
-    branching_factor: 50
-  spectral:
-    n_clusters:
-      rel: [0.005, 0.01, 0.02, 0.05]
-      min: 4
-      max: 16
+      max: 32
     affinity: nearest_neighbors
     n_neighbors: 10
