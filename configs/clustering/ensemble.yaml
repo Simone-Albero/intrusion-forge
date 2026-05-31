@@ -1,9 +1,13 @@
 distance: cosine
 max_fit_samples: 10000
 consensus_threshold: 0.5            # with M=3, threshold 0.5 = >= 2/3 votes (true majority)
+weight_voters: true                # weight voters by reliability (coverage * mutual agreement)
+refine_geometry: true              # post-consensus feature-space straggler reassignment
+refine_margin: 0.8                 # reassign only if a centroid is >=20% closer than the current
 min_consensus_size:                  # min_cluster_size on the co-association matrix
-  rel: 0.005
-  min: 5
+  sqrt: 0.5                          # ~sqrt(N) scaling: steadier cluster counts across class sizes
+  min: 15
+  max: 100
 algorithms:
   kmeans:                            # centroid-based
     n_clusters:

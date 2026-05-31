@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 
 def _rekey_consensus_by_algo_name(diagnostics: dict, algo_names: list[str]) -> dict:
-    """Rewrite `pairwise_algo_agreement_idx` and `algorithm_consensus_ari_idx` to use names."""
+    """Rewrite the `*_idx` diagnostics (pairwise agreement, ARI, voter weights) to use names."""
     out = {k: v for k, v in diagnostics.items() if not k.endswith("_idx")}
     pairwise_idx = diagnostics.get("pairwise_algo_agreement_idx", {})
     out["pairwise_algo_agreement"] = {
@@ -54,6 +54,10 @@ def _rekey_consensus_by_algo_name(diagnostics: dict, algo_names: list[str]) -> d
     ari_idx = diagnostics.get("algorithm_consensus_ari_idx", [])
     out["algorithm_consensus_ari"] = {
         algo_names[i]: ari_idx[i] for i in range(len(ari_idx))
+    }
+    weights_idx = diagnostics.get("voter_weights_idx", [])
+    out["voter_weights"] = {
+        algo_names[i]: weights_idx[i] for i in range(len(weights_idx))
     }
     return out
 
@@ -69,6 +73,9 @@ def _cluster_per_class(
     min_consensus_size,
     random_state: int,
     metric: str = "euclidean",
+    weight_voters: bool = True,
+    refine_geometry: bool = True,
+    refine_margin: float = 0.8,
 ) -> tuple[np.ndarray, dict[int, np.ndarray], set[int], dict[str, dict]]:
     """Per-class clustering. Returns (labels, centroids, noise_cluster_ids, report).
 
@@ -111,6 +118,9 @@ def _cluster_per_class(
             min_consensus_size=min_consensus_size,
             reporter=_reporter,
             consensus_reporter=_consensus_reporter,
+            weight_voters=weight_voters,
+            refine_geometry=refine_geometry,
+            refine_margin=refine_margin,
         )
         raw_labels = cluster_fn(X_fit_cls, None)
 
@@ -268,6 +278,8 @@ def prepare(cfg):
     min_consensus_size = OmegaConf.to_container(
         cfg.clustering.min_consensus_size, resolve=True
     ) if not isinstance(cfg.clustering.min_consensus_size, (int, float)) else cfg.clustering.min_consensus_size
+    # voter weighting / geometric refinement are ensemble-only knobs (ignored for a single algo)
+    is_ensemble = len(algorithms) > 1
     labels, centroids, noise_cluster_ids, clustering_report = _cluster_per_class(
         X_num,
         y_class,
@@ -278,6 +290,9 @@ def prepare(cfg):
         min_consensus_size=min_consensus_size,
         random_state=cfg.seed,
         metric=cfg.clustering.distance,
+        weight_voters=cfg.clustering.weight_voters if is_ensemble else True,
+        refine_geometry=cfg.clustering.refine_geometry if is_ensemble else True,
+        refine_margin=cfg.clustering.refine_margin if is_ensemble else 0.8,
     )
     dispatcher.publish(LogBundle.from_dict({"json/clustering_report": clustering_report}))
     noise_count = (

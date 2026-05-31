@@ -1,3 +1,4 @@
+import math
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
@@ -14,11 +15,11 @@ Reporter = Callable[[str, dict], None]  # (algo_name, grid_search_result) -> Non
 
 
 def _is_grid_spec(value) -> bool:
-    """True if value is an abs list or a `{rel: [...]}` / `{rel_inv: [...]}` dict."""
+    """True if value is an abs list or a `{rel/rel_inv/sqrt: [...]}` dict."""
     if isinstance(value, list):
         return True
-    if isinstance(value, dict) and (
-        isinstance(value.get("rel"), list) or isinstance(value.get("rel_inv"), list)
+    if isinstance(value, dict) and any(
+        isinstance(value.get(k), list) for k in ("rel", "rel_inv", "sqrt")
     ):
         return True
     return False
@@ -45,6 +46,7 @@ def _resolve_grid(grid: dict, effective_n: int) -> dict[str, list]:
     Abs lists pass through unchanged.
     `{rel: [...], min?, max?}` → `[clip(round(effective_n * r), min, max) for r in rel]`.
     `{rel_inv: [...], min?, max?}` → `[clip(round(1 / r), min, max) for r in rel_inv]`.
+    `{sqrt: [...], min?, max?}` → `[clip(round(c * sqrt(effective_n)), min, max) for c in sqrt]`.
     Deduplicated preserving insertion order; values are always int.
     """
     out: dict[str, list] = {}
@@ -56,6 +58,8 @@ def _resolve_grid(grid: dict, effective_n: int) -> dict[str, list]:
         hi = spec.get("max")
         if "rel" in spec:
             raw = (int(round(effective_n * float(r))) for r in spec["rel"])
+        elif "sqrt" in spec:
+            raw = (int(round(float(c) * math.sqrt(effective_n))) for c in spec["sqrt"])
         else:
             raw = (int(round(1.0 / float(r))) for r in spec["rel_inv"])
         seen: set[int] = set()
@@ -70,15 +74,19 @@ def _resolve_grid(grid: dict, effective_n: int) -> dict[str, list]:
 
 
 def _resolve_scalar_rel(value, effective_n: int) -> int:
-    """Resolve int/float scalar or `{rel: float, min?, max?}` to a single int.
+    """Resolve int/float scalar or `{rel/sqrt: float, min?, max?}` to a single int.
 
-    Scalar values pass through (cast to int). `rel` is resolved against
-    `effective_n` like in `_resolve_grid`; `min`/`max` clip the result.
+    Scalar values pass through (cast to int). `rel` scales linearly with
+    `effective_n`; `sqrt` scales with its square root (steadier cluster counts
+    across class sizes). `min`/`max` clip the result.
     """
     if isinstance(value, (int, float)):
         return int(value)
     if isinstance(value, dict) and "rel" in value:
         x = int(round(effective_n * float(value["rel"])))
+        return _clip(x, value.get("min"), value.get("max"))
+    if isinstance(value, dict) and "sqrt" in value:
+        x = int(round(float(value["sqrt"]) * math.sqrt(effective_n)))
         return _clip(x, value.get("min"), value.get("max"))
     raise TypeError(f"unsupported scalar-rel spec: {value!r}")
 
@@ -129,14 +137,18 @@ def build_cluster_fn(
     reporter: Reporter | None = None,
     consensus_reporter: "ConsensusReporter | None" = None,
     propagation_confidence_floor: float = 0.0,
+    weight_voters: bool = True,
+    refine_geometry: bool = True,
+    refine_margin: float = 0.8,
 ) -> ClusterFn:
     """Build a ClusterFn from {algorithm_name: params}; ensembles when >1 key.
 
     `min_consensus_size` is the HDBSCAN(precomputed) min_cluster_size on the
-    co-association matrix; may be `int` or `{rel: float, min?, max?}`. Ignored
+    co-association matrix; may be `int` or `{rel/sqrt: float, min?, max?}`. Ignored
     for a single algorithm. `reporter` is invoked once per algorithm with its
     grid-search result; `consensus_reporter` receives the consensus diagnostics
-    on each ensemble call.
+    on each ensemble call. `weight_voters`, `refine_geometry` and `refine_margin`
+    configure the ensemble's voter weighting and feature-space refinement.
     """
     if not algorithms:
         raise ValueError("build_cluster_fn: algorithms is empty")
@@ -156,4 +168,7 @@ def build_cluster_fn(
         random_state=random_state,
         consensus_reporter=consensus_reporter,
         propagation_confidence_floor=propagation_confidence_floor,
+        weight_voters=weight_voters,
+        refine_geometry=refine_geometry,
+        refine_margin=refine_margin,
     )
