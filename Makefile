@@ -33,6 +33,7 @@ SEED       ?= 42
 CLASSIFIER ?= tabular
 DISTANCE   ?= euclidean
 CLUSTERING ?= ensemble
+CLUSTERING_ALGOS ?= kmeans hdbscan spectral birch gmm ensemble
 FORCE      ?=
 EXPLAIN    ?=
 export EXPLAIN
@@ -72,7 +73,7 @@ HYDRA := data=$(DATA) name=$(NAME) seed=$(SEED) classifier=$(CLASSIFIER) \
 FORCE_FLAG := $(if $(FORCE),prepare.force=true complexity.force=true,)
 EXPLAIN_FLAG := $(if $(EXPLAIN),explain.generate=true,)
 
-.PHONY: prepare classify classify-extended explain complexity failure-classify render run generate dashboard help
+.PHONY: prepare classify classify-extended explain complexity failure-classify render run run-clustering-sweep generate dashboard help
 
 ## prepare:            Step 1 — preprocess raw CSV → parquet splits           (DATA, NAME, SEED, FORCE)
 prepare:
@@ -168,6 +169,20 @@ run:
 	done
 	@echo ""
 	@echo "Done."
+
+## run-clustering-sweep: Full `run` once per clustering algorithm → NAME_<algo>  (DATA?, CLASSIFIER?, NAME, SEED, DISTANCE, FORCE, EXPLAIN)
+run-clustering-sweep:
+	@for c in $(CLUSTERING_ALGOS); do \
+		echo ""; \
+		echo "##############################################"; \
+		echo " CLUSTERING = $$c   →   name=$(NAME)_$$c"; \
+		echo "##############################################"; \
+		$(MAKE) --no-print-directory run \
+			NAME=$(NAME)_$$c CLUSTERING=$$c SEED=$(SEED) DISTANCE=$(DISTANCE) \
+			$(if $(DATA_GIVEN),DATA=$(DATA),) $(if $(CLF_GIVEN),CLASSIFIER=$(CLASSIFIER),) \
+			$(if $(FORCE),FORCE=$(FORCE),) $(if $(EXPLAIN),EXPLAIN=$(EXPLAIN),) || exit 1; \
+	done
+	@echo ""; echo "Clustering sweep done: $(CLUSTERING_ALGOS)"
 
 ## generate:           Generate synthetic test dataset                        (ROWS)
 generate:

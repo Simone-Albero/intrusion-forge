@@ -1,10 +1,7 @@
 distance: cosine
-max_fit_samples: 10000
+max_fit_samples: 20000              # standalone: no s×s co-association, safe to raise the fit budget
 consensus_threshold: 0.5            # inert for a single algorithm
 min_consensus_size: 1               # inert for a single algorithm
 algorithms:
-  kmeans:
-    n_clusters:
-      rel: [0.005, 0.01, 0.02, 0.05]
-      min: 4
-      max: 64
+  kmeans:                            # centroid-based
+    n_clusters: [4, 8, 16, 32, 64, 128, 256]   # absolute grid (size-independent; fit clamps to n-1 per class)

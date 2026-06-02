@@ -1,35 +1,21 @@
 distance: cosine
-max_fit_samples: 10000
+max_fit_samples: 10000             # kept at 10k: co-association is a dense s×s matrix (O(s²) mem)
 consensus_threshold: 0.5            # with M=3, threshold 0.5 = >= 2/3 votes (true majority)
-weight_voters: true                # weight voters by reliability (coverage * mutual agreement)
-refine_geometry: true              # post-consensus feature-space straggler reassignment
-refine_margin: 0.8                 # reassign only if a centroid is >=20% closer than the current
-min_consensus_size:                  # min_cluster_size on the co-association matrix
-  sqrt: 0.5                          # ~sqrt(N) scaling: steadier cluster counts across class sizes
-  min: 15
-  max: 100
+weight_voters: true                # weight voters by reliability (coverage = 1 - noise_ratio)
+refine_geometry: true              # post-consensus kNN-majority straggler reassignment
+refine_margin: 0.8                 # reassign only if >=80% of kNN are in another single cluster
+min_consensus_size: 25             # absolute min_cluster_size on the co-association matrix
+# Voter grids mirror the standalone configs (kmeans.yaml / hdbscan.yaml / spectral.yaml)
 algorithms:
   kmeans:                            # centroid-based
-    n_clusters:
-      rel: [0.005, 0.01, 0.02, 0.05]
-      min: 4
-      max: 64
+    n_clusters: [4, 8, 16, 32, 64, 128, 256]
   hdbscan:                           # density-based, handles noise natively
-    min_cluster_size:
-      rel: [0.005, 0.01, 0.02]
-      min: 5
-      max: 100
-    min_samples:
-      rel: [0.0025, 0.005, 0.01]
-      min: 3
-      max: 50
+    min_cluster_size: [5, 10, 25, 50, 100, 200]
+    min_samples: [5, 15, 50]
     cluster_selection_method: leaf          # eom tested: regressed on overlapping blobs (NIDS-like) → reverted
     max_cluster_size: null
     penalize: false
   spectral:                          # graph-based (k-NN), captures non-convex structure
-    n_clusters:                      # min=2 tested: spectral selected K=2 on overlapping blobs
-      rel: [0.005, 0.01, 0.02, 0.05] #   via silhouette, collapsing consensus → regressed, reverted
-      min: 4
-      max: 32
+    n_clusters: [4, 8, 16, 32, 64]
     affinity: nearest_neighbors
     n_neighbors: 10
