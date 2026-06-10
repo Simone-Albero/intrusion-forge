@@ -32,7 +32,7 @@ from src.core.paths import OutputPaths, with_variant
 from src.core.utils import flush_timing, load_from_json, skip_if_exists, timed
 from src.core.io import load_listed_dfs
 from src.domain.analysis.explain import kernel_shap_values, summarize_background
-from src.domain.data.preprocessing import subsample_df
+from src.domain.data.preprocessing import random_undersample_df, subsample_df
 from src.domain.projection import stratified_subsample, tsne_projection
 from src.domain.plot.base import Plot
 from src.domain.plot.charts import bar_plot, line_plot, scatter_plot
@@ -73,12 +73,17 @@ class DataConfig:
     label_col: str
     n_samples: int | None
     file_suffix: str = ""
+    balance: str = "undersample"
 
 
 def _load_data(
     data: DataConfig, random_state: int
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Load train/val/test splits; optionally subsample the training set."""
+    """Load train/val/test splits; balance and/or subsample the training set.
+
+    Balancing is a training-time choice: the persisted splits keep the
+    original class distribution (the data-space diagnosis depends on it).
+    """
     train_df, val_df, test_df = load_listed_dfs(
         data.processed_data_path,
         [
@@ -87,6 +92,10 @@ def _load_data(
             f"test{data.file_suffix}.{data.extension}",
         ],
     )
+    if data.balance == "undersample":
+        train_df = random_undersample_df(
+            train_df, data.label_col, random_state=random_state
+        )
     if data.n_samples is not None:
         train_df = subsample_df(
             train_df,
@@ -618,6 +627,7 @@ def classify(cfg) -> None:
         n_samples=cfg.n_samples,
         # the extended splits live in separate files; base runs read the originals
         file_suffix="_extended" if cfg.explain.generate else "",
+        balance=cfg.balance,
     )
 
     stage = cfg.stage
@@ -625,6 +635,12 @@ def classify(cfg) -> None:
         logger.error(
             "Unknown stage: %r. Valid: 'all', 'training', 'testing'.",
             stage,
+        )
+        sys.exit(1)
+    if cfg.balance not in ("undersample", "none"):
+        logger.error(
+            "Unknown balance: %r. Valid: 'undersample', 'none'.",
+            cfg.balance,
         )
         sys.exit(1)
 

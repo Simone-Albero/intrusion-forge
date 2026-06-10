@@ -33,7 +33,6 @@ from src.domain.data.preprocessing import (
     ml_split,
     query_filter,
     rare_category_filter,
-    random_undersample_df,
 )
 from src.domain.analysis.complexity.shared import _l2_normalize
 from src.domain.clustering import build_cluster_fn
@@ -223,7 +222,6 @@ def preprocess_df(
         random_state=random_state,
         label_col=label_col,
     )
-    train_df = random_undersample_df(train_df, label_col, random_state=random_state)
     logger.info(
         "Split sizes — train: %d, val: %d, test: %d",
         len(train_df),

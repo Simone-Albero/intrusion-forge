@@ -14,6 +14,7 @@ name: exp_euc
 device: cpu
 stage: all
 n_samples: null
+balance: undersample                 # training-set class balancing at training time: undersample | none
 
 grid_search:
   enabled: true
