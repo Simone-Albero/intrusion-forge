@@ -1,5 +1,6 @@
 import numpy as np
 import hdbscan
+from kmodes.kprototypes import KPrototypes
 from sklearn.cluster import Birch, KMeans, SpectralClustering
 from sklearn.mixture import GaussianMixture
 from sklearn.neighbors import NearestNeighbors
@@ -68,6 +69,52 @@ def fit_hdbscan(
             )
 
     return labels
+
+
+@ClusteringFactory.register("kprototypes")
+def fit_kprototypes(
+    X_num: np.ndarray,
+    *,
+    X_cat: np.ndarray | None = None,
+    n_clusters: int = 8,
+    gamma: float | None = None,
+    max_fit_samples: int = 20_000,
+    random_state: int = 0,
+    **_,
+) -> np.ndarray:
+    """Fit k-prototypes on mixed numeric + categorical features and return labels (n,).
+
+    `gamma` weighs the categorical matching dissimilarity against the numeric
+    distance (None = kmodes default, half the mean std of the numerics).
+    Requires categorical columns; use kmeans for numeric-only data.
+    """
+    if X_cat is None or X_cat.shape[1] == 0:
+        raise ValueError(
+            "fit_kprototypes requires categorical features (X_cat is empty); "
+            "use kmeans for numeric-only data."
+        )
+    n, d_num = X_num.shape
+    n_clusters = max(2, min(int(n_clusters), n - 1))
+    X_num = np.ascontiguousarray(X_num, dtype=np.float64)
+    cat_idx = list(range(d_num, d_num + X_cat.shape[1]))
+
+    def _mixed(num: np.ndarray, cat: np.ndarray) -> np.ndarray:
+        return np.concatenate([num.astype(object), cat.astype(object)], axis=1)
+
+    model = KPrototypes(
+        n_clusters=n_clusters,
+        gamma=gamma,
+        init="Cao",
+        n_init=1,
+        random_state=random_state,
+    )
+    if n > max_fit_samples:
+        sub_num, sub_cat = _subsample(X_num, X_cat, max_fit_samples, random_state)
+        model.fit(_mixed(sub_num, sub_cat), categorical=cat_idx)
+        labels = model.predict(_mixed(X_num, X_cat), categorical=cat_idx)
+    else:
+        labels = model.fit_predict(_mixed(X_num, X_cat), categorical=cat_idx)
+    return np.asarray(labels, dtype=np.int64)
 
 
 @ClusteringFactory.register("kmeans")

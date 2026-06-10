@@ -299,7 +299,7 @@ def make_ensemble_cluster_fn(
     cluster_fns: list[ClusterFn],
     *,
     threshold: float = 0.5,
-    min_consensus_size=1,
+    min_consensus_size: int = 1,
     max_fit_samples: int = 10_000,
     random_state: int = 0,
     consensus_reporter: ConsensusReporter | None = None,
@@ -310,23 +310,19 @@ def make_ensemble_cluster_fn(
 ) -> ClusterFn:
     """Compose multiple ClusterFns via co-association + HDBSCAN(precomputed).
 
-    `min_consensus_size` may be `int` or `{rel/sqrt: float, min?, max?}`; resolved
-    against `effective_n = min(N, max_fit_samples)` per call. `consensus_reporter`
-    receives the diagnostics dict after each consensus computation. `weight_voters`,
-    `refine_geometry` and `refine_margin` control the reliability weighting and the
-    kNN-majority feature-space refinement of the consensus.
+    `min_consensus_size` is the absolute HDBSCAN(precomputed) min_cluster_size
+    on the co-association matrix. `consensus_reporter` receives the diagnostics
+    dict after each consensus computation. `weight_voters`, `refine_geometry`
+    and `refine_margin` control the reliability weighting and the kNN-majority
+    feature-space refinement of the consensus.
     """
 
     def _fn(X_num: np.ndarray, X_cat: np.ndarray | None = None) -> np.ndarray:
-        from src.domain.clustering.compose import _resolve_scalar_rel  # lazy to avoid cycle
-
         labels_list = [fn(X_num, X_cat) for fn in cluster_fns]
-        effective_n = min(X_num.shape[0], max_fit_samples)
-        mcs = _resolve_scalar_rel(min_consensus_size, effective_n)
         labels, diagnostics = compute_coassociation_labels(
             labels_list,
             threshold=threshold,
-            min_cluster_size=mcs,
+            min_cluster_size=int(min_consensus_size),
             max_fit_samples=max_fit_samples,
             random_state=random_state,
             propagation_confidence_floor=propagation_confidence_floor,

@@ -1,11 +1,10 @@
-import math
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 import numpy as np
 
 from src.domain.clustering import ClusteringFactory
-from src.domain.clustering.base import ClusterFn, grid_search
+from src.domain.clustering.base import ClusterFn, grid_search, make_hybrid_silhouette_fn
 from src.domain.clustering.ensemble import make_ensemble_cluster_fn
 
 if TYPE_CHECKING:
@@ -19,14 +18,6 @@ def _split_grid_fixed(params: dict) -> tuple[dict, dict]:
     grid = {k: v for k, v in params.items() if isinstance(v, list)}
     fixed = {k: v for k, v in params.items() if not isinstance(v, list)}
     return grid, fixed
-
-
-def _clip(x: int, lo, hi) -> int:
-    if lo is not None:
-        x = max(int(lo), x)
-    if hi is not None:
-        x = min(int(hi), x)
-    return x
 
 
 _K_GRID_KEYS = ("n_clusters", "n_components")
@@ -56,22 +47,8 @@ def _prune_grid_by_floor(
     return out, dropped
 
 
-def _resolve_scalar_rel(value, effective_n: int) -> int:
-    """Resolve int/float scalar or `{rel/sqrt: float, min?, max?}` to a single int.
-
-    Scalar values pass through (cast to int). `rel` scales linearly with
-    `effective_n`; `sqrt` scales with its square root (steadier cluster counts
-    across class sizes). `min`/`max` clip the result.
-    """
-    if isinstance(value, (int, float)):
-        return int(value)
-    if isinstance(value, dict) and "rel" in value:
-        x = int(round(effective_n * float(value["rel"])))
-        return _clip(x, value.get("min"), value.get("max"))
-    if isinstance(value, dict) and "sqrt" in value:
-        x = int(round(float(value["sqrt"]) * math.sqrt(effective_n)))
-        return _clip(x, value.get("min"), value.get("max"))
-    raise TypeError(f"unsupported scalar-rel spec: {value!r}")
+# algorithms clustering on mixed features: scored with the Gower-hybrid silhouette
+_HYBRID_SCORED_ALGOS = ("kprototypes",)
 
 
 def _make_single_cluster_fn(
@@ -81,10 +58,16 @@ def _make_single_cluster_fn(
     random_state: int,
     reporter: Reporter | None = None,
     min_cluster_floor: int = 50,
+    metric: str = "cosine",
 ) -> ClusterFn:
     """Build a ClusterFn for a single registered algorithm."""
     fit_fn = ClusteringFactory.get(name)
     grid_raw, fixed = _split_grid_fixed(params)
+    silhouette_fn = (
+        make_hybrid_silhouette_fn(metric=metric, random_state=random_state)
+        if name in _HYBRID_SCORED_ALGOS
+        else None
+    )
 
     def _fn(X_num: np.ndarray, X_cat: np.ndarray | None = None) -> np.ndarray:
         effective_n = min(X_num.shape[0], max_fit_samples)
@@ -102,6 +85,7 @@ def _make_single_cluster_fn(
                     fit_fn,
                     grid,
                     min_cluster_floor=min_cluster_floor,
+                    silhouette_fn=silhouette_fn,
                     **common,
                 )
                 if pruned:
@@ -126,7 +110,7 @@ def build_cluster_fn(
     consensus_threshold: float,
     max_fit_samples: int,
     random_state: int,
-    min_consensus_size=1,
+    min_consensus_size: int = 1,
     reporter: Reporter | None = None,
     consensus_reporter: "ConsensusReporter | None" = None,
     propagation_confidence_floor: float = 0.0,
@@ -134,15 +118,16 @@ def build_cluster_fn(
     refine_geometry: bool = True,
     refine_margin: float = 0.8,
     min_cluster_floor: int = 50,
+    metric: str = "cosine",
 ) -> ClusterFn:
     """Build a ClusterFn from {algorithm_name: params}; ensembles when >1 key.
 
-    `min_consensus_size` is the HDBSCAN(precomputed) min_cluster_size on the
-    co-association matrix; may be `int` or `{rel/sqrt: float, min?, max?}`. Ignored
-    for a single algorithm. `reporter` is invoked once per algorithm with its
-    grid-search result; `consensus_reporter` receives the consensus diagnostics
-    on each ensemble call. `weight_voters`, `refine_geometry` and `refine_margin`
-    configure the ensemble's voter weighting and feature-space refinement.
+    `min_consensus_size` is the absolute HDBSCAN(precomputed) min_cluster_size
+    on the co-association matrix; ignored for a single algorithm. `reporter`
+    is invoked once per algorithm with its grid-search result;
+    `consensus_reporter` receives the consensus diagnostics on each ensemble
+    call. `weight_voters`, `refine_geometry` and `refine_margin` configure the
+    ensemble's voter weighting and feature-space refinement.
     """
     if not algorithms:
         raise ValueError("build_cluster_fn: algorithms is empty")
@@ -154,6 +139,7 @@ def build_cluster_fn(
             random_state,
             reporter=reporter,
             min_cluster_floor=min_cluster_floor,
+            metric=metric,
         )
         for name, params in algorithms.items()
     ]

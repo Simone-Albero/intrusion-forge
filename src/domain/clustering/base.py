@@ -7,9 +7,15 @@ from sklearn.metrics import silhouette_score
 from tqdm import tqdm
 
 from src.core.utils import timed
+from src.domain.analysis.complexity.shared import (
+    _hybrid_row_batch,
+    _hybrid_row_batch_euclidean,
+    _l2_normalize,
+)
 
 FitFn = Callable[..., np.ndarray]  # (X_num, X_cat=None, **params) -> labels
 ClusterFn = Callable[[np.ndarray, np.ndarray | None], np.ndarray]  # (X_num, X_cat) -> labels
+SilhouetteFn = Callable[[np.ndarray, np.ndarray | None, np.ndarray], float]  # (X_num, X_cat, labels) -> sil
 
 
 def cluster_size_balance(labels: np.ndarray) -> float:
@@ -86,6 +92,61 @@ def _score_silhouette(
         return float("-inf")
 
 
+def pairwise_hybrid_distance(
+    X_num: np.ndarray,
+    X_cat: np.ndarray | None,
+    metric: str = "cosine",
+) -> np.ndarray:
+    """Full pairwise Gower-hybrid distance matrix in [0, 1].
+
+    Same formula as the complexity k-NN graph (cosine or range-normalised
+    Manhattan on numerics + Hamming on categorics), materialised densely —
+    only suitable for scoring subsamples (O(n^2) memory).
+    """
+    d_num = X_num.shape[1]
+    d_cat = X_cat.shape[1] if X_cat is not None else 0
+    if metric == "cosine":
+        X_norm = _l2_normalize(X_num)
+        return _hybrid_row_batch(X_norm, X_cat, X_norm, X_cat, d_num, d_cat)
+    feat_ranges = X_num.max(axis=0) - X_num.min(axis=0)
+    return _hybrid_row_batch_euclidean(
+        X_num, X_cat, X_num, X_cat, d_num, d_cat, feat_ranges
+    )
+
+
+def make_hybrid_silhouette_fn(
+    metric: str = "cosine",
+    max_scoring_samples: int = 5_000,
+    random_state: int = 0,
+) -> SilhouetteFn:
+    """Build a silhouette scorer on the Gower-hybrid distance (mixed features).
+
+    Operates on a random subsample of at most `max_scoring_samples` non-noise
+    points to bound the dense pairwise matrix. Returns -inf on degenerate input.
+    """
+
+    def _fn(X_num: np.ndarray, X_cat: np.ndarray | None, labels: np.ndarray) -> float:
+        idx = np.where(labels != -1)[0]
+        if idx.size < 2:
+            return float("-inf")
+        if idx.size > max_scoring_samples:
+            rng = np.random.default_rng(random_state)
+            idx = rng.choice(idx, size=max_scoring_samples, replace=False)
+        sub_labels = labels[idx]
+        if np.unique(sub_labels).size < 2:
+            return float("-inf")
+        dm = pairwise_hybrid_distance(
+            X_num[idx], X_cat[idx] if X_cat is not None else None, metric=metric
+        )
+        np.fill_diagonal(dm, 0.0)
+        try:
+            return float(silhouette_score(dm, sub_labels, metric="precomputed"))
+        except Exception:
+            return float("-inf")
+
+    return _fn
+
+
 @timed
 def grid_search(
     X_num: np.ndarray,
@@ -96,6 +157,7 @@ def grid_search(
     max_fit_samples: int = 50_000,
     random_state: int = 0,
     min_cluster_floor: int = 50,
+    silhouette_fn: SilhouetteFn | None = None,
     **fixed_params,
 ) -> dict:
     """Generic grid search over param_grid, scored by a fragmentation-aware composite.
@@ -104,6 +166,9 @@ def grid_search(
     (raw silhouette when it is <= 0, so low coverage never rewards a bad fit):
     plain silhouette on non-noise points rewards both noise-dumping (HDBSCAN)
     and max-K fragmentation (centroid-based algorithms).
+
+    `silhouette_fn` overrides the silhouette term (e.g. Gower-hybrid silhouette
+    for mixed-feature algorithms); the default is Euclidean on `X_num`.
 
     Returns `{"best": entry, "sweep": [entry, ...]}` where every entry has
     `{combo, score, silhouette, floor_coverage, n_clusters, n_noise,
@@ -145,7 +210,11 @@ def grid_search(
             continue
 
         duration = time.perf_counter() - t0
-        sil = _score_silhouette(sub_num, labels)
+        sil = (
+            silhouette_fn(sub_num, sub_cat, labels)
+            if silhouette_fn is not None
+            else _score_silhouette(sub_num, labels)
+        )
         cov = floor_coverage(labels, min_cluster_floor)
         noise_ratio = float((labels == -1).mean())
         s = sil * (1.0 - noise_ratio) * cov if sil > 0 else sil

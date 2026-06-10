@@ -79,10 +79,11 @@ def _cluster_per_class(
     y_class: np.ndarray,
     classes: list,
     *,
+    X_cat: np.ndarray | None = None,
     algorithms: dict[str, dict],
     consensus_threshold: float,
     max_fit_samples: int,
-    min_consensus_size,
+    min_consensus_size: int,
     random_state: int,
     metric: str = "euclidean",
     weight_voters: bool = True,
@@ -113,7 +114,8 @@ def _cluster_per_class(
         if not mask.any():
             continue
         X_num_cls = X_num[mask]
-        X_fit_cls = _l2_normalize(X_num_cls) if metric == "cosine" else X_num_cls
+        X_num_cls = _l2_normalize(X_num_cls) if metric == "cosine" else X_num_cls
+        X_cat_cls = X_cat[mask] if X_cat is not None else None
 
         algo_reports: dict[str, dict] = {}
         consensus_diag: dict = {}
@@ -136,8 +138,9 @@ def _cluster_per_class(
             refine_geometry=refine_geometry,
             refine_margin=refine_margin,
             min_cluster_floor=min_cluster_floor,
+            metric=metric,
         )
-        raw_labels = cluster_fn(X_fit_cls, None)
+        raw_labels = cluster_fn(X_num_cls, X_cat_cls)
         raw_labels, n_floor_clusters, n_floor_points = _absorb_small_clusters(
             raw_labels, min_cluster_floor
         )
@@ -153,7 +156,9 @@ def _cluster_per_class(
             "floor_absorbed_points": n_floor_points,
         }
         if consensus_diag:
-            consensus_block.update(_rekey_consensus_by_algo_name(consensus_diag, algo_names))
+            consensus_block.update(
+                _rekey_consensus_by_algo_name(consensus_diag, algo_names)
+            )
 
         report[str(cls)] = {
             "n_samples": n_cls,
@@ -164,7 +169,7 @@ def _cluster_per_class(
         cluster_ids = np.unique(raw_labels[raw_labels != -1])
         labels[mask] = np.where(raw_labels == -1, -1, raw_labels + offset)
         for cid in cluster_ids:
-            centroids[int(cid + offset)] = X_num_cls[raw_labels == cid].mean(axis=0)
+            centroids[int(cid + offset)] = X_num[mask][raw_labels == cid].mean(axis=0)
         if len(cluster_ids) > 0:
             offset += int(cluster_ids.max()) + 1
 
@@ -290,24 +295,23 @@ def prepare(cfg):
 
     combined = pd.concat([train_df, val_df, test_df], ignore_index=True)
     X_num = combined[num_cols].to_numpy(dtype=np.float64)
+    X_cat = combined[cat_cols].to_numpy() if cat_cols else None
     y_class = combined[label_col].to_numpy()
     all_classes = sorted(combined[label_col].unique().tolist())
 
     logger.info("Running per-class clustering...")
     algorithms = OmegaConf.to_container(cfg.clustering.algorithms, resolve=True)
-    min_consensus_size = OmegaConf.to_container(
-        cfg.clustering.min_consensus_size, resolve=True
-    ) if not isinstance(cfg.clustering.min_consensus_size, (int, float)) else cfg.clustering.min_consensus_size
     # voter weighting / geometric refinement are ensemble-only knobs (ignored for a single algo)
     is_ensemble = len(algorithms) > 1
     labels, centroids, noise_cluster_ids, clustering_report = _cluster_per_class(
         X_num,
         y_class,
         all_classes,
+        X_cat=X_cat,
         algorithms=algorithms,
         consensus_threshold=cfg.clustering.consensus_threshold,
         max_fit_samples=cfg.clustering.max_fit_samples,
-        min_consensus_size=min_consensus_size,
+        min_consensus_size=cfg.clustering.min_consensus_size,
         random_state=cfg.seed,
         metric=cfg.clustering.distance,
         weight_voters=cfg.clustering.weight_voters if is_ensemble else True,
@@ -315,7 +319,9 @@ def prepare(cfg):
         refine_margin=cfg.clustering.refine_margin if is_ensemble else 0.8,
         min_cluster_floor=cfg.clustering.min_cluster_floor,
     )
-    dispatcher.publish(LogBundle.from_dict({"json/clustering_report": clustering_report}))
+    dispatcher.publish(
+        LogBundle.from_dict({"json/clustering_report": clustering_report})
+    )
     noise_count = (
         int(np.isin(labels, sorted(noise_cluster_ids)).sum())
         if noise_cluster_ids
