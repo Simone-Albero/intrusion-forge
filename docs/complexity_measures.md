@@ -136,6 +136,15 @@ approximate minimum spanning tree connecting them to a sample of the
 adversarial population. The MST is built on the symmetrised k-NN graph and a
 bridge edge is added per disconnected component to guarantee connectivity.
 
+> **Approximation.** The MST is computed on the *sparse* k-NN graph, not on
+> the full pairwise distance matrix, so it is an approximation of the true
+> MST. When categorical features partition the space, the k-NN graph can be
+> disconnected; connectivity is then restored by adding one bridge edge per
+> component towards a reference node. Bridge edges are not MST-optimal and
+> can introduce a small number of artificial adjacencies, so $n_1$ should be
+> read as a boundary indicator on the neighbourhood graph rather than an
+> exact MST statistic.
+
 $$n_1(c, j) = \frac{|\{x \in c : \exists\, (x, y) \in \text{MST},\; y \in j\}|}{|c|}$$
 
 | | |
@@ -272,8 +281,14 @@ information is captured by the N/ND families).
 ## Family G — Geometry
 
 Per-partition geometric properties computed under the configured metric on
-`X_num`. Silhouette is approximated via stratified sampling (up to 10 000
-points). G-family is numerical-only by design.
+`X_num`. G-family is numerical-only by design.
+
+> **Approximation.** Silhouette-based quantities (`p5_silhouette`,
+> `frac_at_risk`) are estimated on a stratified subsample of at most 10 000
+> points to bound the $O(n^2)$ pairwise cost. Samples outside the subsample
+> have no silhouette value, so for partitions much larger than the cap the
+> reported percentiles are estimated from a fraction of the members and
+> should be treated as approximate.
 
 ### `max_dispersion`
 

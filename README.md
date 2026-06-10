@@ -11,7 +11,7 @@ The pipeline covers data preparation, classifier training, per-cluster complexit
 ```
 intrusion-forge/
 ├── pipelines/                       # Pipeline entry points (Hydra-driven)
-│   ├── prepare_data.py              # Step 1 — preprocess raw CSV → parquet splits + per-class HDBSCAN
+│   ├── prepare_data.py              # Step 1 — preprocess raw CSV → parquet splits + per-class clustering
 │   ├── classify.py                  # Step 2 — train & evaluate one ML or DL classifier
 │   ├── compute_complexity.py        # Step 3a — per-cluster + per-class complexity (shared)
 │   ├── fit_failure_classifier.py    # Step 3b — Random Forest predicting cluster failure
@@ -112,6 +112,7 @@ defaults:
 |---|---|---|
 | `data` | `nb15_v2`, `bot_iot_v2`, `cic_2018_v2`, `cic_2018_f`, `ton_iot_v2`, `bank_marketing`, `covertype`, `letter_recognition`, `statlog_landsat_satellite`, `thyroid_disease`, `synthetic_test` | Dataset definition: columns, split ratios, filtering |
 | `classifier` | DL: `tabular`, `numerical`, `categorical` &nbsp;·&nbsp; ML: `decision_tree`, `random_forest`, `hist_gradient_boosting`, `xgboost`, `knn`, `lda`, `logistic_regression`, `naive_bayes`, `svm_rbf` | Classifier kind (`ml` / `dl`), name, hyperparameters, optional grid-search grid |
+| `clustering` | `hdbscan`, `kmeans`, `spectral`, `birch`, `kprototypes`, `ensemble` | Per-class clustering strategy and hyperparameter grids (`kprototypes` includes categorical features; GMM was evaluated and excluded for pathological fragmentation) |
 | `loss` | `cross_entropy`, `focal` | DL loss functions |
 | `optimizer` | `adamw` | DL optimizer settings |
 | `scheduler` | `one_cycle` | DL learning-rate scheduler |
@@ -122,19 +123,22 @@ defaults:
 
 | Parameter | Default | Description |
 |---|---|---|
-| `seed` | `42` | Random seed for reproducibility |
+| `seed` | `42` | Random seed for reproducibility (splits, clustering, CV, weight init) |
 | `name` | `exp` | Experiment name (component of the output path) |
 | `device` | `cpu` | Device for DL training (`cpu`, `cuda`) |
 | `stage` | `all` | DL only — which stages to run: `training`, `testing`, or `all` |
 | `n_samples` | `null` | Optional training set subsampling cap |
+| `balance` | `undersample` | Training-set class balancing at training time (`undersample` / `none`); persisted splits keep the original distribution |
 | `grid_search.enabled` | `false` | Enable sklearn `GridSearchCV` over `classifier.grid` (ML only) |
 | `prepare.force` | `false` | Re-run preprocessing + clustering even if shared outputs exist |
 | `complexity.distance` | `cosine` | Distance metric for the complexity graph (`euclidean` / `cosine`) |
 | `complexity.k` | `30` | k for the shared k-NN graph |
 | `complexity.top_k_clusters` | `10` | Top-K nearest adversarial clusters per cluster |
 | `complexity.force` | `false` | Re-run complexity computation even if shared output exists |
-| `clustering.distance` | `cosine` | Distance metric for HDBSCAN (`cosine` L2-normalises `X_num`) |
+| `clustering.distance` | `cosine` | Distance metric for clustering (`cosine` L2-normalises `X_num`); keep in sync with `complexity.distance` |
+| `clustering.min_cluster_floor` | `50` | Clusters below this size are absorbed into the class pseudo-cluster (all algorithms) |
 | `failure_classifier.threshold` | `0.0` | A cluster is "failed" when `failure_rate > threshold` |
+| `failure_classifier.min_test_support` | `5` | Clusters with fewer test samples are excluded from the failure dataset |
 
 The full set of nested parameters (clustering grid, failure-classifier nested CV grid, plot caps) lives in [configs/config.yaml](configs/config.yaml).
 
@@ -170,7 +174,7 @@ resources/experiments/${name}/${data.file_name}_${seed}/
 make prepare DATA=cic_2018_v2 NAME=my_exp
 ```
 
-Loads the raw CSV, applies preprocessing (NaN removal, rare category filtering, log-scaling, robust scaling, optional top-N hash encoding), runs a stratified train/val/test split, balances classes via random undersampling, encodes labels, and runs per-class HDBSCAN to assign every sample a globally unique cluster id (noise points are merged into a per-class pseudo-cluster).
+Loads the raw CSV, applies preprocessing (NaN removal, rare category filtering, log-scaling, robust scaling, optional top-N hash encoding), runs a stratified train/val/test split, encodes labels, and runs per-class clustering (HDBSCAN by default, selectable via `clustering=`) to assign every sample a globally unique cluster id. Noise points and clusters smaller than `clustering.min_cluster_floor` are merged into a per-class pseudo-cluster. The persisted splits keep the original class distribution — balancing happens at training time (Step 2, `balance`).
 
 **Shared outputs (dataset-level):**
 
@@ -192,7 +196,7 @@ make ml-all   DATA=cic_2018_v2 NAME=my_exp     # every ML classifier in turn
 make dl-all   DATA=cic_2018_v2 NAME=my_exp     # every DL classifier in turn
 ```
 
-Trains and evaluates a single classifier (ML or DL, selected via the `classifier` config group), then writes per-class metrics and per-sample predictions used downstream by the failure classifier.
+Trains and evaluates a single classifier (ML or DL, selected via the `classifier` config group), then writes per-class metrics and per-sample predictions used downstream by the failure classifier. The training split is balanced via random undersampling at load time (`balance=undersample`, the default); pass `balance=none` to train on the original distribution. With `explain.generate=true` (or `make ... EXPLAIN=1`) the classifier is instead trained on the complexity-extended splits (`*_extended.parquet`, produced by Step 3a) and explained with SHAP — its F1 is a transductive upper bound, reported as "F1 extended (transductive)"; see [docs/approach.md](docs/approach.md).
 
 **Per-classifier outputs:**
 
@@ -272,7 +276,7 @@ The `all` target iterates over the `DATASET_CLASSIFIERS` list in the [Makefile](
 make dashboard
 ```
 
-Launches a Streamlit dashboard ([dashboard.py](dashboard.py)) for browsing experiment outputs across datasets, classifiers, and seeds.
+Launches a Streamlit dashboard ([dashboard.py](dashboard.py)) for browsing experiment outputs across datasets, classifiers, and seeds. The Overview heatmap includes the optional "F1 extended (transductive)" metric, and the drill-down shows the explain panel (extended metrics + SHAP beeswarm figures) for runs produced with `EXPLAIN=1`.
 
 ---
 
