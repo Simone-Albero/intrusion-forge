@@ -34,6 +34,7 @@ complexity:
 
 failure_classifier:
   threshold: 0.0                     # cluster is "failed" when failure_rate > threshold
+  min_test_support: 5                # clusters with fewer test samples are excluded from the failure dataset
   n_outer_splits: 5
   n_inner_splits: 5
   param_grid:

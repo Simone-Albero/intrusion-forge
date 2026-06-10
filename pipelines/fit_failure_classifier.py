@@ -97,7 +97,7 @@ def build_cluster_summary(
     Output schema per cluster:
         cluster_<measure>  — cluster-level complexity (vs top-K adversarial clusters)
         class_<measure>    — class-level complexity of the cluster's class
-        cluster_class, is_noise_cluster, failure_rate, is_failed
+        cluster_class, is_noise_cluster, n_test, failure_rate, is_failed
     """
     cluster_errors = predictions.get("clusters", {}).get("global", {}) or {}
     summary: dict[str, dict] = {}
@@ -123,10 +123,27 @@ def build_cluster_summary(
             **class_feats,
             "cluster_class": class_id,
             "is_noise_cluster": cluster_measures.get("is_noise_cluster", False),
+            "n_test": error_entry.get("n_total", 0),
             "failure_rate": failure_rate,
             "is_failed": failure_rate is not None and failure_rate > failure_threshold,
         }
     return summary
+
+
+def _failure_rate_distribution(rates: pd.Series) -> dict:
+    """Summary stats of the failure-rate distribution over the used clusters."""
+    if rates.empty:
+        return {}
+    quantiles = rates.quantile([0.25, 0.5, 0.75, 0.9])
+    return {
+        "min": float(rates.min()),
+        "p25": float(quantiles[0.25]),
+        "median": float(quantiles[0.5]),
+        "p75": float(quantiles[0.75]),
+        "p90": float(quantiles[0.9]),
+        "max": float(rates.max()),
+        "mean": float(rates.mean()),
+    }
 
 
 @timed
@@ -139,21 +156,49 @@ def fit_failure_classifier(
     n_inner_splits: int = 5,
     random_state: int = 42,
     failure_threshold: float = 0.0,
+    min_test_support: int = 5,
     analysis_bus: LogDispatcher | None = None,
 ) -> dict:
     """Train a Random Forest with nested CV to predict cluster failure from separability features.
 
-    Uses nested cross-validation: outer StratifiedKFold for unbiased evaluation,
-    inner GridSearchCV for hyperparameter selection. Metrics are aggregated over
-    out-of-fold (OOF) predictions.
+    Clusters without a failure rate (no test samples) or with fewer than
+    `min_test_support` test samples are excluded — their failure label would
+    be fabricated or near-random noise. Uses nested cross-validation: outer
+    StratifiedKFold for unbiased evaluation, inner GridSearchCV for
+    hyperparameter selection. Metrics are aggregated over out-of-fold (OOF)
+    predictions.
     """
     logger.info("Running failure classifier ...")
     df = pd.DataFrame.from_dict(cluster_stats, orient="index")
+
+    no_test = df["failure_rate"].isna()
+    low_support = ~no_test & (df["n_test"].fillna(0) < min_test_support)
+    n_excluded_no_test = int(no_test.sum())
+    n_excluded_low_support = int(low_support.sum())
+    df = df[~no_test & ~low_support]
+    exclusions = {
+        "n_clusters_total": int(no_test.size),
+        "n_clusters_used": int(len(df)),
+        "n_excluded_no_test": n_excluded_no_test,
+        "n_excluded_low_support": n_excluded_low_support,
+        "min_test_support": min_test_support,
+        "threshold": failure_threshold,
+    }
+    if n_excluded_no_test or n_excluded_low_support:
+        logger.info(
+            "Excluded clusters — no test samples: %d, test support < %d: %d (%d/%d used)",
+            n_excluded_no_test,
+            min_test_support,
+            n_excluded_low_support,
+            len(df),
+            no_test.size,
+        )
+
     if feature_cols is None:
         feature_cols = [
             c
             for c in df.select_dtypes("number").columns
-            if c != "is_failed" and c != "failure_rate"
+            if c not in ("is_failed", "failure_rate", "n_test")
         ]
     X = df[feature_cols].copy()
 
@@ -177,8 +222,11 @@ def fit_failure_classifier(
             "n_minority": n_minority,
             "n_positives": n_positives,
             "n_negatives": n_negatives,
-            "threshold": failure_threshold,
             "min_required": 2,
+            **exclusions,
+            "failure_rate_distribution": _failure_rate_distribution(
+                df["failure_rate"]
+            ),
         }
         if analysis_bus is not None:
             analysis_bus.publish(
@@ -249,6 +297,10 @@ def fit_failure_classifier(
         oof_auc = float("nan")
 
     results = {
+        **exclusions,
+        "n_positives": n_positives,
+        "n_negatives": n_negatives,
+        "failure_rate_distribution": _failure_rate_distribution(df["failure_rate"]),
         "f1_score": float(f1_score(oof_y_true_arr, oof_y_pred_arr)),
         "f1_score_std": float(np.std(fold_f1s)),
         "f1_scores_per_fold": fold_f1s,
@@ -329,6 +381,7 @@ def main():
         n_outer_splits=cfg.failure_classifier.n_outer_splits,
         n_inner_splits=cfg.failure_classifier.n_inner_splits,
         failure_threshold=cfg.failure_classifier.threshold,
+        min_test_support=cfg.failure_classifier.min_test_support,
         random_state=cfg.seed,
         analysis_bus=bus,
     )
