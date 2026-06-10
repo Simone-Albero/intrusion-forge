@@ -258,12 +258,13 @@ def main():
                 extended[name] = merged
             extended = scale_columns_on_train(extended, complexity_cols)
             for name, split_df in extended.items():
-                save_df(split_df, paths.processed_data / f"{name}.{ext}")
+                save_df(split_df, paths.processed_data / f"{name}_extended.{ext}")
             bus.publish(
                 LogBundle.from_dict({"json/complexity_meta": {"columns": complexity_cols}})
             )
             logger.info(
-                "Extended splits with %d complexity columns; meta -> %s",
+                "Extended splits saved as *_extended.%s (%d complexity columns); meta -> %s",
+                ext,
                 len(complexity_cols),
                 meta_marker,
             )

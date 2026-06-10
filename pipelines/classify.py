@@ -72,6 +72,7 @@ class DataConfig:
     cat_cols: list[str]
     label_col: str
     n_samples: int | None
+    file_suffix: str = ""
 
 
 def _load_data(
@@ -81,9 +82,9 @@ def _load_data(
     train_df, val_df, test_df = load_listed_dfs(
         data.processed_data_path,
         [
-            f"train.{data.extension}",
-            f"val.{data.extension}",
-            f"test.{data.extension}",
+            f"train{data.file_suffix}.{data.extension}",
+            f"val{data.file_suffix}.{data.extension}",
+            f"test{data.file_suffix}.{data.extension}",
         ],
     )
     if data.n_samples is not None:
@@ -594,6 +595,8 @@ def classify(cfg) -> None:
         cat_cols=cat_cols,
         label_col=label_col,
         n_samples=cfg.n_samples,
+        # the extended splits live in separate files; base runs read the originals
+        file_suffix="_extended" if cfg.explain.generate else "",
     )
 
     stage = cfg.stage
