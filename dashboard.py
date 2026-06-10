@@ -32,6 +32,7 @@ HEATMAP_METRICS: dict[str, str] = {
     "accuracy": "Test accuracy",
     "precision_macro": "Test precision macro",
     "recall_macro": "Test recall macro",
+    "f1_extended": "F1 extended (transductive)",
     "fc_f1": "Failure-classifier F1",
     "fc_auc": "Failure-classifier ROC AUC",
 }
@@ -42,6 +43,7 @@ GALLERY_CATEGORIES: list[str] = [
     "summary",
     "summary/correlation",
     "summary/global",
+    "explained",
 ]
 
 CLUSTER_NON_FEATURE_COLS = frozenset(
@@ -79,6 +81,7 @@ class ExperimentRecord:
     f1_weighted: float | None
     precision_macro: float | None
     recall_macro: float | None
+    f1_extended: float | None
     fc_f1: float | None
     fc_auc: float | None
     fc_skipped: bool = False
@@ -163,15 +166,24 @@ def _classifier_family(classifier_dir: Path) -> Literal["ml", "dl"]:
 
 
 def _extract_headline_metrics(classifier_dir: Path) -> dict[str, float | bool | None]:
-    """Read summary.json + classifier_results.json and return the headline metrics."""
+    """Read summary.json + classifier_results.json and return the headline metrics.
+
+    `f1_extended` comes from the optional `explained/` variant subtree; it is a
+    transductive upper bound, not comparable with the base F1.
+    """
     summary = _read_json(classifier_dir / "outputs" / "testing" / "summary.json") or {}
     fc = _read_json(classifier_dir / "outputs" / "analysis" / "classifier_results.json") or {}
+    extended = (
+        _read_json(classifier_dir / "explained" / "outputs" / "testing" / "summary.json")
+        or {}
+    )
     return {
         "accuracy": _safe_float(summary.get("accuracy")),
         "f1_macro": _safe_float(summary.get("f1_macro")),
         "f1_weighted": _safe_float(summary.get("f1_weighted")),
         "precision_macro": _safe_float(summary.get("precision_macro")),
         "recall_macro": _safe_float(summary.get("recall_macro")),
+        "f1_extended": _safe_float(extended.get("f1_macro")),
         "fc_f1": _safe_float(fc.get("f1_score")),
         "fc_auc": _safe_float(fc.get("roc_auc")),
         "fc_skipped": bool(fc.get("skipped", False)),
@@ -282,14 +294,21 @@ def load_experiment_detail(record_root: str, record_shared: str) -> ExperimentDe
 
 @st.cache_data(show_spinner=False)
 def load_figure_index(record_root: str) -> dict[str, str]:
-    """Return `{relative_posix_path: absolute_path}` for every PNG under `figures/`."""
-    figures_dir = Path(record_root) / "figures"
-    if not figures_dir.is_dir():
-        return {}
+    """Return `{relative_posix_path: absolute_path}` for every PNG under `figures/`.
+
+    Figures of the optional `explained/` variant are indexed under the
+    `explained/` prefix.
+    """
+    root = Path(record_root)
     out: dict[str, str] = {}
-    for png in sorted(figures_dir.rglob("*.png")):
-        rel = png.relative_to(figures_dir).as_posix()
-        out[rel] = str(png)
+    for prefix, figures_dir in (
+        ("", root / "figures"),
+        ("explained/", root / "explained" / "figures"),
+    ):
+        if not figures_dir.is_dir():
+            continue
+        for png in sorted(figures_dir.rglob("*.png")):
+            out[prefix + png.relative_to(figures_dir).as_posix()] = str(png)
     return out
 
 
@@ -326,6 +345,7 @@ def records_to_df(records: list[ExperimentRecord]) -> pd.DataFrame:
                 "f1_weighted": r.f1_weighted,
                 "precision_macro": r.precision_macro,
                 "recall_macro": r.recall_macro,
+                "f1_extended": r.f1_extended,
                 "fc_f1": r.fc_f1,
                 "fc_auc": r.fc_auc,
                 "key": r.key,
@@ -828,6 +848,44 @@ def panel_sibling_classifiers(
     )
 
 
+def panel_explain(
+    record: ExperimentRecord, detail: ExperimentDetail, key_prefix: str = "drill"
+) -> None:
+    """Extended-classifier metrics + SHAP figures from the `explained/` variant."""
+    st.markdown("**Explain — extended classifier (transductive)**")
+    summary = _read_json(record.root / "explained" / "outputs" / "testing" / "summary.json")
+    figures_dir = record.root / "explained" / "figures"
+    figures = sorted(figures_dir.rglob("*.png")) if figures_dir.is_dir() else []
+    if summary is None and not figures:
+        st.caption("No explain run for this classifier — run with `EXPLAIN=1`.")
+        return
+    if summary:
+        cols = st.columns(3)
+        ext_f1 = summary.get("f1_macro")
+        cols[0].metric(
+            "F1 extended (transductive)",
+            f"{ext_f1:.4f}" if ext_f1 is not None else "—",
+        )
+        if record.f1_macro is not None:
+            cols[1].metric("F1 base", f"{record.f1_macro:.4f}")
+            if ext_f1 is not None:
+                cols[2].metric("Δ vs base", f"{ext_f1 - record.f1_macro:+.4f}")
+        st.caption(
+            "⚠️ The extended F1 is a transductive upper bound: complexity "
+            "features are constant per cluster and clusters are class-pure, "
+            "so this measures how strongly the geometry encodes the label — "
+            "not a generalisation gain over the base classifier."
+        )
+    for start in range(0, len(figures), 2):
+        cols = st.columns(2)
+        for col, fig_path in zip(cols, figures[start : start + 2]):
+            col.image(
+                str(fig_path),
+                caption=fig_path.relative_to(figures_dir).as_posix(),
+                width="stretch",
+            )
+
+
 def panel_training_curve(record: ExperimentRecord) -> None:
     st.markdown("**Training curve (DL)**")
     if not render_figure_if_present(record, "training/loss_curve.png", "training/loss_curve.png"):
@@ -1005,6 +1063,10 @@ def render_drilldown(records: list[ExperimentRecord], seed: int) -> None:
             panel_training_curve(record)
         else:
             panel_grid_search(record, detail)
+
+    st.divider()
+    with st.container(border=True):
+        panel_explain(record, detail)
 
     st.divider()
     with st.container(border=True):
