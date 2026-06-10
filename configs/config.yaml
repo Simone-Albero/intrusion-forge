@@ -50,8 +50,11 @@ plots:
 
 explain:
   generate: false                    # opt-in: train an extra complexity-extended classifier + SHAP
-  num_samples: 100                   # test instances explained per run
-  background_samples: 100            # background rows for the KernelExplainer
+  force: false                       # re-run the SHAP stage even if shap_values.pkl exists
+  num_samples: 50                    # test instances explained per run
+  background_samples: 100            # rows sampled before the k-means summarisation
+  background_summary_k: 25           # k-means centroids used as KernelExplainer background
+  nsamples: 200                      # coalition samples per explained instance (KernelExplainer)
   max_display: 20                    # top features shown in the beeswarm
 
 

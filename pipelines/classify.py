@@ -29,9 +29,9 @@ from src.core.log import (
     setup_logger,
 )
 from src.core.paths import OutputPaths, with_variant
-from src.core.utils import flush_timing, load_from_json, timed
+from src.core.utils import flush_timing, load_from_json, skip_if_exists, timed
 from src.core.io import load_listed_dfs
-from src.domain.analysis.explain import kernel_shap_values
+from src.domain.analysis.explain import kernel_shap_values, summarize_background
 from src.domain.data.preprocessing import subsample_df
 from src.domain.projection import stratified_subsample, tsne_projection
 from src.domain.plot.base import Plot
@@ -511,6 +511,10 @@ def _explain_stage(
     bus: LogDispatcher,
 ) -> None:
     """Compute model-agnostic SHAP values on a test subsample and publish raw arrays."""
+    marker = paths.pickle / "explain/shap_values.pkl"
+    if skip_if_exists(marker, cfg.explain.force, "explain"):
+        return
+
     kind = cfg.classifier.kind
     training_mod = _resolve_training_module(kind)
     context = (
@@ -532,14 +536,31 @@ def _explain_stage(
         _, proba = training_mod.predict_with_proba(model, batch, context=context)
         return proba.detach().cpu().numpy() if hasattr(proba, "detach") else np.asarray(proba)
 
-    background = X_ref.sample(
-        n=min(cfg.explain.background_samples, len(X_ref)), random_state=cfg.seed
+    background = summarize_background(
+        X_ref.sample(
+            n=min(cfg.explain.background_samples, len(X_ref)), random_state=cfg.seed
+        ),
+        cfg.explain.background_summary_k,
     )
     eval_samples = test_df[feat_cols].sample(
         n=min(cfg.explain.num_samples, len(test_df)), random_state=cfg.seed
     )
 
-    values = kernel_shap_values(predict_fn, background, eval_samples)
+    chunk_size = 10
+    parts: list[np.ndarray] = []
+    for start in range(0, len(eval_samples), chunk_size):
+        chunk = eval_samples.iloc[start : start + chunk_size]
+        parts.append(
+            kernel_shap_values(
+                predict_fn, background, chunk, nsamples=cfg.explain.nsamples
+            )
+        )
+        logger.info(
+            "SHAP progress: %d/%d samples",
+            min(start + chunk_size, len(eval_samples)),
+            len(eval_samples),
+        )
+    values = np.concatenate(parts, axis=0)
     label_mapping = df_meta["label_mapping"]
     class_names = [label_mapping.get(str(k), str(k)) for k in range(values.shape[-1])]
 
