@@ -97,6 +97,7 @@ def _make_single_cluster_fn(
     max_fit_samples: int,
     random_state: int,
     reporter: Reporter | None = None,
+    min_cluster_floor: int = 50,
 ) -> ClusterFn:
     """Build a ClusterFn for a single registered algorithm."""
     fit_fn = ClusteringFactory.get(name)
@@ -112,7 +113,14 @@ def _make_single_cluster_fn(
         }
         try:
             if grid:
-                result = grid_search(X_num, X_cat, fit_fn, grid, **common)
+                result = grid_search(
+                    X_num,
+                    X_cat,
+                    fit_fn,
+                    grid,
+                    min_cluster_floor=min_cluster_floor,
+                    **common,
+                )
                 if reporter is not None:
                     reporter(name, result)
                 return fit_fn(X_num, X_cat=X_cat, **result["best"]["combo"], **common)
@@ -140,6 +148,7 @@ def build_cluster_fn(
     weight_voters: bool = True,
     refine_geometry: bool = True,
     refine_margin: float = 0.8,
+    min_cluster_floor: int = 50,
 ) -> ClusterFn:
     """Build a ClusterFn from {algorithm_name: params}; ensembles when >1 key.
 
@@ -154,7 +163,12 @@ def build_cluster_fn(
         raise ValueError("build_cluster_fn: algorithms is empty")
     fns = [
         _make_single_cluster_fn(
-            name, params, max_fit_samples, random_state, reporter=reporter
+            name,
+            params,
+            max_fit_samples,
+            random_state,
+            reporter=reporter,
+            min_cluster_floor=min_cluster_floor,
         )
         for name, params in algorithms.items()
     ]

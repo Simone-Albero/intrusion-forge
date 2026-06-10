@@ -62,6 +62,18 @@ def _rekey_consensus_by_algo_name(diagnostics: dict, algo_names: list[str]) -> d
     return out
 
 
+def _absorb_small_clusters(
+    labels: np.ndarray, floor: int
+) -> tuple[np.ndarray, int, int]:
+    """Reassign clusters smaller than `floor` to noise (-1)."""
+    ids, counts = np.unique(labels[labels != -1], return_counts=True)
+    small = ids[counts < floor]
+    if small.size == 0:
+        return labels, 0, 0
+    mask = np.isin(labels, small)
+    return np.where(mask, -1, labels), int(small.size), int(mask.sum())
+
+
 def _cluster_per_class(
     X_num: np.ndarray,
     y_class: np.ndarray,
@@ -76,13 +88,15 @@ def _cluster_per_class(
     weight_voters: bool = True,
     refine_geometry: bool = True,
     refine_margin: float = 0.8,
+    min_cluster_floor: int = 50,
 ) -> tuple[np.ndarray, dict[int, np.ndarray], set[int], dict[str, dict]]:
     """Per-class clustering. Returns (labels, centroids, noise_cluster_ids, report).
 
     Cluster IDs are globally unique via offset. Residual -1 noise points (from
-    single-HDBSCAN runs, ensemble HDBSCAN(precomputed), or low-confidence
-    out-of-sample propagation) are reassigned to per-class pseudo-clusters;
-    their IDs are collected in noise_cluster_ids.
+    single-HDBSCAN runs, ensemble HDBSCAN(precomputed), low-confidence
+    out-of-sample propagation, or clusters absorbed by `min_cluster_floor`)
+    are reassigned to per-class pseudo-clusters; their IDs are collected in
+    noise_cluster_ids.
 
     `report` is keyed by stringified class id; each entry has
     `{n_samples, algorithms: {algo: {best, sweep}}, consensus: {...}}`.
@@ -121,8 +135,12 @@ def _cluster_per_class(
             weight_voters=weight_voters,
             refine_geometry=refine_geometry,
             refine_margin=refine_margin,
+            min_cluster_floor=min_cluster_floor,
         )
         raw_labels = cluster_fn(X_fit_cls, None)
+        raw_labels, n_floor_clusters, n_floor_points = _absorb_small_clusters(
+            raw_labels, min_cluster_floor
+        )
 
         n_cls = int(raw_labels.shape[0])
         n_noise_cls = int((raw_labels == -1).sum())
@@ -131,6 +149,8 @@ def _cluster_per_class(
             "n_noise": n_noise_cls,
             "noise_ratio": n_noise_cls / n_cls if n_cls > 0 else 0.0,
             "size_balance": cluster_size_balance(raw_labels),
+            "floor_absorbed_clusters": n_floor_clusters,
+            "floor_absorbed_points": n_floor_points,
         }
         if consensus_diag:
             consensus_block.update(_rekey_consensus_by_algo_name(consensus_diag, algo_names))
@@ -293,6 +313,7 @@ def prepare(cfg):
         weight_voters=cfg.clustering.weight_voters if is_ensemble else True,
         refine_geometry=cfg.clustering.refine_geometry if is_ensemble else True,
         refine_margin=cfg.clustering.refine_margin if is_ensemble else 0.8,
+        min_cluster_floor=cfg.clustering.min_cluster_floor,
     )
     dispatcher.publish(LogBundle.from_dict({"json/clustering_report": clustering_report}))
     noise_count = (

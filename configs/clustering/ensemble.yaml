@@ -5,6 +5,7 @@ weight_voters: true                # weight voters by reliability (coverage = 1 
 refine_geometry: true              # post-consensus kNN-majority straggler reassignment
 refine_margin: 0.8                 # reassign only if >=80% of kNN are in another single cluster
 min_consensus_size: 25             # absolute min_cluster_size on the co-association matrix
+min_cluster_floor: 50              # clusters below this size are absorbed into the class pseudo-cluster
 
 algorithms:
   kmeans:

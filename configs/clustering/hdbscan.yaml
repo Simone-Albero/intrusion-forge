@@ -2,10 +2,11 @@ distance: cosine
 max_fit_samples: 20000
 consensus_threshold: 0.5
 min_consensus_size: 1
+min_cluster_floor: 50              # clusters below this size are absorbed into the class pseudo-cluster
 algorithms:
   hdbscan:
     min_cluster_size: [5, 10, 25, 50, 100, 200]
     min_samples: [5, 15, 50, 100, 200]
     cluster_selection_method: leaf
     max_cluster_size: null
-    penalize: false
+    penalize: true

@@ -2,6 +2,7 @@ distance: cosine
 max_fit_samples: 20000              # standalone: no s×s co-association, safe to raise the fit budget
 consensus_threshold: 0.5            # inert for a single algorithm
 min_consensus_size: 1               # inert for a single algorithm
+min_cluster_floor: 50              # clusters below this size are absorbed into the class pseudo-cluster
 algorithms:
   spectral:                          # graph-based (k-NN), captures non-convex structure
     n_clusters: [4, 8, 16, 32, 64]   # absolute grid (no 256: eigsolve cost grows with K and fit size)

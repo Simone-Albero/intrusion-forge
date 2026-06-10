@@ -26,6 +26,17 @@ def cluster_size_balance(labels: np.ndarray) -> float:
     return h / float(np.log(k))
 
 
+def floor_coverage(labels: np.ndarray, floor: int) -> float:
+    """Fraction of non-noise points belonging to clusters of size >= floor."""
+    mask = labels != -1
+    if not mask.any():
+        return 0.0
+    _, inverse, counts = np.unique(
+        labels[mask], return_inverse=True, return_counts=True
+    )
+    return float((counts[inverse] >= floor).mean())
+
+
 def _measure(labels: np.ndarray, score: float, combo: dict, duration_s: float) -> dict:
     """Headline metrics for a single clustering candidate."""
     n = int(labels.shape[0])
@@ -84,14 +95,20 @@ def grid_search(
     *,
     max_fit_samples: int = 50_000,
     random_state: int = 0,
+    min_cluster_floor: int = 50,
     **fixed_params,
 ) -> dict:
-    """Generic grid search over param_grid, scored by Euclidean silhouette.
+    """Generic grid search over param_grid, scored by a fragmentation-aware composite.
+
+    Candidates are scored as `silhouette * (1 - noise_ratio) * floor_coverage`
+    (raw silhouette when it is <= 0, so low coverage never rewards a bad fit):
+    plain silhouette on non-noise points rewards both noise-dumping (HDBSCAN)
+    and max-K fragmentation (centroid-based algorithms).
 
     Returns `{"best": entry, "sweep": [entry, ...]}` where every entry has
-    `{combo, score, n_clusters, n_noise, noise_ratio, size_balance, duration_s}`.
-    Failed fits are recorded with `score=-inf` and `error=True`. Raises if no
-    candidate produced a clustering.
+    `{combo, score, silhouette, floor_coverage, n_clusters, n_noise,
+    noise_ratio, size_balance, duration_s}`. Failed fits are recorded with
+    `score=-inf` and `error=True`. Raises if no candidate produced a clustering.
 
     fixed_params are forwarded unchanged to fit_fn on every call.
     """
@@ -128,8 +145,13 @@ def grid_search(
             continue
 
         duration = time.perf_counter() - t0
-        s = _score_silhouette(sub_num, labels)
+        sil = _score_silhouette(sub_num, labels)
+        cov = floor_coverage(labels, min_cluster_floor)
+        noise_ratio = float((labels == -1).mean())
+        s = sil * (1.0 - noise_ratio) * cov if sil > 0 else sil
         entry = _measure(labels, s, combo, duration)
+        entry["silhouette"] = sil
+        entry["floor_coverage"] = cov
         sweep.append(entry)
         if fallback_entry is None:
             fallback_entry = entry
