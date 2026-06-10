@@ -57,6 +57,7 @@ def grid_search_classifier(
     n_jobs: int = -1,
     max_samples: int | None = None,
     context: dict | None = None,
+    random_state: int = 42,
 ) -> tuple[Pipeline, dict]:
     """Cross-validated grid search over the classifier step of the pipeline.
 
@@ -78,7 +79,7 @@ def grid_search_classifier(
     subsampled = max_samples is not None and len(X) > max_samples
     if subsampled:
         _, X_search, _, y_search = train_test_split(
-            X, y, test_size=max_samples, stratify=y, random_state=42
+            X, y, test_size=max_samples, stratify=y, random_state=random_state
         )
     else:
         X_search, y_search = X, y

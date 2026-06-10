@@ -31,12 +31,16 @@ def load_best_checkpoint(
 ) -> None:
     files = list(checkpoint_dir.glob("*.pt"))
     if not files:
-        logger.warning("No checkpoint found, using current model state")
-        return
+        raise FileNotFoundError(
+            f"No checkpoint found in {checkpoint_dir}; refusing to continue "
+            "with randomly initialized weights."
+        )
     best = min(files, key=_parse_loss)
     if _parse_loss(best) == float("inf"):
         logger.warning(
-            "Could not parse loss from any checkpoint filename, using most recent"
+            "Could not parse loss from any checkpoint filename in %s; "
+            "falling back to the most recent file by mtime",
+            checkpoint_dir,
         )
         best = max(files, key=lambda p: p.stat().st_mtime)
     _load(best, model, device, weights_only)
@@ -51,6 +55,8 @@ def load_latest_checkpoint(
 ) -> None:
     files = list(checkpoint_dir.glob("*.pt"))
     if not files:
-        logger.warning("No checkpoint found, using current model state")
-        return
+        raise FileNotFoundError(
+            f"No checkpoint found in {checkpoint_dir}; refusing to continue "
+            "with randomly initialized weights."
+        )
     _load(max(files, key=lambda p: p.stat().st_mtime), model, device, weights_only)

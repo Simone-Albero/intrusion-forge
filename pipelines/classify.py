@@ -1,5 +1,7 @@
 import importlib
+import inspect
 import logging
+import random
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,10 +38,28 @@ from src.domain.plot.base import Plot
 from src.domain.plot.charts import bar_plot, line_plot, scatter_plot
 from src.domain.plot.metrics import confusion_matrix_plot
 from src.domain.plot.style import apply_plot_style, extended_palette
+from src.registries import MLClassifierFactory
 
 setup_logger(log_file="resources/logs.txt")
 apply_plot_style()
 logger = logging.getLogger(__name__)
+
+
+def _seed_everything(seed: int) -> None:
+    """Seed python, numpy and torch RNGs for reproducible runs."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+
+def _supports_random_state(clf_cls: type) -> bool:
+    """True if the estimator accepts a `random_state` parameter."""
+    if "random_state" in inspect.signature(clf_cls.__init__).parameters:
+        return True
+    try:
+        return "random_state" in clf_cls().get_params()
+    except Exception:
+        return False
 
 
 @dataclass
@@ -373,6 +393,9 @@ def _train_stage(
             cat_cols,
             df_meta["num_classes"],
         )
+    else:
+        if _supports_random_state(MLClassifierFactory.get(cfg.classifier.name)):
+            params.setdefault("random_state", cfg.seed)
 
     has_grid = "grid" in cfg.classifier and len(cfg.classifier.grid) > 0
     if cfg.grid_search.enabled and has_grid:
@@ -392,6 +415,7 @@ def _train_stage(
             cv=cfg.grid_search.cv,
             context=context,
             max_samples=cfg.grid_search.max_samples,
+            random_state=cfg.seed,
         )
         logger.info(
             "Best params: %s | Best score (%s): %.4f",
@@ -538,6 +562,7 @@ def _explain_stage(
 @timed
 def classify(cfg) -> None:
     """Run the supervised classification pipeline for a single classifier."""
+    _seed_everything(cfg.seed)
     paths = OutputPaths(
         processed_data=Path(cfg.path.processed_data),
         shared=Path(cfg.path.shared),
