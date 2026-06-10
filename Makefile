@@ -20,7 +20,7 @@
 # Flags:
 #   FORCE=1               re-run shared stages (prepare, complexity), ignoring skip markers
 #   EXPLAIN=1             in `run`, adds classify-extended (SHAP) to the flow for every (ds, clf)
-#   CLUSTERING=<name>     select clustering strategy (ensemble/kmeans/hdbscan/gmm/birch/spectral)
+#   CLUSTERING=<name>     select clustering strategy (ensemble/kmeans/hdbscan/birch/spectral)
 # ──────────────────────────────────────────────────────────────────────────────
 
 # Use venv if present; falls back to the active conda (or system) python otherwise.
@@ -33,7 +33,7 @@ SEED       ?= 42
 CLASSIFIER ?= tabular
 DISTANCE   ?= euclidean
 CLUSTERING ?= ensemble
-CLUSTERING_ALGOS ?= kmeans hdbscan spectral birch gmm ensemble
+CLUSTERING_ALGOS ?= kmeans hdbscan spectral birch ensemble
 FORCE      ?=
 EXPLAIN    ?=
 export EXPLAIN
@@ -204,7 +204,7 @@ help:
 	@echo "ML classifiers:         $(ML_CLASSIFIERS)"
 	@echo "DL classifiers (mixed): $(DL_CLASSIFIERS_MIXED)"
 	@echo "DL classifiers (num):   $(DL_CLASSIFIERS_NUMERICAL)"
-	@echo "Clustering strategies:  ensemble kmeans hdbscan gmm birch spectral"
+	@echo "Clustering strategies:  ensemble kmeans hdbscan birch spectral"
 	@echo "Datasets (format):      $(DATASET_FORMATS)"
 	@echo ""
 	@echo "Run examples:"

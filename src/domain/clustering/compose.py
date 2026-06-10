@@ -14,21 +14,10 @@ if TYPE_CHECKING:
 Reporter = Callable[[str, dict], None]  # (algo_name, grid_search_result) -> None
 
 
-def _is_grid_spec(value) -> bool:
-    """True if value is an abs list or a `{rel/rel_inv/sqrt: [...]}` dict."""
-    if isinstance(value, list):
-        return True
-    if isinstance(value, dict) and any(
-        isinstance(value.get(k), list) for k in ("rel", "rel_inv", "sqrt")
-    ):
-        return True
-    return False
-
-
 def _split_grid_fixed(params: dict) -> tuple[dict, dict]:
-    """Split params into ({grid-spec → grid}, {scalar → fixed})."""
-    grid = {k: v for k, v in params.items() if _is_grid_spec(v)}
-    fixed = {k: v for k, v in params.items() if not _is_grid_spec(v)}
+    """Split params into ({list → grid}, {scalar → fixed})."""
+    grid = {k: v for k, v in params.items() if isinstance(v, list)}
+    fixed = {k: v for k, v in params.items() if not isinstance(v, list)}
     return grid, fixed
 
 
@@ -40,37 +29,31 @@ def _clip(x: int, lo, hi) -> int:
     return x
 
 
-def _resolve_grid(grid: dict, effective_n: int) -> dict[str, list]:
-    """Expand each grid entry to a concrete list of values.
+_K_GRID_KEYS = ("n_clusters", "n_components")
 
-    Abs lists pass through unchanged.
-    `{rel: [...], min?, max?}` → `[clip(round(effective_n * r), min, max) for r in rel]`.
-    `{rel_inv: [...], min?, max?}` → `[clip(round(1 / r), min, max) for r in rel_inv]`.
-    `{sqrt: [...], min?, max?}` → `[clip(round(c * sqrt(effective_n)), min, max) for c in sqrt]`.
-    Deduplicated preserving insertion order; values are always int.
+
+def _prune_grid_by_floor(
+    grid: dict[str, list], effective_n: int, floor: int
+) -> tuple[dict[str, list], dict[str, list]]:
+    """Drop K candidates whose average cluster size would fall below `floor`.
+
+    Only applies to cluster-count keys (`n_clusters`, `n_components`); the
+    smallest candidate is always kept so the grid never empties. Returns
+    `(pruned_grid, {key: dropped_values})`.
     """
-    out: dict[str, list] = {}
-    for key, spec in grid.items():
-        if isinstance(spec, list):
-            out[key] = spec
+    out = dict(grid)
+    dropped: dict[str, list] = {}
+    for key in _K_GRID_KEYS:
+        values = out.get(key)
+        if not values:
             continue
-        lo = spec.get("min")
-        hi = spec.get("max")
-        if "rel" in spec:
-            raw = (int(round(effective_n * float(r))) for r in spec["rel"])
-        elif "sqrt" in spec:
-            raw = (int(round(float(c) * math.sqrt(effective_n))) for c in spec["sqrt"])
-        else:
-            raw = (int(round(1.0 / float(r))) for r in spec["rel_inv"])
-        seen: set[int] = set()
-        values: list[int] = []
-        for x in raw:
-            x = _clip(x, lo, hi)
-            if x not in seen:
-                seen.add(x)
-                values.append(x)
-        out[key] = values
-    return out
+        keep = [k for k in values if effective_n / k >= floor]
+        if not keep:
+            keep = [min(values)]
+        if len(keep) < len(values):
+            out[key] = keep
+            dropped[key] = [k for k in values if k not in keep]
+    return out, dropped
 
 
 def _resolve_scalar_rel(value, effective_n: int) -> int:
@@ -105,7 +88,7 @@ def _make_single_cluster_fn(
 
     def _fn(X_num: np.ndarray, X_cat: np.ndarray | None = None) -> np.ndarray:
         effective_n = min(X_num.shape[0], max_fit_samples)
-        grid = _resolve_grid(grid_raw, effective_n)
+        grid, pruned = _prune_grid_by_floor(grid_raw, effective_n, min_cluster_floor)
         common = {
             "max_fit_samples": max_fit_samples,
             "random_state": random_state,
@@ -121,6 +104,8 @@ def _make_single_cluster_fn(
                     min_cluster_floor=min_cluster_floor,
                     **common,
                 )
+                if pruned:
+                    result["pruned_by_floor"] = pruned
                 if reporter is not None:
                     reporter(name, result)
                 return fit_fn(X_num, X_cat=X_cat, **result["best"]["combo"], **common)
