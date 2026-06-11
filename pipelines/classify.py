@@ -423,7 +423,11 @@ def _train_stage(
     X, y = _prepare_train_payload(kind, train_df, feat_cols, label_col)
     X_val, y_val = _prepare_train_payload(kind, val_df, feat_cols, label_col)
 
-    params = OmegaConf.to_container(cfg.classifier.params, resolve=True)
+    params = (
+        OmegaConf.to_container(cfg.classifier.params, resolve=True)
+        if cfg.classifier.params is not None
+        else {}
+    )
     if kind == "dl":
         params = _resolve_dl_params(
             cfg.classifier.name,
