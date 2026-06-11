@@ -1,23 +1,11 @@
 import io
-from dataclasses import dataclass
 
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 
-
-@dataclass
-class Plot:
-    """Immutable, self-contained figure payload.
-
-    Created by _fig_to_plot; the source Figure is closed before this object
-    is returned, so no matplotlib state leaks to callers.
-    """
-
-    data: bytes
-    format: str = "png"
-
+from src.core.plot import Plot
 
 _FIGURE_FORMAT = "pdf"
 

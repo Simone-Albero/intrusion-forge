@@ -15,7 +15,7 @@ from src.core.log import (
     LogDispatcher,
     setup_logger,
 )
-from src.core.paths import OutputPaths
+from pipelines.common import paths_from_cfg
 from src.core.utils import flush_timing, load_from_json, load_from_pickle, timed
 from src.domain.plot.charts import (
     bar_plot,
@@ -413,15 +413,7 @@ def main():
         overrides=sys.argv[1:],
     )
     set_figure_format(cfg.plots.format)
-    paths = OutputPaths(
-        processed_data=Path(cfg.path.processed_data),
-        shared=Path(cfg.path.shared),
-        configs=Path(cfg.path.configs),
-        outputs=Path(cfg.path.outputs),
-        pickle=Path(cfg.path.pickle),
-        models=Path(cfg.path.models),
-        figures=Path(cfg.path.figures),
-    )
+    paths = paths_from_cfg(cfg)
     save_config(cfg, paths.configs / "config_composed_render.json")
 
     analysis_bus = LogDispatcher()
@@ -442,7 +434,7 @@ def main():
         )
     else:
         logger.warning(
-            "[STAGE-SKIP] Missing failure-analysis artifacts in %s; skipping summary figures.",
+            "[STAGE-SKIP] Missing failure-analysis artifacts in %s; run `make failure-classify` first. Skipping summary figures.",
             paths.outputs / "analysis",
         )
 
@@ -459,7 +451,7 @@ def main():
         )
     else:
         logger.warning(
-            "[STAGE-SKIP] Missing SHAP artifacts under %s; skipping beeswarm figures.",
+            "[STAGE-SKIP] Missing SHAP artifacts under %s; run `make classify-extended` first. Skipping beeswarm figures.",
             paths.pickle / "explain",
         )
 

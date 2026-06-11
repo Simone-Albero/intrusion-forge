@@ -13,7 +13,7 @@ from src.core.log import (
     LogDispatcher,
     setup_logger,
 )
-from src.core.paths import OutputPaths
+from pipelines.common import paths_from_cfg
 from src.core.utils import flush_timing, load_from_json, skip_if_exists, timed
 
 from src.domain.analysis.complexity import compute_all_complexity_measures
@@ -152,15 +152,7 @@ def main():
         config_name="config",
         overrides=sys.argv[1:],
     )
-    paths = OutputPaths(
-        processed_data=Path(cfg.path.processed_data),
-        shared=Path(cfg.path.shared),
-        configs=Path(cfg.path.configs),
-        outputs=Path(cfg.path.outputs),
-        pickle=Path(cfg.path.pickle),
-        models=Path(cfg.path.models),
-        figures=Path(cfg.path.figures),
-    )
+    paths = paths_from_cfg(cfg)
 
     cluster_marker = paths.shared / "complexity.json"
     class_marker = paths.shared / "class_complexity.json"

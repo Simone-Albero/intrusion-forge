@@ -29,6 +29,7 @@ from src.core.log import (
     setup_logger,
 )
 from src.core.paths import OutputPaths
+from pipelines.common import paths_from_cfg
 from src.core.utils import flush_timing, load_from_json, skip_if_exists, timed
 from src.core.io import load_listed_dfs
 from src.domain.analysis.explain import kernel_shap_values, summarize_background
@@ -360,6 +361,20 @@ def _build_ml_context(num_cols: list[str], cat_cols: list[str]) -> dict:
     return {"num_cols": num_cols, "cat_cols": cat_cols}
 
 
+def _build_context(
+    cfg,
+    paths: OutputPaths,
+    df_meta: dict,
+    num_cols: list[str],
+    cat_cols: list[str],
+    label_col: str,
+) -> dict:
+    """Build the training-module context for the configured classifier kind."""
+    if cfg.classifier.kind == "dl":
+        return _build_dl_context(cfg, paths, df_meta, num_cols, cat_cols, label_col)
+    return _build_ml_context(num_cols, cat_cols)
+
+
 def _resolve_dl_params(
     name: str,
     params: dict,
@@ -403,11 +418,7 @@ def _train_stage(
     kind = cfg.classifier.kind
     suffix = _variant_suffix(cfg)
     training_mod = _resolve_training_module(kind)
-    context = (
-        _build_dl_context(cfg, paths, df_meta, num_cols, cat_cols, label_col)
-        if kind == "dl"
-        else _build_ml_context(num_cols, cat_cols)
-    )
+    context = _build_context(cfg, paths, df_meta, num_cols, cat_cols, label_col)
 
     X, y = _prepare_train_payload(kind, train_df, feat_cols, label_col)
     X_val, y_val = _prepare_train_payload(kind, val_df, feat_cols, label_col)
@@ -501,11 +512,7 @@ def _evaluate_stage(
     kind = cfg.classifier.kind
     suffix = _variant_suffix(cfg)
     training_mod = _resolve_training_module(kind)
-    context = (
-        _build_dl_context(cfg, paths, df_meta, num_cols, cat_cols, label_col)
-        if kind == "dl"
-        else _build_ml_context(num_cols, cat_cols)
-    )
+    context = _build_context(cfg, paths, df_meta, num_cols, cat_cols, label_col)
 
     logger.info("Loading model from %s ...", paths.models)
     model = training_mod.load_model(paths.models, context=context, suffix=suffix)
@@ -557,11 +564,7 @@ def _explain_stage(
 
     kind = cfg.classifier.kind
     training_mod = _resolve_training_module(kind)
-    context = (
-        _build_dl_context(cfg, paths, df_meta, num_cols, cat_cols, label_col)
-        if kind == "dl"
-        else _build_ml_context(num_cols, cat_cols)
-    )
+    context = _build_context(cfg, paths, df_meta, num_cols, cat_cols, label_col)
 
     logger.info("Loading model from %s for explanation ...", paths.models)
     model = training_mod.load_model(
@@ -626,27 +629,36 @@ def _explain_stage(
 @timed
 def classify(cfg) -> None:
     """Run the supervised classification pipeline for a single classifier."""
+    if cfg.stage not in ("all", "training", "testing"):
+        raise ValueError(
+            f"Unknown stage: {cfg.stage!r}. Valid: 'all', 'training', 'testing'."
+        )
+    if cfg.balance not in ("undersample", "none"):
+        raise ValueError(
+            f"Unknown balance: {cfg.balance!r}. Valid: 'undersample', 'none'."
+        )
+
     _seed_everything(cfg.seed)
     set_figure_format(cfg.plots.format)
-    paths = OutputPaths(
-        processed_data=Path(cfg.path.processed_data),
-        shared=Path(cfg.path.shared),
-        configs=Path(cfg.path.configs),
-        outputs=Path(cfg.path.outputs),
-        pickle=Path(cfg.path.pickle),
-        models=Path(cfg.path.models),
-        figures=Path(cfg.path.figures),
-    )
+    paths = paths_from_cfg(cfg)
     suffix = _variant_suffix(cfg)
 
-    df_meta = load_from_json(paths.shared / "metadata/df_meta.json")
+    df_meta_path = paths.shared / "metadata/df_meta.json"
+    if not df_meta_path.exists():
+        raise FileNotFoundError(f"Missing {df_meta_path}. Run `make prepare` first.")
+    df_meta = load_from_json(df_meta_path)
     save_config(cfg, paths.configs / f"config_composed{suffix}.json")
 
     num_cols = list(cfg.data.num_cols) if cfg.data.num_cols else []
     cat_cols = list(cfg.data.cat_cols) if cfg.data.cat_cols else []
     label_col = "encoded_" + cfg.data.label_col
     if cfg.extend.generate:
-        complexity_cols = load_from_json(paths.shared / "complexity_meta.json")["columns"]
+        complexity_meta_path = paths.shared / "complexity_meta.json"
+        if not complexity_meta_path.exists():
+            raise FileNotFoundError(
+                f"Missing {complexity_meta_path}. Run `make complexity` first."
+            )
+        complexity_cols = load_from_json(complexity_meta_path)["columns"]
         num_cols = num_cols + complexity_cols
         logger.info("Extended path: +%d complexity columns", len(complexity_cols))
     feat_cols = num_cols + cat_cols
@@ -664,19 +676,6 @@ def classify(cfg) -> None:
     )
 
     stage = cfg.stage
-    if stage not in ("all", "training", "testing"):
-        logger.error(
-            "Unknown stage: %r. Valid: 'all', 'training', 'testing'.",
-            stage,
-        )
-        sys.exit(1)
-    if cfg.balance not in ("undersample", "none"):
-        logger.error(
-            "Unknown balance: %r. Valid: 'undersample', 'none'.",
-            cfg.balance,
-        )
-        sys.exit(1)
-
     train_df, val_df, test_df = _load_data(data, cfg.seed)
     logger.info(
         "Data loaded — train: %d, val: %d, test: %d samples",

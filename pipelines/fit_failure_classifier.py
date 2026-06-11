@@ -23,7 +23,7 @@ from src.core.log import (
     LogDispatcher,
     setup_logger,
 )
-from src.core.paths import OutputPaths
+from pipelines.common import paths_from_cfg
 from src.core.utils import flush_timing, load_from_json, timed
 
 setup_logger(log_file="resources/logs.txt")
@@ -343,15 +343,7 @@ def main():
         config_name="config",
         overrides=sys.argv[1:],
     )
-    paths = OutputPaths(
-        processed_data=Path(cfg.path.processed_data),
-        shared=Path(cfg.path.shared),
-        configs=Path(cfg.path.configs),
-        outputs=Path(cfg.path.outputs),
-        pickle=Path(cfg.path.pickle),
-        models=Path(cfg.path.models),
-        figures=Path(cfg.path.figures),
-    )
+    paths = paths_from_cfg(cfg)
     save_config(cfg, paths.configs / "config_composed.json")
 
     complexity_path = paths.shared / "complexity.json"

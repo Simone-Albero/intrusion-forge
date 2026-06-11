@@ -1,12 +1,10 @@
 import importlib
-import logging
 import pkgutil
 import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import Generic, TypeVar, Type
 
-logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
@@ -76,7 +74,11 @@ def _to_snake_case(name: str) -> str:
 
 
 def discover_and_import_modules(package_path: Path, package_name: str) -> list[str]:
-    """Recursively import all modules in a package, triggering decorator registration."""
+    """Recursively import all modules in a package, triggering decorator registration.
+
+    Import failures raise: a module that fails to import would silently drop
+    its registrations from the factory, surfacing only as a late KeyError.
+    """
     imported: list[str] = []
     for _, modname, _ in pkgutil.walk_packages(
         path=[str(package_path)], prefix=f"{package_name}."
@@ -85,7 +87,10 @@ def discover_and_import_modules(package_path: Path, package_name: str) -> list[s
             continue
         try:
             importlib.import_module(modname)
-            imported.append(modname)
         except Exception as e:
-            logger.warning(f"Failed to import {modname}: {e}")
+            raise ImportError(
+                f"Factory auto-discovery failed to import {modname!r}; "
+                "its registrations would be silently missing."
+            ) from e
+        imported.append(modname)
     return imported

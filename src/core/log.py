@@ -1,12 +1,12 @@
 import logging
+import os
 from dataclasses import dataclass, field
-from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 
 from rich.logging import RichHandler
 
-from src.domain.plot.base import Plot
+from .plot import Plot
 from .utils import save_to_json, save_to_pickle
 
 
@@ -18,12 +18,11 @@ def setup_logger(
     console: bool = True,
     log_file: str | None = None,
     file_level: int | None = None,
-    max_bytes: int = 10 * 1024 * 1024,
-    backup_count: int = 3,
 ) -> logging.Logger:
-    """Configure the root logger with optional console and rolling file handlers.
+    """Configure the root logger with optional console and append-mode file handlers.
 
-    Handlers are only added once, even if you call this multiple times.
+    The file handler appends to a single log file (no rotation). Handlers are
+    only added once, even if you call this multiple times.
     """
     root = logging.getLogger()
     root.setLevel(level)
@@ -40,21 +39,17 @@ def setup_logger(
 
     if log_file:
         file_level = file_level or level
-        resolved_path = str(Path(log_file).resolve())
+        # match FileHandler's own normalization (abspath, symlinks untouched)
+        resolved_path = os.path.abspath(log_file)
         Path(log_file).parent.mkdir(parents=True, exist_ok=True)
         existing = [
             h
             for h in root.handlers
-            if isinstance(h, RotatingFileHandler)
+            if isinstance(h, logging.FileHandler)
             and getattr(h, "baseFilename", "") == resolved_path
         ]
         if not existing:
-            fh = RotatingFileHandler(
-                filename=log_file,
-                maxBytes=max_bytes,
-                backupCount=backup_count,
-                encoding="utf-8",
-            )
+            fh = logging.FileHandler(filename=log_file, mode="a", encoding="utf-8")
             fh.setFormatter(formatter)
             fh.setLevel(file_level)
             root.addHandler(fh)
