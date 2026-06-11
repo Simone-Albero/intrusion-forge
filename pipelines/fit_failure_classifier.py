@@ -130,6 +130,91 @@ def build_cluster_summary(
     return summary
 
 
+def _run_nested_cv(
+    X: pd.DataFrame,
+    y: pd.Series,
+    outer_cv: StratifiedKFold,
+    outer_k: int,
+    inner_cv: StratifiedKFold | None,
+    param_grid: dict,
+    random_state: int,
+) -> dict:
+    """Run the outer CV loop and collect per-fold scores + out-of-fold predictions."""
+    fold_f1s: list[float] = []
+    fold_aucs: list[float] = []
+    fold_importances: list[np.ndarray] = []
+    oof_y_true: list[int] = []
+    oof_y_pred: list[int] = []
+    oof_y_proba: list[float] = []
+    oof_indices: list = []
+
+    for train_idx, test_idx in tqdm(
+        outer_cv.split(X, y), total=outer_k, desc="Outer CV"
+    ):
+        fold = _run_outer_fold(
+            X.iloc[train_idx],
+            y.iloc[train_idx],
+            X.iloc[test_idx],
+            y.iloc[test_idx],
+            inner_cv,
+            param_grid,
+            random_state,
+        )
+        fold_f1s.append(fold["f1"])
+        fold_aucs.append(fold["auc"])
+        fold_importances.append(fold["importances"])
+        oof_y_true.extend(y.iloc[test_idx].tolist())
+        oof_y_pred.extend(fold["y_pred"])
+        oof_y_proba.extend(fold["y_proba"])
+        oof_indices.extend(fold["indices"])
+
+    return {
+        "fold_f1s": fold_f1s,
+        "fold_aucs": fold_aucs,
+        "fold_importances": fold_importances,
+        "y_true": np.array(oof_y_true),
+        "y_pred": np.array(oof_y_pred),
+        "y_proba": np.array(oof_y_proba),
+        "indices": oof_indices,
+    }
+
+
+def _aggregate_oof_results(oof: dict, feature_cols: list[str]) -> dict:
+    """Aggregate out-of-fold predictions into the published metrics block."""
+    y_true, y_pred, y_proba = oof["y_true"], oof["y_pred"], oof["y_proba"]
+    fpr, tpr, _ = roc_curve(y_true, y_proba)
+    mean_importances = np.mean(oof["fold_importances"], axis=0)
+    try:
+        oof_auc = float(roc_auc_score(y_true, y_proba))
+    except ValueError:
+        oof_auc = float("nan")
+
+    return {
+        "f1_score": float(f1_score(y_true, y_pred)),
+        "f1_score_std": float(np.std(oof["fold_f1s"])),
+        "f1_scores_per_fold": oof["fold_f1s"],
+        "roc_auc": oof_auc,
+        "roc_auc_std": float(np.nanstd(oof["fold_aucs"])),
+        "roc_auc_per_fold": oof["fold_aucs"],
+        "roc_curve_data": {"fpr": fpr.tolist(), "tpr": tpr.tolist()},
+        "confusion_matrix": confusion_matrix(y_true, y_pred).tolist(),
+        "classification_report": classification_report(
+            y_true,
+            y_pred,
+            digits=4,
+            output_dict=True,
+        ),
+        "feature_importances": dict(zip(feature_cols, mean_importances.tolist())),
+        "oof_predictions": {
+            str(cid): int(pred == true)
+            for cid, pred, true in zip(oof["indices"], y_pred, y_true)
+        },
+        "oof_risk_proba": {
+            str(cid): float(proba) for cid, proba in zip(oof["indices"], y_proba)
+        },
+    }
+
+
 def _failure_rate_distribution(rates: pd.Series) -> dict:
     """Summary stats of the failure-rate distribution over the used clusters."""
     if rates.empty:
@@ -256,73 +341,14 @@ def fit_failure_classifier(
         else None
     )
 
-    fold_f1s: list[float] = []
-    fold_aucs: list[float] = []
-    fold_importances: list[np.ndarray] = []
-    oof_y_true: list[int] = []
-    oof_y_pred: list[int] = []
-    oof_y_proba: list[float] = []
-    oof_indices: list = []
-
-    for train_idx, test_idx in tqdm(
-        outer_cv.split(X, y), total=outer_k, desc="Outer CV"
-    ):
-        fold = _run_outer_fold(
-            X.iloc[train_idx],
-            y.iloc[train_idx],
-            X.iloc[test_idx],
-            y.iloc[test_idx],
-            inner_cv,
-            param_grid,
-            random_state,
-        )
-        fold_f1s.append(fold["f1"])
-        fold_aucs.append(fold["auc"])
-        fold_importances.append(fold["importances"])
-        oof_y_true.extend(y.iloc[test_idx].tolist())
-        oof_y_pred.extend(fold["y_pred"])
-        oof_y_proba.extend(fold["y_proba"])
-        oof_indices.extend(fold["indices"])
-
-    oof_y_true_arr = np.array(oof_y_true)
-    oof_y_pred_arr = np.array(oof_y_pred)
-    oof_y_proba_arr = np.array(oof_y_proba)
-
-    fpr, tpr, _ = roc_curve(oof_y_true_arr, oof_y_proba_arr)
-    mean_importances = np.mean(fold_importances, axis=0)
-
-    try:
-        oof_auc = float(roc_auc_score(oof_y_true_arr, oof_y_proba_arr))
-    except ValueError:
-        oof_auc = float("nan")
+    oof = _run_nested_cv(X, y, outer_cv, outer_k, inner_cv, param_grid, random_state)
 
     results = {
         **exclusions,
         "n_positives": n_positives,
         "n_negatives": n_negatives,
         "failure_rate_distribution": _failure_rate_distribution(df["failure_rate"]),
-        "f1_score": float(f1_score(oof_y_true_arr, oof_y_pred_arr)),
-        "f1_score_std": float(np.std(fold_f1s)),
-        "f1_scores_per_fold": fold_f1s,
-        "roc_auc": oof_auc,
-        "roc_auc_std": float(np.nanstd(fold_aucs)),
-        "roc_auc_per_fold": fold_aucs,
-        "roc_curve_data": {"fpr": fpr.tolist(), "tpr": tpr.tolist()},
-        "confusion_matrix": confusion_matrix(oof_y_true_arr, oof_y_pred_arr).tolist(),
-        "classification_report": classification_report(
-            oof_y_true_arr,
-            oof_y_pred_arr,
-            digits=4,
-            output_dict=True,
-        ),
-        "feature_importances": dict(zip(feature_cols, mean_importances.tolist())),
-        "oof_predictions": {
-            str(cid): int(pred == true)
-            for cid, pred, true in zip(oof_indices, oof_y_pred, oof_y_true)
-        },
-        "oof_risk_proba": {
-            str(cid): float(proba) for cid, proba in zip(oof_indices, oof_y_proba)
-        },
+        **_aggregate_oof_results(oof, feature_cols),
     }
     if analysis_bus is not None:
         analysis_bus.publish(

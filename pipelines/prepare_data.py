@@ -249,48 +249,22 @@ def preprocess_df(
     return train_df, val_df, test_df
 
 
-@timed
-def prepare(cfg):
-    """Prepare data given a configuration object."""
-    num_cols = list(cfg.data.num_cols) if cfg.data.num_cols else []
-    cat_cols = list(cfg.data.cat_cols) if cfg.data.cat_cols else []
-    label_col = cfg.data.label_col
+def _cluster_splits(
+    cfg,
+    train_df: pd.DataFrame,
+    val_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    num_cols: list[str],
+    cat_cols: list[str],
+    label_col: str,
+    dispatcher: LogDispatcher,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict, set[int]]:
+    """Cluster the combined splits per class and attach the `cluster` column.
 
-    raw_data_path = Path(cfg.path.raw_data)
-    processed_data_path = Path(cfg.path.processed_data)
-    data_logs_path = Path(cfg.path.shared)
-
-    dispatcher = LogDispatcher()
-    dispatcher.subscribe(JSONSubscriber(data_logs_path / "metadata"))
-
-    logger.info("Loading and preprocessing data...")
-    df = load_df(str(raw_data_path))
-    logger.info("Raw data loaded: %d rows, %d columns", *df.shape)
-
-    df_info = get_df_info(df, label_col=label_col)
-    dispatcher.publish(LogBundle.from_dict({"json/df_info": df_info}))
-
-    train_df, val_df, test_df = preprocess_df(
-        df,
-        num_cols,
-        cat_cols,
-        label_col,
-        cfg.data.filter_query,
-        cfg.data.min_cat_count,
-        cfg.data.train_frac,
-        cfg.data.val_frac,
-        cfg.data.test_frac,
-        cfg.seed,
-        cfg.data.top_n,
-        cfg.data.hash_buckets,
-    )
-
-    train_df, val_df, test_df = (
-        df.reset_index(drop=True) for df in [train_df, val_df, test_df]
-    )
-
+    Returns the splits with the new column, the cluster centroids and the
+    pseudo-cluster ids; publishes the clustering report.
+    """
     n_train, n_val = len(train_df), len(val_df)
-
     combined = pd.concat([train_df, val_df, test_df], ignore_index=True)
     X_num = combined[num_cols].to_numpy(dtype=np.float64)
     X_cat = combined[cat_cols].to_numpy() if cat_cols else None
@@ -336,19 +310,23 @@ def prepare(cfg):
         len(centroids),
         noise_count,
     )
+    return train_df, val_df, test_df, centroids, noise_cluster_ids
 
-    train_df, val_df, test_df, label_mapping = encode_labels(
-        train_df, val_df, test_df, label_col, dst_label_col=f"encoded_{label_col}"
-    )
 
-    logger.info("Saving processed data...")
-    for split_name, split_df in [
-        ("train", train_df),
-        ("val", val_df),
-        ("test", test_df),
-    ]:
-        save_df(split_df, processed_data_path / f"{split_name}.{cfg.data.extension}")
-
+def _publish_metadata(
+    cfg,
+    train_df: pd.DataFrame,
+    val_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    num_cols: list[str],
+    cat_cols: list[str],
+    label_col: str,
+    label_mapping: dict,
+    centroids: dict,
+    noise_cluster_ids: set[int],
+    dispatcher: LogDispatcher,
+) -> dict:
+    """Compute and publish dataset + cluster metadata; returns df_meta."""
     logger.info("Computing and saving metadata...")
     metadata = compute_df_metadata(
         {"train": train_df, "val": val_df, "test": test_df},
@@ -371,7 +349,77 @@ def prepare(cfg):
     )
     dispatcher.publish(LogBundle.from_dict({"json/clusters_meta": clusters_metadata}))
     logger.info("Cluster metadata saved.")
+    return metadata
 
+
+@timed
+def prepare(cfg):
+    """Prepare data given a configuration object."""
+    num_cols = list(cfg.data.num_cols) if cfg.data.num_cols else []
+    cat_cols = list(cfg.data.cat_cols) if cfg.data.cat_cols else []
+    label_col = cfg.data.label_col
+
+    raw_data_path = Path(cfg.path.raw_data)
+    processed_data_path = Path(cfg.path.processed_data)
+    data_logs_path = Path(cfg.path.shared)
+
+    dispatcher = LogDispatcher()
+    dispatcher.subscribe(JSONSubscriber(data_logs_path / "metadata"))
+
+    logger.info("Loading and preprocessing data...")
+    df = load_df(str(raw_data_path))
+    logger.info("Raw data loaded: %d rows, %d columns", *df.shape)
+
+    df_info = get_df_info(df, label_col=label_col)
+    dispatcher.publish(LogBundle.from_dict({"json/df_info": df_info}))
+
+    train_df, val_df, test_df = preprocess_df(
+        df,
+        num_cols,
+        cat_cols,
+        label_col,
+        cfg.data.filter_query,
+        cfg.data.min_cat_count,
+        cfg.data.train_frac,
+        cfg.data.val_frac,
+        cfg.data.test_frac,
+        cfg.seed,
+        cfg.data.top_n,
+        cfg.data.hash_buckets,
+    )
+    train_df, val_df, test_df = (
+        df.reset_index(drop=True) for df in [train_df, val_df, test_df]
+    )
+
+    train_df, val_df, test_df, centroids, noise_cluster_ids = _cluster_splits(
+        cfg, train_df, val_df, test_df, num_cols, cat_cols, label_col, dispatcher
+    )
+
+    train_df, val_df, test_df, label_mapping = encode_labels(
+        train_df, val_df, test_df, label_col, dst_label_col=f"encoded_{label_col}"
+    )
+
+    logger.info("Saving processed data...")
+    for split_name, split_df in [
+        ("train", train_df),
+        ("val", val_df),
+        ("test", test_df),
+    ]:
+        save_df(split_df, processed_data_path / f"{split_name}.{cfg.data.extension}")
+
+    metadata = _publish_metadata(
+        cfg,
+        train_df,
+        val_df,
+        test_df,
+        num_cols,
+        cat_cols,
+        label_col,
+        label_mapping,
+        centroids,
+        noise_cluster_ids,
+        dispatcher,
+    )
     return train_df, val_df, test_df, metadata
 
 

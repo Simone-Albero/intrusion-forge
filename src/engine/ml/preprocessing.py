@@ -21,6 +21,9 @@ sklearn `Pipeline` wrapping the appropriate preprocessing step plus the
 classifier built via `MLClassifierFactory`.
 """
 
+# HistGradientBoosting raises above this native-categorical cardinality
+_HISTGB_MAX_CARDINALITY = 255
+
 CLASSIFIER_PREPROCESS: dict[str, str] = {
     "logistic_regression": "onehot",
     "lda": "onehot",
@@ -105,7 +108,7 @@ def _build_preprocess(
         return ColumnTransformer(
             [
                 ("num", "passthrough", num_cols),
-                ("cat", CappedCategoryEncoder(max_cardinality=255), cat_cols),
+                ("cat", CappedCategoryEncoder(max_cardinality=_HISTGB_MAX_CARDINALITY), cat_cols),
             ],
             remainder="drop",
             verbose_feature_names_out=False,

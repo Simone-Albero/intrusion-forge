@@ -10,7 +10,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import LabelEncoder, RobustScaler
 
 
-def drop_nans(df: pd.DataFrame, cols: list) -> pd.DataFrame:
+def drop_nans(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
     """Drop rows with NaN or infinite values in specified columns."""
     return df.replace([np.inf, -np.inf], np.nan).dropna(subset=cols)
 
@@ -21,7 +21,7 @@ def query_filter(df: pd.DataFrame, *, query: str | None = None) -> pd.DataFrame:
 
 
 def rare_category_filter(
-    df: pd.DataFrame, cat_cols: list, *, min_count: int = 3000
+    df: pd.DataFrame, cat_cols: list[str], *, min_count: int = 3000
 ) -> pd.DataFrame:
     """Remove rows with rare categories in specified categorical columns."""
     if not min_count or min_count <= 0:

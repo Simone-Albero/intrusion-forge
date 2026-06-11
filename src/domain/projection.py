@@ -3,6 +3,10 @@ from sklearn.manifold import TSNE
 from umap import UMAP
 
 
+_UMAP_DEFAULT_NEIGHBORS = 15   # library default, capped to n-1 on small inputs
+_TSNE_MIN_PERPLEXITY = 5       # below this t-SNE degenerates to noise
+_TSNE_MAX_PERPLEXITY = 30      # library default upper bound
+
 def stratified_subsample(
     labels: np.ndarray,
     *,
@@ -69,7 +73,7 @@ def stratified_subsample(
 
 def umap_projection(X: np.ndarray, *, n_components: int = 2) -> np.ndarray:
     """Project data to lower dimensions with UMAP, capping n_neighbors to sample count."""
-    n_neighbors = min(15, len(X) - 1)
+    n_neighbors = min(_UMAP_DEFAULT_NEIGHBORS, len(X) - 1)
     return UMAP(
         n_components=n_components,
         n_neighbors=n_neighbors,
@@ -87,7 +91,10 @@ def tsne_projection(
 ) -> np.ndarray:
     """Project data to lower dimensions using t-SNE with adaptive perplexity."""
     if perplexity is None:
-        perplexity = max(5, min(30, (len(data) - 1) // 3))
+        perplexity = max(
+            _TSNE_MIN_PERPLEXITY,
+            min(_TSNE_MAX_PERPLEXITY, (len(data) - 1) // 3),
+        )
     return TSNE(
         n_components=n_components, perplexity=perplexity, random_state=random_state
     ).fit_transform(data)
