@@ -34,7 +34,7 @@ from src.core.io import load_listed_dfs
 from src.domain.analysis.explain import kernel_shap_values, summarize_background
 from src.domain.data.preprocessing import random_undersample_df, subsample_df
 from src.domain.projection import stratified_subsample, tsne_projection
-from src.domain.plot.base import Plot
+from src.domain.plot.base import Plot, set_figure_format
 from src.domain.plot.charts import bar_plot, line_plot, scatter_plot
 from src.domain.plot.metrics import confusion_matrix_plot
 from src.domain.plot.style import apply_plot_style, extended_palette
@@ -594,6 +594,7 @@ def _explain_stage(
 def classify(cfg) -> None:
     """Run the supervised classification pipeline for a single classifier."""
     _seed_everything(cfg.seed)
+    set_figure_format(cfg.plots.format)
     paths = OutputPaths(
         processed_data=Path(cfg.path.processed_data),
         shared=Path(cfg.path.shared),

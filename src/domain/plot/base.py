@@ -19,12 +19,23 @@ class Plot:
     format: str = "png"
 
 
+_FIGURE_FORMAT = "pdf"
+
+
+def set_figure_format(fmt: str) -> None:
+    """Set the rendering format ("pdf" or "png") for every Plot created after."""
+    global _FIGURE_FORMAT
+    if fmt not in ("pdf", "png"):
+        raise ValueError(f"Unsupported figure format: {fmt!r}. Use 'pdf' or 'png'.")
+    _FIGURE_FORMAT = fmt
+
+
 def _fig_to_plot(fig: Figure) -> Plot:
-    """Render figure to PNG bytes, close it, and return a Plot."""
+    """Render figure to bytes in the configured format, close it, return a Plot."""
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", bbox_inches="tight")
+    fig.savefig(buf, format=_FIGURE_FORMAT, bbox_inches="tight")
     plt.close(fig)
-    return Plot(data=buf.getvalue())
+    return Plot(data=buf.getvalue(), format=_FIGURE_FORMAT)
 
 
 def _ensure_ax(

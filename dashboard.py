@@ -7,6 +7,7 @@ Usage:
 
 from __future__ import annotations
 
+import base64
 import json
 import pickle
 from dataclasses import dataclass, field
@@ -292,12 +293,15 @@ def load_experiment_detail(record_root: str, record_shared: str) -> ExperimentDe
     return detail
 
 
+FIGURE_EXTENSIONS = (".png", ".pdf")
+
+
 @st.cache_data(show_spinner=False)
 def load_figure_index(record_root: str) -> dict[str, str]:
-    """Return `{relative_posix_path: absolute_path}` for every PNG under `figures/`.
+    """Return `{relative_posix_path: absolute_path}` for every figure under `figures/`.
 
-    Figures of the optional `explained/` variant are indexed under the
-    `explained/` prefix.
+    Both PNG and PDF files are indexed. Figures of the optional `explained/`
+    variant are indexed under the `explained/` prefix.
     """
     root = Path(record_root)
     out: dict[str, str] = {}
@@ -307,8 +311,9 @@ def load_figure_index(record_root: str) -> dict[str, str]:
     ):
         if not figures_dir.is_dir():
             continue
-        for png in sorted(figures_dir.rglob("*.png")):
-            out[prefix + png.relative_to(figures_dir).as_posix()] = str(png)
+        for fig in sorted(figures_dir.rglob("*")):
+            if fig.suffix.lower() in FIGURE_EXTENSIONS:
+                out[prefix + fig.relative_to(figures_dir).as_posix()] = str(fig)
     return out
 
 
@@ -385,16 +390,36 @@ def find_record(records: list[ExperimentRecord], key: str) -> ExperimentRecord |
 # ══════════════════════════════ Figure utilities ═════════════════════════════
 
 
+def _show_figure(path: str | Path, caption: str | None = None) -> None:
+    """Display a figure file: st.image for raster formats, embedded viewer for PDF."""
+    p = Path(path)
+    if p.suffix.lower() == ".pdf":
+        b64 = base64.b64encode(p.read_bytes()).decode()
+        st.markdown(
+            f'<embed src="data:application/pdf;base64,{b64}" '
+            'width="100%" height="480" type="application/pdf">',
+            unsafe_allow_html=True,
+        )
+        if caption:
+            st.caption(caption)
+    else:
+        st.image(str(p), caption=caption, width="stretch")
+
+
 def find_figure(record: ExperimentRecord, relative: str) -> Path | None:
-    candidate = record.root / "figures" / relative
-    return candidate if candidate.is_file() else None
+    """Resolve a figure path, falling back across the supported extensions."""
+    base = record.root / "figures" / relative
+    for candidate in (base, *(base.with_suffix(ext) for ext in FIGURE_EXTENSIONS)):
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 def render_figure_if_present(record: ExperimentRecord, relative: str, caption: str) -> bool:
     path = find_figure(record, relative)
     if path is None:
         return False
-    st.image(str(path), caption=caption, width="stretch")
+    _show_figure(path, caption)
     return True
 
 
@@ -855,7 +880,13 @@ def panel_explain(
     st.markdown("**Explain — extended classifier (transductive)**")
     summary = _read_json(record.root / "explained" / "outputs" / "testing" / "summary.json")
     figures_dir = record.root / "explained" / "figures"
-    figures = sorted(figures_dir.rglob("*.png")) if figures_dir.is_dir() else []
+    figures = (
+        sorted(
+            p for p in figures_dir.rglob("*") if p.suffix.lower() in FIGURE_EXTENSIONS
+        )
+        if figures_dir.is_dir()
+        else []
+    )
     if summary is None and not figures:
         st.caption("No explain run for this classifier — run with `EXPLAIN=1`.")
         return
@@ -879,11 +910,10 @@ def panel_explain(
     for start in range(0, len(figures), 2):
         cols = st.columns(2)
         for col, fig_path in zip(cols, figures[start : start + 2]):
-            col.image(
-                str(fig_path),
-                caption=fig_path.relative_to(figures_dir).as_posix(),
-                width="stretch",
-            )
+            with col:
+                _show_figure(
+                    fig_path, caption=fig_path.relative_to(figures_dir).as_posix()
+                )
 
 
 def panel_training_curve(record: ExperimentRecord) -> None:
@@ -1151,10 +1181,14 @@ def _render_gallery_single(rs_v: list[ExperimentRecord]) -> None:
         return
 
     if category != "all":
-        figures = {rel: abs_ for rel, abs_ in figures.items() if rel.startswith(category + "/") or rel == category + ".png"}
+        figures = {
+            rel: abs_
+            for rel, abs_ in figures.items()
+            if rel.startswith(category + "/") or rel.rsplit(".", 1)[0] == category
+        }
 
     if not figures:
-        st.info(f"No PNGs matching category `{category}`.")
+        st.info(f"No figures matching category `{category}`.")
         return
 
     st.caption(f"{len(figures)} figure(s) in `{record.root.name}/figures/`")
@@ -1163,7 +1197,7 @@ def _render_gallery_single(rs_v: list[ExperimentRecord]) -> None:
         cols = st.columns(3)
         for col, rel in zip(cols, rels[i : i + 3]):
             with col:
-                st.image(figures[rel], caption=rel, width="stretch")
+                _show_figure(figures[rel], caption=rel)
 
 
 def _render_gallery_cross(rs_v: list[ExperimentRecord]) -> None:
@@ -1202,9 +1236,13 @@ def _render_gallery_cross(rs_v: list[ExperimentRecord]) -> None:
     category = col_cat.selectbox("Category", ["all", *GALLERY_CATEGORIES], key="gal_x_category")
     rels_all = sorted(all_fig_paths)
     if category != "all":
-        rels_all = [p for p in rels_all if p.startswith(category + "/") or p == category + ".png"]
+        rels_all = [
+            p
+            for p in rels_all
+            if p.startswith(category + "/") or p.rsplit(".", 1)[0] == category
+        ]
     if not rels_all:
-        st.info(f"No PNGs matching category `{category}`.")
+        st.info(f"No figures matching category `{category}`.")
         return
 
     figure_path = col_fig.selectbox("Figure", rels_all, key="gal_x_figure")
@@ -1226,7 +1264,7 @@ def _render_gallery_cross(rs_v: list[ExperimentRecord]) -> None:
             abs_path = cell_map.get(f"{ds}|{clf}")
             with row_cols[i + 1]:
                 if abs_path:
-                    st.image(abs_path, width="stretch")
+                    _show_figure(abs_path)
                 else:
                     st.caption("—")
 

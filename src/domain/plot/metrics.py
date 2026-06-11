@@ -14,10 +14,18 @@ def confusion_matrix_plot(
     show_colorbar: bool = True,
     extra_metrics: dict[str, float] | None = None,
     title: str = "",
-    figsize: tuple[float, float] = (5, 5),
+    figsize: tuple[float, float] | None = None,
     ax: Axes | None = None,
+    max_annotated_classes: int = 20,
+    max_label_chars: int = 18,
 ) -> Plot | None:
-    """Plot a confusion matrix with optional row/column normalization and a metrics row."""
+    """Plot a confusion matrix with optional row/column normalization and a metrics row.
+
+    The layout adapts to the number of classes: figsize grows with `n_classes`
+    (unless given explicitly), x tick labels are rotated and long class names
+    truncated to `max_label_chars`, in-cell annotations shrink with the class
+    count and are dropped above `max_annotated_classes` (the colorbar remains).
+    """
     if cm.ndim != 2 or cm.shape[0] != cm.shape[1]:
         raise ValueError("`cm` must be a square 2D array (n_classes x n_classes).")
     if normalize not in ("row", "col", None):
@@ -28,6 +36,13 @@ def confusion_matrix_plot(
         class_names = [str(i) for i in range(n_classes)]
     elif len(class_names) != n_classes:
         raise ValueError("`class_names` length must match cm.shape[0].")
+    display_names = [
+        n if len(n) <= max_label_chars else n[: max_label_chars - 1] + "…"
+        for n in class_names
+    ]
+    if figsize is None:
+        side = max(5.0, 0.55 * n_classes + 1.5)
+        figsize = (side, side)
 
     matrix = cm.astype(float)
     if normalize is not None:
@@ -48,22 +63,28 @@ def confusion_matrix_plot(
         matrix, cmap=cmap, interpolation="nearest", aspect="equal", vmin=0.0, vmax=vmax
     )
 
-    threshold = vmax / 2.0
-    for i in range(n_classes):
-        for j in range(n_classes):
-            ax.text(
-                j,
-                i,
-                _format_value(display[i, j], kind=cell_kind),
-                ha="center",
-                va="center",
-                color="white" if matrix[i, j] > threshold else "black",
-            )
+    if n_classes <= max_annotated_classes:
+        threshold = vmax / 2.0
+        cell_fontsize = max(6.0, 12.0 - 0.35 * n_classes)
+        for i in range(n_classes):
+            for j in range(n_classes):
+                text = _format_value(display[i, j], kind=cell_kind)
+                if text.startswith("0."):
+                    text = text[1:]
+                ax.text(
+                    j,
+                    i,
+                    text,
+                    ha="center",
+                    va="center",
+                    fontsize=cell_fontsize,
+                    color="white" if matrix[i, j] > threshold else "black",
+                )
 
     ax.set_xticks(np.arange(n_classes))
     ax.set_yticks(np.arange(n_classes))
-    ax.set_xticklabels(class_names)
-    ax.set_yticklabels(class_names)
+    ax.set_xticklabels(display_names, rotation=45, ha="right", rotation_mode="anchor")
+    ax.set_yticklabels(display_names)
     ax.grid(False)
 
     if show_colorbar and fig is not None:

@@ -45,6 +45,7 @@ failure_classifier:
     max_features: [sqrt, 0.5]
 
 plots:
+  format: pdf                        # figure file format: pdf (vector, lighter) | png
   max_class_pairs: 10
   projection_max_samples: 5000
   pair_projection_max_samples: 5000

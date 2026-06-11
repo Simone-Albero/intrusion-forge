@@ -26,7 +26,7 @@ from src.domain.plot.charts import (
     violin_plot,
 )
 from src.domain.plot.metrics import confusion_matrix_plot, roc_plot
-from src.domain.plot.base import Plot
+from src.domain.plot.base import Plot, set_figure_format
 from src.domain.plot.style import (
     CORRECT_COLOR,
     FAILED_COLOR,
@@ -412,6 +412,7 @@ def main():
         config_name="config",
         overrides=sys.argv[1:],
     )
+    set_figure_format(cfg.plots.format)
     paths = OutputPaths(
         processed_data=Path(cfg.path.processed_data),
         shared=Path(cfg.path.shared),
