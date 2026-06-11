@@ -15,6 +15,7 @@ device: cpu
 stage: all
 n_samples: null
 balance: undersample                 # training-set class balancing at training time: undersample | none
+distance: cosine                     # euclidean | cosine — single metric for clustering AND complexity analysis
 
 grid_search:
   enabled: true
@@ -26,7 +27,7 @@ prepare:
   force: false                       # re-run preprocessing+clustering even if shared outputs exist
 
 complexity:
-  distance: cosine                   # euclidean | cosine — governs all complexity analysis (k-NN, MST, F/N/ND/G families)
+  distance: ${distance}              # inherited from the top-level key — must match the clustering metric
   k: 30
   top_k_clusters: 10                 # top-K nearest adversarial clusters per cluster (vs-cluster aggregation)
   min_subsample_per_cluster: 50      # minimum samples per cluster in proportional subsampling

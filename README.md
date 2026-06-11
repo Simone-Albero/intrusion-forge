@@ -129,13 +129,12 @@ defaults:
 | `stage` | `all` | DL only — which stages to run: `training`, `testing`, or `all` |
 | `n_samples` | `null` | Optional training set subsampling cap |
 | `balance` | `undersample` | Training-set class balancing at training time (`undersample` / `none`); persisted splits keep the original distribution |
+| `distance` | `cosine` | Single metric (`euclidean` / `cosine`) interpolated by both `clustering.distance` and `complexity.distance` — coherence is structural |
 | `grid_search.enabled` | `false` | Enable sklearn `GridSearchCV` over `classifier.grid` (ML only) |
 | `prepare.force` | `false` | Re-run preprocessing + clustering even if shared outputs exist |
-| `complexity.distance` | `cosine` | Distance metric for the complexity graph (`euclidean` / `cosine`) |
 | `complexity.k` | `30` | k for the shared k-NN graph |
 | `complexity.top_k_clusters` | `10` | Top-K nearest adversarial clusters per cluster |
 | `complexity.force` | `false` | Re-run complexity computation even if shared output exists |
-| `clustering.distance` | `cosine` | Distance metric for clustering (`cosine` L2-normalises `X_num`); keep in sync with `complexity.distance` |
 | `clustering.min_cluster_floor` | `50` | Clusters below this size are absorbed into the class pseudo-cluster (all algorithms) |
 | `failure_classifier.threshold` | `0.0` | A cluster is "failed" when `failure_rate > threshold` |
 | `failure_classifier.min_test_support` | `5` | Clusters with fewer test samples are excluded from the failure dataset |
@@ -223,7 +222,7 @@ Computes complexity measures at **two parallel partition levels** under a single
 - **Cluster-level** (`complexity.json`): each cluster aggregated against its top-K nearest adversarial clusters.
 - **Class-level** (`class_complexity.json`): each class aggregated against its top-K nearest adversarial classes.
 
-Both levels share the same Gower-style mixed-distance k-NN backbone (governed by `complexity.distance`) and the same five families: F (feature), N (neighbourhood), ND (network density), T (dimensionality), G (geometry). The two outputs are independent and can be compared row-wise. See [docs/complexity_measures.md](docs/complexity_measures.md) for definitions.
+Both levels share the same Gower-style mixed-distance k-NN backbone (governed by the top-level `distance` key, the same metric used by the clustering) and the same five families: F (feature), N (neighbourhood), ND (network density), T (dimensionality), G (geometry). The two outputs are independent and can be compared row-wise. See [docs/complexity_measures.md](docs/complexity_measures.md) for definitions.
 
 **Shared outputs:**
 

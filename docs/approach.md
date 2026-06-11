@@ -56,7 +56,7 @@ $$d_\text{hybrid}(x, x') = \frac{1}{d_\text{num} + d_\text{cat}} \left( \sum_{f=
 
 Computing the full pairwise distance matrix would be $O(n^2 d)$, which is prohibitive at dataset scale. Instead, only a sparse $k$-nearest-neighbour graph (default `complexity.k = 30`) is materialised — distances are computed in row batches and only the $k$ closest neighbours per sample are retained. This graph is constructed once and shared across all neighbourhood-based families, amortising its cost.
 
-**Metric coherence.** The numerical component of the analysis metric (`complexity.distance`) must match the clustering metric (`clustering.distance`): the neighbourhood topology analysed in this step has to be the one in which the clusters of Step 1 were formed, otherwise the measures describe a geometry different from the partition's. The two keys are configured independently but are kept in sync by the experiment runner.
+**Metric coherence.** The numerical component of the analysis metric must match the clustering metric: the neighbourhood topology analysed in this step has to be the one in which the clusters of Step 1 were formed, otherwise the measures describe a geometry different from the partition's. Coherence is enforced structurally: both `clustering.distance` and `complexity.distance` interpolate the single top-level `distance` key.
 
 ### Family F — Feature-Based Separability
 

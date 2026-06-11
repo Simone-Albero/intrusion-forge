@@ -68,8 +68,7 @@ DATASET_FORMATS := \
     thyroid_disease:numerical
 
 HYDRA := data=$(DATA) name=$(NAME) seed=$(SEED) classifier=$(CLASSIFIER) \
-         clustering=$(CLUSTERING) \
-         complexity.distance=$(DISTANCE) clustering.distance=$(DISTANCE)
+         clustering=$(CLUSTERING) distance=$(DISTANCE)
 FORCE_FLAG := $(if $(FORCE),prepare.force=true complexity.force=true,)
 
 .PHONY: prepare classify classify-extended extend complexity failure-classify render run run-clustering-sweep generate dashboard help
