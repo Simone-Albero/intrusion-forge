@@ -196,7 +196,7 @@ make ml-all   DATA=cic_2018_v2 NAME=my_exp     # every ML classifier in turn
 make dl-all   DATA=cic_2018_v2 NAME=my_exp     # every DL classifier in turn
 ```
 
-Trains and evaluates a single classifier (ML or DL, selected via the `classifier` config group), then writes per-class metrics and per-sample predictions used downstream by the failure classifier. The training split is balanced via random undersampling at load time (`balance=undersample`, the default); pass `balance=none` to train on the original distribution. With `explain.generate=true` (or `make ... EXPLAIN=1`) the classifier is instead trained on the complexity-extended splits (`*_extended.parquet`, produced by Step 3a) and explained with SHAP — its F1 is a transductive upper bound, reported as "F1 extended (transductive)"; see [docs/approach.md](docs/approach.md).
+Trains and evaluates a single classifier (ML or DL, selected via the `classifier` config group), then writes per-class metrics and per-sample predictions used downstream by the failure classifier. The training split is balanced via random undersampling at load time (`balance=undersample`, the default); pass `balance=none` to train on the original distribution. With `extend.generate=true` (or `make ... EXTEND=1`) the classifier is instead trained on the complexity-extended splits (`*_extended.parquet`, produced by Step 3a) and explained with SHAP — every artifact of this variant is written next to the base one with an `_extended` leaf-name suffix (`summary_extended.json`, `model_extended.joblib`, …). Its F1 is a transductive upper bound, reported as "F1 extended (transductive)"; see [docs/approach.md](docs/approach.md).
 
 **Per-classifier outputs:**
 
@@ -276,7 +276,7 @@ The `all` target iterates over the `DATASET_CLASSIFIERS` list in the [Makefile](
 make dashboard
 ```
 
-Launches a Streamlit dashboard ([dashboard.py](dashboard.py)) for browsing experiment outputs across datasets, classifiers, and seeds. The Overview heatmap includes the optional "F1 extended (transductive)" metric, and the drill-down shows the explain panel (extended metrics + SHAP beeswarm figures) for runs produced with `EXPLAIN=1`.
+Launches a Streamlit dashboard ([dashboard.py](dashboard.py)) for browsing experiment outputs across datasets, classifiers, and seeds. The Overview heatmap includes the optional "F1 extended (transductive)" metric, and the drill-down shows the explain panel (extended metrics + SHAP beeswarm figures) for runs produced with `EXTEND=1`.
 
 ---
 

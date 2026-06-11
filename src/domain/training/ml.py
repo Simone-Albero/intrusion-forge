@@ -148,11 +148,14 @@ def save_model(
     *,
     name: str = "",
     params: dict | None = None,
+    suffix: str = "",
 ) -> None:
-    """Save the full sklearn Pipeline to ``path / 'model.joblib'``."""
-    save_to_joblib(pipeline, Path(path) / "model.joblib")
+    """Save the full sklearn Pipeline to ``path / f'model{suffix}.joblib'``."""
+    save_to_joblib(pipeline, Path(path) / f"model{suffix}.joblib")
 
 
-def load_model(path: Path, *, context: dict | None = None) -> Pipeline:
-    """Load the sklearn Pipeline from ``path / 'model.joblib'``."""
-    return load_from_joblib(Path(path) / "model.joblib")
+def load_model(
+    path: Path, *, context: dict | None = None, suffix: str = ""
+) -> Pipeline:
+    """Load the sklearn Pipeline from ``path / f'model{suffix}.joblib'``."""
+    return load_from_joblib(Path(path) / f"model{suffix}.joblib")

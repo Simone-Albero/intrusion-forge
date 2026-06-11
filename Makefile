@@ -15,11 +15,11 @@
 #   make complexity        DATA=cic_2018_v2 NAME=my_exp                     # shared, dataset-level
 #   make failure-classify  DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=random_forest
 #   make render            DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=random_forest
-#   make explain           DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=tabular  # complexity + classify-extended + render
+#   make extend            DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=tabular  # complexity + classify-extended + render
 #
 # Flags:
 #   FORCE=1               re-run shared stages (prepare, complexity), ignoring skip markers
-#   EXPLAIN=1             in `run`, adds classify-extended (SHAP) to the flow for every (ds, clf)
+#   EXTEND=1              in `run`, adds classify-extended (SHAP) to the flow for every (ds, clf)
 #   CLUSTERING=<name>     select clustering strategy (ensemble/kmeans/hdbscan/birch/spectral/kprototypes)
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -35,8 +35,8 @@ DISTANCE   ?= euclidean
 CLUSTERING ?= ensemble
 CLUSTERING_ALGOS ?= kmeans hdbscan spectral birch kprototypes ensemble
 FORCE      ?=
-EXPLAIN    ?=
-export EXPLAIN
+EXTEND     ?=
+export EXTEND
 
 # `run` distinguishes "passed on the command line" from "default" via $(origin).
 DATA_GIVEN := $(if $(filter command line,$(origin DATA)),1,)
@@ -71,9 +71,8 @@ HYDRA := data=$(DATA) name=$(NAME) seed=$(SEED) classifier=$(CLASSIFIER) \
          clustering=$(CLUSTERING) \
          complexity.distance=$(DISTANCE) clustering.distance=$(DISTANCE)
 FORCE_FLAG := $(if $(FORCE),prepare.force=true complexity.force=true,)
-EXPLAIN_FLAG := $(if $(EXPLAIN),explain.generate=true,)
 
-.PHONY: prepare classify classify-extended explain complexity failure-classify render run run-clustering-sweep generate dashboard help
+.PHONY: prepare classify classify-extended extend complexity failure-classify render run run-clustering-sweep generate dashboard help
 
 ## prepare:            Step 1 — preprocess raw CSV → parquet splits           (DATA, NAME, SEED, FORCE)
 prepare:
@@ -85,10 +84,10 @@ classify:
 
 ## classify-extended:  Step 2b — train classifier on complexity-extended features + SHAP  (DATA, NAME, SEED, CLASSIFIER)
 classify-extended:
-	PYTHONPATH=. $(PYTHON) pipelines/classify.py $(HYDRA) explain.generate=true
+	PYTHONPATH=. $(PYTHON) pipelines/classify.py $(HYDRA) extend.generate=true
 
-## explain:            Complexity-extended classify (+SHAP) then render, one classifier (assumes prepare done)  (DATA, NAME, SEED, CLASSIFIER)
-explain: complexity classify-extended render
+## extend:             Complexity-extended classify (+SHAP) then render, one classifier (assumes prepare done)  (DATA, NAME, SEED, CLASSIFIER)
+extend: complexity classify-extended render
 
 ## complexity:         Step 3a — cluster + class complexity (shared, idempotent)  (DATA, NAME, SEED, FORCE)
 complexity:
@@ -102,7 +101,7 @@ failure-classify: complexity
 render:
 	PYTHONPATH=. $(PYTHON) pipelines/render_plots.py $(HYDRA)
 
-## run:                Parametric sweep — fix passed vars, iterate the rest   (DATA?, CLASSIFIER?, NAME, SEED, FORCE, EXPLAIN)
+## run:                Parametric sweep — fix passed vars, iterate the rest   (DATA?, CLASSIFIER?, NAME, SEED, FORCE, EXTEND)
 run:
 	@data_given="$(DATA_GIVEN)"; \
 	clf_given="$(CLF_GIVEN)"; \
@@ -157,7 +156,7 @@ run:
 			$(MAKE) --no-print-directory failure-classify \
 				DATA=$$ds NAME=$(NAME) SEED=$(SEED) CLASSIFIER=$$clf \
 				DISTANCE=$(DISTANCE) || exit 1; \
-			if [ -n "$(EXPLAIN)" ]; then \
+			if [ -n "$(EXTEND)" ]; then \
 				$(MAKE) --no-print-directory classify-extended \
 					DATA=$$ds NAME=$(NAME) SEED=$(SEED) CLASSIFIER=$$clf \
 					DISTANCE=$(DISTANCE) || exit 1; \
@@ -170,7 +169,7 @@ run:
 	@echo ""
 	@echo "Done."
 
-## run-clustering-sweep: Full `run` once per clustering algorithm → NAME_<algo>  (DATA?, CLASSIFIER?, NAME, SEED, DISTANCE, FORCE, EXPLAIN)
+## run-clustering-sweep: Full `run` once per clustering algorithm → NAME_<algo>  (DATA?, CLASSIFIER?, NAME, SEED, DISTANCE, FORCE, EXTEND)
 run-clustering-sweep:
 	@for c in $(CLUSTERING_ALGOS); do \
 		echo ""; \
@@ -180,7 +179,7 @@ run-clustering-sweep:
 		$(MAKE) --no-print-directory run \
 			NAME=$(NAME)_$$c CLUSTERING=$$c SEED=$(SEED) DISTANCE=$(DISTANCE) \
 			$(if $(DATA_GIVEN),DATA=$(DATA),) $(if $(CLF_GIVEN),CLASSIFIER=$(CLASSIFIER),) \
-			$(if $(FORCE),FORCE=$(FORCE),) $(if $(EXPLAIN),EXPLAIN=$(EXPLAIN),) || exit 1; \
+			$(if $(FORCE),FORCE=$(FORCE),) $(if $(EXTEND),EXTEND=$(EXTEND),) || exit 1; \
 	done
 	@echo ""; echo "Clustering sweep done: $(CLUSTERING_ALGOS)"
 

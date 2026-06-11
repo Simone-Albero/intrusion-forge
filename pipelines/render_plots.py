@@ -15,7 +15,7 @@ from src.core.log import (
     LogDispatcher,
     setup_logger,
 )
-from src.core.paths import OutputPaths, with_variant
+from src.core.paths import OutputPaths
 from src.core.utils import flush_timing, load_from_json, load_from_pickle, timed
 from src.domain.plot.charts import (
     bar_plot,
@@ -446,22 +446,21 @@ def main():
             paths.outputs / "analysis",
         )
 
-    explained = with_variant(paths, "explained")
-    shap_path = explained.pickle / "explain/shap_values.pkl"
-    meta_path = explained.outputs / "explain/meta.json"
+    shap_path = paths.pickle / "explain/shap_values.pkl"
+    meta_path = paths.outputs / "explain/meta.json"
     if shap_path.exists() and meta_path.exists():
         explain_bus = LogDispatcher()
-        explain_bus.subscribe(FilesystemFigureSubscriber(explained.figures))
+        explain_bus.subscribe(FilesystemFigureSubscriber(paths.figures))
         assemble_explain_figures(
             load_from_pickle(shap_path),
             load_from_json(meta_path),
-            max_display=cfg.explain.max_display,
+            max_display=cfg.extend.max_display,
             explain_bus=explain_bus,
         )
     else:
         logger.warning(
             "[STAGE-SKIP] Missing SHAP artifacts under %s; skipping beeswarm figures.",
-            explained.pickle / "explain",
+            paths.pickle / "explain",
         )
 
     flush_timing(paths.outputs / "timing.json")

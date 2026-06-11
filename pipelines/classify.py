@@ -28,7 +28,7 @@ from src.core.log import (
     PickleSubscriber,
     setup_logger,
 )
-from src.core.paths import OutputPaths, with_variant
+from src.core.paths import OutputPaths
 from src.core.utils import flush_timing, load_from_json, skip_if_exists, timed
 from src.core.io import load_listed_dfs
 from src.domain.analysis.explain import kernel_shap_values, summarize_background
@@ -60,6 +60,18 @@ def _supports_random_state(clf_cls: type) -> bool:
         return "random_state" in clf_cls().get_params()
     except Exception:
         return False
+
+
+def _variant_suffix(cfg) -> str:
+    """Artifact-name suffix of the run variant ("" base, "_extended" extend)."""
+    return "_extended" if cfg.extend.generate else ""
+
+
+def _with_suffix(bundle: dict, suffix: str) -> dict:
+    """Append `suffix` to the leaf name of every LogBundle key."""
+    if not suffix:
+        return bundle
+    return {f"{key}{suffix}": value for key, value in bundle.items()}
 
 
 @dataclass
@@ -317,7 +329,12 @@ def _build_dl_context(
         "optimizer_cfg": cfg.optimizer,
         "scheduler_cfg": cfg.scheduler,
         "loops_cfg": cfg.loops,
-        "models_path": paths.models,
+        # per-epoch checkpoints of the extended variant get their own dir:
+        # with_checkpointing wipes the checkpoint dir, sharing it would
+        # destroy the base run's checkpoints
+        "models_path": paths.models / "extended"
+        if cfg.extend.generate
+        else paths.models,
     }
 
 
@@ -384,6 +401,7 @@ def _train_stage(
 ) -> None:
     """Run training (optionally grid search), save the model, publish summaries."""
     kind = cfg.classifier.kind
+    suffix = _variant_suffix(cfg)
     training_mod = _resolve_training_module(kind)
     context = (
         _build_dl_context(cfg, paths, df_meta, num_cols, cat_cols, label_col)
@@ -433,7 +451,11 @@ def _train_stage(
             summary["scoring"],
             summary["best_score"],
         )
-        bus.publish(LogBundle.from_dict({"json/training/grid_search": summary}))
+        bus.publish(
+            LogBundle.from_dict(
+                _with_suffix({"json/training/grid_search": summary}, suffix)
+            )
+        )
     else:
         logger.info("Training %s ...", cfg.classifier.name)
         model, fit_summary = training_mod.fit_classifier(
@@ -447,13 +469,18 @@ def _train_stage(
         )
         history = fit_summary.get("history", {})
         if history:
-            bus.publish(LogBundle.from_dict(_training_history_figures(history)))
+            bus.publish(
+                LogBundle.from_dict(
+                    _with_suffix(_training_history_figures(history), suffix)
+                )
+            )
 
     training_mod.save_model(
         model,
         paths.models,
         name=cfg.classifier.name,
         params=params,
+        suffix=suffix,
     )
     logger.info("Model saved under %s", paths.models)
 
@@ -472,6 +499,7 @@ def _evaluate_stage(
 ) -> None:
     """Load the trained model, run predictions, publish metrics + figures + dumps."""
     kind = cfg.classifier.kind
+    suffix = _variant_suffix(cfg)
     training_mod = _resolve_training_module(kind)
     context = (
         _build_dl_context(cfg, paths, df_meta, num_cols, cat_cols, label_col)
@@ -480,7 +508,7 @@ def _evaluate_stage(
     )
 
     logger.info("Loading model from %s ...", paths.models)
-    model = training_mod.load_model(paths.models, context=context)
+    model = training_mod.load_model(paths.models, context=context, suffix=suffix)
 
     X = test_df[feat_cols] if kind == "ml" else test_df
     y_pred, y_proba = training_mod.predict_with_proba(model, X, context=context)
@@ -496,12 +524,15 @@ def _evaluate_stage(
 
     bus.publish(
         LogBundle.from_dict(
-            {
-                **figures,
-                "json/testing/summary": full_metrics,
-                "json/analysis/predictions/test": pred_infos,
-                "pickle/analysis/confusion_matrices/test": cm,
-            }
+            _with_suffix(
+                {
+                    **figures,
+                    "json/testing/summary": full_metrics,
+                    "json/analysis/predictions/test": pred_infos,
+                    "pickle/analysis/confusion_matrices/test": cm,
+                },
+                suffix,
+            )
         )
     )
 
@@ -521,7 +552,7 @@ def _explain_stage(
 ) -> None:
     """Compute model-agnostic SHAP values on a test subsample and publish raw arrays."""
     marker = paths.pickle / "explain/shap_values.pkl"
-    if skip_if_exists(marker, cfg.explain.force, "explain"):
+    if skip_if_exists(marker, cfg.extend.force, "explain"):
         return
 
     kind = cfg.classifier.kind
@@ -533,7 +564,9 @@ def _explain_stage(
     )
 
     logger.info("Loading model from %s for explanation ...", paths.models)
-    model = training_mod.load_model(paths.models, context=context)
+    model = training_mod.load_model(
+        paths.models, context=context, suffix=_variant_suffix(cfg)
+    )
 
     X_train, _ = _prepare_train_payload(kind, train_df, feat_cols, label_col)
     X_ref = X_train if kind == "ml" else X_train[feat_cols]
@@ -547,12 +580,12 @@ def _explain_stage(
 
     background = summarize_background(
         X_ref.sample(
-            n=min(cfg.explain.background_samples, len(X_ref)), random_state=cfg.seed
+            n=min(cfg.extend.background_samples, len(X_ref)), random_state=cfg.seed
         ),
-        cfg.explain.background_summary_k,
+        cfg.extend.background_summary_k,
     )
     eval_samples = test_df[feat_cols].sample(
-        n=min(cfg.explain.num_samples, len(test_df)), random_state=cfg.seed
+        n=min(cfg.extend.num_samples, len(test_df)), random_state=cfg.seed
     )
 
     chunk_size = 10
@@ -561,7 +594,7 @@ def _explain_stage(
         chunk = eval_samples.iloc[start : start + chunk_size]
         parts.append(
             kernel_shap_values(
-                predict_fn, background, chunk, nsamples=cfg.explain.nsamples
+                predict_fn, background, chunk, nsamples=cfg.extend.nsamples
             )
         )
         logger.info(
@@ -604,19 +637,18 @@ def classify(cfg) -> None:
         models=Path(cfg.path.models),
         figures=Path(cfg.path.figures),
     )
-    if cfg.explain.generate:
-        paths = with_variant(paths, "explained")
+    suffix = _variant_suffix(cfg)
 
     df_meta = load_from_json(paths.shared / "metadata/df_meta.json")
-    save_config(cfg, paths.configs / "config_composed.json")
+    save_config(cfg, paths.configs / f"config_composed{suffix}.json")
 
     num_cols = list(cfg.data.num_cols) if cfg.data.num_cols else []
     cat_cols = list(cfg.data.cat_cols) if cfg.data.cat_cols else []
     label_col = "encoded_" + cfg.data.label_col
-    if cfg.explain.generate:
+    if cfg.extend.generate:
         complexity_cols = load_from_json(paths.shared / "complexity_meta.json")["columns"]
         num_cols = num_cols + complexity_cols
-        logger.info("Explainable path: +%d complexity columns", len(complexity_cols))
+        logger.info("Extended path: +%d complexity columns", len(complexity_cols))
     feat_cols = num_cols + cat_cols
 
     data = DataConfig(
@@ -627,7 +659,7 @@ def classify(cfg) -> None:
         label_col=label_col,
         n_samples=cfg.n_samples,
         # the extended splits live in separate files; base runs read the originals
-        file_suffix="_extended" if cfg.explain.generate else "",
+        file_suffix=suffix,
         balance=cfg.balance,
     )
 
@@ -686,7 +718,7 @@ def classify(cfg) -> None:
             bus,
         )
 
-    if cfg.explain.generate:
+    if cfg.extend.generate:
         _explain_stage(
             cfg,
             paths,
@@ -711,7 +743,7 @@ def main():
         overrides=sys.argv[1:],
     )
     classify(cfg)
-    flush_timing(Path(cfg.path.outputs) / "timing.json")
+    flush_timing(Path(cfg.path.outputs) / f"timing{_variant_suffix(cfg)}.json")
 
 
 if __name__ == "__main__":

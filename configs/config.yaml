@@ -50,7 +50,7 @@ plots:
   projection_max_samples: 5000
   pair_projection_max_samples: 5000
 
-explain:
+extend:
   generate: false                    # opt-in: train an extra complexity-extended classifier + SHAP
   force: false                       # re-run the SHAP stage even if shap_values.pkl exists
   num_samples: 50                    # test instances explained per run

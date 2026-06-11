@@ -44,7 +44,7 @@ GALLERY_CATEGORIES: list[str] = [
     "summary",
     "summary/correlation",
     "summary/global",
-    "explained",
+    "explain",
 ]
 
 CLUSTER_NON_FEATURE_COLS = frozenset(
@@ -169,13 +169,14 @@ def _classifier_family(classifier_dir: Path) -> Literal["ml", "dl"]:
 def _extract_headline_metrics(classifier_dir: Path) -> dict[str, float | bool | None]:
     """Read summary.json + classifier_results.json and return the headline metrics.
 
-    `f1_extended` comes from the optional `explained/` variant subtree; it is a
-    transductive upper bound, not comparable with the base F1.
+    `f1_extended` comes from the optional `summary_extended.json` of the
+    extend variant; it is a transductive upper bound, not comparable with the
+    base F1.
     """
     summary = _read_json(classifier_dir / "outputs" / "testing" / "summary.json") or {}
     fc = _read_json(classifier_dir / "outputs" / "analysis" / "classifier_results.json") or {}
     extended = (
-        _read_json(classifier_dir / "explained" / "outputs" / "testing" / "summary.json")
+        _read_json(classifier_dir / "outputs" / "testing" / "summary_extended.json")
         or {}
     )
     return {
@@ -300,20 +301,16 @@ FIGURE_EXTENSIONS = (".png", ".pdf")
 def load_figure_index(record_root: str) -> dict[str, str]:
     """Return `{relative_posix_path: absolute_path}` for every figure under `figures/`.
 
-    Both PNG and PDF files are indexed. Figures of the optional `explained/`
-    variant are indexed under the `explained/` prefix.
+    Both PNG and PDF files are indexed; extend-variant figures live in the
+    same tree (`*_extended.*` leaf names, plus the `explain/` subfolder).
     """
-    root = Path(record_root)
+    figures_dir = Path(record_root) / "figures"
+    if not figures_dir.is_dir():
+        return {}
     out: dict[str, str] = {}
-    for prefix, figures_dir in (
-        ("", root / "figures"),
-        ("explained/", root / "explained" / "figures"),
-    ):
-        if not figures_dir.is_dir():
-            continue
-        for fig in sorted(figures_dir.rglob("*")):
-            if fig.suffix.lower() in FIGURE_EXTENSIONS:
-                out[prefix + fig.relative_to(figures_dir).as_posix()] = str(fig)
+    for fig in sorted(figures_dir.rglob("*")):
+        if fig.suffix.lower() in FIGURE_EXTENSIONS:
+            out[fig.relative_to(figures_dir).as_posix()] = str(fig)
     return out
 
 
@@ -876,10 +873,10 @@ def panel_sibling_classifiers(
 def panel_explain(
     record: ExperimentRecord, detail: ExperimentDetail, key_prefix: str = "drill"
 ) -> None:
-    """Extended-classifier metrics + SHAP figures from the `explained/` variant."""
+    """Extended-classifier metrics + SHAP figures of the extend variant."""
     st.markdown("**Explain — extended classifier (transductive)**")
-    summary = _read_json(record.root / "explained" / "outputs" / "testing" / "summary.json")
-    figures_dir = record.root / "explained" / "figures"
+    summary = _read_json(record.root / "outputs" / "testing" / "summary_extended.json")
+    figures_dir = record.root / "figures" / "explain"
     figures = (
         sorted(
             p for p in figures_dir.rglob("*") if p.suffix.lower() in FIGURE_EXTENSIONS
@@ -888,7 +885,7 @@ def panel_explain(
         else []
     )
     if summary is None and not figures:
-        st.caption("No explain run for this classifier — run with `EXPLAIN=1`.")
+        st.caption("No extend run for this classifier — run with `EXTEND=1`.")
         return
     if summary:
         cols = st.columns(3)
