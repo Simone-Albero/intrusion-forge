@@ -22,6 +22,7 @@ from src.domain.analysis.metadata import (
     get_df_info,
 )
 from src.core.io import load_df, save_df
+from sklearn.cluster import MiniBatchKMeans
 from sklearn.preprocessing import RobustScaler
 
 from src.domain.data.preprocessing import (
@@ -73,6 +74,37 @@ def _absorb_small_clusters(
     return np.where(mask, -1, labels), int(small.size), int(mask.sum())
 
 
+def _split_large_clusters(
+    labels: np.ndarray, X_fit: np.ndarray, target: int, floor: int, random_state: int
+) -> tuple[np.ndarray, int]:
+    """Split clusters larger than `target` using MiniBatchKMeans on the full cluster points.
+
+    Noise pseudo-clusters (-1) are skipped. Sub-cluster 0 keeps the original id;
+    additional sub-clusters receive fresh ids above the current maximum.
+    """
+    ids, counts = np.unique(labels[labels != -1], return_counts=True)
+    large_mask = counts > target
+    if not large_mask.any():
+        return labels, 0
+
+    labels = labels.copy()
+    next_id = int(ids.max()) + 1
+    n_added = 0
+
+    for cid, n in zip(ids[large_mask], counts[large_mask]):
+        k = min(int(np.ceil(n / target)), int(n) // floor)
+        if k < 2:
+            continue
+        idx = np.where(labels == cid)[0]
+        sub = MiniBatchKMeans(n_clusters=k, random_state=random_state).fit_predict(X_fit[idx])
+        for s in range(1, k):
+            labels[idx[sub == s]] = next_id
+            next_id += 1
+        n_added += k - 1
+
+    return labels, n_added
+
+
 def _cluster_per_class(
     X_num: np.ndarray,
     y_class: np.ndarray,
@@ -89,6 +121,7 @@ def _cluster_per_class(
     refine_geometry: bool = True,
     refine_margin: float = 0.8,
     min_cluster_floor: int = 50,
+    target_cluster_size: int = 25000,
 ) -> tuple[np.ndarray, dict[int, np.ndarray], set[int], dict[str, dict]]:
     """Per-class clustering. Returns (labels, centroids, noise_cluster_ids, report).
 
@@ -143,6 +176,9 @@ def _cluster_per_class(
         raw_labels, n_floor_clusters, n_floor_points = _absorb_small_clusters(
             raw_labels, min_cluster_floor
         )
+        raw_labels, n_split_added = _split_large_clusters(
+            raw_labels, X_num_cls, target_cluster_size, min_cluster_floor, random_state
+        )
 
         n_cls = int(raw_labels.shape[0])
         n_noise_cls = int((raw_labels == -1).sum())
@@ -153,6 +189,7 @@ def _cluster_per_class(
             "size_balance": cluster_size_balance(raw_labels),
             "floor_absorbed_clusters": n_floor_clusters,
             "floor_absorbed_points": n_floor_points,
+            "split_added_clusters": n_split_added,
         }
         if consensus_diag:
             consensus_block.update(
@@ -293,6 +330,7 @@ def _cluster_splits(
         refine_geometry=cfg.clustering.refine_geometry if is_ensemble else True,
         refine_margin=cfg.clustering.refine_margin if is_ensemble else 0.8,
         min_cluster_floor=cfg.clustering.min_cluster_floor,
+        target_cluster_size=cfg.clustering.target_cluster_size,
     )
     dispatcher.publish(
         LogBundle.from_dict({"json/clustering_report": clustering_report})

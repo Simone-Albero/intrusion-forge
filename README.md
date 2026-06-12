@@ -136,7 +136,8 @@ defaults:
 | `complexity.top_k_clusters` | `10` | Top-K nearest adversarial clusters per cluster |
 | `complexity.force` | `false` | Re-run complexity computation even if shared output exists |
 | `clustering.min_cluster_floor` | `50` | Clusters below this size are absorbed into the class pseudo-cluster (all algorithms) |
-| `failure_classifier.threshold` | `0.0` | A cluster is "failed" when `failure_rate > threshold` |
+| `clustering.target_cluster_size` | `25000` | Clusters above this size are split post-hoc with MiniBatchKMeans on the full cluster points; together with `min_cluster_floor` this enforces a [50, 25 000] resolution band |
+| `failure_classifier.labeling` | `binomial` | Failure label: `binomial` (error rate significantly above the classifier's global rate, level `alpha`) or `threshold` (`failure_rate > threshold`) |
 | `failure_classifier.min_test_support` | `5` | Clusters with fewer test samples are excluded from the failure dataset |
 
 The full set of nested parameters (clustering grid, failure-classifier nested CV grid, plot caps) lives in [configs/config.yaml](configs/config.yaml).

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from scipy.stats import binom, spearmanr
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import (
     classification_report,
@@ -85,11 +86,48 @@ def _run_outer_fold(
     }
 
 
+def _global_error_rate(cluster_errors: dict) -> float:
+    """Pooled test error rate over every cluster with test samples."""
+    n_err = sum(v["n_error"] for v in cluster_errors.values())
+    n_tot = sum(v["n_total"] for v in cluster_errors.values())
+    return n_err / n_tot if n_tot else 0.0
+
+
+def _label_failed(
+    n_error: int,
+    n_total: int,
+    *,
+    labeling: str,
+    alpha: float,
+    threshold: float,
+    global_error_rate: float,
+) -> bool:
+    """Failure label for one cluster.
+
+    binomial:  failed when the cluster's error count is significantly above the
+               classifier's global error rate (one-sided binomial test). Scale-
+               aware: large clusters need a real elevation, small ones a strong
+               excess — a single slip among tens of thousands of test samples
+               no longer counts as failure.
+    threshold: failed when failure_rate > threshold (legacy semantics).
+    """
+    if n_total == 0:
+        return False
+    if labeling == "binomial":
+        return n_error > 0 and float(
+            binom.sf(n_error - 1, n_total, global_error_rate)
+        ) < alpha
+    return (n_error / n_total) > threshold
+
+
 def build_cluster_summary(
     complexity: dict,
     class_complexity: dict,
     predictions: dict,
-    failure_threshold: float,
+    *,
+    labeling: str = "binomial",
+    alpha: float = 0.05,
+    failure_threshold: float = 0.0,
 ) -> dict:
     """Merge per-cluster complexity with class-level complexity (joined on the
     cluster's class via `cluster_class`) and per-classifier failure rates.
@@ -99,7 +137,12 @@ def build_cluster_summary(
         class_<measure>    — class-level complexity of the cluster's class
         cluster_class, is_noise_cluster, n_test, failure_rate, is_failed
     """
+    if labeling not in ("binomial", "threshold"):
+        raise ValueError(
+            f"Unknown labeling: {labeling!r}. Valid: 'binomial', 'threshold'."
+        )
     cluster_errors = predictions.get("clusters", {}).get("global", {}) or {}
+    global_error_rate = _global_error_rate(cluster_errors)
     summary: dict[str, dict] = {}
     for cid, cluster_measures in complexity.items():
         class_id = cluster_measures.get("cluster_class")
@@ -125,7 +168,15 @@ def build_cluster_summary(
             "is_noise_cluster": cluster_measures.get("is_noise_cluster", False),
             "n_test": error_entry.get("n_total", 0),
             "failure_rate": failure_rate,
-            "is_failed": failure_rate is not None and failure_rate > failure_threshold,
+            "is_failed": failure_rate is not None
+            and _label_failed(
+                error_entry.get("n_error", 0),
+                error_entry.get("n_total", 0),
+                labeling=labeling,
+                alpha=alpha,
+                threshold=failure_threshold,
+                global_error_rate=global_error_rate,
+            ),
         }
     return summary
 
@@ -240,12 +291,17 @@ def fit_failure_classifier(
     n_outer_splits: int = 5,
     n_inner_splits: int = 5,
     random_state: int = 42,
+    labeling: str = "binomial",
+    alpha: float = 0.05,
     failure_threshold: float = 0.0,
     min_test_support: int = 5,
     analysis_bus: LogDispatcher | None = None,
 ) -> dict:
     """Train a Random Forest with nested CV to predict cluster failure from separability features.
 
+    The failure label comes from the `is_failed` column of `cluster_stats`
+    (computed by `build_cluster_summary` under the configured labeling);
+    `labeling`/`alpha`/`failure_threshold` are reported for transparency.
     Clusters without a failure rate (no test samples) or with fewer than
     `min_test_support` test samples are excluded — their failure label would
     be fabricated or near-random noise. Uses nested cross-validation: outer
@@ -261,13 +317,22 @@ def fit_failure_classifier(
     n_excluded_no_test = int(no_test.sum())
     n_excluded_low_support = int(low_support.sum())
     df = df[~no_test & ~low_support]
+
+    rates = df["failure_rate"].astype(float)
+    n_test = df["n_test"].astype(float)
+    global_error_rate = (
+        float((rates * n_test).sum() / n_test.sum()) if n_test.sum() else 0.0
+    )
     exclusions = {
         "n_clusters_total": int(no_test.size),
         "n_clusters_used": int(len(df)),
         "n_excluded_no_test": n_excluded_no_test,
         "n_excluded_low_support": n_excluded_low_support,
         "min_test_support": min_test_support,
+        "labeling": labeling,
+        "alpha": alpha,
         "threshold": failure_threshold,
+        "global_error_rate": global_error_rate,
     }
     if n_excluded_no_test or n_excluded_low_support:
         logger.info(
@@ -287,16 +352,25 @@ def fit_failure_classifier(
         ]
     X = df[feature_cols].copy()
 
-    y = df["failure_rate"].apply(lambda x: 1 if x > failure_threshold else 0)
+    y = df["is_failed"].astype(int)
 
     n_positives = int(y.sum())
     n_negatives = int((1 - y).sum())
+    prevalence = n_positives / max(n_positives + n_negatives, 1)
+    context_metrics = {
+        "n_positives": n_positives,
+        "n_negatives": n_negatives,
+        "prevalence": prevalence,
+        # F1 of the constant all-failed predictor: the floor any useful model must beat
+        "f1_baseline_all_failed": 2 * prevalence / (1 + prevalence) if prevalence else 0.0,
+        "failure_rate_distribution": _failure_rate_distribution(df["failure_rate"]),
+    }
     n_minority = min(n_positives, n_negatives)
     outer_k = _max_safe_splits(n_minority, n_outer_splits)
     if outer_k == 0:
         message = (
             f"Failure classifier skipped: only {n_minority} minority sample(s) "
-            f"(positives={n_positives}, threshold={failure_threshold}). "
+            f"(positives={n_positives}, labeling={labeling}). "
             f"Need >=2 for stratified CV."
         )
         logger.warning("[STAGE-SKIP] %s", message)
@@ -305,13 +379,9 @@ def fit_failure_classifier(
             "reason": "insufficient_minority_samples",
             "message": message,
             "n_minority": n_minority,
-            "n_positives": n_positives,
-            "n_negatives": n_negatives,
             "min_required": 2,
             **exclusions,
-            "failure_rate_distribution": _failure_rate_distribution(
-                df["failure_rate"]
-            ),
+            **context_metrics,
         }
         if analysis_bus is not None:
             analysis_bus.publish(
@@ -343,11 +413,16 @@ def fit_failure_classifier(
 
     oof = _run_nested_cv(X, y, outer_cv, outer_k, inner_cv, param_grid, random_state)
 
+    # rank correlation between the RF risk score and the continuous failure
+    # rate: measures the relationship without the binarisation
+    oof_rates = df.loc[oof["indices"], "failure_rate"].astype(float).to_numpy()
+    rho = spearmanr(oof["y_proba"], oof_rates)
+
     results = {
         **exclusions,
-        "n_positives": n_positives,
-        "n_negatives": n_negatives,
-        "failure_rate_distribution": _failure_rate_distribution(df["failure_rate"]),
+        **context_metrics,
+        "spearman_proba_failure_rate": float(rho.statistic),
+        "spearman_proba_failure_rate_pvalue": float(rho.pvalue),
         **_aggregate_oof_results(oof, feature_cols),
     }
     if analysis_bus is not None:
@@ -385,7 +460,12 @@ def main():
     predictions = load_from_json(paths.outputs / "analysis/predictions/test.json")
 
     cluster_summary = build_cluster_summary(
-        complexity, class_complexity, predictions, cfg.failure_classifier.threshold
+        complexity,
+        class_complexity,
+        predictions,
+        labeling=cfg.failure_classifier.labeling,
+        alpha=cfg.failure_classifier.alpha,
+        failure_threshold=cfg.failure_classifier.threshold,
     )
 
     bus = LogDispatcher()
@@ -398,6 +478,8 @@ def main():
         to_container(cfg.failure_classifier.param_grid),
         n_outer_splits=cfg.failure_classifier.n_outer_splits,
         n_inner_splits=cfg.failure_classifier.n_inner_splits,
+        labeling=cfg.failure_classifier.labeling,
+        alpha=cfg.failure_classifier.alpha,
         failure_threshold=cfg.failure_classifier.threshold,
         min_test_support=cfg.failure_classifier.min_test_support,
         random_state=cfg.seed,
