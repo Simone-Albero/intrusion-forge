@@ -8,6 +8,10 @@ from sklearn.neighbors import NearestNeighbors
 from src.domain.clustering import ClusteringFactory
 from src.domain.clustering.base import _subsample
 
+# out-of-sample prediction batch: bounds transient memory (hdbscan's
+# approximate_predict allocates n × 2·min_samples distance/index arrays)
+_PREDICT_CHUNK = 200_000
+
 
 @ClusteringFactory.register("hdbscan")
 def fit_hdbscan(
@@ -42,7 +46,12 @@ def fit_hdbscan(
     if n > max_fit_samples:
         sub_num, _ = _subsample(X_num, None, max_fit_samples, random_state)
         clf.fit(sub_num)
-        labels, _ = hdbscan.approximate_predict(clf, X_num)
+        labels = np.concatenate(
+            [
+                hdbscan.approximate_predict(clf, X_num[start : start + _PREDICT_CHUNK])[0]
+                for start in range(0, n, _PREDICT_CHUNK)
+            ]
+        )
     else:
         clf.fit(X_num)
         labels = clf.labels_
@@ -111,7 +120,18 @@ def fit_kprototypes(
     if n > max_fit_samples:
         sub_num, sub_cat = _subsample(X_num, X_cat, max_fit_samples, random_state)
         model.fit(_mixed(sub_num, sub_cat), categorical=cat_idx)
-        labels = model.predict(_mixed(X_num, X_cat), categorical=cat_idx)
+        labels = np.concatenate(
+            [
+                model.predict(
+                    _mixed(
+                        X_num[start : start + _PREDICT_CHUNK],
+                        X_cat[start : start + _PREDICT_CHUNK],
+                    ),
+                    categorical=cat_idx,
+                )
+                for start in range(0, n, _PREDICT_CHUNK)
+            ]
+        )
     else:
         labels = model.fit_predict(_mixed(X_num, X_cat), categorical=cat_idx)
     return np.asarray(labels, dtype=np.int64)

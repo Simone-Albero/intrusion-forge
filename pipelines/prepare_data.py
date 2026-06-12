@@ -167,8 +167,11 @@ def _cluster_per_class(
 
         cluster_ids = np.unique(raw_labels[raw_labels != -1])
         labels[mask] = np.where(raw_labels == -1, -1, raw_labels + offset)
+        # centroids on the raw (un-normalized) features; materialize once per class
+        X_raw_cls = X_num[mask]
         for cid in cluster_ids:
-            centroids[int(cid + offset)] = X_num[mask][raw_labels == cid].mean(axis=0)
+            centroids[int(cid + offset)] = X_raw_cls[raw_labels == cid].mean(axis=0)
+        del X_raw_cls
         if len(cluster_ids) > 0:
             offset += int(cluster_ids.max()) + 1
 
