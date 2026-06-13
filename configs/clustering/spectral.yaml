@@ -4,6 +4,7 @@ consensus_threshold: 0.5            # inert for a single algorithm
 min_consensus_size: 1               # inert for a single algorithm
 min_cluster_floor: 50              # clusters below this size are absorbed into the class pseudo-cluster
 target_cluster_size: 25000         # clusters above this size are split into sub-clusters (post-hoc, full-data MiniBatchKMeans)
+target_size_frac: 0.05             # adaptive: effective target = clamp(2*floor, total_n * frac, target_cluster_size)
 algorithms:
   spectral:                          # graph-based (k-NN), captures non-convex structure
     n_clusters: [4, 8, 16, 32, 64]   # absolute grid (no 256: eigsolve cost grows with K and fit size)

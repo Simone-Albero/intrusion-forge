@@ -96,7 +96,9 @@ def _split_large_clusters(
         if k < 2:
             continue
         idx = np.where(labels == cid)[0]
-        sub = MiniBatchKMeans(n_clusters=k, random_state=random_state).fit_predict(X_fit[idx])
+        sub = MiniBatchKMeans(n_clusters=k, random_state=random_state).fit_predict(
+            X_fit[idx]
+        )
         for s in range(1, k):
             labels[idx[sub == s]] = next_id
             next_id += 1
@@ -122,19 +124,18 @@ def _cluster_per_class(
     refine_margin: float = 0.8,
     min_cluster_floor: int = 50,
     target_cluster_size: int = 25000,
+    target_size_frac: float = 0.05,
 ) -> tuple[np.ndarray, dict[int, np.ndarray], set[int], dict[str, dict]]:
     """Per-class clustering. Returns (labels, centroids, noise_cluster_ids, report).
 
     Cluster IDs are globally unique via offset. Residual -1 noise points (from
-    single-HDBSCAN runs, ensemble HDBSCAN(precomputed), low-confidence
-    out-of-sample propagation, or clusters absorbed by `min_cluster_floor`)
-    are reassigned to per-class pseudo-clusters; their IDs are collected in
-    noise_cluster_ids.
-
-    `report` is keyed by stringified class id; each entry has
-    `{n_samples, algorithms: {algo: {best, sweep}}, consensus: {...}}`.
+    single-HDBSCAN runs, clusters absorbed by `min_cluster_floor` are reassigned
+    to per-class pseudo-clusters; their IDs are collected in noise_cluster_ids.
     """
     n = X_num.shape[0]
+    target_eff = max(
+        2 * min_cluster_floor, min(round(n * target_size_frac), target_cluster_size)
+    )
     labels = np.full(n, -1, dtype=np.int64)
     centroids: dict[int, np.ndarray] = {}
     offset = 0
@@ -177,7 +178,7 @@ def _cluster_per_class(
             raw_labels, min_cluster_floor
         )
         raw_labels, n_split_added = _split_large_clusters(
-            raw_labels, X_num_cls, target_cluster_size, min_cluster_floor, random_state
+            raw_labels, X_num_cls, target_eff, min_cluster_floor, random_state
         )
 
         n_cls = int(raw_labels.shape[0])
@@ -331,6 +332,7 @@ def _cluster_splits(
         refine_margin=cfg.clustering.refine_margin if is_ensemble else 0.8,
         min_cluster_floor=cfg.clustering.min_cluster_floor,
         target_cluster_size=cfg.clustering.target_cluster_size,
+        target_size_frac=cfg.clustering.target_size_frac,
     )
     dispatcher.publish(
         LogBundle.from_dict({"json/clustering_report": clustering_report})

@@ -7,6 +7,7 @@ refine_margin: 0.8                 # reassign only if >=80% of kNN are in anothe
 min_consensus_size: 25             # absolute min_cluster_size on the co-association matrix
 min_cluster_floor: 50              # clusters below this size are absorbed into the class pseudo-cluster
 target_cluster_size: 25000         # clusters above this size are split into sub-clusters (post-hoc, full-data MiniBatchKMeans)
+target_size_frac: 0.05             # adaptive: effective target = clamp(2*floor, total_n * frac, target_cluster_size)
 
 algorithms:
   kmeans:

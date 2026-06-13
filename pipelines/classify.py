@@ -3,7 +3,7 @@ import inspect
 import logging
 import random
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 
@@ -18,6 +18,7 @@ from sklearn.metrics import (
     recall_score,
     accuracy_score,
 )
+from sklearn.model_selection import StratifiedKFold
 
 from src.core.config import load_config, save_config
 from src.core.log import (
@@ -401,6 +402,101 @@ def _resolve_dl_params(
     return out
 
 
+def _resolve_fit_params(cfg, kind: str, num_cols, cat_cols, df_meta: dict) -> dict:
+    """Resolve the classifier `params` (DL shape injection / ML random_state)."""
+    params = (
+        OmegaConf.to_container(cfg.classifier.params, resolve=True)
+        if cfg.classifier.params is not None
+        else {}
+    )
+    if kind == "dl":
+        params = _resolve_dl_params(
+            cfg.classifier.name, params, num_cols, cat_cols, df_meta["num_classes"]
+        )
+    elif _supports_random_state(MLClassifierFactory.get(cfg.classifier.name)):
+        params.setdefault("random_state", cfg.seed)
+    return params
+
+
+def _fit_model(
+    training_mod,
+    name: str,
+    params: dict,
+    X,
+    y,
+    X_val,
+    y_val,
+    context: dict,
+    save_dir: Path,
+    suffix: str = "",
+) -> tuple[object, dict]:
+    """Fit one classifier on (X, y) and save it under `save_dir`. Returns (model, summary).
+
+    The backbone shared by the single-model and per-fold (k-fold OOF) training paths;
+    `context` carries the (DL) checkpoint location, so callers point it where needed.
+    """
+    save_dir.mkdir(parents=True, exist_ok=True)
+    model, summary = training_mod.fit_classifier(
+        name=name, params=params, X=X, y=y, X_val=X_val, y_val=y_val, context=context
+    )
+    training_mod.save_model(model, save_dir, name=name, params=params, suffix=suffix)
+    return model, summary
+
+
+def _predict_model(
+    training_mod,
+    model_dir: Path,
+    df: pd.DataFrame,
+    feat_cols: list[str],
+    kind: str,
+    context: dict,
+    suffix: str = "",
+) -> tuple[np.ndarray, np.ndarray]:
+    """Load one model from `model_dir` and predict `df` → (y_pred, y_proba).
+
+    The backbone shared by the single-split and per-fold (k-fold OOF) evaluation paths.
+    """
+    model = training_mod.load_model(model_dir, context=context, suffix=suffix)
+    X = df[feat_cols] if kind == "ml" else df
+    return training_mod.predict_with_proba(model, X, context=context)
+
+
+def _publish_evaluation(
+    bus: LogDispatcher,
+    df_meta: dict,
+    X_np: np.ndarray,
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    y_proba: np.ndarray,
+    clusters: np.ndarray | None,
+    *,
+    eval_mode: str,
+    suffix: str = "",
+) -> None:
+    """Build metrics, confusion matrix and figures from predictions and publish them.
+
+    Shared by the single-split and k-fold OOF evaluation paths; `eval_mode` marks the
+    artifacts (`single_split` / `oof_kfold`).
+    """
+    full_metrics = {**_compute_classification_metrics(y_true, y_pred), "eval_mode": eval_mode}
+    pred_infos = {**_evaluate_predictions(y_true, y_pred, y_proba, clusters), "eval_mode": eval_mode}
+    cm = confusion_matrix(y_true, y_pred, labels=np.unique(y_true), normalize="true")
+    figures = _build_test_figures(X_np, y_true, y_pred, df_meta["label_mapping"])
+    bus.publish(
+        LogBundle.from_dict(
+            _with_suffix(
+                {
+                    **figures,
+                    "json/testing/summary": full_metrics,
+                    "json/analysis/predictions/test": pred_infos,
+                    "pickle/analysis/confusion_matrices/test": cm,
+                },
+                suffix,
+            )
+        )
+    )
+
+
 @timed
 def _train_stage(
     cfg,
@@ -414,31 +510,14 @@ def _train_stage(
     cat_cols: list[str],
     bus: LogDispatcher,
 ) -> None:
-    """Run training (optionally grid search), save the model, publish summaries."""
+    """Train one model on the train split (optionally grid search) and save it."""
     kind = cfg.classifier.kind
     suffix = _variant_suffix(cfg)
     training_mod = _resolve_training_module(kind)
     context = _build_context(cfg, paths, df_meta, num_cols, cat_cols, label_col)
-
+    params = _resolve_fit_params(cfg, kind, num_cols, cat_cols, df_meta)
     X, y = _prepare_train_payload(kind, train_df, feat_cols, label_col)
     X_val, y_val = _prepare_train_payload(kind, val_df, feat_cols, label_col)
-
-    params = (
-        OmegaConf.to_container(cfg.classifier.params, resolve=True)
-        if cfg.classifier.params is not None
-        else {}
-    )
-    if kind == "dl":
-        params = _resolve_dl_params(
-            cfg.classifier.name,
-            params,
-            num_cols,
-            cat_cols,
-            df_meta["num_classes"],
-        )
-    else:
-        if _supports_random_state(MLClassifierFactory.get(cfg.classifier.name)):
-            params.setdefault("random_state", cfg.seed)
 
     has_grid = "grid" in cfg.classifier and len(cfg.classifier.grid) > 0
     if cfg.grid_search.enabled and has_grid:
@@ -471,16 +550,14 @@ def _train_stage(
                 _with_suffix({"json/training/grid_search": summary}, suffix)
             )
         )
+        training_mod.save_model(
+            model, paths.models, name=cfg.classifier.name, params=params, suffix=suffix
+        )
     else:
         logger.info("Training %s ...", cfg.classifier.name)
-        model, fit_summary = training_mod.fit_classifier(
-            name=cfg.classifier.name,
-            params=params,
-            X=X,
-            y=y,
-            X_val=X_val,
-            y_val=y_val,
-            context=context,
+        _, fit_summary = _fit_model(
+            training_mod, cfg.classifier.name, params, X, y, X_val, y_val,
+            context, paths.models, suffix,
         )
         history = fit_summary.get("history", {})
         if history:
@@ -489,14 +566,6 @@ def _train_stage(
                     _with_suffix(_training_history_figures(history), suffix)
                 )
             )
-
-    training_mod.save_model(
-        model,
-        paths.models,
-        name=cfg.classifier.name,
-        params=params,
-        suffix=suffix,
-    )
     logger.info("Model saved under %s", paths.models)
 
 
@@ -512,40 +581,114 @@ def _evaluate_stage(
     cat_cols: list[str],
     bus: LogDispatcher,
 ) -> None:
-    """Load the trained model, run predictions, publish metrics + figures + dumps."""
+    """Load the trained model, predict the test split, publish metrics + figures + dumps."""
     kind = cfg.classifier.kind
     suffix = _variant_suffix(cfg)
     training_mod = _resolve_training_module(kind)
     context = _build_context(cfg, paths, df_meta, num_cols, cat_cols, label_col)
 
     logger.info("Loading model from %s ...", paths.models)
-    model = training_mod.load_model(paths.models, context=context, suffix=suffix)
-
-    X = test_df[feat_cols] if kind == "ml" else test_df
-    y_pred, y_proba = training_mod.predict_with_proba(model, X, context=context)
-
+    y_pred, y_proba = _predict_model(
+        training_mod, paths.models, test_df, feat_cols, kind, context, suffix
+    )
     y_true = test_df[label_col].to_numpy()
     clusters = test_df["cluster"].to_numpy() if "cluster" in test_df.columns else None
-    X_np = test_df[feat_cols].to_numpy()
 
-    full_metrics = _compute_classification_metrics(y_true, y_pred)
-    pred_infos = _evaluate_predictions(y_true, y_pred, y_proba, clusters)
-    cm = confusion_matrix(y_true, y_pred, labels=np.unique(y_true), normalize="true")
-    figures = _build_test_figures(X_np, y_true, y_pred, df_meta["label_mapping"])
-
-    bus.publish(
-        LogBundle.from_dict(
-            _with_suffix(
-                {
-                    **figures,
-                    "json/testing/summary": full_metrics,
-                    "json/analysis/predictions/test": pred_infos,
-                    "pickle/analysis/confusion_matrices/test": cm,
-                },
-                suffix,
-            )
-        )
+    _publish_evaluation(
+        bus, df_meta, test_df[feat_cols].to_numpy(), y_true, y_pred, y_proba, clusters,
+        eval_mode="single_split", suffix=suffix,
     )
+
+
+def _oof_splits(base: pd.DataFrame, label_col: str, k: int, seed: int) -> list:
+    """Deterministic stratified OOF folds over `base`; K capped to the rarest class."""
+    y = base[label_col].to_numpy()
+    k = min(k, int(np.unique(y, return_counts=True)[1].min()))
+    if k < 2:
+        raise ValueError(f"k-fold OOF needs >=2 samples per class, got k={k}.")
+    return list(StratifiedKFold(n_splits=k, shuffle=True, random_state=seed).split(base, y))
+
+
+@timed
+def _train_kfold_stage(
+    cfg,
+    paths: OutputPaths,
+    train_df: pd.DataFrame,
+    val_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    feat_cols: list[str],
+    label_col: str,
+    df_meta: dict,
+    num_cols: list[str],
+    cat_cols: list[str],
+) -> None:
+    """Train one classifier per OOF fold over train+test, saving each under `fold_{f}/`.
+
+    `val_df` is the shared early-stopping holdout (DL): reserved from every fold,
+    never trained on. Each fold mirrors the real balance recipe.
+    """
+    kind = cfg.classifier.kind
+    training_mod = _resolve_training_module(kind)
+    context = _build_context(cfg, paths, df_meta, num_cols, cat_cols, label_col)
+    params = _resolve_fit_params(cfg, kind, num_cols, cat_cols, df_meta)
+    X_val, y_val = _prepare_train_payload(kind, val_df, feat_cols, label_col)
+
+    base = pd.concat([train_df, test_df], ignore_index=True)
+    for f, (tr_idx, _) in enumerate(_oof_splits(base, label_col, cfg.kfold_splits, cfg.seed)):
+        fold_dir = paths.models / f"fold_{f}"
+        fold_train = base.iloc[tr_idx]
+        if cfg.balance == "undersample":
+            fold_train = random_undersample_df(fold_train, label_col, random_state=cfg.seed)
+        X, y = _prepare_train_payload(kind, fold_train, feat_cols, label_col)
+        # DL checkpoints during fit go to the fold's own dir, never clobbering siblings
+        fold_ctx = {**context, "models_path": fold_dir} if kind == "dl" else context
+        _fit_model(
+            training_mod, cfg.classifier.name, params, X, y, X_val, y_val,
+            fold_ctx, fold_dir,
+        )
+    logger.info("k-fold OOF: trained %d fold models under %s", f + 1, paths.models)
+
+
+@timed
+def _evaluate_kfold_stage(
+    cfg,
+    paths: OutputPaths,
+    train_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    feat_cols: list[str],
+    label_col: str,
+    df_meta: dict,
+    num_cols: list[str],
+    cat_cols: list[str],
+    bus: LogDispatcher,
+) -> None:
+    """Assemble OOF predictions from the saved fold models; publish metrics + failure rates.
+
+    Each saved `model_f` predicts only its held-out fold → leakage-free predictions
+    over train+test feeding both the classifier metrics and the per-cluster failure
+    rates. `eval_mode` marks the artifacts as cross-validated (not single-split).
+    """
+    kind = cfg.classifier.kind
+    training_mod = _resolve_training_module(kind)
+    context = _build_context(cfg, paths, df_meta, num_cols, cat_cols, label_col)
+
+    base = pd.concat([train_df, test_df], ignore_index=True)
+    y_true = base[label_col].to_numpy()
+    clusters = base["cluster"].to_numpy() if "cluster" in base.columns else None
+    y_pred = np.empty(len(base), dtype=y_true.dtype)
+    y_proba = np.zeros((len(base), df_meta["num_classes"]))
+
+    for f, (_, te_idx) in enumerate(_oof_splits(base, label_col, cfg.kfold_splits, cfg.seed)):
+        y_pred[te_idx], y_proba[te_idx] = _predict_model(
+            training_mod, paths.models / f"fold_{f}", base.iloc[te_idx],
+            feat_cols, kind, context,
+        )
+
+    _publish_evaluation(
+        bus, df_meta, base[feat_cols].to_numpy(), y_true, y_pred, y_proba, clusters,
+        eval_mode="oof_kfold",
+    )
+    logger.info("k-fold OOF evaluation: %d samples over %d folds", len(base), f + 1)
 
 
 @timed
@@ -680,7 +823,12 @@ def classify(cfg) -> None:
     )
 
     stage = cfg.stage
-    train_df, val_df, test_df = _load_data(data, cfg.seed)
+    # k-fold OOF evaluates the configured pipeline over train+test; the base run
+    # uses the raw splits (balance is applied per fold), the extended variant stays
+    # single-split. kfold OFF keeps the current train→test single-split path.
+    use_kfold = cfg.kfold and not cfg.extend.generate
+    load_cfg = replace(data, balance="none", n_samples=None) if use_kfold else data
+    train_df, val_df, test_df = _load_data(load_cfg, cfg.seed)
     logger.info(
         "Data loaded — train: %d, val: %d, test: %d samples",
         len(train_df),
@@ -695,31 +843,28 @@ def classify(cfg) -> None:
     bus.subscribe(FilesystemFigureSubscriber(paths.figures))
 
     if stage in ("training", "all"):
-        _train_stage(
-            cfg,
-            paths,
-            train_df,
-            val_df,
-            feat_cols,
-            label_col,
-            df_meta,
-            num_cols,
-            cat_cols,
-            bus,
-        )
+        if use_kfold:
+            _train_kfold_stage(
+                cfg, paths, train_df, val_df, test_df,
+                feat_cols, label_col, df_meta, num_cols, cat_cols,
+            )
+        else:
+            _train_stage(
+                cfg, paths, train_df, val_df,
+                feat_cols, label_col, df_meta, num_cols, cat_cols, bus,
+            )
 
     if stage in ("testing", "all"):
-        _evaluate_stage(
-            cfg,
-            paths,
-            test_df,
-            feat_cols,
-            label_col,
-            df_meta,
-            num_cols,
-            cat_cols,
-            bus,
-        )
+        if use_kfold:
+            _evaluate_kfold_stage(
+                cfg, paths, train_df, test_df,
+                feat_cols, label_col, df_meta, num_cols, cat_cols, bus,
+            )
+        else:
+            _evaluate_stage(
+                cfg, paths, test_df,
+                feat_cols, label_col, df_meta, num_cols, cat_cols, bus,
+            )
 
     if cfg.extend.generate:
         _explain_stage(

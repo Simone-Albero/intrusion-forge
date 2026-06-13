@@ -16,6 +16,8 @@ stage: all
 n_samples: null
 balance: undersample                 # training-set class balancing at training time: undersample | none
 distance: cosine                     # euclidean | cosine — single metric for clustering AND complexity analysis
+kfold: true                          # classifier evaluation: true = k-fold OOF over train+test (metrics + failure rates); false = single test split
+kfold_splits: 5                      # number of OOF folds when kfold=true
 
 grid_search:
   enabled: true

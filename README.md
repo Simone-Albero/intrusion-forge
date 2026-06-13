@@ -130,13 +130,16 @@ defaults:
 | `n_samples` | `null` | Optional training set subsampling cap |
 | `balance` | `undersample` | Training-set class balancing at training time (`undersample` / `none`); persisted splits keep the original distribution |
 | `distance` | `cosine` | Single metric (`euclidean` / `cosine`) interpolated by both `clustering.distance` and `complexity.distance` — coherence is structural |
+| `kfold` | `true` | Classifier evaluation protocol: `true` = k-fold out-of-fold over train+test (one model per fold, saved under `models/fold_*`; metrics + per-cluster failure rates both come from the OOF predictions, `eval_mode: oof_kfold`); `false` = single held-out test split. Override to `false` on the largest datasets to skip the K× training cost |
+| `kfold_splits` | `5` | Number of OOF folds when `kfold=true` (capped to the rarest class count) |
 | `grid_search.enabled` | `false` | Enable sklearn `GridSearchCV` over `classifier.grid` (ML only) |
 | `prepare.force` | `false` | Re-run preprocessing + clustering even if shared outputs exist |
 | `complexity.k` | `30` | k for the shared k-NN graph |
 | `complexity.top_k_clusters` | `10` | Top-K nearest adversarial clusters per cluster |
 | `complexity.force` | `false` | Re-run complexity computation even if shared output exists |
 | `clustering.min_cluster_floor` | `50` | Clusters below this size are absorbed into the class pseudo-cluster (all algorithms) |
-| `clustering.target_cluster_size` | `25000` | Clusters above this size are split post-hoc with MiniBatchKMeans on the full cluster points; together with `min_cluster_floor` this enforces a [50, 25 000] resolution band |
+| `clustering.target_cluster_size` | `25000` | Absolute cap on the split target: clusters above the effective target are split post-hoc with MiniBatchKMeans on the full cluster points |
+| `clustering.target_size_frac` | `0.05` | Makes the split target relative to dataset size: effective target = clamp(2·`min_cluster_floor`, `total_n`·frac, `target_cluster_size`). Small datasets get a lower ceiling (more, finer clusters); large datasets stay at the absolute cap |
 | `failure_classifier.labeling` | `binomial` | Failure label: `binomial` (error rate significantly above the classifier's global rate, level `alpha`) or `threshold` (`failure_rate > threshold`) |
 | `failure_classifier.min_test_support` | `5` | Clusters with fewer test samples are excluded from the failure dataset |
 
@@ -196,7 +199,7 @@ make ml-all   DATA=cic_2018_v2 NAME=my_exp     # every ML classifier in turn
 make dl-all   DATA=cic_2018_v2 NAME=my_exp     # every DL classifier in turn
 ```
 
-Trains and evaluates a single classifier (ML or DL, selected via the `classifier` config group), then writes per-class metrics and per-sample predictions used downstream by the failure classifier. The training split is balanced via random undersampling at load time (`balance=undersample`, the default); pass `balance=none` to train on the original distribution. With `extend.generate=true` (or `make ... EXTEND=1`) the classifier is instead trained on the complexity-extended splits (`*_extended.parquet`, produced by Step 3a) and explained with SHAP — every artifact of this variant is written next to the base one with an `_extended` leaf-name suffix (`summary_extended.json`, `model_extended.joblib`, …). Its F1 is a transductive upper bound, reported as "F1 extended (transductive)"; see [docs/approach.md](docs/approach.md).
+Trains and evaluates a single classifier (ML or DL, selected via the `classifier` config group), then writes per-class metrics and per-sample predictions used downstream by the failure classifier. The training split is balanced via random undersampling at load time (`balance=undersample`, the default); pass `balance=none` to train on the original distribution. By default (`kfold=true`) evaluation is **k-fold out-of-fold over train+test**: one model is trained per fold and saved under `models/fold_*`, and the reported metrics and per-cluster failure rates both come from the leakage-free OOF predictions (`eval_mode: oof_kfold`). Pass `kfold=false` for single held-out test-split evaluation (e.g. to skip the K× cost on the largest datasets). With `extend.generate=true` (or `make ... EXTEND=1`) the classifier is instead trained on the complexity-extended splits (`*_extended.parquet`, produced by Step 3a) and explained with SHAP — every artifact of this variant is written next to the base one with an `_extended` leaf-name suffix (`summary_extended.json`, `model_extended.joblib`, …). Its F1 is a transductive upper bound, reported as "F1 extended (transductive)"; see [docs/approach.md](docs/approach.md).
 
 **Per-classifier outputs:**
 
