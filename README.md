@@ -140,8 +140,7 @@ defaults:
 | `clustering.min_cluster_floor` | `50` | Clusters below this size are absorbed into the class pseudo-cluster (all algorithms) |
 | `clustering.target_cluster_size` | `25000` | Absolute cap on the split target: clusters above the effective target are split post-hoc with MiniBatchKMeans on the full cluster points |
 | `clustering.target_size_frac` | `0.05` | Makes the split target relative to dataset size: effective target = clamp(2·`min_cluster_floor`, `total_n`·frac, `target_cluster_size`). Small datasets get a lower ceiling (more, finer clusters); large datasets stay at the absolute cap |
-| `failure_classifier.labeling` | `binomial` | Failure label: `binomial` (error rate significantly above the classifier's global rate, level `alpha`) or `threshold` (`failure_rate > threshold`) |
-| `failure_classifier.min_test_support` | `5` | Clusters with fewer test samples are excluded from the failure dataset |
+| `failure_classifier.min_test_support` | `5` | Clusters with fewer test samples are excluded from the failure dataset (their rate is too noisy to regress) |
 
 The full set of nested parameters (clustering grid, failure-classifier nested CV grid, plot caps) lives in [configs/config.yaml](configs/config.yaml).
 
@@ -244,14 +243,14 @@ This step is dataset-level (classifier-independent) and idempotent: existing out
 make failure-classify DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=random_forest
 ```
 
-Builds a per-cluster summary by joining (a) the cluster-level complexity vector, (b) the class-level complexity vector of the cluster's class (`cluster_*` / `class_*` feature prefixes), and (c) the classifier's per-cluster failure rate (Step 2). A Random Forest is then trained — with nested stratified cross-validation (5 outer × 5 inner folds) — to predict whether a cluster's failure rate exceeds `failure_classifier.threshold`. Reports out-of-fold metrics, ROC curves, and feature importances.
+Builds a per-cluster summary by joining (a) the cluster-level complexity vector, (b) the class-level complexity vector of the cluster's class (`cluster_*` / `class_*` feature prefixes), and (c) the classifier's per-cluster failure rate (Step 2). A **Random Forest regressor** is then trained — with nested cross-validation (5 outer × 5 inner folds; outer folds stratified on quantile bins of the rate) — to predict each cluster's continuous failure rate from its complexity vector. Reports out-of-fold **Spearman ρ** (headline), **R²**, **MAE**, and feature importances.
 
 **Per-classifier outputs:**
 
 ```
 ${classifier.name}/outputs/analysis/
 ├── cluster_summary.json             # complexity + failure rate per cluster
-└── failure_classifier_results.json  # nested-CV scores, feature importances, ROC data
+└── failure_classifier_results.json  # nested-CV regression scores, feature importances, OOF predicted rates
 ```
 
 ### Step 4 — Plot Rendering
@@ -260,7 +259,7 @@ ${classifier.name}/outputs/analysis/
 make render DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=random_forest
 ```
 
-Renders figures from the JSON / pickle artifacts produced by the previous steps (confusion matrices, per-class F1, complexity distributions, ROC curves, failure–complexity scatters). All figures land under `${classifier.name}/figures/`.
+Renders figures from the JSON / pickle artifacts produced by the previous steps (confusion matrices, per-class F1, complexity distributions, the failure-regressor predicted-vs-observed scatter, failure–complexity scatters). All figures land under `${classifier.name}/figures/`.
 
 ### Full Pipeline Shortcuts
 

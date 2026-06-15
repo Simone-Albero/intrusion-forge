@@ -34,8 +34,9 @@ HEATMAP_METRICS: dict[str, str] = {
     "precision_macro": "Test precision macro",
     "recall_macro": "Test recall macro",
     "f1_extended": "F1 extended (transductive)",
-    "fc_f1": "Failure-classifier F1",
-    "fc_auc": "Failure-classifier ROC AUC",
+    "fc_spearman": "Failure-regressor Spearman ρ",
+    "fc_r2": "Failure-regressor R²",
+    "fc_mae": "Failure-regressor MAE",
 }
 
 GALLERY_CATEGORIES: list[str] = [
@@ -52,7 +53,6 @@ CLUSTER_NON_FEATURE_COLS = frozenset(
         "cluster_id",
         "cluster_class",
         "is_noise_cluster",
-        "is_failed",
         "failure_rate",
     }
 )
@@ -83,8 +83,9 @@ class ExperimentRecord:
     precision_macro: float | None
     recall_macro: float | None
     f1_extended: float | None
-    fc_f1: float | None
-    fc_auc: float | None
+    fc_spearman: float | None
+    fc_r2: float | None
+    fc_mae: float | None
     fc_skipped: bool = False
 
     @property
@@ -186,8 +187,9 @@ def _extract_headline_metrics(classifier_dir: Path) -> dict[str, float | bool | 
         "precision_macro": _safe_float(summary.get("precision_macro")),
         "recall_macro": _safe_float(summary.get("recall_macro")),
         "f1_extended": _safe_float(extended.get("f1_macro")),
-        "fc_f1": _safe_float(fc.get("f1_score")),
-        "fc_auc": _safe_float(fc.get("roc_auc")),
+        "fc_spearman": _safe_float(fc.get("spearman")),
+        "fc_r2": _safe_float(fc.get("r2")),
+        "fc_mae": _safe_float(fc.get("mae")),
         "fc_skipped": bool(fc.get("skipped", False)),
     }
 
@@ -348,8 +350,9 @@ def records_to_df(records: list[ExperimentRecord]) -> pd.DataFrame:
                 "precision_macro": r.precision_macro,
                 "recall_macro": r.recall_macro,
                 "f1_extended": r.f1_extended,
-                "fc_f1": r.fc_f1,
-                "fc_auc": r.fc_auc,
+                "fc_spearman": r.fc_spearman,
+                "fc_r2": r.fc_r2,
+                "fc_mae": r.fc_mae,
                 "key": r.key,
             }
             for r in records
@@ -562,19 +565,30 @@ def feature_importance_bar(importances: dict, *, top_k: int = 20) -> go.Figure:
     return fig
 
 
-def roc_curve_fig(roc_data: dict) -> go.Figure:
-    fpr = roc_data.get("fpr", [])
-    tpr = roc_data.get("tpr", [])
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=fpr, y=tpr, mode="lines", name="ROC", line=dict(color="#d62728")))
+def pred_vs_actual_fig(fc: dict, cluster_df: pd.DataFrame) -> go.Figure:
+    """Predicted vs observed failure rate (OOF), with a y=x reference line."""
+    predicted = fc.get("oof_predicted_rate", {})
+    df = cluster_df[["cluster_id", "cluster_class", "failure_rate"]].copy()
+    df["predicted"] = df["cluster_id"].astype(str).map(predicted)
+    df = df.dropna(subset=["failure_rate", "predicted"])
+    fig = px.scatter(
+        df,
+        x="failure_rate",
+        y="predicted",
+        color="failure_rate",
+        color_continuous_scale="Viridis",
+        hover_data=["cluster_id", "cluster_class"],
+    )
+    lo = float(min(df["failure_rate"].min(), df["predicted"].min())) if len(df) else 0.0
+    hi = float(max(df["failure_rate"].max(), df["predicted"].max())) if len(df) else 1.0
     fig.add_trace(
-        go.Scatter(x=[0, 1], y=[0, 1], mode="lines", name="Chance", line=dict(dash="dash", color="grey"))
+        go.Scatter(x=[lo, hi], y=[lo, hi], mode="lines", name="y=x", line=dict(dash="dash", color="grey"))
     )
     fig.update_layout(
-        height=360,
-        xaxis_title="FPR",
-        yaxis_title="TPR",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        height=400,
+        xaxis_title="Observed failure rate",
+        yaxis_title="Predicted failure rate (OOF)",
+        showlegend=False,
     )
     return fig
 
@@ -585,9 +599,9 @@ def complexity_vs_failure_scatter(cluster_df: pd.DataFrame, feature: str) -> go.
         df,
         x=feature,
         y="failure_rate",
-        color="is_failed" if "is_failed" in df.columns else None,
+        color="failure_rate",
+        color_continuous_scale="Viridis",
         hover_data=["cluster_id", "cluster_class"],
-        color_discrete_map={True: "#d62728", False: "#1f77b4"},
     )
     fig.update_layout(
         height=400,
@@ -661,7 +675,7 @@ def panel_confusion_matrix(
 def panel_failure_classifier(
     record: ExperimentRecord, detail: ExperimentDetail, key_prefix: str = "drill"
 ) -> None:
-    st.markdown("**Failure classifier (RF on cluster complexity)**")
+    st.markdown("**Failure regressor (RF on cluster complexity)**")
     fc = detail.classifier_results
     if fc is None:
         st.caption("⚠️ Not computed — run `make failure-classify` to generate.")
@@ -669,28 +683,27 @@ def panel_failure_classifier(
     if fc.get("skipped"):
         st.warning(
             f"🚫 **Stage skipped** — {fc.get('message', fc.get('reason'))}\n\n"
-            f"Positives: {fc.get('n_positives', '?')} | "
-            f"Threshold: {fc.get('threshold', '?')} | "
-            f"Required: ≥{fc.get('min_required', 2)}"
+            f"Clusters used: {fc.get('n_clusters_used', '?')}"
         )
         return
-    cols = st.columns(3)
-    cols[0].metric(
-        "F1",
-        f"{fc.get('f1_score', float('nan')):.4f}",
-        delta=f"± {fc.get('f1_score_std', 0):.3f}",
-    )
+    cols = st.columns(4)
+    cols[0].metric("Spearman ρ", f"{fc.get('spearman', float('nan')):.4f}")
     cols[1].metric(
-        "ROC AUC",
-        f"{fc.get('roc_auc', float('nan')):.4f}",
-        delta=f"± {fc.get('roc_auc_std', 0):.3f}",
+        "R²",
+        f"{fc.get('r2', float('nan')):.4f}",
+        delta=f"± {fc.get('r2_std', 0):.3f}",
     )
-    cols[2].metric("CV folds", f"{len(fc.get('f1_scores_per_fold', []))}")
-    if fc.get("roc_curve_data"):
+    cols[2].metric(
+        "MAE",
+        f"{fc.get('mae', float('nan')):.4f}",
+        delta=f"± {fc.get('mae_std', 0):.3f}",
+    )
+    cols[3].metric("CV folds", f"{len(fc.get('r2_per_fold', []))}")
+    if fc.get("oof_predicted_rate") and detail.cluster_summary is not None:
         st.plotly_chart(
-            roc_curve_fig(fc["roc_curve_data"]),
+            pred_vs_actual_fig(fc, detail.cluster_summary),
             width="stretch",
-            key=_wkey(key_prefix, "roc", record),
+            key=_wkey(key_prefix, "pred_vs_actual", record),
         )
 
 
@@ -742,8 +755,6 @@ def panel_feature_distribution(
         y=feature,
         box=True,
         points="all",
-        color="is_failed" if "is_failed" in cdf.columns else None,
-        color_discrete_map={True: "#d62728", False: "#1f77b4"},
     )
     fig.update_layout(height=380, yaxis_title=feature)
     st.plotly_chart(fig, width="stretch", key=_wkey(key_prefix, "fd_chart", record))
@@ -789,7 +800,7 @@ def panel_failure_rate_distribution(
         key=_wkey(key_prefix, "fr_chart", record),
     )
     render_figure_if_present(
-        record, "summary/rf_prediction_strip_box.png", "summary/rf_prediction_strip_box.png"
+        record, "summary/failure_rate_strip_box.png", "summary/failure_rate_strip_box.png"
     )
 
 
@@ -821,7 +832,7 @@ def panel_cluster_table(
         st.caption("No cluster_summary.json.")
         return
     label_map = detail.df_meta.get("label_mapping") or {}
-    show_cols = ["cluster_id", "cluster_class", "failure_rate", "is_failed", "is_noise_cluster"]
+    show_cols = ["cluster_id", "cluster_class", "failure_rate", "is_noise_cluster"]
     show_cols += [c for c in ["cluster_p5_silhouette", "cluster_frac_at_risk", "class_f1_min", "class_n1_max"] if c in cdf.columns]
     view = cdf[[c for c in show_cols if c in cdf.columns]].copy()
     if "cluster_class" in view.columns:
@@ -857,12 +868,13 @@ def panel_sibling_classifiers(
         "f1_weighted",
         "precision_macro",
         "recall_macro",
-        "fc_f1",
-        "fc_auc",
+        "fc_spearman",
+        "fc_r2",
+        "fc_mae",
     ]
     view = df[view_cols].sort_values("f1_macro", ascending=False, na_position="last")
     styled = view.style.highlight_max(
-        subset=[c for c in ["accuracy", "f1_macro", "f1_weighted", "fc_f1", "fc_auc"] if c in view.columns],
+        subset=[c for c in ["accuracy", "f1_macro", "f1_weighted", "fc_spearman", "fc_r2"] if c in view.columns],
         color="rgba(46, 160, 67, 0.25)",
     ).format({c: "{:.4f}" for c in view.columns if view[c].dtype.kind == "f"}, na_rep="—")
     st.dataframe(

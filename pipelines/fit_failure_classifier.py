@@ -5,16 +5,10 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from scipy.stats import binom, spearmanr
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import (
-    classification_report,
-    confusion_matrix,
-    f1_score,
-    roc_auc_score,
-    roc_curve,
-)
-from sklearn.model_selection import GridSearchCV, StratifiedKFold
+from scipy.stats import spearmanr
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_absolute_error, r2_score
+from sklearn.model_selection import GridSearchCV, KFold, StratifiedKFold
 from tqdm import tqdm
 
 from src.core.config import load_config, save_config, to_container
@@ -42,26 +36,20 @@ def _run_outer_fold(
     y_train: pd.Series,
     X_test: pd.DataFrame,
     y_test: pd.Series,
-    inner_cv: StratifiedKFold | None,
+    inner_cv: KFold | None,
     param_grid: dict,
     random_state: int,
 ) -> dict:
     """Run one outer CV fold. When inner_cv is None, skip GridSearchCV and use default RF."""
     if inner_cv is None:
-        best = RandomForestClassifier(
-            random_state=random_state,
-            class_weight="balanced",
-        )
+        best = RandomForestRegressor(random_state=random_state)
         best.fit(X_train, y_train)
     else:
         grid = GridSearchCV(
-            estimator=RandomForestClassifier(
-                random_state=random_state,
-                class_weight="balanced",
-            ),
+            estimator=RandomForestRegressor(random_state=random_state),
             param_grid=param_grid,
             cv=inner_cv,
-            scoring="f1",
+            scoring="r2",
             n_jobs=-1,
             verbose=0,
         )
@@ -69,65 +57,31 @@ def _run_outer_fold(
         best = grid.best_estimator_
 
     y_pred = best.predict(X_test)
-    y_proba = best.predict_proba(X_test)[:, 1]
-
-    try:
-        auc = roc_auc_score(y_test, y_proba)
-    except ValueError:
-        auc = float("nan")
-
     return {
-        "f1": f1_score(y_test, y_pred),
-        "auc": auc,
+        "r2": float(r2_score(y_test, y_pred)) if len(y_test) > 1 else float("nan"),
+        "mae": float(mean_absolute_error(y_test, y_pred)),
         "importances": best.feature_importances_,
         "y_pred": y_pred.tolist(),
-        "y_proba": y_proba.tolist(),
         "indices": X_test.index.tolist(),
     }
 
 
-def _global_error_rate(cluster_errors: dict) -> float:
-    """Pooled test error rate over every cluster with test samples."""
-    n_err = sum(v["n_error"] for v in cluster_errors.values())
-    n_tot = sum(v["n_total"] for v in cluster_errors.values())
-    return n_err / n_tot if n_tot else 0.0
-
-
-def _label_failed(
-    n_error: int,
-    n_total: int,
-    *,
-    labeling: str,
-    alpha: float,
-    threshold: float,
-    global_error_rate: float,
-) -> bool:
-    """Failure label for one cluster.
-
-    binomial:  failed when the cluster's error count is significantly above the
-               classifier's global error rate (one-sided binomial test). Scale-
-               aware: large clusters need a real elevation, small ones a strong
-               excess — a single slip among tens of thousands of test samples
-               no longer counts as failure.
-    threshold: failed when failure_rate > threshold (legacy semantics).
-    """
-    if n_total == 0:
-        return False
-    if labeling == "binomial":
-        return n_error > 0 and float(
-            binom.sf(n_error - 1, n_total, global_error_rate)
-        ) < alpha
-    return (n_error / n_total) > threshold
+def _quantile_strata(y: pd.Series, q: int) -> pd.Series | None:
+    """Integer quantile-bin codes of the continuous target for stratified folding
+    (None if the target can't be binned into at least two groups)."""
+    try:
+        bins = pd.qcut(y, q=min(q, len(y)), duplicates="drop")
+    except (ValueError, IndexError):
+        return None
+    if bins.nunique() < 2:
+        return None
+    return bins.cat.codes
 
 
 def build_cluster_summary(
     complexity: dict,
     class_complexity: dict,
     predictions: dict,
-    *,
-    labeling: str = "binomial",
-    alpha: float = 0.05,
-    failure_threshold: float = 0.0,
 ) -> dict:
     """Merge per-cluster complexity with class-level complexity (joined on the
     cluster's class via `cluster_class`) and per-classifier failure rates.
@@ -135,14 +89,9 @@ def build_cluster_summary(
     Output schema per cluster:
         cluster_<measure>  — cluster-level complexity (vs top-K adversarial clusters)
         class_<measure>    — class-level complexity of the cluster's class
-        cluster_class, is_noise_cluster, n_test, failure_rate, is_failed
+        cluster_class, is_noise_cluster, n_test, failure_rate
     """
-    if labeling not in ("binomial", "threshold"):
-        raise ValueError(
-            f"Unknown labeling: {labeling!r}. Valid: 'binomial', 'threshold'."
-        )
     cluster_errors = predictions.get("clusters", {}).get("global", {}) or {}
-    global_error_rate = _global_error_rate(cluster_errors)
     summary: dict[str, dict] = {}
     for cid, cluster_measures in complexity.items():
         class_id = cluster_measures.get("cluster_class")
@@ -160,23 +109,13 @@ def build_cluster_summary(
             if k != "is_noise_cluster"
         }
         error_entry = cluster_errors.get(str(cid), {})
-        failure_rate = error_entry.get("error_rate")
         summary[str(cid)] = {
             **cluster_feats,
             **class_feats,
             "cluster_class": class_id,
             "is_noise_cluster": cluster_measures.get("is_noise_cluster", False),
             "n_test": error_entry.get("n_total", 0),
-            "failure_rate": failure_rate,
-            "is_failed": failure_rate is not None
-            and _label_failed(
-                error_entry.get("n_error", 0),
-                error_entry.get("n_total", 0),
-                labeling=labeling,
-                alpha=alpha,
-                threshold=failure_threshold,
-                global_error_rate=global_error_rate,
-            ),
+            "failure_rate": error_entry.get("error_rate"),
         }
     return summary
 
@@ -184,23 +123,23 @@ def build_cluster_summary(
 def _run_nested_cv(
     X: pd.DataFrame,
     y: pd.Series,
-    outer_cv: StratifiedKFold,
+    outer_cv: StratifiedKFold | KFold,
     outer_k: int,
-    inner_cv: StratifiedKFold | None,
+    split_labels: pd.Series | None,
+    inner_cv: KFold | None,
     param_grid: dict,
     random_state: int,
 ) -> dict:
     """Run the outer CV loop and collect per-fold scores + out-of-fold predictions."""
-    fold_f1s: list[float] = []
-    fold_aucs: list[float] = []
+    fold_r2s: list[float] = []
+    fold_maes: list[float] = []
     fold_importances: list[np.ndarray] = []
-    oof_y_true: list[int] = []
-    oof_y_pred: list[int] = []
-    oof_y_proba: list[float] = []
+    oof_y_true: list[float] = []
+    oof_y_pred: list[float] = []
     oof_indices: list = []
 
     for train_idx, test_idx in tqdm(
-        outer_cv.split(X, y), total=outer_k, desc="Outer CV"
+        outer_cv.split(X, split_labels), total=outer_k, desc="Outer CV"
     ):
         fold = _run_outer_fold(
             X.iloc[train_idx],
@@ -211,57 +150,43 @@ def _run_nested_cv(
             param_grid,
             random_state,
         )
-        fold_f1s.append(fold["f1"])
-        fold_aucs.append(fold["auc"])
+        fold_r2s.append(fold["r2"])
+        fold_maes.append(fold["mae"])
         fold_importances.append(fold["importances"])
         oof_y_true.extend(y.iloc[test_idx].tolist())
         oof_y_pred.extend(fold["y_pred"])
-        oof_y_proba.extend(fold["y_proba"])
         oof_indices.extend(fold["indices"])
 
     return {
-        "fold_f1s": fold_f1s,
-        "fold_aucs": fold_aucs,
+        "fold_r2s": fold_r2s,
+        "fold_maes": fold_maes,
         "fold_importances": fold_importances,
         "y_true": np.array(oof_y_true),
         "y_pred": np.array(oof_y_pred),
-        "y_proba": np.array(oof_y_proba),
         "indices": oof_indices,
     }
 
 
 def _aggregate_oof_results(oof: dict, feature_cols: list[str]) -> dict:
-    """Aggregate out-of-fold predictions into the published metrics block."""
-    y_true, y_pred, y_proba = oof["y_true"], oof["y_pred"], oof["y_proba"]
-    fpr, tpr, _ = roc_curve(y_true, y_proba)
+    """Aggregate out-of-fold predictions into the published regression-metrics block."""
+    y_true, y_pred = oof["y_true"], oof["y_pred"]
     mean_importances = np.mean(oof["fold_importances"], axis=0)
-    try:
-        oof_auc = float(roc_auc_score(y_true, y_proba))
-    except ValueError:
-        oof_auc = float("nan")
+    # rank correlation between predicted and observed failure rate: the headline
+    # metric, robust to the heteroscedastic noise of a per-cluster proportion.
+    rho = spearmanr(y_pred, y_true)
 
     return {
-        "f1_score": float(f1_score(y_true, y_pred)),
-        "f1_score_std": float(np.std(oof["fold_f1s"])),
-        "f1_scores_per_fold": oof["fold_f1s"],
-        "roc_auc": oof_auc,
-        "roc_auc_std": float(np.nanstd(oof["fold_aucs"])),
-        "roc_auc_per_fold": oof["fold_aucs"],
-        "roc_curve_data": {"fpr": fpr.tolist(), "tpr": tpr.tolist()},
-        "confusion_matrix": confusion_matrix(y_true, y_pred).tolist(),
-        "classification_report": classification_report(
-            y_true,
-            y_pred,
-            digits=4,
-            output_dict=True,
-        ),
+        "spearman": float(rho.statistic),
+        "spearman_pvalue": float(rho.pvalue),
+        "r2": float(r2_score(y_true, y_pred)),
+        "r2_std": float(np.nanstd(oof["fold_r2s"])),
+        "r2_per_fold": oof["fold_r2s"],
+        "mae": float(mean_absolute_error(y_true, y_pred)),
+        "mae_std": float(np.std(oof["fold_maes"])),
+        "mae_per_fold": oof["fold_maes"],
         "feature_importances": dict(zip(feature_cols, mean_importances.tolist())),
-        "oof_predictions": {
-            str(cid): int(pred == true)
-            for cid, pred, true in zip(oof["indices"], y_pred, y_true)
-        },
-        "oof_risk_proba": {
-            str(cid): float(proba) for cid, proba in zip(oof["indices"], y_proba)
+        "oof_predicted_rate": {
+            str(cid): float(pred) for cid, pred in zip(oof["indices"], y_pred)
         },
     }
 
@@ -291,23 +216,20 @@ def fit_failure_classifier(
     n_outer_splits: int = 5,
     n_inner_splits: int = 5,
     random_state: int = 42,
-    labeling: str = "binomial",
-    alpha: float = 0.05,
-    failure_threshold: float = 0.0,
     min_test_support: int = 5,
     analysis_bus: LogDispatcher | None = None,
 ) -> dict:
-    """Train a Random Forest with nested CV to predict cluster failure from separability features.
+    """Train a Random Forest *regressor* with nested CV to predict each cluster's
+    continuous failure rate from its separability features.
 
-    The failure label comes from the `is_failed` column of `cluster_stats`
-    (computed by `build_cluster_summary` under the configured labeling);
-    `labeling`/`alpha`/`failure_threshold` are reported for transparency.
-    Clusters without a failure rate (no test samples) or with fewer than
-    `min_test_support` test samples are excluded — their failure label would
-    be fabricated or near-random noise. Uses nested cross-validation: outer
-    StratifiedKFold for unbiased evaluation, inner GridSearchCV for
-    hyperparameter selection. Metrics are aggregated over out-of-fold (OOF)
-    predictions.
+    The target is the `failure_rate` column of `cluster_stats` (computed by
+    `build_cluster_summary`). Clusters without a failure rate (no test samples)
+    or with fewer than `min_test_support` test samples are excluded — their rate
+    would be fabricated or near-random noise. Uses nested cross-validation: the
+    outer loop (StratifiedKFold on quantile bins of the rate, KFold fallback)
+    gives unbiased out-of-fold predictions, the inner GridSearchCV selects
+    hyperparameters. Metrics — Spearman ρ (headline), R², MAE — are aggregated
+    over the OOF predictions.
     """
     logger.info("Running failure classifier ...")
     df = pd.DataFrame.from_dict(cluster_stats, orient="index")
@@ -329,9 +251,6 @@ def fit_failure_classifier(
         "n_excluded_no_test": n_excluded_no_test,
         "n_excluded_low_support": n_excluded_low_support,
         "min_test_support": min_test_support,
-        "labeling": labeling,
-        "alpha": alpha,
-        "threshold": failure_threshold,
         "global_error_rate": global_error_rate,
     }
     if n_excluded_no_test or n_excluded_low_support:
@@ -348,38 +267,25 @@ def fit_failure_classifier(
         feature_cols = [
             c
             for c in df.select_dtypes("number").columns
-            if c not in ("is_failed", "failure_rate", "n_test")
+            if c not in ("failure_rate", "n_test")
         ]
     X = df[feature_cols].copy()
+    y = df["failure_rate"].astype(float)
 
-    y = df["is_failed"].astype(int)
-
-    n_positives = int(y.sum())
-    n_negatives = int((1 - y).sum())
-    prevalence = n_positives / max(n_positives + n_negatives, 1)
     context_metrics = {
-        "n_positives": n_positives,
-        "n_negatives": n_negatives,
-        "prevalence": prevalence,
-        # F1 of the constant all-failed predictor: the floor any useful model must beat
-        "f1_baseline_all_failed": 2 * prevalence / (1 + prevalence) if prevalence else 0.0,
-        "failure_rate_distribution": _failure_rate_distribution(df["failure_rate"]),
+        "failure_rate_distribution": _failure_rate_distribution(rates),
     }
-    n_minority = min(n_positives, n_negatives)
-    outer_k = _max_safe_splits(n_minority, n_outer_splits)
-    if outer_k == 0:
+    n_used = len(df)
+    if n_used < 2 or float(y.std()) < 1e-9:
         message = (
-            f"Failure classifier skipped: only {n_minority} minority sample(s) "
-            f"(positives={n_positives}, labeling={labeling}). "
-            f"Need >=2 for stratified CV."
+            f"Failure classifier skipped: {n_used} usable cluster(s), "
+            f"failure-rate std={float(y.std()):.4g}. Need >=2 clusters with variance."
         )
         logger.warning("[STAGE-SKIP] %s", message)
         results = {
             "skipped": True,
-            "reason": "insufficient_minority_samples",
+            "reason": "degenerate_target",
             "message": message,
-            "n_minority": n_minority,
-            "min_required": 2,
             **exclusions,
             **context_metrics,
         }
@@ -389,12 +295,30 @@ def fit_failure_classifier(
             )
         return results
 
-    m_train_worst = n_minority - math.ceil(n_minority / outer_k)
+    # Stratify the outer folds on quantile bins of the rate so each fold stays
+    # representative on small datasets; fall back to plain KFold when the rate
+    # can't be binned into >=2 groups.
+    strata = _quantile_strata(y, n_outer_splits)
+    if strata is not None:
+        outer_k = _max_safe_splits(int(strata.value_counts().min()), n_outer_splits)
+    else:
+        outer_k = 0
+    if outer_k >= 2:
+        outer_cv = StratifiedKFold(
+            n_splits=outer_k, shuffle=True, random_state=random_state
+        )
+        split_labels = strata
+    else:
+        outer_k = _max_safe_splits(n_used, n_outer_splits)
+        outer_cv = KFold(n_splits=outer_k, shuffle=True, random_state=random_state)
+        split_labels = None
+
+    m_train_worst = n_used - math.ceil(n_used / outer_k)
     inner_k = _max_safe_splits(m_train_worst, n_inner_splits)
     if outer_k < n_outer_splits or inner_k < n_inner_splits:
         logger.warning(
-            "[CV-ADAPT] Adapting CV (minority=%d): outer %d→%d, inner %d→%d%s",
-            n_minority,
+            "[CV-ADAPT] Adapting CV (clusters=%d): outer %d→%d, inner %d→%d%s",
+            n_used,
             n_outer_splits,
             outer_k,
             n_inner_splits,
@@ -402,27 +326,19 @@ def fit_failure_classifier(
             " (no GridSearchCV — using RF defaults)" if inner_k == 0 else "",
         )
 
-    outer_cv = StratifiedKFold(
-        n_splits=outer_k, shuffle=True, random_state=random_state
-    )
     inner_cv = (
-        StratifiedKFold(n_splits=inner_k, shuffle=True, random_state=random_state)
+        KFold(n_splits=inner_k, shuffle=True, random_state=random_state)
         if inner_k > 0
         else None
     )
 
-    oof = _run_nested_cv(X, y, outer_cv, outer_k, inner_cv, param_grid, random_state)
-
-    # rank correlation between the RF risk score and the continuous failure
-    # rate: measures the relationship without the binarisation
-    oof_rates = df.loc[oof["indices"], "failure_rate"].astype(float).to_numpy()
-    rho = spearmanr(oof["y_proba"], oof_rates)
+    oof = _run_nested_cv(
+        X, y, outer_cv, outer_k, split_labels, inner_cv, param_grid, random_state
+    )
 
     results = {
         **exclusions,
         **context_metrics,
-        "spearman_proba_failure_rate": float(rho.statistic),
-        "spearman_proba_failure_rate_pvalue": float(rho.pvalue),
         **_aggregate_oof_results(oof, feature_cols),
     }
     if analysis_bus is not None:
@@ -430,9 +346,10 @@ def fit_failure_classifier(
             LogBundle.from_dict({"json/analysis/classifier_results": results})
         )
     logger.info(
-        "Classifier results — F1: %.4f, ROC-AUC: %.4f",
-        results["f1_score"],
-        results["roc_auc"],
+        "Classifier results — Spearman: %.4f, R²: %.4f, MAE: %.4f",
+        results["spearman"],
+        results["r2"],
+        results["mae"],
     )
     return results
 
@@ -463,9 +380,6 @@ def main():
         complexity,
         class_complexity,
         predictions,
-        labeling=cfg.failure_classifier.labeling,
-        alpha=cfg.failure_classifier.alpha,
-        failure_threshold=cfg.failure_classifier.threshold,
     )
 
     bus = LogDispatcher()
@@ -478,9 +392,6 @@ def main():
         to_container(cfg.failure_classifier.param_grid),
         n_outer_splits=cfg.failure_classifier.n_outer_splits,
         n_inner_splits=cfg.failure_classifier.n_inner_splits,
-        labeling=cfg.failure_classifier.labeling,
-        alpha=cfg.failure_classifier.alpha,
-        failure_threshold=cfg.failure_classifier.threshold,
         min_test_support=cfg.failure_classifier.min_test_support,
         random_state=cfg.seed,
         analysis_bus=bus,

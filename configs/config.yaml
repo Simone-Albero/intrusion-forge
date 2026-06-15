@@ -37,9 +37,6 @@ complexity:
   force: false                       # re-run complexity computation even if shared output exists
 
 failure_classifier:
-  labeling: binomial                 # binomial (error rate significantly above the classifier's global rate) | threshold
-  alpha: 0.05                        # significance level for the binomial labeling
-  threshold: 0.0                     # used when labeling=threshold: "failed" when failure_rate > threshold
   min_test_support: 5                # clusters with fewer test samples are excluded from the failure dataset
   n_outer_splits: 5
   n_inner_splits: 5

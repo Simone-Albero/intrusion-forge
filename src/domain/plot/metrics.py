@@ -2,7 +2,6 @@ import numpy as np
 from matplotlib.axes import Axes
 
 from .base import Plot, _apply_labels, _ensure_ax, _finalize, _format_value
-from .style import NEUTRAL_COLOR, PALETTE
 
 
 def confusion_matrix_plot(
@@ -110,46 +109,4 @@ def confusion_matrix_plot(
         )
 
     _apply_labels(ax, x_label="Predicted label", y_label="True label", title=title)
-    return _finalize(fig)
-
-
-def roc_plot(
-    fpr: np.ndarray,
-    tpr: np.ndarray,
-    auc_score: float,
-    *,
-    color: str | None = None,
-    show_baseline: bool = True,
-    title: str = "",
-    figsize: tuple[float, float] = (5.5, 5.5),
-    ax: Axes | None = None,
-) -> Plot | None:
-    """ROC curve with AUC annotation and optional random-classifier baseline."""
-    ax, fig = _ensure_ax(ax, figsize)
-
-    curve_color = color if color is not None else PALETTE[0]
-    ax.plot(fpr, tpr, color=curve_color, linewidth=1.8)
-    ax.fill_between(fpr, 0, tpr, color=curve_color, alpha=0.15)
-
-    if show_baseline:
-        ax.plot([0, 1], [0, 1], color=NEUTRAL_COLOR, linewidth=1.0, linestyle=":")
-
-    ax.text(
-        0.05,
-        0.95,
-        f"AUC = {_format_value(auc_score, kind='score')}",
-        transform=ax.transAxes,
-        va="top",
-        ha="left",
-        fontsize=10,
-        bbox=dict(facecolor="white", edgecolor="#cccccc", boxstyle="round,pad=0.3"),
-    )
-
-    ax.set_xlim(0.0, 1.0)
-    ax.set_ylim(0.0, 1.05)
-    ax.grid(True, axis="both", alpha=0.15, linewidth=0.5)
-
-    _apply_labels(
-        ax, x_label="False Positive Rate", y_label="True Positive Rate", title=title
-    )
     return _finalize(fig)

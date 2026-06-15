@@ -2,7 +2,6 @@ import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.axes import Axes
-from scipy.stats import gaussian_kde
 
 from .base import (
     Plot,
@@ -10,6 +9,7 @@ from .base import (
     _ensure_ax,
     _fig_to_plot,
     _finalize,
+    _format_value,
     _smart_legend_loc,
 )
 from .style import (
@@ -268,9 +268,10 @@ def violin_plot(
 def strip_plot(
     categories: np.ndarray,
     values: np.ndarray,
-    fill_categorical_colors: tuple[str, ...],
+    fill_categorical_colors: tuple[str, ...] = (),
     *,
     fill_values: np.ndarray | None = None,
+    fill_cmap: str | None = None,
     marker_values: np.ndarray | None = None,
     marker_shapes: tuple[str, ...] = ("o", "X"),
     category_order: list | None = None,
@@ -283,7 +284,11 @@ def strip_plot(
     figsize: tuple[float, float] | None = None,
     ax: Axes | None = None,
 ) -> Plot | None:
-    """Strip plot with categorical fill and optional per-point marker encoding."""
+    """Strip plot with categorical fill and optional per-point marker encoding.
+
+    `fill_cmap`: when set, `fill_values` is treated as continuous floats mapped
+    through this colormap instead of used as categorical indices.
+    """
     if orientation not in ("v", "h"):
         raise ValueError("`orientation` must be 'v' or 'h'.")
 
@@ -299,15 +304,24 @@ def strip_plot(
         np.asarray(fill_values, dtype=float) if fill_values is not None else values
     )
     finite = np.isfinite(fill_arr)
-    fill_idx = np.clip(
-        np.where(finite, fill_arr.astype(int), 0),
-        0,
-        len(fill_categorical_colors) - 1,
-    )
-    point_colors = np.array(
-        [mcolors.to_rgba(fill_categorical_colors[i]) for i in fill_idx], dtype=float
-    )
-    point_colors[~finite] = [0.75, 0.75, 0.75, 0.85]
+    if fill_cmap is not None:
+        cmap_fn = plt.get_cmap(fill_cmap)
+        lo = float(np.nanmin(fill_arr)) if finite.any() else 0.0
+        hi = float(np.nanmax(fill_arr)) if finite.any() else 1.0
+        span = hi - lo if hi > lo else 1.0
+        normed = np.where(finite, (fill_arr - lo) / span, 0.5)
+        point_colors = np.array([cmap_fn(float(v)) for v in normed], dtype=float)
+        point_colors[~finite] = [0.75, 0.75, 0.75, 0.85]
+    else:
+        fill_idx = np.clip(
+            np.where(finite, fill_arr.astype(int), 0),
+            0,
+            len(fill_categorical_colors) - 1,
+        )
+        point_colors = np.array(
+            [mcolors.to_rgba(fill_categorical_colors[i]) for i in fill_idx], dtype=float
+        )
+        point_colors[~finite] = [0.75, 0.75, 0.75, 0.85]
 
     if marker_values is not None:
         marker_arr = np.asarray(marker_values, dtype=float)
@@ -395,6 +409,8 @@ def strip_count_panel_plot(
     fill_categorical_colors: tuple[str, ...],
     x_label: str,
     *,
+    fill_cmap: str | None = None,
+    fill_cmap_label: str = "",
     marker_values: np.ndarray | None = None,
     marker_shapes: tuple[str, ...] = ("o", "X"),
     failed_counts_by_class: dict[str, int] | None = None,
@@ -420,6 +436,7 @@ def strip_count_panel_plot(
         values=values,
         fill_values=fill_values,
         fill_categorical_colors=fill_categorical_colors,
+        fill_cmap=fill_cmap,
         marker_values=marker_values,
         marker_shapes=marker_shapes,
         category_order=category_order,
@@ -429,6 +446,17 @@ def strip_count_panel_plot(
         y_label="Class",
         ax=ax_left,
     )
+
+    if fill_cmap is not None:
+        fill_arr = np.asarray(fill_values, dtype=float)
+        finite = np.isfinite(fill_arr)
+        lo = float(np.nanmin(fill_arr[finite])) if finite.any() else 0.0
+        hi = float(np.nanmax(fill_arr[finite])) if finite.any() else 1.0
+        norm = mcolors.Normalize(vmin=lo, vmax=hi)
+        sm = plt.cm.ScalarMappable(cmap=fill_cmap, norm=norm)
+        sm.set_array([])
+        cbar = fig.colorbar(sm, ax=ax_left, fraction=0.025, pad=0.02, shrink=0.8)
+        cbar.set_label(fill_cmap_label, fontsize=8)
 
     counts = [int(counts_by_class.get(cat, 0)) for cat in category_order]
     y_positions = np.arange(n_cats)
@@ -633,264 +661,72 @@ def scatter_plot(
     return _finalize(fig)
 
 
-def heatmap_plot(
-    matrix: np.ndarray,
-    labels: list[str],
+def numeric_scatter_plot(
+    x: np.ndarray,
+    y: np.ndarray,
     *,
-    mask: np.ndarray | None = None,
-    sidebar_values: np.ndarray | None = None,
-    sidebar_label: str = "",
-    sidebar_cmap: str = "Reds",
-    diagonal_values: np.ndarray | None = None,
-    diagonal_label: str = "diagonal",
-    diagonal_cmap: str = "Reds",
-    matrix_label: str = "value",
-    matrix_cmap: str = "viridis_r",
-    label_legend: dict[int, str] | None = None,
-    legend_title: str = "",
-    figsize: tuple[float, float] | None = None,
-) -> Plot:
-    """Square matrix heatmap with optional sidebar, diagonal overlay, and legend.
+    color_values: np.ndarray | None = None,
+    reference_line: bool = False,
+    trend_line: bool = False,
+    annotations: dict[str, float] | None = None,
+    cmap: str = "viridis",
+    colorbar_label: str = "",
+    x_label: str = "",
+    y_label: str = "",
+    title: str = "",
+    figsize: tuple[float, float] = (5.5, 5.5),
+    ax: Axes | None = None,
+) -> Plot | None:
+    """Generic numeric x–y scatter, with optional continuous coloring, a y=x
+    reference line, a linear trend line, and a metrics annotation box."""
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    ax, fig = _ensure_ax(ax, figsize)
 
-    `mask`: bool array same shape as `matrix`; True cells render as NaN.
-    `sidebar_values`: one scalar per row, drawn as a horizontal bar next to
-    the matrix. None skips the sidebar.
-    `diagonal_values`: one scalar per row, overlaid on the diagonal using a
-    separate cmap scaled to [0, 1].
-    `label_legend`: numeric_id -> name mapping rendered below the matrix.
-    """
-    matrix = np.asarray(matrix, dtype=float)
-    n = matrix.shape[0]
-    if matrix.shape != (n, n):
-        raise ValueError("`matrix` must be square.")
-    if len(labels) != n:
-        raise ValueError("`labels` length must match matrix size.")
-    if mask is not None and np.asarray(mask).shape != (n, n):
-        raise ValueError("`mask` must match matrix shape.")
-    if sidebar_values is not None and len(sidebar_values) != n:
-        raise ValueError("`sidebar_values` length must match matrix size.")
+    if reference_line and len(x):
+        lo = float(min(x.min(), y.min()))
+        hi = float(max(x.max(), y.max()))
+        ax.plot([lo, hi], [lo, hi], color=NEUTRAL_COLOR, linewidth=1.0, linestyle=":")
 
-    has_sidebar = sidebar_values is not None
-    has_diag = diagonal_values is not None
-
-    if figsize is None:
-        cell = max(0.22, min(0.45, 7.0 / max(n, 1)))
-        side = max(4.0, cell * n + 1.0)
-        figsize = (side + 1.8, side + 1.3)
-
-    width_ratios = [1.0]
-    if has_sidebar:
-        width_ratios.append(0.06)
-    width_ratios.append(0.04)
-    if has_diag:
-        width_ratios.append(0.04)
-
-    fig = plt.figure(figsize=figsize)
-    gs = fig.add_gridspec(
-        2,
-        len(width_ratios),
-        width_ratios=width_ratios,
-        height_ratios=[1.0, 0.20],
-        wspace=0.04,
-        hspace=0.10,
+    sc = ax.scatter(
+        x,
+        y,
+        c=color_values if color_values is not None else PALETTE[0],
+        cmap=cmap if color_values is not None else None,
+        s=22,
+        alpha=0.7,
+        edgecolors="none",
     )
-    col = 0
-    ax_mat = fig.add_subplot(gs[0, col]); col += 1
-    ax_side = None
-    if has_sidebar:
-        ax_side = fig.add_subplot(gs[0, col], sharey=ax_mat); col += 1
-    ax_cbar = fig.add_subplot(gs[0, col]); col += 1
-    ax_cbar_diag = fig.add_subplot(gs[0, col]) if has_diag else None
-    ax_legend = fig.add_subplot(gs[1, :])
-    ax_legend.axis("off")
+    if color_values is not None and fig is not None:
+        cbar = fig.colorbar(sc, ax=ax, fraction=0.046, pad=0.04)
+        cbar.set_label(colorbar_label)
 
-    cmap = plt.get_cmap(matrix_cmap).copy()
-    cmap.set_bad(color=NEUTRAL_COLOR)
-    visible = np.where(np.asarray(mask, dtype=bool), np.nan, matrix) if mask is not None else matrix.copy()
-    if has_diag:
-        np.fill_diagonal(visible, np.nan)
-    im = ax_mat.imshow(visible, cmap=cmap, aspect="auto", interpolation="nearest")
+    if trend_line:
+        finite = np.isfinite(x) & np.isfinite(y)
+        if int(finite.sum()) >= 2:
+            m, b = np.polyfit(x[finite], y[finite], 1)
+            x_range = np.array([float(x[finite].min()), float(x[finite].max())])
+            ax.plot(x_range, m * x_range + b, color=NEUTRAL_COLOR, linewidth=1.0, linestyle="--", zorder=2)
 
-    if has_diag:
-        d_cmap = plt.get_cmap(diagonal_cmap).copy()
-        d_cmap.set_bad(color="none")
-        diag_overlay = np.full((n, n), np.nan)
-        np.fill_diagonal(diag_overlay, np.asarray(diagonal_values, dtype=float))
-        im_diag = ax_mat.imshow(
-            diag_overlay,
-            cmap=d_cmap,
-            aspect="auto",
-            interpolation="nearest",
-            vmin=0.0,
-            vmax=1.0,
+    if annotations:
+        text = "\n".join(
+            f"{name} = {_format_value(value, kind='score')}"
+            for name, value in annotations.items()
         )
-        fig.colorbar(im_diag, cax=ax_cbar_diag).set_label(diagonal_label)
-
-    ax_mat.set_xticks(np.arange(n))
-    ax_mat.set_yticks(np.arange(n))
-    ax_mat.set_xticklabels(labels, rotation=90, fontsize=8)
-    ax_mat.set_yticklabels(labels, fontsize=8)
-    ax_mat.grid(False)
-    fig.colorbar(im, cax=ax_cbar).set_label(matrix_label)
-
-    if has_sidebar:
-        sidebar = np.asarray(sidebar_values, dtype=float)
-        safe = np.where(np.isfinite(sidebar), sidebar, 0.0)
-        s_max = float(safe.max()) if safe.size and safe.max() > 0 else 1.0
-        side_cmap = plt.get_cmap(sidebar_cmap)
-        side_colors = [
-            side_cmap(0.0) if v <= 0 else side_cmap(0.25 + 0.6 * (v / s_max))
-            for v in safe
-        ]
-        ax_side.barh(
-            np.arange(n), safe, color=side_colors, edgecolor="white", linewidth=0.3
-        )
-        ax_side.set_xlim(0, s_max * 1.05 if s_max > 0 else 1.0)
-        ax_side.tick_params(axis="y", left=False, labelleft=False)
-        ax_side.spines["left"].set_visible(False)
-        ax_side.set_xlabel(sidebar_label, fontsize=8)
-        ax_side.tick_params(axis="x", labelsize=7)
-        ax_side.grid(False)
-
-    if label_legend:
-        handles = [
-            plt.Rectangle(
-                (0, 0), 1, 1,
-                facecolor="none",
-                edgecolor="none",
-                label=f"{num}: {name}",
-            )
-            for num, name in sorted(label_legend.items())
-        ]
-        ax_legend.legend(
-            handles=handles,
-            loc="upper center",
-            ncol=min(len(handles), 3),
-            frameon=False,
-            fontsize=8,
-            handlelength=0,
-            handletextpad=0,
-            columnspacing=1.4,
-            title=legend_title or None,
-            title_fontsize=8,
+        ax.text(
+            0.05,
+            0.95,
+            text,
+            transform=ax.transAxes,
+            va="top",
+            ha="left",
+            fontsize=10,
+            bbox=dict(facecolor="white", edgecolor="#cccccc", boxstyle="round,pad=0.3"),
         )
 
-    return _fig_to_plot(fig)
-
-
-def ridgeline_plot(
-    distributions: dict[str, tuple[np.ndarray, np.ndarray]],
-    *,
-    order: list[str] | None = None,
-    legend_labels: tuple[str, str] = ("a", "b"),
-    colors: tuple[str, str] | None = None,
-    x_label: str = "value",
-    figsize: tuple[float, float] | None = None,
-) -> Plot:
-    """One horizontal density per key, two overlaid series per row.
-
-    `distributions`: label -> (series_a, series_b). Empty or all-non-finite
-    rows are dropped.
-    `colors`: fill colors for series a and b; defaults to (PALETTE[0], PALETTE[1]).
-    """
-    raw_keys = order if order is not None else list(distributions.keys())
-
-    def _finite(values: np.ndarray) -> np.ndarray:
-        arr = np.asarray(values, dtype=float)
-        return arr[np.isfinite(arr)]
-
-    finite_per_key: dict[str, tuple[np.ndarray, np.ndarray]] = {}
-    for k in raw_keys:
-        fa, fb = (_finite(s) for s in distributions[k])
-        if len(fa) == 0 and len(fb) == 0:
-            continue
-        finite_per_key[k] = (fa, fb)
-
-    keys = [k for k in raw_keys if k in finite_per_key]
-    n = len(keys)
-    if figsize is None:
-        figsize = (8.0, max(2.5, 0.4 * max(n, 1) + 1.5))
-
-    fig, ax = plt.subplots(figsize=figsize)
-    if n == 0:
-        ax.set_xlabel(x_label)
-        return _fig_to_plot(fig)
-
-    concat = np.concatenate(
-        [arr for fa, fb in finite_per_key.values() for arr in (fa, fb) if len(arr)]
-    )
-    x_min, x_max = float(concat.min()), float(concat.max())
-    if x_min == x_max:
-        x_max = x_min + 1.0
-    grid = np.linspace(x_min, x_max, 200)
-
-    spacing = 0.7
-    max_kde_height = spacing * 0.9
-    rug_height = spacing * 0.25
-    color_a, color_b = colors if colors is not None else (PALETTE[0], PALETTE[1])
-
-    def _kde_curve(arr: np.ndarray) -> np.ndarray | None:
-        if len(arr) < 2 or arr.std() < 1e-9:
-            return None
-        try:
-            return gaussian_kde(arr, bw_method="scott")(grid)
-        except Exception:
-            return None
-
-    def _draw_rug(values: np.ndarray, base_y: float, color: str) -> None:
-        if not len(values):
-            return
-        ax.vlines(
-            values,
-            base_y,
-            base_y + rug_height,
-            color=color,
-            linewidth=1.0,
-            alpha=0.85,
-            zorder=4,
-        )
-
-    for i, k in enumerate(keys):
-        base_y = (n - 1 - i) * spacing
-        fa, fb = finite_per_key[k]
-        curves = [_kde_curve(fa), _kde_curve(fb)]
-        row_max = max(
-            (float(c.max()) for c in curves if c is not None), default=1e-9
-        )
-        for curve, raw, color, zorder in zip(
-            curves, (fa, fb), (color_a, color_b), (3, 2)
-        ):
-            if curve is None:
-                _draw_rug(raw, base_y, color)
-                continue
-            heights = (curve / row_max) * max_kde_height
-            ax.fill_between(
-                grid,
-                base_y,
-                base_y + heights,
-                color=color,
-                alpha=0.5,
-                linewidth=0.7,
-                edgecolor=color,
-                zorder=zorder,
-            )
-
-    ax.set_yticks([(n - 1 - i) * spacing + max_kde_height * 0.2 for i in range(n)])
-    ax.set_yticklabels(keys, fontsize=8)
-    ax.set_xlabel(x_label)
-    ax.set_xlim(x_min, x_max)
-    ax.grid(True, axis="x", alpha=0.15, linewidth=0.5)
-    ax.grid(False, axis="y")
-    ax.spines["left"].set_visible(False)
-    ax.tick_params(axis="y", left=False)
-
-    handles = [
-        plt.Rectangle((0, 0), 1, 1, facecolor=color_a, alpha=0.5, label=legend_labels[0]),
-        plt.Rectangle((0, 0), 1, 1, facecolor=color_b, alpha=0.5, label=legend_labels[1]),
-    ]
-    ax.legend(handles=handles, loc="upper right", fontsize=8)
-
-    return _fig_to_plot(fig)
+    ax.grid(True, alpha=0.15, linewidth=0.5)
+    _apply_labels(ax, x_label, y_label, title)
+    return _finalize(fig)
 
 
 def line_plot(
