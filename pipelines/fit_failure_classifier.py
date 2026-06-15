@@ -113,7 +113,7 @@ def build_cluster_summary(
             **cluster_feats,
             **class_feats,
             "cluster_class": class_id,
-            "is_noise_cluster": cluster_measures.get("is_noise_cluster", False),
+            "is_noise_cluster": int(cluster_measures.get("is_noise_cluster", False)),
             "n_test": error_entry.get("n_total", 0),
             "failure_rate": error_entry.get("error_rate"),
         }

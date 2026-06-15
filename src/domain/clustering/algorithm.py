@@ -27,7 +27,6 @@ def fit_hdbscan(
     min_clustered_ratio: float = 0.20,
     penalize: bool = True,
     max_fit_samples: int = 50_000,
-    max_cluster_size: int | None = None,
     random_state: int = 0,
     **fixed_params,
 ) -> np.ndarray:
@@ -55,12 +54,6 @@ def fit_hdbscan(
     else:
         clf.fit(X_num)
         labels = clf.labels_
-
-    if max_cluster_size is not None:
-        for cid in np.unique(labels[labels != -1]):
-            members = np.where(labels == cid)[0]
-            if len(members) > max_cluster_size:
-                labels[members[max_cluster_size:]] = -1
 
     if penalize:
         n_clustered = (labels != -1).sum()

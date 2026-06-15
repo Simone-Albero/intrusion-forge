@@ -160,12 +160,14 @@ def grid_search(
     silhouette_fn: SilhouetteFn | None = None,
     **fixed_params,
 ) -> dict:
-    """Generic grid search over param_grid, scored by a fragmentation-aware composite.
+    """Generic grid search over param_grid, scored by silhouette on non-noise points.
 
-    Candidates are scored as `silhouette * (1 - noise_ratio) * floor_coverage`
-    (raw silhouette when it is <= 0, so low coverage never rewards a bad fit):
-    plain silhouette on non-noise points rewards both noise-dumping (HDBSCAN)
-    and max-K fragmentation (centroid-based algorithms).
+    Score = silhouette (negative silhouette passed through unchanged so bad fits
+    rank below good ones). `(1 - noise_ratio)` is intentionally excluded: HDBSCAN
+    noise points are genuine density outliers, not a quality defect, and penalising
+    them biases selection toward centroid methods. `_prune_grid_by_floor` upstream
+    already prevents degenerate K values (average cluster size < floor) from entering
+    the grid, so extreme fragmentation is blocked without touching the score.
 
     `silhouette_fn` overrides the silhouette term (e.g. Gower-hybrid silhouette
     for mixed-feature algorithms); the default is Euclidean on `X_num`.
@@ -216,8 +218,7 @@ def grid_search(
             else _score_silhouette(sub_num, labels)
         )
         cov = floor_coverage(labels, min_cluster_floor)
-        noise_ratio = float((labels == -1).mean())
-        s = sil * (1.0 - noise_ratio) * cov if sil > 0 else sil
+        s = sil
         entry = _measure(labels, s, combo, duration)
         entry["silhouette"] = sil
         entry["floor_coverage"] = cov

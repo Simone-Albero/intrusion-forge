@@ -137,7 +137,7 @@ defaults:
 | `complexity.k` | `30` | k for the shared k-NN graph |
 | `complexity.top_k_clusters` | `10` | Top-K nearest adversarial clusters per cluster |
 | `complexity.force` | `false` | Re-run complexity computation even if shared output exists |
-| `clustering.min_cluster_floor` | `50` | Clusters below this size are absorbed into the class pseudo-cluster (all algorithms) |
+| `clustering.min_cluster_floor` | `5` | Clusters below this size are absorbed into the class pseudo-cluster; kept very low so the pseudo-cluster contains only genuine density outliers (statistical validity enforced downstream by `failure_classifier.min_test_support`) |
 | `clustering.target_cluster_size` | `25000` | Absolute cap on the split target: clusters above the effective target are split post-hoc with MiniBatchKMeans on the full cluster points |
 | `clustering.target_size_frac` | `0.05` | Makes the split target relative to dataset size: effective target = clamp(2·`min_cluster_floor`, `total_n`·frac, `target_cluster_size`). Small datasets get a lower ceiling (more, finer clusters); large datasets stay at the absolute cap |
 | `failure_classifier.min_test_support` | `5` | Clusters with fewer test samples are excluded from the failure dataset (their rate is too noisy to regress) |
@@ -176,7 +176,7 @@ resources/experiments/${name}/${data.file_name}_${seed}/
 make prepare DATA=cic_2018_v2 NAME=my_exp
 ```
 
-Loads the raw CSV, applies preprocessing (NaN removal, rare category filtering, log-scaling, robust scaling, optional top-N hash encoding), runs a stratified train/val/test split, encodes labels, and runs per-class clustering (HDBSCAN by default, selectable via `clustering=`) to assign every sample a globally unique cluster id. Noise points and clusters smaller than `clustering.min_cluster_floor` are merged into a per-class pseudo-cluster. The persisted splits keep the original class distribution — balancing happens at training time (Step 2, `balance`).
+Loads the raw CSV, applies preprocessing (NaN removal, rare category filtering, log-scaling, robust scaling, optional top-N hash encoding), runs a stratified train/val/test split, encodes labels, and runs per-class clustering (HDBSCAN by default, selectable via `clustering=`) to assign every sample a globally unique cluster id. HDBSCAN noise points are merged into a per-class pseudo-cluster; clusters above the effective size target are split post-hoc with MiniBatchKMeans. The persisted splits keep the original class distribution — balancing happens at training time (Step 2, `balance`).
 
 **Shared outputs (dataset-level):**
 
