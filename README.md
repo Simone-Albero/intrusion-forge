@@ -82,11 +82,11 @@ resources/raw_data/${data.dir}/${data.file_name}.csv
 A synthetic dataset is included for local testing without real data:
 
 ```bash
-make generate              # default: ~102,500 rows
+make generate              # default: ~69,500 rows
 make generate ROWS=50000
 ```
 
-This writes `resources/raw_data/synthetic/synthetic_test.csv` and can be used immediately with `data=synthetic_test`. The dataset covers 11 classes with engineered separation challenges (hard pairs, overlapping distributions, rare-class filtering, NaN/Inf injection). See [docs/synthetic_dataset.md](docs/synthetic_dataset.md) for the full class specification.
+This writes `resources/raw_data/synthetic/synthetic_test.csv` and can be used immediately with `data=synthetic_test`. The dataset has 10 classes (~69 500 rows) designed to demonstrate the core hypothesis end-to-end: each attack class has canonical / medium / evasive sub-groups positioned at increasing distances from the nearest adversarial class. After per-class clustering and complexity analysis, complexity scores should rank correctly and correlate with classifier failure rates (high Spearman ρ). A `true_subgroup` column records the intended difficulty for post-hoc validation; it is not used by the pipeline. See [docs/synthetic_dataset.md](docs/synthetic_dataset.md) for the full specification.
 
 ---
 

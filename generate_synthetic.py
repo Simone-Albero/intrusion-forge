@@ -1,21 +1,33 @@
 """Generates a synthetic dataset for ML pipeline testing.
 
-Produces configurable-size data with 20 numerical features (num_1..num_20),
-2 categorical features (cat_1, cat_2), and a label column with 11 classes.
+Redesigned to demonstrate the core hypothesis: per-cluster geometric complexity
+predicts per-cluster classification failure rate.
+
+Each attack class has sub-groups positioned at increasing distances from the
+nearest adversarial class, along the same feature dimensions that define
+inter-class boundaries — not in an orthogonal subspace. After per-class
+clustering, complexity measures score evasive sub-clusters higher than canonical
+ones; classifier failure rates follow, producing a high Spearman ρ in Step 4.
 
 Feature layout:
-- num_1..num_15: per-class discriminating features
-- num_16..num_20: intra-class sub-cluster features (40% of each class shifted to
-  N(20, 1)), enabling per-class HDBSCAN to find ≥2 sub-clusters
+    num_1..num_20  all available for intra/inter-class geometry; no reserved
+                   orthogonal sub-cluster space.
 
-Pipeline test behaviors:
-- class_2 / class_3: identical numericals, differ only in cat_2 (hard separation)
-- class_7 / class_8: same center on num_3,4,11,12; class_8 has wider variance (overlap)
-- class_10: slight shift from class_1 on num_1,2,9 only (partial overlap)
-- class_11: always 500 samples → filtered by rare_category_filter (min_count=3000)
-- ~500 rows with NaN/Inf values → removed by drop_nans
+Ground truth: `true_subgroup` (canonical / medium / evasive) is written to the
+CSV for post-hoc validation. It is not in num_cols/cat_cols so the pipeline
+ignores it automatically.
 
-See docs/synthetic_dataset.md for the full per-class specification.
+Classes (~69 500 rows):
+    class_1 (benign)           22 000  80% canonical / 20% near-attack (α=0.3 → class_2)
+    class_2 (attack A)          9 000  50% canonical / 30% medium / 20% evasive → class_1
+    class_3 (attack B, variant) 7 000  50% canonical / 30% medium / 20% evasive → class_1
+    class_4 (attack C)          6 000  50% canonical / 30% medium / 20% evasive → class_1
+    class_5 (overlap A)         5 000  50% canonical / 30% medium / 20% evasive → class_6
+    class_6 (overlap B)         5 000  50% canonical / 30% medium / 20% evasive → class_5
+    class_7 (attack D)          5 000  50% canonical / 30% medium / 20% evasive → class_1
+    class_8 (categorical)       5 000  60% canonical / 40% medium (num_15 drift for density peaks)
+    class_9 (stealth)           5 000  20% canonical / 40% medium / 40% evasive → class_1
+    class_10 (rare, filtered)     500  filtered by rare_category_filter (< min_cat_count=3000)
 
 Usage (from project root):
     python generate_synthetic.py [--rows N]
@@ -31,21 +43,20 @@ import pandas as pd
 OUTPUT_PATH = Path("resources/raw_data/synthetic/synthetic_test.csv")
 
 _DEFAULT_CLASS_SIZES: dict[str, int] = {
-    "class_1": 35_000,
-    "class_2": 10_000,
-    "class_3": 10_000,
-    "class_4": 8_000,
-    "class_5": 7_000,
-    "class_6": 6_000,
-    "class_7": 8_000,
-    "class_8": 6_000,
+    "class_1": 22_000,
+    "class_2": 9_000,
+    "class_3": 7_000,
+    "class_4": 6_000,
+    "class_5": 5_000,
+    "class_6": 5_000,
+    "class_7": 5_000,
+    "class_8": 5_000,
     "class_9": 5_000,
-    "class_10": 7_000,
-    "class_11": 500,
+    "class_10": 500,
 }
 
-_DEFAULT_TOTAL = sum(_DEFAULT_CLASS_SIZES.values())  # 102_500
-_RARE_CLASS_SIZE = 500  # class_11 always kept rare (< min_cat_count=3000)
+_DEFAULT_TOTAL = sum(_DEFAULT_CLASS_SIZES.values())  # 69_500
+_RARE_CLASS_SIZE = 500
 
 _CAT1_VALUES = ["A", "B", "C"]
 _CAT2_VALUES = ["X", "Y", "Z", "W"]
@@ -53,176 +64,220 @@ _CAT2_VALUES = ["X", "Y", "Z", "W"]
 RNG = np.random.default_rng(42)
 
 
-def _normal(mu: float, sigma: float, n: int) -> np.ndarray:
+def _n(mu: float, sigma: float, n: int) -> np.ndarray:
     return RNG.normal(loc=mu, scale=sigma, size=n)
-
-
-def _uniform(low: float, high: float, n: int) -> np.ndarray:
-    return RNG.uniform(low=low, high=high, size=n)
 
 
 def _cat(values: list, weights: list, n: int) -> np.ndarray:
     return RNG.choice(values, size=n, p=weights)
 
 
-def _base_features(n: int) -> dict:
-    """Baseline: all 20 features drawn from N(5, 1)."""
-    return {f"num_{i}": _normal(5.0, 1.0, n) for i in range(1, 21)}
+def _base(n: int) -> dict:
+    """All 20 features at the benign baseline N(5, 1)."""
+    return {f"num_{i}": _n(5.0, 1.0, n) for i in range(1, 21)}
 
 
-def _add_sub_cluster(f: dict, n: int) -> dict:
-    """Shift num_16..num_20 in the last 40% of rows to N(20, 1).
+def _interp(class_mu: dict[str, float], adv_mu: dict[str, float], alpha: float) -> dict[str, float]:
+    """Interpolate feature means: (1 - alpha) * class + alpha * adversary.
 
-    These 5 features are reserved solely for intra-class sub-cluster structure
-    and are not used as per-class discriminating dimensions (num_1..num_15).
-    5 shifted features survive PCA+preprocessing and give HDBSCAN two clear
-    density peaks even for the smallest classes (around 4000 train samples).
+    Features not listed in class_mu default to 5.0 (benign baseline).
+    alpha=0 → canonical (at class center); alpha=1 → at adversary center.
     """
-    n_b = int(n * 0.40)
-    f = {k: v.copy() for k, v in f.items()}
-    for col in ["num_16", "num_17", "num_18", "num_19", "num_20"]:
-        f[col][-n_b:] = _normal(20.0, 1.0, n_b)
+    keys = set(class_mu) | set(adv_mu)
+    return {k: (1 - alpha) * class_mu.get(k, 5.0) + alpha * adv_mu.get(k, 5.0) for k in keys}
+
+
+def _subgroup(n: int, class_mu: dict[str, float], adv_mu: dict[str, float], alpha: float, sigma: float) -> dict:
+    """Generate features for one sub-group.
+
+    Non-discriminating features stay at baseline N(5, 1); discriminating features
+    are drawn at the interpolated center with the given sigma.
+    """
+    f = _base(n)
+    for col, mu in _interp(class_mu, adv_mu, alpha).items():
+        f[col] = _n(mu, sigma, n)
     return f
 
 
-def _make_df(
-    features: dict, cat1_w: list, cat2_w: list, label: str, n: int
-) -> pd.DataFrame:
-    df = pd.DataFrame(features)
+def _assemble(label: str, parts: list[tuple[dict, str]], cat1_w: list, cat2_w: list) -> pd.DataFrame:
+    """Concatenate sub-group feature dicts, attach categoricals and label."""
+    dfs = []
+    for features, sg in parts:
+        df = pd.DataFrame(features)
+        df["true_subgroup"] = sg
+        dfs.append(df)
+    df = pd.concat(dfs, ignore_index=True)
+    n = len(df)
     df["cat_1"] = _cat(_CAT1_VALUES, cat1_w, n)
     df["cat_2"] = _cat(_CAT2_VALUES, cat2_w, n)
     df["label"] = label
     return df
 
 
+# ── Canonical class centers (discriminating features only; baseline = 5.0) ──────────
+
+# class_2: attack A — num_1, num_2, num_3
+_MU2 = {"num_1": 25.0, "num_2": 22.0, "num_3": 20.0}
+# class_3: attack B, variant — shares num_1, num_2 with class_2; uses num_4 not num_3
+_MU3 = {"num_1": 24.0, "num_2": 20.0, "num_4": 22.0}
+# class_4: attack C — distinct feature block
+_MU4 = {"num_5": 30.0, "num_6": 28.0, "num_7": 25.0}
+# class_5 / class_6: overlap pair — adjacent clusters in num_8/num_9 space
+_MU5 = {"num_8": 20.0, "num_9": 18.0, "num_10": 22.0}
+_MU6 = {"num_8": 22.0, "num_9": 14.0, "num_11": 20.0}
+# class_7: attack D — another separate block
+_MU7 = {"num_12": 28.0, "num_13": 25.0, "num_14": 22.0}
+# class_9: stealth — uses num_1/num_2 (partial overlap with class_2/3) + num_15
+_MU9 = {"num_1": 18.0, "num_2": 16.0, "num_15": 15.0}
+# Benign baseline center (all at 5.0)
+_MU1: dict[str, float] = {}
+
+
 def generate_class_1(n: int) -> pd.DataFrame:
-    """Majority baseline: all features N(5, 1)."""
-    f = _add_sub_cluster(_base_features(n), n)
-    return _make_df(f, [0.6, 0.3, 0.1], [0.4, 0.3, 0.15, 0.15], "class_1", n)
+    """Majority benign: canonical at baseline + near-attack sub-group toward class_2."""
+    n_a, n_b = int(n * 0.80), n - int(n * 0.80)
+    f_a = _base(n_a)
+    f_b = _subgroup(n_b, _MU1, _MU2, alpha=0.30, sigma=1.2)
+    return _assemble("class_1", [(f_a, "canonical"), (f_b, "evasive")],
+                     [0.6, 0.3, 0.1], [0.4, 0.35, 0.15, 0.10])
 
 
 def generate_class_2(n: int) -> pd.DataFrame:
-    """Hard-pair A: distinct block (num_1,2,5,6,11,12,13), cat_2=W exclusively."""
-    f = _base_features(n)
-    f["num_1"] = _normal(20.0, 1.0, n)
-    f["num_2"] = _normal(18.0, 1.0, n)
-    f["num_5"] = _normal(1.0, 0.3, n).clip(0)
-    f["num_6"] = _normal(1.0, 0.3, n).clip(0)
-    f["num_11"] = _uniform(1.0, 3.0, n)
-    f["num_12"] = _uniform(1.0, 3.0, n)
-    f["num_13"] = _normal(18.0, 0.8, n)
-    return _make_df(
-        _add_sub_cluster(f, n), [0.8, 0.15, 0.05], [0.0, 0.0, 0.0, 1.0], "class_2", n
+    """Attack A (clear): full difficulty gradient toward class_1."""
+    n_a, n_b = int(n * 0.50), int(n * 0.30)
+    n_c = n - n_a - n_b
+    return _assemble(
+        "class_2",
+        [
+            (_subgroup(n_a, _MU2, _MU1, alpha=0.00, sigma=1.5), "canonical"),
+            (_subgroup(n_b, _MU2, _MU1, alpha=0.50, sigma=1.5), "medium"),
+            (_subgroup(n_c, _MU2, _MU1, alpha=0.80, sigma=1.5), "evasive"),
+        ],
+        [0.8, 0.15, 0.05],
+        [0.05, 0.10, 0.10, 0.75],
     )
 
 
 def generate_class_3(n: int) -> pd.DataFrame:
-    """Hard-pair B: identical numericals to class_2, cat_2=Z exclusively."""
-    f = _base_features(n)
-    f["num_1"] = _normal(20.0, 1.0, n)
-    f["num_2"] = _normal(18.0, 1.0, n)
-    f["num_5"] = _normal(1.0, 0.3, n).clip(0)
-    f["num_6"] = _normal(1.0, 0.3, n).clip(0)
-    f["num_11"] = _uniform(1.0, 3.0, n)
-    f["num_12"] = _uniform(1.0, 3.0, n)
-    f["num_13"] = _normal(18.0, 0.8, n)
-    return _make_df(
-        _add_sub_cluster(f, n), [0.8, 0.15, 0.05], [0.0, 0.0, 1.0, 0.0], "class_3", n
+    """Attack B (variant of A): shares num_1/num_2 with class_2; evasive toward class_1."""
+    n_a, n_b = int(n * 0.50), int(n * 0.30)
+    n_c = n - n_a - n_b
+    return _assemble(
+        "class_3",
+        [
+            (_subgroup(n_a, _MU3, _MU1, alpha=0.00, sigma=1.5), "canonical"),
+            (_subgroup(n_b, _MU3, _MU1, alpha=0.50, sigma=1.5), "medium"),
+            (_subgroup(n_c, _MU3, _MU1, alpha=0.80, sigma=1.5), "evasive"),
+        ],
+        [0.75, 0.20, 0.05],
+        [0.05, 0.10, 0.35, 0.50],
     )
 
 
 def generate_class_4(n: int) -> pd.DataFrame:
-    """Block A: num_1,2,7,14,15 high; num_5,6 near-zero."""
-    f = _base_features(n)
-    f["num_1"] = _normal(30.0, 1.5, n)
-    f["num_2"] = _normal(28.0, 1.5, n)
-    f["num_7"] = _normal(25.0, 1.5, n)
-    f["num_14"] = _normal(22.0, 1.0, n)
-    f["num_15"] = _normal(20.0, 1.0, n)
-    f["num_5"] = _uniform(0.0, 0.5, n)
-    f["num_6"] = _uniform(0.0, 0.5, n)
-    return _make_df(
-        _add_sub_cluster(f, n), [0.5, 0.4, 0.1], [0.5, 0.4, 0.05, 0.05], "class_4", n
+    """Attack C (well separated): distinct feature block; evasive toward class_1."""
+    n_a, n_b = int(n * 0.50), int(n * 0.30)
+    n_c = n - n_a - n_b
+    return _assemble(
+        "class_4",
+        [
+            (_subgroup(n_a, _MU4, _MU1, alpha=0.00, sigma=1.5), "canonical"),
+            (_subgroup(n_b, _MU4, _MU1, alpha=0.50, sigma=1.5), "medium"),
+            (_subgroup(n_c, _MU4, _MU1, alpha=0.80, sigma=1.5), "evasive"),
+        ],
+        [0.5, 0.4, 0.1],
+        [0.5, 0.35, 0.10, 0.05],
     )
 
 
 def generate_class_5(n: int) -> pd.DataFrame:
-    """Block B: num_3,4,8,9,10 high; num_10 tightly concentrated."""
-    f = _base_features(n)
-    f["num_3"] = _normal(28.0, 1.0, n)
-    f["num_4"] = _normal(25.0, 1.0, n)
-    f["num_8"] = _normal(22.0, 1.0, n)
-    f["num_9"] = _normal(20.0, 1.0, n)
-    f["num_10"] = _normal(35.0, 0.3, n)
-    return _make_df(
-        _add_sub_cluster(f, n), [0.4, 0.5, 0.1], [0.3, 0.5, 0.1, 0.1], "class_5", n
+    """Overlap-pair A: evasive sub-group falls deep into class_6 territory."""
+    n_a, n_b = int(n * 0.50), int(n * 0.30)
+    n_c = n - n_a - n_b
+    return _assemble(
+        "class_5",
+        [
+            (_subgroup(n_a, _MU5, _MU6, alpha=0.00, sigma=1.5), "canonical"),
+            (_subgroup(n_b, _MU5, _MU6, alpha=0.50, sigma=1.5), "medium"),
+            (_subgroup(n_c, _MU5, _MU6, alpha=0.80, sigma=1.5), "evasive"),
+        ],
+        [0.4, 0.5, 0.1],
+        [0.3, 0.5, 0.1, 0.1],
     )
 
 
 def generate_class_6(n: int) -> pd.DataFrame:
-    """Block C: num_5,6,9 very high; num_1,7 near-zero."""
-    f = _base_features(n)
-    f["num_5"] = _normal(35.0, 2.0, n)
-    f["num_6"] = _normal(30.0, 2.0, n)
-    f["num_9"] = _normal(28.0, 2.0, n)
-    f["num_1"] = _uniform(0.0, 0.5, n)
-    f["num_7"] = _normal(0.3, 0.1, n).clip(0)
-    return _make_df(
-        _add_sub_cluster(f, n), [0.7, 0.2, 0.1], [0.6, 0.1, 0.1, 0.2], "class_6", n
+    """Overlap-pair B: wider variance; evasive sub-group overlaps class_5 deeply."""
+    n_a, n_b = int(n * 0.50), int(n * 0.30)
+    n_c = n - n_a - n_b
+    return _assemble(
+        "class_6",
+        [
+            (_subgroup(n_a, _MU6, _MU5, alpha=0.00, sigma=2.0), "canonical"),
+            (_subgroup(n_b, _MU6, _MU5, alpha=0.50, sigma=2.0), "medium"),
+            (_subgroup(n_c, _MU6, _MU5, alpha=0.80, sigma=2.0), "evasive"),
+        ],
+        [0.35, 0.50, 0.15],
+        [0.3, 0.5, 0.1, 0.1],
     )
 
 
 def generate_class_7(n: int) -> pd.DataFrame:
-    """Overlap-pair A: moderate shift on num_3,4,11,12."""
-    f = _base_features(n)
-    f["num_3"] = _normal(14.0, 1.5, n)
-    f["num_4"] = _normal(13.0, 1.5, n)
-    f["num_11"] = _normal(15.0, 1.5, n)
-    f["num_12"] = _normal(13.0, 1.0, n)
-    return _make_df(
-        _add_sub_cluster(f, n), [0.55, 0.35, 0.1], [0.35, 0.25, 0.2, 0.2], "class_7", n
+    """Attack D (well separated 2): different feature block from class_4; evasive toward class_1."""
+    n_a, n_b = int(n * 0.50), int(n * 0.30)
+    n_c = n - n_a - n_b
+    return _assemble(
+        "class_7",
+        [
+            (_subgroup(n_a, _MU7, _MU1, alpha=0.00, sigma=1.5), "canonical"),
+            (_subgroup(n_b, _MU7, _MU1, alpha=0.50, sigma=1.5), "medium"),
+            (_subgroup(n_c, _MU7, _MU1, alpha=0.80, sigma=1.5), "evasive"),
+        ],
+        [0.55, 0.35, 0.10],
+        [0.35, 0.30, 0.20, 0.15],
     )
 
 
 def generate_class_8(n: int) -> pd.DataFrame:
-    """Overlap-pair B: same center as class_7, wider variance → intentional overlap."""
-    f = _base_features(n)
-    f["num_3"] = _normal(14.0, 4.0, n).clip(0)
-    f["num_4"] = _normal(13.0, 4.0, n).clip(0)
-    f["num_11"] = _normal(15.0, 1.5, n)
-    f["num_12"] = _normal(13.0, 2.5, n)
-    return _make_df(
-        _add_sub_cluster(f, n), [0.55, 0.35, 0.1], [0.3, 0.3, 0.2, 0.2], "class_8", n
-    )
+    """Categorical: numerically near class_1; cat_2=W exclusively is the separator.
+
+    Two sub-groups via num_15 drift: canonical at baseline, medium shifted to N(10, 1.5).
+    This gives HDBSCAN two distinguishable density peaks within the class.
+    Evasive sub-group omitted: moving numerically toward class_1 is impossible here
+    (the class IS numerically at class_1); the challenge is purely categorical.
+    """
+    n_a, n_b = int(n * 0.60), n - int(n * 0.60)
+    f_a = _base(n_a)
+    f_b = _base(n_b)
+    f_b["num_15"] = _n(10.0, 1.5, n_b)
+    return _assemble("class_8", [(f_a, "canonical"), (f_b, "medium")],
+                     [0.7, 0.2, 0.1], [0.0, 0.0, 0.0, 1.0])
 
 
 def generate_class_9(n: int) -> pd.DataFrame:
-    """Block D: num_5,6 extreme; num_1,2 near-zero."""
-    f = _base_features(n)
-    f["num_5"] = _normal(50.0, 4.0, n)
-    f["num_6"] = _normal(55.0, 5.0, n)
-    f["num_1"] = _uniform(0.0, 0.3, n)
-    f["num_2"] = _normal(0.3, 0.1, n).clip(0)
-    return _make_df(
-        _add_sub_cluster(f, n), [0.7, 0.2, 0.1], [0.5, 0.1, 0.1, 0.3], "class_9", n
+    """Stealth: majority evasive — most samples are near-benign; canonical is exceptional."""
+    n_a, n_b = int(n * 0.20), int(n * 0.40)
+    n_c = n - n_a - n_b
+    return _assemble(
+        "class_9",
+        [
+            (_subgroup(n_a, _MU9, _MU1, alpha=0.00, sigma=1.5), "canonical"),
+            (_subgroup(n_b, _MU9, _MU1, alpha=0.50, sigma=1.2), "medium"),
+            (_subgroup(n_c, _MU9, _MU1, alpha=0.80, sigma=1.0), "evasive"),
+        ],
+        [0.6, 0.3, 0.1],
+        [0.7, 0.1, 0.1, 0.1],
     )
 
 
 def generate_class_10(n: int) -> pd.DataFrame:
-    """Partial overlap with class_1: slight shift on num_1,2,9 only."""
-    f = _base_features(n)
-    f["num_1"] = _normal(7.0, 1.2, n)
-    f["num_2"] = _normal(7.5, 1.2, n)
-    f["num_9"] = _normal(7.0, 1.0, n)
-    return _make_df(
-        _add_sub_cluster(f, n), [0.6, 0.3, 0.1], [0.7, 0.1, 0.05, 0.15], "class_10", n
-    )
-
-
-def generate_class_11(n: int) -> pd.DataFrame:
-    """Rare class: filtered by rare_category_filter (n < min_cat_count=3000)."""
-    f = _base_features(n)
-    return _make_df(f, [0.33, 0.34, 0.33], [0.25, 0.25, 0.25, 0.25], "class_11", n)
+    """Rare class: always 500 rows → removed by rare_category_filter (< min_cat_count=3000)."""
+    df = pd.DataFrame(_base(n))
+    df["cat_1"] = _cat(_CAT1_VALUES, [0.33, 0.34, 0.33], n)
+    df["cat_2"] = _cat(_CAT2_VALUES, [0.25, 0.25, 0.25, 0.25], n)
+    df["label"] = "class_10"
+    df["true_subgroup"] = "canonical"
+    return df
 
 
 def inject_edge_cases(df: pd.DataFrame) -> pd.DataFrame:
@@ -244,11 +299,11 @@ def inject_edge_cases(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _compute_sizes(total_rows: int) -> dict[str, int]:
-    """Scale class sizes proportionally to total_rows, keeping class_11 rare."""
+    """Scale class sizes proportionally to total_rows, keeping class_10 rare."""
     scalable_total = _DEFAULT_TOTAL - _RARE_CLASS_SIZE
     scale = (total_rows - _RARE_CLASS_SIZE) / scalable_total
     return {
-        cls: _RARE_CLASS_SIZE if cls == "class_11" else max(1, round(n * scale))
+        cls: _RARE_CLASS_SIZE if cls == "class_10" else max(1, round(n * scale))
         for cls, n in _DEFAULT_CLASS_SIZES.items()
     }
 
@@ -264,7 +319,6 @@ _GENERATORS = [
     generate_class_8,
     generate_class_9,
     generate_class_10,
-    generate_class_11,
 ]
 
 
@@ -275,7 +329,7 @@ def main() -> None:
         type=int,
         default=_DEFAULT_TOTAL,
         help=f"Target total row count (default: {_DEFAULT_TOTAL:,}). "
-        "class_11 is always kept at 500 rows to preserve the rare-class filter test.",
+        "class_10 is always kept at 500 rows to preserve the rare-class filter test.",
     )
     args = parser.parse_args()
 
@@ -299,6 +353,8 @@ def main() -> None:
     print(f"Inf count: {inf_count}")
     print("\nClass distribution:")
     print(df["label"].value_counts().sort_index().to_string())
+    print("\nSub-group distribution:")
+    print(df.groupby("label")["true_subgroup"].value_counts().to_string())
 
 
 if __name__ == "__main__":
