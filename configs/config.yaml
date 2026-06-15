@@ -55,7 +55,7 @@ plots:
 extend:
   generate: false                    # opt-in: train an extra complexity-extended classifier + SHAP
   force: false                       # re-run the SHAP stage even if shap_values.pkl exists
-  num_samples: 50                    # test instances explained per run
+  num_samples: 200                   # test instances explained per run
   background_samples: 100            # rows sampled before the k-means summarisation
   background_summary_k: 25           # k-means centroids used as KernelExplainer background
   nsamples: 200                      # coalition samples per explained instance (KernelExplainer)

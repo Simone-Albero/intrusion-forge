@@ -24,7 +24,7 @@ from src.domain.plot.charts import (
     strip_count_panel_plot,
 )
 from src.domain.plot.base import Plot, set_figure_format
-from src.domain.plot.style import PALETTE, apply_plot_style
+from src.domain.plot.style import CORRECT_COLOR, FAILED_COLOR, MUTED_COLOR, PALETTE, apply_plot_style
 
 setup_logger(log_file="resources/logs.txt")
 apply_plot_style()
@@ -197,6 +197,40 @@ def assemble_analysis_figures(
     return figures
 
 
+def _plot_base_vs_extended_f1(
+    base_summary: dict,
+    ext_summary: dict,
+    df_meta: dict,
+) -> dict[str, Plot]:
+    """Delta bar chart: per-class F1 improvement of extended over base classifier."""
+    label_mapping = {str(k): v for k, v in df_meta["label_mapping"].items()}
+    n = len(base_summary["f1_per_class"])
+    names = [label_mapping.get(str(i), str(i)) for i in range(n)]
+    delta = np.array(ext_summary["f1_per_class"]) - np.array(base_summary["f1_per_class"])
+
+    # Pre-sort to avoid the known bar_plot bug where color list is not reindexed with sort
+    order = np.argsort(delta)
+    names_sorted = [names[i] for i in order]
+    delta_sorted = delta[order]
+    colors = [CORRECT_COLOR if d >= 0 else FAILED_COLOR for d in delta_sorted]
+
+    return {
+        "figure/explain/f1_delta": bar_plot(
+            names_sorted,
+            delta_sorted.tolist(),
+            orientation="h",
+            color=colors,
+            sort=None,
+            annotate_values=True,
+            value_format="{:+.3f}",
+            axvline=0.0,
+            axvline_color=MUTED_COLOR,
+            x_label="F1 improvement (extended − base)",
+            title="Extended vs base — per-class F1 delta",
+        )
+    }
+
+
 def assemble_explain_figures(
     shap_payload: dict,
     explain_meta: dict,
@@ -204,7 +238,7 @@ def assemble_explain_figures(
     max_display: int = 20,
     explain_bus: LogDispatcher | None = None,
 ) -> dict[str, Plot]:
-    """Build one SHAP beeswarm per class from persisted SHAP values."""
+    """Build one SHAP beeswarm per class plus a global importance bar from persisted SHAP values."""
     values = np.asarray(shap_payload["values"])  # (n, f, c)
     data = np.asarray(shap_payload["data"])  # (n, f)
     feature_names = explain_meta["feature_names"]
@@ -220,6 +254,21 @@ def assemble_explain_figures(
             max_display=max_display,
             title=f"SHAP — class '{name}'",
         )
+
+    # Global importance: mean |SHAP| aggregated over samples and classes
+    mean_abs = np.abs(values).mean(axis=(0, 2))  # (n_features,)
+    top_k = min(max_display, len(mean_abs))
+    idx = np.argsort(mean_abs)[-top_k:][::-1]  # descending by importance
+    figures["figure/explain/global_importance"] = bar_plot(
+        [feature_names[i] for i in idx],
+        [float(mean_abs[i]) for i in idx],
+        orientation="h",
+        sort=None,
+        color_gradient=True,
+        x_label="Mean |SHAP| (all classes)",
+        title="Global SHAP feature importance (extended classifier)",
+    )
+
     if explain_bus is not None:
         explain_bus.publish(LogBundle.from_dict(figures))
     return figures
@@ -253,6 +302,21 @@ def main():
         logger.warning(
             "[STAGE-SKIP] Missing failure-analysis artifacts in %s; run `make failure-classify` first. Skipping summary figures.",
             paths.outputs / "analysis",
+        )
+
+    summary_base_path = paths.outputs / "testing" / "summary.json"
+    summary_ext_path = paths.outputs / "testing" / "summary_extended.json"
+    if summary_base_path.exists() and summary_ext_path.exists():
+        delta_figures = _plot_base_vs_extended_f1(
+            load_from_json(summary_base_path),
+            load_from_json(summary_ext_path),
+            load_from_json(paths.shared / "metadata/df_meta.json"),
+        )
+        analysis_bus.publish(LogBundle.from_dict(delta_figures))
+    else:
+        logger.warning(
+            "[STAGE-SKIP] Missing base or extended summary in %s; run both `make classify` and `make classify-extended` first. Skipping F1 delta figure.",
+            paths.outputs / "testing",
         )
 
     shap_path = paths.pickle / "explain/shap_values.pkl"

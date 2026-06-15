@@ -772,67 +772,30 @@ def beeswarm_plot(
     *,
     max_display: int = 20,
     title: str = "",
-    x_label: str = "SHAP value (impact on model output)",
     figsize: tuple[float, float] | None = None,
-    ax: Axes | None = None,
+    ax: Axes | None = None,  # noqa: ARG001 — ignored: SHAP creates its own figure
 ) -> Plot | None:
-    """Beeswarm of per-sample SHAP values for the top features by mean |SHAP|.
+    """Beeswarm of per-sample SHAP values rendered via the native SHAP library.
 
-    Rows are ordered by mean absolute SHAP (most impactful on top); points are
-    jittered vertically and coloured by per-feature normalised value (low→high).
+    Delegates to `shap.plots.beeswarm()` (requires a SHAP `Explanation` object
+    constructed from the raw arrays) and wraps the result in a `Plot`.
     """
+    import shap as shap_lib
+
     shap_values = np.asarray(shap_values, dtype=float)
     feature_values = np.asarray(feature_values, dtype=float)
     if shap_values.ndim != 2:
         raise ValueError("`shap_values` must have shape (n_samples, n_features).")
 
-    importance = np.abs(shap_values).mean(axis=0)
-    order = np.argsort(importance)[::-1][:max_display][::-1]  # most impactful on top
-    n_shown = len(order)
-
-    if figsize is None:
-        figsize = (9.0, max(3.0, 0.4 * n_shown + 1.5))
-    ax, fig = _ensure_ax(ax, figsize)
-
-    rng = np.random.default_rng(0)
-    cmap = plt.get_cmap("coolwarm")
-    scatter = None
-    for row, feat in enumerate(order):
-        sv = shap_values[:, feat]
-        fv = feature_values[:, feat]
-        finite = np.isfinite(fv)
-        color_val = np.full(len(fv), 0.5)
-        if finite.any():
-            lo, hi = np.nanpercentile(fv[finite], [1, 99])
-            if hi > lo:
-                color_val = np.clip((fv - lo) / (hi - lo), 0.0, 1.0)
-        jitter = rng.uniform(-0.18, 0.18, size=len(sv))
-        scatter = ax.scatter(
-            sv,
-            np.full(len(sv), row) + jitter,
-            c=color_val,
-            cmap=cmap,
-            vmin=0.0,
-            vmax=1.0,
-            s=12.0,
-            alpha=0.7,
-            edgecolors="none",
-            rasterized=True,
-        )
-
-    ax.axvline(0.0, color=MUTED_COLOR, linewidth=0.8, zorder=1)
-    ax.set_yticks(range(n_shown))
-    ax.set_yticklabels([feature_names[i] for i in order], fontsize=8)
-    ax.set_ylim(-0.6, n_shown - 0.4)
-    ax.grid(True, axis="x", alpha=0.15, linewidth=0.5)
-    ax.grid(False, axis="y")
-    _apply_labels(ax, x_label=x_label, title=title)
-
-    owner = fig if fig is not None else ax.figure
-    if scatter is not None:
-        cbar = owner.colorbar(scatter, ax=ax, pad=0.02, fraction=0.046)
-        cbar.set_label("Feature value (low to high)", fontsize=8)
-        cbar.set_ticks([0.0, 1.0])
-        cbar.set_ticklabels(["low", "high"])
-
-    return _finalize(fig)
+    exp = shap_lib.Explanation(
+        values=shap_values,
+        data=feature_values,
+        feature_names=list(feature_names),
+    )
+    returned_ax = shap_lib.plots.beeswarm(exp, max_display=max_display, show=False)
+    fig = returned_ax.get_figure()
+    if title:
+        returned_ax.set_title(title, fontsize=10)
+    if figsize is not None:
+        fig.set_size_inches(figsize)
+    return _fig_to_plot(fig)
