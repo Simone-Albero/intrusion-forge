@@ -97,6 +97,12 @@ classify-extended:
 ## extend:             complexity + classify-extended + render (assumes prepare + classify done)  (DATA, NAME, SEED, CLASSIFIER)
 extend: complexity classify-extended render
 
+## extend-lf:          label-free extended: nearest-centroid assignment, ignores class labels    (DATA, NAME, SEED, CLASSIFIER)
+extend-lf:
+	PYTHONPATH=. $(PYTHON) pipelines/compute_complexity.py $(HYDRA) $(FORCE_FLAG) extend.generate=true extend.labelfree=true
+	PYTHONPATH=. $(PYTHON) pipelines/classify.py $(HYDRA) extend.generate=true
+	PYTHONPATH=. $(PYTHON) pipelines/render_plots.py $(HYDRA)
+
 ## complexity:         Step 3a — cluster + class complexity (shared, idempotent)  (DATA, NAME, SEED, FORCE)
 complexity:
 	PYTHONPATH=. $(PYTHON) pipelines/compute_complexity.py $(HYDRA) $(FORCE_FLAG)

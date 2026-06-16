@@ -55,6 +55,7 @@ plots:
 extend:
   generate: false                    # opt-in: train an extra complexity-extended classifier + SHAP
   force: false                       # re-run the SHAP stage even if shap_values.pkl exists
+  labelfree: false                   # nearest-centroid assignment across all clusters, ignoring class labels
   num_samples: 200                   # test instances explained per run
   background_samples: 100            # rows sampled before the k-means summarisation
   background_summary_k: 25           # k-means centroids used as KernelExplainer background

@@ -234,11 +234,27 @@ def fit_failure_classifier(
     logger.info("Running failure classifier ...")
     df = pd.DataFrame.from_dict(cluster_stats, orient="index")
 
+    # Noise pseudo-clusters aggregate density outliers that have no geometric
+    # substructure: their complexity vector is an unreliable average, so they
+    # are excluded from the meta-model (we predict failure only for clusters
+    # with genuine geometry). Their test-support share = the coverage cost.
+    is_noise = (
+        df["is_noise_cluster"].fillna(0).astype(bool)
+        if "is_noise_cluster" in df
+        else pd.Series(False, index=df.index)
+    )
     no_test = df["failure_rate"].isna()
     low_support = ~no_test & (df["n_test"].fillna(0) < min_test_support)
     n_excluded_no_test = int(no_test.sum())
-    n_excluded_low_support = int(low_support.sum())
-    df = df[~no_test & ~low_support]
+    n_excluded_low_support = int((low_support & ~is_noise).sum())
+    n_excluded_noise = int((is_noise & ~no_test).sum())
+    noise_test_share = (
+        float(df.loc[is_noise & ~no_test, "n_test"].fillna(0).sum())
+        / float(df.loc[~no_test, "n_test"].fillna(0).sum())
+        if df.loc[~no_test, "n_test"].fillna(0).sum()
+        else 0.0
+    )
+    df = df[~no_test & ~low_support & ~is_noise]
 
     rates = df["failure_rate"].astype(float)
     n_test = df["n_test"].astype(float)
@@ -250,15 +266,20 @@ def fit_failure_classifier(
         "n_clusters_used": int(len(df)),
         "n_excluded_no_test": n_excluded_no_test,
         "n_excluded_low_support": n_excluded_low_support,
+        "n_excluded_noise": n_excluded_noise,
+        "noise_test_share": noise_test_share,
         "min_test_support": min_test_support,
         "global_error_rate": global_error_rate,
     }
-    if n_excluded_no_test or n_excluded_low_support:
+    if n_excluded_no_test or n_excluded_low_support or n_excluded_noise:
         logger.info(
-            "Excluded clusters — no test samples: %d, test support < %d: %d (%d/%d used)",
+            "Excluded clusters — no test: %d, support < %d: %d, noise pseudo-clusters: %d "
+            "(%.1f%% of test support); %d/%d used",
             n_excluded_no_test,
             min_test_support,
             n_excluded_low_support,
+            n_excluded_noise,
+            100.0 * noise_test_share,
             len(df),
             no_test.size,
         )
@@ -267,7 +288,7 @@ def fit_failure_classifier(
         feature_cols = [
             c
             for c in df.select_dtypes("number").columns
-            if c not in ("failure_rate", "n_test")
+            if c not in ("failure_rate", "n_test", "is_noise_cluster")
         ]
     X = df[feature_cols].copy()
     y = df["failure_rate"].astype(float)

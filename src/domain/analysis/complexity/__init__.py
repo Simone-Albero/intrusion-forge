@@ -1,6 +1,8 @@
+import logging
+from dataclasses import dataclass
+
 import numpy as np
 from tqdm import tqdm
-import logging
 
 from src.domain.analysis.complexity.shared import (
     build_knn_graph,
@@ -14,8 +16,30 @@ from src.domain.analysis.complexity.dimensionality import compute_t_measures
 
 from src.core.utils import timed
 
-__all__ = ["compute_all_complexity_measures"]
+__all__ = [
+    "ComplexityGraph",
+    "prepare_complexity_graph",
+    "compute_complexity_from_graph",
+]
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ComplexityGraph:
+    """Subsampled point cloud + shared Gower-hybrid k-NN graph.
+
+    Built once by `prepare_complexity_graph` and consumed by
+    `compute_complexity_from_graph` for both the cluster-level and class-level
+    passes, so the expensive k-NN graph is built a single time. The graph
+    depends only on the feature space (X, k, metric), not on the partition.
+    """
+
+    X_num: np.ndarray
+    X_cat: np.ndarray | None
+    y_class: np.ndarray
+    y_cluster: np.ndarray
+    knn_idx: np.ndarray
+    knn_dist: np.ndarray
 
 
 def _stratified_subsample(
@@ -147,52 +171,36 @@ def _compute_analysis_centroids(
 
 
 @timed
-def compute_all_complexity_measures(
+def prepare_complexity_graph(
     X_num: np.ndarray,
     X_cat: np.ndarray | None,
     y_class: np.ndarray,
     y_cluster: np.ndarray,
-    centroids: dict[str, list[float]],
     *,
     k: int = 30,
-    top_k_clusters: int = 10,
     max_samples: int | None = None,
     min_per_cluster: int = 50,
     metric: str = "cosine",
-    noise_cluster_ids: set[int] | None = None,
     random_state: int = 42,
-) -> dict[str, dict[str, float | None]]:
-    """Compute all complexity measures per partition under a single metric.
+) -> ComplexityGraph:
+    """Stratified-subsample by cluster and build the shared k-NN graph.
 
-    The partition is determined by `y_cluster`: passing cluster IDs gives
-    cluster-level measures; passing class IDs (with y_class == y_cluster) gives
-    class-level measures. All aggregations are vs the top-K nearest adversarial
-    partitions (no dual scope). Output keys are neutral (no _class_ / _cluster_
-    suffix, no _cosine / _euclidean suffix).
+    The graph depends only on the feature space, not on the partition, so one
+    cluster-stratified subsample serves both the cluster-level and class-level
+    analyses (every class is a union of its clusters, so a cluster-stratified
+    subsample also covers every class). Build it once; reuse for both passes.
 
     Inputs:
         X_num            — (n, d_num) float array, RobustScaled numericals.
         X_cat            — (n, d_cat) int array or None.
-        y_class          — (n,) int array, class labels (encoded). Used by
-                           _build_topk_map to identify "adversarial" partitions
-                           (different class). For class-level analysis pass
-                           the same array as y_cluster.
-        y_cluster        — (n,) int array, partition labels (-1 = noise).
-        centroids        — {str(partition_id): [float, ...]} Euclidean centroids.
-                           Used only by the Euclidean G-family path; the cosine
-                           path recomputes spherical centroids.
+        y_class          — (n,) int array, class labels (encoded).
+        y_cluster        — (n,) int array, cluster labels (-1 = noise).
         k                — number of neighbours for the k-NN graph.
-        top_k_clusters   — K nearest adversarial partitions for aggregation.
-        max_samples      — if set, subsample stratified by partition before
+        max_samples      — if set, subsample stratified by cluster before
                            building the k-NN graph. None = use all samples.
-        min_per_cluster  — minimum samples per partition in the subsample.
-        metric           — "cosine" or "euclidean". Controls k-NN, MST, F-family,
-                           G-family centroids, pairwise distances, and silhouette.
-        noise_cluster_ids — set of pseudo-partition IDs (reassigned noise points).
-                           Adds is_noise_cluster flag to the output rows.
-        random_state     — seed for stratified subsampling and silhouette.
-
-    Returns {partition_id: {measure_name: value}}.
+        min_per_cluster  — minimum samples per cluster in the subsample.
+        metric           — "cosine" or "euclidean".
+        random_state     — seed for stratified subsampling.
     """
     if max_samples is not None and len(y_cluster) > max_samples:
         n_orig = len(y_cluster)
@@ -209,11 +217,52 @@ def compute_all_complexity_measures(
 
     logger.info("Building Gower-%s hybrid k-NN graph (k=%d)...", metric, k)
     knn_idx, knn_dist = build_knn_graph(X_num, X_cat, k=k, metric=metric)
+    return ComplexityGraph(X_num, X_cat, y_class, y_cluster, knn_idx, knn_dist)
 
-    cluster_mask, cluster_to_class = _build_population_masks(y_class, y_cluster)
+
+@timed
+def compute_complexity_from_graph(
+    graph: ComplexityGraph,
+    y_partition: np.ndarray,
+    centroids: dict[str, list[float]],
+    *,
+    top_k_clusters: int = 10,
+    metric: str = "cosine",
+    noise_cluster_ids: set[int] | None = None,
+    random_state: int = 42,
+) -> dict[str, dict[str, float | None]]:
+    """Compute all complexity-measure families for one partition of `graph`.
+
+    `y_partition` selects the partition over the graph's subsampled points: pass
+    the cluster labels for cluster-level measures, the class labels for
+    class-level measures. All aggregations are vs the top-K nearest adversarial
+    partitions (different class). Output keys are neutral (no _class_ / _cluster_
+    suffix, no _cosine / _euclidean suffix).
+
+    Inputs:
+        graph            — shared subsample + k-NN graph from
+                           `prepare_complexity_graph`.
+        y_partition      — (n,) int array, partition labels (-1 = noise) aligned
+                           to `graph`'s subsampled points.
+        centroids        — {str(partition_id): [float, ...]} Euclidean centroids.
+                           Used only by the Euclidean G-family path; the cosine
+                           path recomputes spherical centroids.
+        top_k_clusters   — K nearest adversarial partitions for aggregation.
+        metric           — "cosine" or "euclidean". Controls MST, F-family,
+                           G-family centroids, pairwise distances, and silhouette.
+        noise_cluster_ids — set of pseudo-partition IDs (reassigned noise points).
+                           Adds is_noise_cluster flag to the output rows.
+        random_state     — seed for the silhouette.
+
+    Returns {partition_id: {measure_name: value}}.
+    """
+    X_num, X_cat, y_class = graph.X_num, graph.X_cat, graph.y_class
+    knn_idx, knn_dist = graph.knn_idx, graph.knn_dist
+
+    cluster_mask, cluster_to_class = _build_population_masks(y_class, y_partition)
 
     # centroids appropriate for the metric (spherical if cosine, Euclidean otherwise)
-    analysis_centroids = _compute_analysis_centroids(X_num, y_cluster, metric=metric)
+    analysis_centroids = _compute_analysis_centroids(X_num, y_partition, metric=metric)
 
     top_k_map = _build_topk_map(
         cluster_to_class, analysis_centroids, top_k_clusters, metric=metric
@@ -222,7 +271,7 @@ def compute_all_complexity_measures(
     with tqdm(total=5, desc="complexity families", unit="family") as pbar:
         pbar.set_description("F measures")
         f_out = compute_f_measures(
-            X_num, y_cluster, top_k_map, metric=metric
+            X_num, y_partition, top_k_map, metric=metric
         )
         pbar.update(1)
 
@@ -243,12 +292,12 @@ def compute_all_complexity_measures(
         pbar.update(1)
 
         pbar.set_description("T measures")
-        t_out = compute_t_measures(X_num, X_cat, y_cluster)
+        t_out = compute_t_measures(X_num, X_cat, y_partition)
         pbar.update(1)
 
         pbar.set_description("G measures")
         g_out = compute_cluster_geometry(
-            X_num, y_cluster, centroids,
+            X_num, y_partition, centroids,
             metric=metric, random_state=random_state,
         )
         pbar.update(1)

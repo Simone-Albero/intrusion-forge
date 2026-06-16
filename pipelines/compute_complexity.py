@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from sklearn.metrics import pairwise_distances
 
 from src.core.config import load_config
 from src.core.io import load_df, save_df
@@ -16,7 +17,11 @@ from src.core.log import (
 from pipelines.common import paths_from_cfg
 from src.core.utils import flush_timing, load_from_json, skip_if_exists, timed
 
-from src.domain.analysis.complexity import compute_all_complexity_measures
+from src.domain.analysis.complexity import (
+    ComplexityGraph,
+    compute_complexity_from_graph,
+    prepare_complexity_graph,
+)
 from src.domain.data.preprocessing import (
     attach_cluster_features,
     cluster_feature_columns,
@@ -25,6 +30,30 @@ from src.domain.data.preprocessing import (
 
 setup_logger(log_file="resources/logs.txt")
 logger = logging.getLogger(__name__)
+
+
+def _assign_nearest_cluster(
+    X_num: np.ndarray,
+    centroids: dict,
+    *,
+    metric: str,
+    exclude_ids: set = frozenset(),
+    batch_size: int = 50_000,
+) -> np.ndarray:
+    """Assign each row to the nearest centroid, ignoring class labels.
+
+    Centroid keys may be strings or ints — both are coerced to int64 so the
+    output is compatible with the `cluster` column dtype in the split DataFrames.
+    """
+    valid = [(int(k), v) for k, v in centroids.items() if int(k) not in exclude_ids]
+    id_arr = np.array([k for k, _ in valid], dtype=np.int64)
+    C = np.array([v for _, v in valid], dtype=np.float64)
+    result = np.empty(len(X_num), dtype=np.int64)
+    for start in range(0, len(X_num), batch_size):
+        batch = X_num[start : start + batch_size]
+        D = pairwise_distances(batch, C, metric=metric)
+        result[start : start + batch_size] = id_arr[D.argmin(axis=1)]
+    return result
 
 
 def _compute_class_centroids(
@@ -58,16 +87,11 @@ def _compute_class_centroids(
 
 @timed
 def compute_cluster_complexity(
-    X_num: np.ndarray,
-    X_cat: np.ndarray | None,
-    y_class: np.ndarray,
-    y_cluster: np.ndarray,
+    graph: ComplexityGraph,
     centroids: dict,
     noise_cluster_ids: list[int],
-    k: int,
+    *,
     top_k_clusters: int,
-    min_subsample_per_cluster: int,
-    max_complexity_samples: int | None,
     metric: str,
     random_state: int,
 ) -> dict:
@@ -76,27 +100,22 @@ def compute_cluster_complexity(
     Output schema: {cluster_id: {<measure>: ..., "cluster_class": <int>}}.
     """
     logger.info("Computing cluster-level complexity measures ...")
-    complexity = compute_all_complexity_measures(
-        X_num,
-        X_cat,
-        y_class=y_class,
-        y_cluster=y_cluster,
-        centroids=centroids,
-        k=k,
+    complexity = compute_complexity_from_graph(
+        graph,
+        graph.y_cluster,
+        centroids,
         top_k_clusters=top_k_clusters,
-        max_samples=max_complexity_samples,
-        min_per_cluster=min_subsample_per_cluster,
         metric=metric,
         noise_cluster_ids=set(noise_cluster_ids),
         random_state=random_state,
     )
 
     cluster_to_class: dict[str, int] = {}
-    for cid in np.unique(y_cluster):
+    for cid in np.unique(graph.y_cluster):
         if cid == -1:
             continue
-        mask = y_cluster == cid
-        cluster_to_class[str(cid)] = int(y_class[mask][0])
+        mask = graph.y_cluster == cid
+        cluster_to_class[str(cid)] = int(graph.y_class[mask][0])
 
     return {
         str(cid): {**measures, "cluster_class": cluster_to_class.get(str(cid))}
@@ -106,34 +125,25 @@ def compute_cluster_complexity(
 
 @timed
 def compute_class_complexity(
-    X_num: np.ndarray,
-    X_cat: np.ndarray | None,
-    y_class: np.ndarray,
+    graph: ComplexityGraph,
     centroids: dict,
-    k: int,
+    *,
     top_k_clusters: int,
-    min_subsample_per_cluster: int,
-    max_complexity_samples: int | None,
     metric: str,
     random_state: int,
 ) -> dict:
     """Compute per-class complexity measures.
 
-    Treats each class as a partition: passes `y_class` as both class labels and
-    partition labels to `compute_all_complexity_measures`. Output schema is
+    Treats each class as a partition: passes the graph's `y_class` as the
+    partition labels to `compute_complexity_from_graph`. Output schema is
     identical to the cluster-level one (neutral keys, no `cluster_class`).
     """
     logger.info("Computing class-level complexity measures ...")
-    return compute_all_complexity_measures(
-        X_num,
-        X_cat,
-        y_class=y_class,
-        y_cluster=y_class,
-        centroids=centroids,
-        k=k,
+    return compute_complexity_from_graph(
+        graph,
+        graph.y_class,
+        centroids,
         top_k_clusters=top_k_clusters,
-        max_samples=max_complexity_samples,
-        min_per_cluster=min_subsample_per_cluster,
         metric=metric,
         noise_cluster_ids=None,
         random_state=random_state,
@@ -160,6 +170,8 @@ def main():
     run_cluster = not skip_if_exists(cluster_marker, cfg.complexity.force, "complexity")
     run_class = not skip_if_exists(class_marker, cfg.complexity.force, "class_complexity")
     run_extend = not skip_if_exists(meta_marker, cfg.complexity.force, "complexity_extend")
+    if cfg.extend.labelfree:
+        run_extend = True  # always regenerate extended splits when label-free is requested
     if not (run_cluster or run_class or run_extend):
         return
 
@@ -183,23 +195,33 @@ def main():
     bus = LogDispatcher()
     bus.subscribe(JSONSubscriber(paths.shared))
 
-    if run_cluster:
+    # Subsample + k-NN graph are partition-independent: build once, reuse for
+    # both the cluster-level and class-level passes.
+    graph = None
+    if run_cluster or run_class:
         y_cluster = combined["cluster"].to_numpy(dtype=np.int64)
+        graph = prepare_complexity_graph(
+            X_num,
+            X_cat,
+            y_class,
+            y_cluster,
+            k=cfg.complexity.k,
+            max_samples=cfg.complexity.max_complexity_samples,
+            min_per_cluster=cfg.complexity.min_subsample_per_cluster,
+            metric=cfg.complexity.distance,
+            random_state=cfg.seed,
+        )
+
+    if run_cluster:
         clusters_meta = load_from_json(paths.shared / "metadata/clusters_meta.json")
         cluster_centroids = clusters_meta.get("centroids", {})
         noise_cluster_ids = clusters_meta.get("noise_cluster_ids", [])
 
         cluster_complexity = compute_cluster_complexity(
-            X_num=X_num,
-            X_cat=X_cat,
-            y_class=y_class,
-            y_cluster=y_cluster,
-            centroids=cluster_centroids,
-            noise_cluster_ids=noise_cluster_ids,
-            k=cfg.complexity.k,
+            graph,
+            cluster_centroids,
+            noise_cluster_ids,
             top_k_clusters=cfg.complexity.top_k_clusters,
-            min_subsample_per_cluster=cfg.complexity.min_subsample_per_cluster,
-            max_complexity_samples=cfg.complexity.max_complexity_samples,
             metric=cfg.complexity.distance,
             random_state=cfg.seed,
         )
@@ -212,14 +234,9 @@ def main():
         )
 
         class_complexity = compute_class_complexity(
-            X_num=X_num,
-            X_cat=X_cat,
-            y_class=y_class,
-            centroids=class_centroids,
-            k=cfg.complexity.k,
+            graph,
+            class_centroids,
             top_k_clusters=cfg.complexity.top_k_clusters,
-            min_subsample_per_cluster=cfg.complexity.min_subsample_per_cluster,
-            max_complexity_samples=cfg.complexity.max_complexity_samples,
             metric=cfg.complexity.distance,
             random_state=cfg.seed,
         )
@@ -235,8 +252,27 @@ def main():
             logger.warning("No complexity columns to attach; skipping dataset extension.")
         else:
             splits = {"train": train_df, "val": val_df, "test": test_df}
+            if cfg.extend.labelfree:
+                _cm = load_from_json(paths.shared / "metadata/clusters_meta.json")
+                _centroids = _cm.get("centroids", {})
+                _noise_ids = set(_cm.get("noise_cluster_ids", []))
+                logger.info(
+                    "Label-free assignment: %d centroids, %d noise excluded",
+                    len(_centroids) - len(_noise_ids),
+                    len(_noise_ids),
+                )
             extended: dict[str, pd.DataFrame] = {}
             for name, split_df in splits.items():
+                if cfg.extend.labelfree:
+                    X_num_split = split_df[num_cols].to_numpy(dtype=np.float64)
+                    split_df = split_df.copy()
+                    split_df["cluster"] = _assign_nearest_cluster(
+                        X_num_split,
+                        _centroids,
+                        metric=cfg.complexity.distance,
+                        exclude_ids=_noise_ids,
+                    )
+                    logger.info("Label-free cluster assignment done for split '%s'", name)
                 merged = attach_cluster_features(split_df, cluster_features)
                 before = len(merged)
                 merged = merged.dropna(subset=complexity_cols, how="all")
