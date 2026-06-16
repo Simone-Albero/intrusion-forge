@@ -1,12 +1,3 @@
-"""Interactive dashboard for intrusion-forge experiment results.
-
-Usage:
-    streamlit run dashboard.py
-    make dashboard
-"""
-
-from __future__ import annotations
-
 import base64
 import json
 import pickle
@@ -20,12 +11,9 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-
-# ══════════════════════════════ Constants ════════════════════════════════════
-
 EXPERIMENTS_ROOT_DEFAULT = str(Path(__file__).parent / "resources" / "experiments")
-
 RESERVED_DIRS = frozenset({"shared", "processed_data", "tb"})
+FIGURE_EXTENSIONS = (".png", ".pdf")
 
 HEATMAP_METRICS: dict[str, str] = {
     "f1_macro": "Test F1 macro",
@@ -39,6 +27,18 @@ HEATMAP_METRICS: dict[str, str] = {
     "fc_mae": "Failure-regressor MAE",
 }
 
+METRIC_COLORSCALE_BOUNDS: dict[str, tuple[float | None, float | None]] = {
+    "f1_macro": (0.0, 1.0),
+    "f1_weighted": (0.0, 1.0),
+    "accuracy": (0.0, 1.0),
+    "precision_macro": (0.0, 1.0),
+    "recall_macro": (0.0, 1.0),
+    "f1_extended": (0.0, 1.0),
+    "fc_spearman": (-1.0, 1.0),
+    "fc_r2": (-1.0, 1.0),
+    "fc_mae": (None, None),  # auto-range; lower-is-better
+}
+
 GALLERY_CATEGORIES: list[str] = [
     "testing",
     "training",
@@ -49,25 +49,13 @@ GALLERY_CATEGORIES: list[str] = [
 ]
 
 CLUSTER_NON_FEATURE_COLS = frozenset(
-    {
-        "cluster_id",
-        "cluster_class",
-        "is_noise_cluster",
-        "failure_rate",
-    }
+    {"cluster_id", "cluster_class", "is_noise_cluster", "failure_rate"}
 )
-
-
-# ══════════════════════════════ Schema ═══════════════════════════════════════
 
 
 @dataclass(frozen=True)
 class ExperimentRecord:
-    """Lightweight handle to one (variant, dataset, seed, classifier) experiment.
-
-    Headline metrics are pre-parsed so the heatmap can be rendered without
-    loading the heavy detail JSON/pickle.
-    """
+    """Lightweight handle to one (variant, dataset, seed, classifier) experiment."""
 
     variant: str
     dataset_dir: str
@@ -113,9 +101,6 @@ class ExperimentDetail:
     clusters_meta: dict = field(default_factory=dict)
 
 
-# ══════════════════════════════ IO helpers ═══════════════════════════════════
-
-
 def _read_json(path: Path) -> dict | list | None:
     try:
         with path.open() as f:
@@ -142,9 +127,6 @@ def _safe_float(value: Any) -> float | None:
         return None
 
 
-# ══════════════════════════════ Discovery ════════════════════════════════════
-
-
 def _parse_dataset_dir(name: str) -> tuple[str, int] | None:
     """Split `{file_name}_{seed}` → (file_name, seed). Returns None on failure."""
     head, _, tail = name.rpartition("_")
@@ -168,14 +150,11 @@ def _classifier_family(classifier_dir: Path) -> Literal["ml", "dl"]:
 
 
 def _extract_headline_metrics(classifier_dir: Path) -> dict[str, float | bool | None]:
-    """Read summary.json + classifier_results.json and return the headline metrics.
-
-    `f1_extended` comes from the optional `summary_extended.json` of the
-    extend variant; it is a transductive upper bound, not comparable with the
-    base F1.
-    """
     summary = _read_json(classifier_dir / "outputs" / "testing" / "summary.json") or {}
-    fc = _read_json(classifier_dir / "outputs" / "analysis" / "classifier_results.json") or {}
+    fc = (
+        _read_json(classifier_dir / "outputs" / "analysis" / "classifier_results.json")
+        or {}
+    )
     extended = (
         _read_json(classifier_dir / "outputs" / "testing" / "summary_extended.json")
         or {}
@@ -200,15 +179,14 @@ def _is_classifier_dir(path: Path) -> bool:
         return False
     if path.name in RESERVED_DIRS or path.name.startswith("."):
         return False
-    return (path / "outputs").exists() or (path / "configs" / "config_composed.json").exists()
+    return (path / "outputs").exists() or (
+        path / "configs" / "config_composed.json"
+    ).exists()
 
 
 @st.cache_data(show_spinner="Scanning experiments…")
 def discover_experiments(root: str) -> tuple[list[ExperimentRecord], int]:
     """Walk `root/<variant>/<dataset_dir>/` and emit one record per classifier.
-
-    A variant/dataset is considered valid only when `shared/metadata/df_meta.json` exists,
-    which excludes the legacy `{run_id}/logs/...` layout automatically.
 
     Returns `(records, n_skipped_legacy)`.
     """
@@ -233,12 +211,9 @@ def discover_experiments(root: str) -> tuple[list[ExperimentRecord], int]:
             if not (shared / "metadata/df_meta.json").exists():
                 skipped += 1
                 continue
-
             for classifier_dir in sorted(dataset_dir.iterdir()):
                 if not _is_classifier_dir(classifier_dir):
                     continue
-                family = _classifier_family(classifier_dir)
-                metrics = _extract_headline_metrics(classifier_dir)
                 records.append(
                     ExperimentRecord(
                         variant=variant_dir.name,
@@ -246,26 +221,20 @@ def discover_experiments(root: str) -> tuple[list[ExperimentRecord], int]:
                         file_name=file_name,
                         seed=seed,
                         classifier=classifier_dir.name,
-                        family=family,
+                        family=_classifier_family(classifier_dir),
                         root=classifier_dir,
                         shared=shared,
-                        **metrics,
+                        **_extract_headline_metrics(classifier_dir),
                     )
                 )
 
     return records, skipped
 
 
-# ══════════════════════════════ Detail loaders ═══════════════════════════════
-
-
 def _cluster_summary_df(data: dict | None) -> pd.DataFrame | None:
     if not data:
         return None
-    rows = []
-    for cluster_id, row in data.items():
-        rows.append({"cluster_id": cluster_id, **row})
-    df = pd.DataFrame(rows)
+    df = pd.DataFrame([{"cluster_id": cid, **row} for cid, row in data.items()])
     if "failure_rate" in df.columns:
         df = df.sort_values("failure_rate", ascending=False).reset_index(drop=True)
     return df
@@ -278,8 +247,12 @@ def load_experiment_detail(record_root: str, record_shared: str) -> ExperimentDe
     shared = Path(record_shared)
     detail = ExperimentDetail(
         testing=_read_json(root / "outputs" / "testing" / "summary.json"),
-        classifier_results=_read_json(root / "outputs" / "analysis" / "classifier_results.json"),
-        predictions=_read_json(root / "outputs" / "analysis" / "predictions" / "test.json"),
+        classifier_results=_read_json(
+            root / "outputs" / "analysis" / "classifier_results.json"
+        ),
+        predictions=_read_json(
+            root / "outputs" / "analysis" / "predictions" / "test.json"
+        ),
         grid_search=_read_json(root / "outputs" / "training" / "grid_search.json"),
         df_meta=_read_json(shared / "metadata/df_meta.json") or {},
         df_info=_read_json(shared / "metadata/df_info.json") or {},
@@ -296,24 +269,17 @@ def load_experiment_detail(record_root: str, record_shared: str) -> ExperimentDe
     return detail
 
 
-FIGURE_EXTENSIONS = (".png", ".pdf")
-
-
 @st.cache_data(show_spinner=False)
 def load_figure_index(record_root: str) -> dict[str, str]:
-    """Return `{relative_posix_path: absolute_path}` for every figure under `figures/`.
-
-    Both PNG and PDF files are indexed; extend-variant figures live in the
-    same tree (`*_extended.*` leaf names, plus the `explain/` subfolder).
-    """
+    """Return `{relative_posix_path: absolute_path}` for every figure under `figures/`."""
     figures_dir = Path(record_root) / "figures"
     if not figures_dir.is_dir():
         return {}
-    out: dict[str, str] = {}
-    for fig in sorted(figures_dir.rglob("*")):
-        if fig.suffix.lower() in FIGURE_EXTENSIONS:
-            out[fig.relative_to(figures_dir).as_posix()] = str(fig)
-    return out
+    return {
+        fig.relative_to(figures_dir).as_posix(): str(fig)
+        for fig in sorted(figures_dir.rglob("*"))
+        if fig.suffix.lower() in FIGURE_EXTENSIONS
+    }
 
 
 @st.cache_data(show_spinner=False)
@@ -329,7 +295,11 @@ def count_clusters(record_shared: str) -> int | None:
     return len(centroids) if isinstance(centroids, dict) and centroids else None
 
 
-# ══════════════════════════════ Selectors ════════════════════════════════════
+@st.cache_data(show_spinner=False)
+def _dataset_test_size(shared: str) -> int:
+    """Test-set row count for a dataset, read from shared df_meta.json."""
+    meta = _read_json(Path(shared) / "metadata/df_meta.json") or {}
+    return (meta.get("dataset_sizes") or {}).get("test", 0)
 
 
 def records_to_df(records: list[ExperimentRecord]) -> pd.DataFrame:
@@ -387,9 +357,6 @@ def find_record(records: list[ExperimentRecord], key: str) -> ExperimentRecord |
     return None
 
 
-# ══════════════════════════════ Figure utilities ═════════════════════════════
-
-
 def _show_figure(path: str | Path, caption: str | None = None) -> None:
     """Display a figure file: st.image for raster formats, embedded viewer for PDF."""
     p = Path(path)
@@ -415,7 +382,9 @@ def find_figure(record: ExperimentRecord, relative: str) -> Path | None:
     return None
 
 
-def render_figure_if_present(record: ExperimentRecord, relative: str, caption: str) -> bool:
+def render_figure_if_present(
+    record: ExperimentRecord, relative: str, caption: str
+) -> bool:
     path = find_figure(record, relative)
     if path is None:
         return False
@@ -423,37 +392,18 @@ def render_figure_if_present(record: ExperimentRecord, relative: str, caption: s
     return True
 
 
-# ══════════════════════════════ Plot builders ════════════════════════════════
-
-
-def heatmap_fig(
+def _apply_matrix_layout(
+    fig: go.Figure,
     pivot: pd.DataFrame,
     *,
     title: str,
-    metric_label: str,
-) -> go.Figure:
-    z = pivot.values.astype(float)
-    text = np.where(np.isnan(z), "", np.vectorize(lambda v: f"{v:.3f}")(z))
-    fig = go.Figure(
-        go.Heatmap(
-            z=z,
-            x=list(pivot.columns),
-            y=list(pivot.index),
-            colorscale="Viridis",
-            zmin=0.0,
-            zmax=1.0,
-            text=text,
-            texttemplate="%{text}",
-            hovertemplate="dataset=%{y}<br>classifier=%{x}<br>"
-            + metric_label
-            + "=%{z:.4f}<extra></extra>",
-            colorbar=dict(title=metric_label),
-        )
-    )
+    xaxis_title: str,
+    yaxis_title: str = "Dataset",
+) -> None:
     fig.update_layout(
         title=title,
-        xaxis_title="Classifier",
-        yaxis_title="Dataset",
+        xaxis_title=xaxis_title,
+        yaxis_title=yaxis_title,
         height=max(380, 60 + 46 * len(pivot.index)),
         margin=dict(l=120, r=40, t=60, b=80),
     )
@@ -463,6 +413,35 @@ def heatmap_fig(
         tickvals=list(pivot.index),
         ticktext=[str(v) for v in pivot.index],
     )
+
+
+def heatmap_fig(
+    pivot: pd.DataFrame,
+    *,
+    title: str,
+    metric_label: str,
+    zmin: float | None = None,
+    zmax: float | None = None,
+) -> go.Figure:
+    z = pivot.values.astype(float)
+    text = np.where(np.isnan(z), "", np.vectorize(lambda v: f"{v:.3f}")(z))
+    fig = go.Figure(
+        go.Heatmap(
+            z=z,
+            x=list(pivot.columns),
+            y=list(pivot.index),
+            colorscale="Viridis",
+            zmin=zmin,
+            zmax=zmax,
+            text=text,
+            texttemplate="%{text}",
+            hovertemplate="dataset=%{y}<br>classifier=%{x}<br>"
+            + metric_label
+            + "=%{z:.4f}<extra></extra>",
+            colorbar=dict(title=metric_label),
+        )
+    )
+    _apply_matrix_layout(fig, pivot, title=title, xaxis_title="Classifier")
     return fig
 
 
@@ -489,25 +468,14 @@ def count_heatmap_fig(
             colorbar=dict(title=value_label),
         )
     )
-    fig.update_layout(
-        title=title,
-        xaxis_title="Variant",
-        yaxis_title="Dataset",
-        height=max(380, 60 + 46 * len(pivot.index)),
-        margin=dict(l=120, r=40, t=60, b=80),
-    )
-    fig.update_xaxes(tickangle=-30)
-    fig.update_yaxes(
-        tickmode="array",
-        tickvals=list(pivot.index),
-        ticktext=[str(v) for v in pivot.index],
-    )
+    _apply_matrix_layout(fig, pivot, title=title, xaxis_title="Variant")
     return fig
 
 
-def confusion_matrix_fig(cm: np.ndarray, labels: list[str], *, title: str = "") -> go.Figure:
+def confusion_matrix_fig(
+    cm: np.ndarray, labels: list[str], *, title: str = ""
+) -> go.Figure:
     is_normalized = cm.dtype.kind == "f" and cm.max() <= 1.0 + 1e-6
-    text_fmt = "%{z:.2f}" if is_normalized else "%{z:d}"
     fig = go.Figure(
         go.Heatmap(
             z=cm,
@@ -515,7 +483,7 @@ def confusion_matrix_fig(cm: np.ndarray, labels: list[str], *, title: str = "") 
             y=labels,
             colorscale="Blues",
             text=cm,
-            texttemplate=text_fmt,
+            texttemplate="%{z:.2f}" if is_normalized else "%{z:d}",
             hovertemplate="true=%{y}<br>pred=%{x}<br>value=%{z}<extra></extra>",
         )
     )
@@ -538,7 +506,9 @@ def per_class_bar_fig(
 ) -> go.Figure:
     fig = go.Figure()
     fig.add_trace(go.Bar(name="F1", x=classes, y=f1, marker_color="#1f77b4"))
-    fig.add_trace(go.Bar(name="Precision", x=classes, y=precision, marker_color="#9ecae1"))
+    fig.add_trace(
+        go.Bar(name="Precision", x=classes, y=precision, marker_color="#9ecae1")
+    )
     fig.add_trace(go.Bar(name="Recall", x=classes, y=recall, marker_color="#6baed6"))
     fig.update_layout(
         barmode="group",
@@ -566,7 +536,6 @@ def feature_importance_bar(importances: dict, *, top_k: int = 20) -> go.Figure:
 
 
 def pred_vs_actual_fig(fc: dict, cluster_df: pd.DataFrame) -> go.Figure:
-    """Predicted vs observed failure rate (OOF), with a y=x reference line."""
     predicted = fc.get("oof_predicted_rate", {})
     df = cluster_df[["cluster_id", "cluster_class", "failure_rate"]].copy()
     df["predicted"] = df["cluster_id"].astype(str).map(predicted)
@@ -582,7 +551,13 @@ def pred_vs_actual_fig(fc: dict, cluster_df: pd.DataFrame) -> go.Figure:
     lo = float(min(df["failure_rate"].min(), df["predicted"].min())) if len(df) else 0.0
     hi = float(max(df["failure_rate"].max(), df["predicted"].max())) if len(df) else 1.0
     fig.add_trace(
-        go.Scatter(x=[lo, hi], y=[lo, hi], mode="lines", name="y=x", line=dict(dash="dash", color="grey"))
+        go.Scatter(
+            x=[lo, hi],
+            y=[lo, hi],
+            mode="lines",
+            name="y=x",
+            line=dict(dash="dash", color="grey"),
+        )
     )
     fig.update_layout(
         height=400,
@@ -603,11 +578,7 @@ def complexity_vs_failure_scatter(cluster_df: pd.DataFrame, feature: str) -> go.
         color_continuous_scale="Viridis",
         hover_data=["cluster_id", "cluster_class"],
     )
-    fig.update_layout(
-        height=400,
-        xaxis_title=feature,
-        yaxis_title="Failure rate",
-    )
+    fig.update_layout(height=400, xaxis_title=feature, yaxis_title="Failure rate")
     return fig
 
 
@@ -629,14 +600,32 @@ def failure_rate_strip(cluster_df: pd.DataFrame, label_map: dict) -> go.Figure:
     return fig
 
 
-# ══════════════════════════════ Panels ═══════════════════════════════════════
-
-
 def _wkey(prefix: str, name: str, record: ExperimentRecord) -> str:
-    """Stable element/widget key. Including `prefix` (view) + record.key prevents
-    DuplicateElementId/DuplicateWidgetID when the same panel is rendered in
-    multiple tabs or columns (e.g. side-by-side)."""
+    """Unique widget key scoped to a view prefix and record, preventing duplicate-id errors."""
     return f"{prefix}_{name}_{record.key}"
+
+
+def _cluster_feature_candidates(cdf: pd.DataFrame) -> tuple[list[str], str]:
+    """Return (candidates, default) for complexity feature selectors."""
+    candidates = [c for c in cdf.columns if c not in CLUSTER_NON_FEATURE_COLS]
+    default = (
+        "cluster_p5_silhouette"
+        if "cluster_p5_silhouette" in candidates
+        else (candidates[0] if candidates else "")
+    )
+    return candidates, default
+
+
+def _filter_figures_by_category(
+    figures: dict[str, str], category: str
+) -> dict[str, str]:
+    if category == "all":
+        return figures
+    return {
+        rel: abs_
+        for rel, abs_ in figures.items()
+        if rel.startswith(category + "/") or rel.rsplit(".", 1)[0] == category
+    }
 
 
 def panel_test_performance(
@@ -649,8 +638,13 @@ def panel_test_performance(
     cols = st.columns(4)
     cols[0].metric("Accuracy", f"{detail.testing.get('accuracy', float('nan')):.4f}")
     cols[1].metric("F1 macro", f"{detail.testing.get('f1_macro', float('nan')):.4f}")
-    cols[2].metric("F1 weighted", f"{detail.testing.get('f1_weighted', float('nan')):.4f}")
-    cols[3].metric("Recall macro", f"{detail.testing.get('recall_macro', float('nan')):.4f}")
+    cols[2].metric(
+        "F1 weighted", f"{detail.testing.get('f1_weighted', float('nan')):.4f}"
+    )
+    cols[3].metric(
+        "Recall macro", f"{detail.testing.get('recall_macro', float('nan')):.4f}"
+    )
+    st.caption(f"eval mode: `{detail.testing.get('eval_mode', '?')}`")
     render_figure_if_present(record, "testing/f1_per_class.png", "f1_per_class.png")
 
 
@@ -668,7 +662,9 @@ def panel_confusion_matrix(
             key=_wkey(key_prefix, "cm", record),
         )
         return
-    if not render_figure_if_present(record, "testing/confusion_matrix.png", "confusion_matrix.png"):
+    if not render_figure_if_present(
+        record, "testing/confusion_matrix.png", "confusion_matrix.png"
+    ):
         st.caption("No confusion matrix available.")
 
 
@@ -689,9 +685,7 @@ def panel_failure_classifier(
     cols = st.columns(4)
     cols[0].metric("Spearman ρ", f"{fc.get('spearman', float('nan')):.4f}")
     cols[1].metric(
-        "R²",
-        f"{fc.get('r2', float('nan')):.4f}",
-        delta=f"± {fc.get('r2_std', 0):.3f}",
+        "R²", f"{fc.get('r2', float('nan')):.4f}", delta=f"± {fc.get('r2_std', 0):.3f}"
     )
     cols[2].metric(
         "MAE",
@@ -739,27 +733,22 @@ def panel_feature_distribution(
     if cdf is None or cdf.empty:
         st.caption("No cluster_summary.json for this run.")
         return
-    candidates = [c for c in cdf.columns if c not in CLUSTER_NON_FEATURE_COLS]
+    candidates, default = _cluster_feature_candidates(cdf)
     if not candidates:
         st.caption("No complexity features in cluster_summary.")
         return
-    default = "cluster_p5_silhouette" if "cluster_p5_silhouette" in candidates else candidates[0]
     feature = st.selectbox(
         "Feature",
         candidates,
         index=candidates.index(default),
         key=_wkey(key_prefix, "fd_feat", record),
     )
-    fig = px.violin(
-        cdf.dropna(subset=[feature]),
-        y=feature,
-        box=True,
-        points="all",
-    )
+    fig = px.violin(cdf.dropna(subset=[feature]), y=feature, box=True, points="all")
     fig.update_layout(height=380, yaxis_title=feature)
     st.plotly_chart(fig, width="stretch", key=_wkey(key_prefix, "fd_chart", record))
-    png_name = f"summary/global/{feature}.png"
-    render_figure_if_present(record, png_name, png_name)
+    render_figure_if_present(
+        record, f"summary/global/{feature}.png", f"summary/global/{feature}"
+    )
 
 
 def panel_complexity_vs_failure(
@@ -770,8 +759,7 @@ def panel_complexity_vs_failure(
     if cdf is None or cdf.empty or "failure_rate" not in cdf.columns:
         st.caption("Need cluster_summary with `failure_rate`.")
         return
-    candidates = [c for c in cdf.columns if c not in CLUSTER_NON_FEATURE_COLS]
-    default = "cluster_p5_silhouette" if "cluster_p5_silhouette" in candidates else candidates[0]
+    candidates, default = _cluster_feature_candidates(cdf)
     feature = st.selectbox(
         "X axis",
         candidates,
@@ -800,7 +788,7 @@ def panel_failure_rate_distribution(
         key=_wkey(key_prefix, "fr_chart", record),
     )
     render_figure_if_present(
-        record, "summary/failure_rate_strip_box.png", "summary/failure_rate_strip_box.png"
+        record, "summary/failure_rate_strip_box.png", "summary/failure_rate_strip_box"
     )
 
 
@@ -833,15 +821,26 @@ def panel_cluster_table(
         return
     label_map = detail.df_meta.get("label_mapping") or {}
     show_cols = ["cluster_id", "cluster_class", "failure_rate", "is_noise_cluster"]
-    show_cols += [c for c in ["cluster_p5_silhouette", "cluster_frac_at_risk", "class_f1_min", "class_n1_max"] if c in cdf.columns]
+    show_cols += [
+        c
+        for c in [
+            "cluster_p5_silhouette",
+            "cluster_frac_at_risk",
+            "class_f1_min",
+            "class_n1_max",
+        ]
+        if c in cdf.columns
+    ]
     view = cdf[[c for c in show_cols if c in cdf.columns]].copy()
     if "cluster_class" in view.columns:
-        view["class_name"] = view["cluster_class"].map(lambda c: label_map.get(str(int(c)), str(int(c))))
+        view["class_name"] = view["cluster_class"].map(
+            lambda c: label_map.get(str(int(c)), str(int(c)))
+        )
     st.dataframe(
-        view, width="stretch", hide_index=True, key=_wkey(key_prefix, "cluster_tbl", record)
-    )
-    render_figure_if_present(
-        record, "summary/cluster_risk_heatmap.png", "summary/cluster_risk_heatmap.png"
+        view,
+        width="stretch",
+        hide_index=True,
+        key=_wkey(key_prefix, "cluster_tbl", record),
     )
 
 
@@ -854,7 +853,9 @@ def panel_sibling_classifiers(
     siblings = [
         r
         for r in all_records
-        if r.variant == record.variant and r.file_name == record.file_name and r.seed == record.seed
+        if r.variant == record.variant
+        and r.file_name == record.file_name
+        and r.seed == record.seed
     ]
     df = records_to_df(siblings)
     if df.empty:
@@ -874,11 +875,20 @@ def panel_sibling_classifiers(
     ]
     view = df[view_cols].sort_values("f1_macro", ascending=False, na_position="last")
     styled = view.style.highlight_max(
-        subset=[c for c in ["accuracy", "f1_macro", "f1_weighted", "fc_spearman", "fc_r2"] if c in view.columns],
+        subset=[
+            c
+            for c in ["accuracy", "f1_macro", "f1_weighted", "fc_spearman", "fc_r2"]
+            if c in view.columns
+        ],
         color="rgba(46, 160, 67, 0.25)",
-    ).format({c: "{:.4f}" for c in view.columns if view[c].dtype.kind == "f"}, na_rep="—")
+    ).format(
+        {c: "{:.4f}" for c in view.columns if view[c].dtype.kind == "f"}, na_rep="—"
+    )
     st.dataframe(
-        styled, width="stretch", hide_index=True, key=_wkey(key_prefix, "siblings_tbl", record)
+        styled,
+        width="stretch",
+        hide_index=True,
+        key=_wkey(key_prefix, "siblings_tbl", record),
     )
 
 
@@ -927,7 +937,9 @@ def panel_explain(
 
 def panel_training_curve(record: ExperimentRecord) -> None:
     st.markdown("**Training curve (DL)**")
-    if not render_figure_if_present(record, "training/loss_curve.png", "training/loss_curve.png"):
+    if not render_figure_if_present(
+        record, "training/loss_curve.png", "training/loss_curve"
+    ):
         st.caption("Training figure not produced for this run.")
 
 
@@ -939,7 +951,39 @@ def panel_grid_search(record: ExperimentRecord, detail: ExperimentDetail) -> Non
     st.json(detail.grid_search, expanded=False)
 
 
-# ══════════════════════════════ Tabs ═════════════════════════════════════════
+def _render_hypothesis_scoreboard(
+    records: list[ExperimentRecord],
+    selected_variants: list[str],
+    seed: int,
+) -> None:
+    """Aggregate Spearman ρ across all selected experiments as a hypothesis check."""
+    rs = filter_records(records, variants=selected_variants, seed=seed)
+    rho_vals = [r.fc_spearman for r in rs if r.fc_spearman is not None]
+    n_skipped = sum(1 for r in rs if r.fc_skipped)
+
+    st.subheader("Hypothesis validation — failure-rate predictability")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Experiments with ρ", f"{len(rho_vals)} / {len(rs)}")
+    c2.metric("Mean ρ", f"{float(np.mean(rho_vals)):.3f}" if rho_vals else "—")
+    pct = sum(v >= 0.6 for v in rho_vals) / len(rho_vals) if rho_vals else None
+    c3.metric("ρ ≥ 0.6", f"{pct:.0%}" if pct is not None else "—")
+    c4.metric("FC skipped", n_skipped)
+
+    if rho_vals:
+        hist_fig = px.histogram(
+            x=rho_vals,
+            nbins=20,
+            labels={"x": "Spearman ρ"},
+            title="Distribution of Spearman ρ across experiments",
+        )
+        hist_fig.add_vline(
+            x=0.6, line_dash="dash", line_color="green", annotation_text="ρ = 0.6"
+        )
+        hist_fig.update_layout(
+            height=220, margin=dict(t=40, b=30, l=40, r=20), showlegend=False
+        )
+        st.plotly_chart(hist_fig, width="stretch", key="hyp_rho_hist")
+    st.divider()
 
 
 def render_overview(
@@ -952,16 +996,29 @@ def render_overview(
         st.info("Pick at least one variant in the sidebar.")
         return
 
+    _render_hypothesis_scoreboard(records, selected_variants, seed)
+
+    size_by_ds: dict[str, int] = {}
+    for r in filter_records(records, seed=seed):
+        if r.file_name not in size_by_ds:
+            size_by_ds[r.file_name] = _dataset_test_size(str(r.shared))
+    ordered_datasets = sorted(size_by_ds, key=lambda ds: size_by_ds[ds], reverse=True)
+
     cluster_rows = [
-        {"dataset": r.file_name, "variant": variant, "n_clusters": count_clusters(str(r.shared))}
+        {
+            "dataset": r.file_name,
+            "variant": variant,
+            "n_clusters": count_clusters(str(r.shared)),
+        }
         for variant in selected_variants
         for r in filter_records(records, variants=[variant], seed=seed)
     ]
     if cluster_rows:
         cdf = pd.DataFrame(cluster_rows).drop_duplicates(subset=["dataset", "variant"])
+        present = [ds for ds in ordered_datasets if ds in cdf["dataset"].values]
         cluster_pivot = cdf.pivot_table(
             index="dataset", columns="variant", values="n_clusters", aggfunc="first"
-        ).reindex(index=sorted(cdf["dataset"].unique()), columns=selected_variants)
+        ).reindex(index=present, columns=selected_variants)
         st.subheader("Clusters per dataset")
         st.plotly_chart(
             count_heatmap_fig(cluster_pivot, title="Total clusters per dataset"),
@@ -971,6 +1028,7 @@ def render_overview(
         st.divider()
 
     metric_label = HEATMAP_METRICS[metric]
+    zmin, zmax = METRIC_COLORSCALE_BOUNDS.get(metric, (0.0, 1.0))
     for variant in selected_variants:
         rs = filter_records(records, variants=[variant], seed=seed)
         if not rs:
@@ -978,20 +1036,23 @@ def render_overview(
             continue
 
         df = records_to_df(rs)
-        all_datasets = sorted(df["dataset"].unique())
+        present_ds = [ds for ds in ordered_datasets if ds in df["dataset"].values]
         all_classifiers = sorted(df["classifier"].unique())
-        pivot = df.pivot_table(index="dataset", columns="classifier", values=metric, aggfunc="first")
-        pivot = pivot.reindex(index=all_datasets, columns=all_classifiers)
+        pivot = df.pivot_table(
+            index="dataset", columns="classifier", values=metric, aggfunc="first"
+        )
+        pivot = pivot.reindex(index=present_ds, columns=all_classifiers)
 
         st.subheader(f"Variant: {variant}")
         c1, c2, c3 = st.columns(3)
-        c1.metric("Datasets", len(all_datasets))
+        c1.metric("Datasets", len(present_ds))
         c2.metric("Classifiers", len(all_classifiers))
-        missing = int(pivot.isna().sum().sum())
-        c3.metric("Empty cells", missing)
+        c3.metric("Empty cells", int(pivot.isna().sum().sum()))
 
         event = st.plotly_chart(
-            heatmap_fig(pivot, title=metric_label, metric_label=metric),
+            heatmap_fig(
+                pivot, title=metric_label, metric_label=metric, zmin=zmin, zmax=zmax
+            ),
             width="stretch",
             key=f"heatmap_{variant}",
             on_select="rerun",
@@ -1001,11 +1062,15 @@ def render_overview(
         clicked = _heatmap_click_target(event, pivot, variant, rs)
         if clicked is not None:
             st.session_state["drill_target"] = clicked
-            st.toast(f"Drill-down armed → {clicked['variant']} · {clicked['dataset']} · {clicked['classifier']}")
+            st.toast(
+                f"Drill-down armed → {clicked['variant']} · {clicked['dataset']} · {clicked['classifier']}"
+            )
 
         with st.expander("Show data", expanded=False):
             st.dataframe(
-                pivot.style.background_gradient(cmap="viridis", vmin=0, vmax=1).format("{:.4f}", na_rep="—"),
+                pivot.style.background_gradient(cmap="viridis", vmin=0, vmax=1).format(
+                    "{:.4f}", na_rep="—"
+                ),
                 width="stretch",
             )
 
@@ -1023,19 +1088,34 @@ def _heatmap_click_target(
         if not points:
             return None
         p = points[0]
-        dataset = pivot.index[int(p["y"])] if isinstance(p.get("y"), (int, np.integer)) else p.get("y")
+        dataset = (
+            pivot.index[int(p["y"])]
+            if isinstance(p.get("y"), (int, np.integer))
+            else p.get("y")
+        )
         classifier = (
-            pivot.columns[int(p["x"])] if isinstance(p.get("x"), (int, np.integer)) else p.get("x")
+            pivot.columns[int(p["x"])]
+            if isinstance(p.get("x"), (int, np.integer))
+            else p.get("x")
         )
         if dataset is None or classifier is None:
             return None
         match = next(
-            (r for r in records if r.file_name == dataset and r.classifier == classifier),
+            (
+                r
+                for r in records
+                if r.file_name == dataset and r.classifier == classifier
+            ),
             None,
         )
         if match is None:
             return None
-        return {"variant": variant, "dataset": match.file_name, "classifier": classifier, "key": match.key}
+        return {
+            "variant": variant,
+            "dataset": match.file_name,
+            "classifier": classifier,
+            "key": match.key,
+        }
     except (AttributeError, KeyError, IndexError, ValueError, TypeError):
         return None
 
@@ -1047,36 +1127,48 @@ def render_drilldown(records: list[ExperimentRecord], seed: int) -> None:
 
     target = st.session_state.get("drill_target")
     variants = sorted({r.variant for r in records})
-    pre_variant = target["variant"] if target and target["variant"] in variants else variants[0]
+    pre_variant = (
+        target["variant"] if target and target["variant"] in variants else variants[0]
+    )
 
     col_v, col_d, col_c = st.columns(3)
-    variant = col_v.selectbox("Variant", variants, index=variants.index(pre_variant), key="dd_variant")
+    variant = col_v.selectbox(
+        "Variant", variants, index=variants.index(pre_variant), key="dd_variant"
+    )
 
     rs_v = filter_records(records, variants=[variant], seed=seed)
     datasets = sorted({r.file_name for r in rs_v})
     if not datasets:
         st.warning("No datasets for this variant at the selected seed.")
         return
-    pre_dataset = target["dataset"] if target and target.get("dataset") in datasets else datasets[0]
-    dataset = col_d.selectbox("Dataset", datasets, index=datasets.index(pre_dataset), key="dd_dataset")
+    pre_dataset = (
+        target["dataset"]
+        if target and target.get("dataset") in datasets
+        else datasets[0]
+    )
+    dataset = col_d.selectbox(
+        "Dataset", datasets, index=datasets.index(pre_dataset), key="dd_dataset"
+    )
 
     rs_vd = filter_records(rs_v, datasets=[dataset])
     classifiers = sorted({r.classifier for r in rs_vd})
     if not classifiers:
         st.warning("No classifier for this (variant, dataset, seed).")
         return
-    pre_clf = target["classifier"] if target and target.get("classifier") in classifiers else classifiers[0]
-    classifier = col_c.selectbox("Classifier", classifiers, index=classifiers.index(pre_clf), key="dd_classifier")
+    pre_clf = (
+        target["classifier"]
+        if target and target.get("classifier") in classifiers
+        else classifiers[0]
+    )
+    classifier = col_c.selectbox(
+        "Classifier", classifiers, index=classifiers.index(pre_clf), key="dd_classifier"
+    )
 
     record = next(r for r in rs_vd if r.classifier == classifier)
     detail = load_experiment_detail(str(record.root), str(record.shared))
 
     st.caption(f"`{record.root}` · family `{record.family}` · seed `{record.seed}`")
 
-    # Pair the panels into rows. One st.columns(2) per row keeps left/right
-    # aligned at the top of each row, even if the panels above had unequal
-    # heights. Pairs are picked so the two panels in each row carry roughly the
-    # same content (metrics+image, plotly+plotly, scatter+strip, plotly+plotly).
     row_pairs = [
         (panel_test_performance, panel_confusion_matrix),
         (panel_failure_classifier, panel_feature_importances),
@@ -1129,8 +1221,9 @@ def render_side_by_side(records: list[ExperimentRecord], seed: int) -> None:
         st.caption("Select at least two experiments to start comparing.")
         return
 
-    selected = [find_record(records, k) for k in selected_keys]
-    selected = [r for r in selected if r is not None]
+    selected = [
+        r for r in (find_record(records, k) for k in selected_keys) if r is not None
+    ]
     details = [load_experiment_detail(str(r.root), str(r.shared)) for r in selected]
 
     cols = st.columns(len(selected))
@@ -1164,7 +1257,6 @@ def render_gallery(records: list[ExperimentRecord], seed: int) -> None:
         horizontal=True,
         key="gal_mode",
     )
-
     if mode == "Single experiment":
         _render_gallery_single(rs_v)
     else:
@@ -1181,21 +1273,16 @@ def _render_gallery_single(rs_v: list[ExperimentRecord]) -> None:
         st.warning("No classifier outputs for this selection.")
         return
     classifier = col_c.selectbox("Classifier", classifiers, key="gal_classifier")
-    category = col_cat.selectbox("Category", ["all", *GALLERY_CATEGORIES], key="gal_category")
+    category = col_cat.selectbox(
+        "Category", ["all", *GALLERY_CATEGORIES], key="gal_category"
+    )
 
     record = next(r for r in rs_vd if r.classifier == classifier)
-    figures = load_figure_index(str(record.root))
-    if not figures:
-        st.info(f"No PNGs under `{record.root / 'figures'}`.")
+    all_figures = load_figure_index(str(record.root))
+    if not all_figures:
+        st.info(f"No figures under `{record.root / 'figures'}`.")
         return
-
-    if category != "all":
-        figures = {
-            rel: abs_
-            for rel, abs_ in figures.items()
-            if rel.startswith(category + "/") or rel.rsplit(".", 1)[0] == category
-        }
-
+    figures = _filter_figures_by_category(all_figures, category)
     if not figures:
         st.info(f"No figures matching category `{category}`.")
         return
@@ -1214,58 +1301,59 @@ def _render_gallery_cross(rs_v: list[ExperimentRecord]) -> None:
     all_classifiers = sorted({r.classifier for r in rs_v})
 
     col_d, col_c = st.columns([1, 1])
-    sel_datasets = col_d.multiselect("Datasets", all_datasets, default=all_datasets, key="gal_x_datasets")
-    sel_classifiers = col_c.multiselect("Classifiers", all_classifiers, default=all_classifiers, key="gal_x_classifiers")
+    sel_datasets = col_d.multiselect(
+        "Datasets", all_datasets, default=all_datasets, key="gal_x_datasets"
+    )
+    sel_classifiers = col_c.multiselect(
+        "Classifiers", all_classifiers, default=all_classifiers, key="gal_x_classifiers"
+    )
 
     if not sel_datasets or not sel_classifiers:
         st.warning("Select at least one dataset and one classifier.")
         return
 
     rs_filtered = [
-        r for r in rs_v
+        r
+        for r in rs_v
         if r.file_name in sel_datasets and r.classifier in sel_classifiers
     ]
     if not rs_filtered:
         st.warning("No experiments match the current selection.")
         return
 
-    # Union of figure paths across all filtered records, indexed by (dataset|classifier)
-    all_fig_paths: set[str] = set()
     fig_index: dict[str, dict[str, str]] = {}
     for r in rs_filtered:
         for rel, abs_ in load_figure_index(str(r.root)).items():
-            all_fig_paths.add(rel)
             fig_index.setdefault(rel, {})[f"{r.file_name}|{r.classifier}"] = abs_
 
-    if not all_fig_paths:
+    if not fig_index:
         st.info("No figures found in the selected experiments.")
         return
 
     col_fig, col_cat = st.columns([2, 1])
-    category = col_cat.selectbox("Category", ["all", *GALLERY_CATEGORIES], key="gal_x_category")
-    rels_all = sorted(all_fig_paths)
-    if category != "all":
-        rels_all = [
-            p
-            for p in rels_all
-            if p.startswith(category + "/") or p.rsplit(".", 1)[0] == category
-        ]
+    category = col_cat.selectbox(
+        "Category", ["all", *GALLERY_CATEGORIES], key="gal_x_category"
+    )
+    rels_all = sorted(
+        rel
+        for rel in fig_index
+        if category == "all"
+        or rel.startswith(category + "/")
+        or rel.rsplit(".", 1)[0] == category
+    )
     if not rels_all:
         st.info(f"No figures matching category `{category}`.")
         return
 
     figure_path = col_fig.selectbox("Figure", rels_all, key="gal_x_figure")
-
     st.markdown(f"**`{figure_path}`**")
     cell_map = fig_index.get(figure_path, {})
 
-    # Header row
     header_cols = st.columns([1] + [2] * len(sel_classifiers))
     header_cols[0].markdown("**Dataset \\ Classifier**")
     for i, clf in enumerate(sel_classifiers):
         header_cols[i + 1].markdown(f"**{clf}**")
 
-    # One row per dataset
     for ds in sel_datasets:
         row_cols = st.columns([1] + [2] * len(sel_classifiers))
         row_cols[0].markdown(f"`{ds}`")
@@ -1278,21 +1366,24 @@ def _render_gallery_cross(rs_v: list[ExperimentRecord]) -> None:
                     st.caption("—")
 
 
-# ══════════════════════════════ Sidebar ══════════════════════════════════════
-
-
-def render_sidebar(records: list[ExperimentRecord], n_skipped: int) -> tuple[str, list[str], int, str]:
+def render_sidebar(
+    records: list[ExperimentRecord], n_skipped: int
+) -> tuple[str, list[str], int, str]:
     st.sidebar.title("Filters")
 
     root = st.sidebar.text_input("Experiments root", value=EXPERIMENTS_ROOT_DEFAULT)
 
     variants = sorted({r.variant for r in records})
-    selected_variants = st.sidebar.multiselect("Variants", variants, default=variants, key="sb_variants")
+    selected_variants = st.sidebar.multiselect(
+        "Variants", variants, default=variants, key="sb_variants"
+    )
 
     seeds = sorted({r.seed for r in records if r.variant in selected_variants})
     default_seed = 42 if 42 in seeds else (seeds[0] if seeds else 42)
     if seeds:
-        seed = st.sidebar.selectbox("Seed", seeds, index=seeds.index(default_seed), key="sb_seed")
+        seed = st.sidebar.selectbox(
+            "Seed", seeds, index=seeds.index(default_seed), key="sb_seed"
+        )
     else:
         seed = default_seed
         st.sidebar.warning("No seeds found.")
@@ -1313,12 +1404,11 @@ def render_sidebar(records: list[ExperimentRecord], n_skipped: int) -> tuple[str
     with st.sidebar.expander("Debug", expanded=False):
         st.write(f"Valid records: **{len(records)}**")
         st.write(f"Legacy folders skipped: **{n_skipped}**")
-        st.write(f"Variants: {len(variants)} · Datasets: {len({r.file_name for r in records})}")
+        st.write(
+            f"Variants: {len(variants)} · Datasets: {len({r.file_name for r in records})}"
+        )
 
     return root, selected_variants, seed, metric
-
-
-# ══════════════════════════════ Entrypoint ═══════════════════════════════════
 
 
 def main() -> None:

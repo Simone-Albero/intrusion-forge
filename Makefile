@@ -39,7 +39,7 @@ DISTANCE   ?= euclidean
 CLUSTERING ?= ensemble
 CLUSTERING_ALGOS ?= kmeans hdbscan spectral birch kprototypes ensemble
 FORCE      ?=
-EXTEND     ?=
+EXTEND     ?= 1
 export EXTEND
 
 # `run` distinguishes "passed on the command line" from "default" via $(origin).

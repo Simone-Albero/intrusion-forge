@@ -1,39 +1,3 @@
-"""Generates a synthetic dataset for ML pipeline testing.
-
-Redesigned to demonstrate the core hypothesis: per-cluster geometric complexity
-predicts per-cluster classification failure rate.
-
-Each attack class has sub-groups positioned at increasing distances from the
-nearest adversarial class, along the same feature dimensions that define
-inter-class boundaries — not in an orthogonal subspace. After per-class
-clustering, complexity measures score evasive sub-clusters higher than canonical
-ones; classifier failure rates follow, producing a high Spearman ρ in Step 4.
-
-Feature layout:
-    num_1..num_20  all available for intra/inter-class geometry; no reserved
-                   orthogonal sub-cluster space.
-
-Ground truth: `true_subgroup` (canonical / medium / evasive) is written to the
-CSV for post-hoc validation. It is not in num_cols/cat_cols so the pipeline
-ignores it automatically.
-
-Classes (~69 500 rows):
-    class_1 (benign)           22 000  80% canonical / 20% near-attack (α=0.3 → class_2)
-    class_2 (attack A)          9 000  50% canonical / 30% medium / 20% evasive → class_1
-    class_3 (attack B, variant) 7 000  50% canonical / 30% medium / 20% evasive → class_1
-    class_4 (attack C)          6 000  50% canonical / 30% medium / 20% evasive → class_1
-    class_5 (overlap A)         5 000  50% canonical / 30% medium / 20% evasive → class_6
-    class_6 (overlap B)         5 000  50% canonical / 30% medium / 20% evasive → class_5
-    class_7 (attack D)          5 000  50% canonical / 30% medium / 20% evasive → class_1
-    class_8 (categorical)       5 000  60% canonical / 40% medium (num_15 drift for density peaks)
-    class_9 (stealth)           5 000  20% canonical / 40% medium / 40% evasive → class_1
-    class_10 (rare, filtered)     500  filtered by rare_category_filter (< min_cat_count=3000)
-
-Usage (from project root):
-    python generate_synthetic.py [--rows N]
-    make generate [ROWS=N]
-"""
-
 import argparse
 from pathlib import Path
 
@@ -77,17 +41,27 @@ def _base(n: int) -> dict:
     return {f"num_{i}": _n(5.0, 1.0, n) for i in range(1, 21)}
 
 
-def _interp(class_mu: dict[str, float], adv_mu: dict[str, float], alpha: float) -> dict[str, float]:
+def _interp(
+    class_mu: dict[str, float], adv_mu: dict[str, float], alpha: float
+) -> dict[str, float]:
     """Interpolate feature means: (1 - alpha) * class + alpha * adversary.
 
     Features not listed in class_mu default to 5.0 (benign baseline).
     alpha=0 → canonical (at class center); alpha=1 → at adversary center.
     """
     keys = set(class_mu) | set(adv_mu)
-    return {k: (1 - alpha) * class_mu.get(k, 5.0) + alpha * adv_mu.get(k, 5.0) for k in keys}
+    return {
+        k: (1 - alpha) * class_mu.get(k, 5.0) + alpha * adv_mu.get(k, 5.0) for k in keys
+    }
 
 
-def _subgroup(n: int, class_mu: dict[str, float], adv_mu: dict[str, float], alpha: float, sigma: float) -> dict:
+def _subgroup(
+    n: int,
+    class_mu: dict[str, float],
+    adv_mu: dict[str, float],
+    alpha: float,
+    sigma: float,
+) -> dict:
     """Generate features for one sub-group.
 
     Non-discriminating features stay at baseline N(5, 1); discriminating features
@@ -99,7 +73,9 @@ def _subgroup(n: int, class_mu: dict[str, float], adv_mu: dict[str, float], alph
     return f
 
 
-def _assemble(label: str, parts: list[tuple[dict, str]], cat1_w: list, cat2_w: list) -> pd.DataFrame:
+def _assemble(
+    label: str, parts: list[tuple[dict, str]], cat1_w: list, cat2_w: list
+) -> pd.DataFrame:
     """Concatenate sub-group feature dicts, attach categoricals and label."""
     dfs = []
     for features, sg in parts:
@@ -138,8 +114,12 @@ def generate_class_1(n: int) -> pd.DataFrame:
     n_a, n_b = int(n * 0.80), n - int(n * 0.80)
     f_a = _base(n_a)
     f_b = _subgroup(n_b, _MU1, _MU2, alpha=0.30, sigma=1.2)
-    return _assemble("class_1", [(f_a, "canonical"), (f_b, "evasive")],
-                     [0.6, 0.3, 0.1], [0.4, 0.35, 0.15, 0.10])
+    return _assemble(
+        "class_1",
+        [(f_a, "canonical"), (f_b, "evasive")],
+        [0.6, 0.3, 0.1],
+        [0.4, 0.35, 0.15, 0.10],
+    )
 
 
 def generate_class_2(n: int) -> pd.DataFrame:
@@ -250,8 +230,12 @@ def generate_class_8(n: int) -> pd.DataFrame:
     f_a = _base(n_a)
     f_b = _base(n_b)
     f_b["num_15"] = _n(10.0, 1.5, n_b)
-    return _assemble("class_8", [(f_a, "canonical"), (f_b, "medium")],
-                     [0.7, 0.2, 0.1], [0.0, 0.0, 0.0, 1.0])
+    return _assemble(
+        "class_8",
+        [(f_a, "canonical"), (f_b, "medium")],
+        [0.7, 0.2, 0.1],
+        [0.0, 0.0, 0.0, 1.0],
+    )
 
 
 def generate_class_9(n: int) -> pd.DataFrame:
