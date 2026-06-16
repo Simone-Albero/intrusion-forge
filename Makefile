@@ -21,6 +21,10 @@
 #   FORCE=1               re-run shared stages (prepare, complexity), ignoring skip markers
 #   EXTEND=1              in `run`, adds classify-extended (SHAP) to the flow for every (ds, clf)
 #   CLUSTERING=<name>     select clustering strategy (ensemble/kmeans/hdbscan/birch/spectral/kprototypes)
+#
+# k-fold note: k-fold evaluation (kfold=true) is disabled automatically for LARGE_DATASETS
+#   (nb15_v2, bot_iot_v2, cic_2018_v2, ton_iot_v2) because millions of rows make it impractical.
+#   Override per-call: make classify DATA=cic_2018_v2 ... kfold=true
 # ──────────────────────────────────────────────────────────────────────────────
 
 # Use venv if present; falls back to the active conda (or system) python otherwise.
@@ -57,19 +61,24 @@ DL_CLASSIFIERS_MIXED     := tabular
 DL_CLASSIFIERS_NUMERICAL := numerical
 
 DATASET_FORMATS := \
-    nb15_v2:mixed \
-    bot_iot_v2:mixed \
-    cic_2018_v2:mixed \
-    ton_iot_v2:mixed \
+    statlog_landsat_satellite:numerical \
+    thyroid_disease:numerical \
+    letter_recognition:numerical \
     bank_marketing:mixed \
     covertype:numerical \
-    letter_recognition:numerical \
-    statlog_landsat_satellite:numerical \
-    thyroid_disease:numerical
+    nb15_v2:mixed \
+    ton_iot_v2:mixed \
+    cic_2018_v2:mixed \
+    bot_iot_v2:mixed
 
-HYDRA := data=$(DATA) name=$(NAME) seed=$(SEED) classifier=$(CLASSIFIER) \
-         clustering=$(CLUSTERING) distance=$(DISTANCE)
-FORCE_FLAG := $(if $(FORCE),prepare.force=true complexity.force=true,)
+# Datasets too large for k-fold evaluation (millions of rows → hours per classifier).
+# kfold=false is injected automatically for these; override with kfold=true if needed.
+LARGE_DATASETS := nb15_v2 bot_iot_v2 cic_2018_v2 ton_iot_v2
+
+HYDRA       := data=$(DATA) name=$(NAME) seed=$(SEED) classifier=$(CLASSIFIER) \
+               clustering=$(CLUSTERING) distance=$(DISTANCE)
+FORCE_FLAG  := $(if $(FORCE),prepare.force=true complexity.force=true,)
+KFOLD_FLAG  := $(if $(filter $(DATA),$(LARGE_DATASETS)),kfold=false,)
 
 .PHONY: prepare classify classify-extended extend complexity failure-classify render run run-clustering-sweep generate dashboard help
 
@@ -79,13 +88,13 @@ prepare:
 
 ## classify:           Step 2 — train & evaluate one classifier (ML or DL)    (DATA, NAME, SEED, CLASSIFIER)
 classify:
-	PYTHONPATH=. $(PYTHON) pipelines/classify.py $(HYDRA)
+	PYTHONPATH=. $(PYTHON) pipelines/classify.py $(HYDRA) $(KFOLD_FLAG)
 
 ## classify-extended:  Step 2b — train classifier on complexity-extended features + SHAP  (DATA, NAME, SEED, CLASSIFIER)
 classify-extended:
 	PYTHONPATH=. $(PYTHON) pipelines/classify.py $(HYDRA) extend.generate=true
 
-## extend:             Complexity-extended classify (+SHAP) then render, one classifier (assumes prepare done)  (DATA, NAME, SEED, CLASSIFIER)
+## extend:             complexity + classify-extended + render (assumes prepare + classify done)  (DATA, NAME, SEED, CLASSIFIER)
 extend: complexity classify-extended render
 
 ## complexity:         Step 3a — cluster + class complexity (shared, idempotent)  (DATA, NAME, SEED, FORCE)
@@ -141,28 +150,28 @@ run:
 		echo " Dataset: $$ds  |  format=$$fmt  |  name=$(NAME)  seed=$(SEED)"; \
 		echo "══════════════════════════════════════════════"; \
 		$(MAKE) --no-print-directory prepare \
-			DATA=$$ds NAME=$(NAME) SEED=$(SEED) \
+			DATA=$$ds NAME=$(NAME) SEED=$(SEED) CLUSTERING=$(CLUSTERING) \
 			DISTANCE=$(DISTANCE) $(FORCE_FLAG) || exit 1; \
 		$(MAKE) --no-print-directory complexity \
-			DATA=$$ds NAME=$(NAME) SEED=$(SEED) \
+			DATA=$$ds NAME=$(NAME) SEED=$(SEED) CLUSTERING=$(CLUSTERING) \
 			DISTANCE=$(DISTANCE) $(FORCE_FLAG) || exit 1; \
 		for clf in $$clf_list; do \
 			echo ""; \
 			echo "── classifier: $$clf ─────────────────────────────"; \
 			$(MAKE) --no-print-directory classify \
 				DATA=$$ds NAME=$(NAME) SEED=$(SEED) CLASSIFIER=$$clf \
-				DISTANCE=$(DISTANCE) || exit 1; \
+				CLUSTERING=$(CLUSTERING) DISTANCE=$(DISTANCE) || exit 1; \
 			$(MAKE) --no-print-directory failure-classify \
 				DATA=$$ds NAME=$(NAME) SEED=$(SEED) CLASSIFIER=$$clf \
-				DISTANCE=$(DISTANCE) || exit 1; \
+				CLUSTERING=$(CLUSTERING) DISTANCE=$(DISTANCE) || exit 1; \
 			if [ -n "$(EXTEND)" ]; then \
 				$(MAKE) --no-print-directory classify-extended \
 					DATA=$$ds NAME=$(NAME) SEED=$(SEED) CLASSIFIER=$$clf \
-					DISTANCE=$(DISTANCE) || exit 1; \
+					CLUSTERING=$(CLUSTERING) DISTANCE=$(DISTANCE) || exit 1; \
 			fi; \
 			$(MAKE) --no-print-directory render \
 				DATA=$$ds NAME=$(NAME) SEED=$(SEED) CLASSIFIER=$$clf \
-				DISTANCE=$(DISTANCE) || exit 1; \
+				CLUSTERING=$(CLUSTERING) DISTANCE=$(DISTANCE) || exit 1; \
 		done; \
 	done
 	@echo ""
@@ -203,7 +212,10 @@ help:
 	@echo "DL classifiers (mixed): $(DL_CLASSIFIERS_MIXED)"
 	@echo "DL classifiers (num):   $(DL_CLASSIFIERS_NUMERICAL)"
 	@echo "Clustering strategies:  ensemble kmeans hdbscan birch spectral kprototypes"
-	@echo "Datasets (format):      $(DATASET_FORMATS)"
+	@echo ""
+	@echo "Datasets (smallest → largest, kfold auto-disabled for large):"
+	@echo "  small (kfold=true):   statlog_landsat_satellite  thyroid_disease  letter_recognition  bank_marketing  covertype"
+	@echo "  large (kfold=false):  nb15_v2  ton_iot_v2  cic_2018_v2  bot_iot_v2"
 	@echo ""
 	@echo "Run examples:"
 	@echo "  make run NAME=x                                      # everything on everything"
