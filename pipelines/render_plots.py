@@ -22,6 +22,7 @@ from src.domain.plot.charts import (
     beeswarm_plot,
     numeric_scatter_plot,
     strip_count_panel_plot,
+    violin_plot,
 )
 from src.domain.plot.base import Plot, set_figure_format
 from src.domain.plot.style import CORRECT_COLOR, FAILED_COLOR, MUTED_COLOR, PALETTE, apply_plot_style
@@ -108,6 +109,50 @@ def _plot_feature_vs_failure(
     return out
 
 
+def _plot_feature_violin_by_rate_bin(
+    summary_df: pd.DataFrame, features: list[str], n_bins: int = 4
+) -> dict[str, Plot]:
+    """Violin distribution of each complexity feature split by failure-rate quartile bins.
+
+    Each violin shows how the feature distributes within clusters that share a
+    similar observed failure rate. A clear shift from Q1 to Q4 confirms the
+    feature discriminates easy vs hard regions.
+    """
+    rate = summary_df["failure_rate"]
+    try:
+        bins = pd.qcut(rate, q=n_bins, duplicates="drop")
+    except Exception:
+        return {}
+    if bins.nunique() < 2:
+        return {}
+
+    midpoints = [interval.mid for interval in bins.cat.categories]
+    bin_labels = [f"Q{i + 1}\n({m:.2f})" for i, m in enumerate(midpoints)]
+    label_map = {cat: lab for cat, lab in zip(bins.cat.categories, bin_labels)}
+    bin_str = bins.map(label_map)
+    ordered = [label_map[c] for c in bins.cat.categories]
+
+    out: dict[str, Plot] = {}
+    for feature in features:
+        x = summary_df[feature]
+        valid = x.notna() & rate.notna()
+        if valid.sum() < 4:
+            continue
+        p = violin_plot(
+            categories=bin_str[valid].to_numpy(),
+            values=x[valid].to_numpy(dtype=float),
+            category_order=ordered,
+            x_label="Failure rate bin",
+            y_label=feature,
+            title=f"{feature} — distribution by failure rate",
+            show_legend=False,
+            inner="box",
+        )
+        if p is not None:
+            out[f"summary/global/{feature}_violin"] = p
+    return out
+
+
 def _plot_rf_evaluation(
     summary_df: pd.DataFrame, classifier_results: dict
 ) -> dict[str, Plot]:
@@ -191,6 +236,7 @@ def assemble_analysis_figures(
     figures: dict[str, Plot] = {}
     figures.update(_plot_failure_strips(summary_df, classifier_results.get("oof_predicted_rate")))
     figures.update(_plot_feature_vs_failure(summary_df, scatter_features))
+    figures.update(_plot_feature_violin_by_rate_bin(summary_df, scatter_features))
     figures.update(_plot_rf_evaluation(summary_df, classifier_results))
     if analysis_bus is not None:
         analysis_bus.publish(LogBundle(figures=figures))
@@ -258,7 +304,7 @@ def assemble_explain_figures(
     # Global importance: mean |SHAP| aggregated over samples and classes
     mean_abs = np.abs(values).mean(axis=(0, 2))  # (n_features,)
     top_k = min(max_display, len(mean_abs))
-    idx = np.argsort(mean_abs)[-top_k:][::-1]  # descending by importance
+    idx = np.argsort(mean_abs)[-top_k:]  # ascending: least→most important (top of barh)
     figures["figure/explain/global_importance"] = bar_plot(
         [feature_names[i] for i in idx],
         [float(mean_abs[i]) for i in idx],
