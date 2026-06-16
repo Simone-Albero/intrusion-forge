@@ -157,17 +157,21 @@ def grid_search(
     max_fit_samples: int = 50_000,
     random_state: int = 0,
     min_cluster_floor: int = 50,
+    noise_penalty: float = 0.5,
     silhouette_fn: SilhouetteFn | None = None,
     **fixed_params,
 ) -> dict:
-    """Generic grid search over param_grid, scored by silhouette on non-noise points.
+    """Generic grid search over param_grid, scored by noise-penalised silhouette.
 
-    Score = silhouette (negative silhouette passed through unchanged so bad fits
-    rank below good ones). `(1 - noise_ratio)` is intentionally excluded: HDBSCAN
-    noise points are genuine density outliers, not a quality defect, and penalising
-    them biases selection toward centroid methods. `_prune_grid_by_floor` upstream
-    already prevents degenerate K values (average cluster size < floor) from entering
-    the grid, so extreme fragmentation is blocked without touching the score.
+    Score = silhouette − `noise_penalty` · noise_ratio. The silhouette is measured
+    on non-noise points only, so without a coverage term selection would prefer the
+    tightest cores regardless of how much data they leave as noise — for density
+    methods (HDBSCAN) the highest-noise combo systematically wins. The additive
+    penalty (chosen over multiplicative `(1 - noise_ratio)`, which mis-ranks
+    negative silhouettes) balances tightness against coverage. Methods without noise
+    (k-means, birch) have noise_ratio = 0, so their score is unaffected.
+    `_prune_grid_by_floor` upstream already blocks degenerate K values (average
+    cluster size < floor) from entering the grid.
 
     `silhouette_fn` overrides the silhouette term (e.g. Gower-hybrid silhouette
     for mixed-feature algorithms); the default is Euclidean on `X_num`.
@@ -218,7 +222,8 @@ def grid_search(
             else _score_silhouette(sub_num, labels)
         )
         cov = floor_coverage(labels, min_cluster_floor)
-        s = sil
+        noise_ratio = float((labels == -1).mean())
+        s = sil - noise_penalty * noise_ratio
         entry = _measure(labels, s, combo, duration)
         entry["silhouette"] = sil
         entry["floor_coverage"] = cov

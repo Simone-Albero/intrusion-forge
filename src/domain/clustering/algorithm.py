@@ -22,15 +22,17 @@ def fit_hdbscan(
     min_samples: int | None = None,
     cluster_selection_method: str = "leaf",
     cluster_selection_epsilon: float = 0.0,
-    min_clusters: int = 2,
-    max_noise_ratio: float = 0.60,
-    min_clustered_ratio: float = 0.20,
-    penalize: bool = True,
     max_fit_samples: int = 50_000,
     random_state: int = 0,
     **fixed_params,
 ) -> np.ndarray:
-    """Fit HDBSCAN with Euclidean distance and return labels (n,)."""
+    """Fit HDBSCAN with Euclidean distance and return labels (n,).
+
+    Noise (-1) is returned as-is: residual noise points are reassigned to
+    per-class pseudo-clusters downstream and excluded from the failure meta-model.
+    Combo quality (including the coverage/noise trade-off) is judged by the
+    noise-penalised silhouette in `grid_search`, not by a hard acceptance gate.
+    """
     n = X_num.shape[0]
 
     clf = hdbscan.HDBSCAN(
@@ -54,21 +56,6 @@ def fit_hdbscan(
     else:
         clf.fit(X_num)
         labels = clf.labels_
-
-    if penalize:
-        n_clustered = (labels != -1).sum()
-        n_clusters = len(set(labels) - {-1})
-        noise_ratio = (labels == -1).sum() / n
-        clustered_ratio = n_clustered / n
-        if (
-            n_clusters < min_clusters
-            or noise_ratio > max_noise_ratio
-            or clustered_ratio < min_clustered_ratio
-        ):
-            raise ValueError(
-                f"fit_hdbscan: invalid clustering — "
-                f"clusters={n_clusters}, noise_ratio={noise_ratio:.2f}, clustered_ratio={clustered_ratio:.2f}"
-            )
 
     return labels
 
