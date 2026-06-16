@@ -39,6 +39,13 @@ METRIC_COLORSCALE_BOUNDS: dict[str, tuple[float | None, float | None]] = {
     "fc_mae": (None, None),  # auto-range; lower-is-better
 }
 
+# Metrics whose Overview heatmap is split diagonally against f1_macro, so the
+# failure-regressor quality (or extended F1) can be eyeballed against the base
+# classifier's F1 within each cell.
+SPLIT_VS_F1_METRICS: frozenset[str] = frozenset(
+    {"fc_spearman", "fc_r2", "fc_mae", "f1_extended"}
+)
+
 GALLERY_CATEGORIES: list[str] = [
     "testing",
     "training",
@@ -296,6 +303,21 @@ def count_clusters(record_shared: str) -> int | None:
 
 
 @st.cache_data(show_spinner=False)
+def count_failing_clusters(record_root: str) -> int | None:
+    """Number of clusters with failure_rate > 0 for one experiment (classifier-specific)."""
+    cs = _read_json(Path(record_root) / "outputs" / "analysis" / "cluster_summary.json")
+    if not isinstance(cs, dict) or not cs:
+        return None
+    return sum(
+        1
+        for v in cs.values()
+        if isinstance(v, dict)
+        and isinstance(v.get("failure_rate"), (int, float))
+        and v["failure_rate"] > 0
+    )
+
+
+@st.cache_data(show_spinner=False)
 def _dataset_test_size(shared: str) -> int:
     """Test-set row count for a dataset, read from shared df_meta.json."""
     meta = _read_json(Path(shared) / "metadata/df_meta.json") or {}
@@ -415,6 +437,27 @@ def _apply_matrix_layout(
     )
 
 
+# Margins assumed by the diagonal-split matrices, so figure width/height can be
+# derived to make each plotted cell exactly square (l + r and t + b).
+_SPLIT_MARGIN_LR = 120 + 150
+_SPLIT_MARGIN_TB = 60 + 80
+_SPLIT_CELL_PX = 72
+
+
+def _size_square_cells(fig: go.Figure, *, n_cols: int, n_rows: int) -> None:
+    """Fix figure width/height so each plotted cell is `_SPLIT_CELL_PX` square.
+
+    The diagonal-split matrices draw triangles in data coordinates; only square
+    cells render the split as a clean 45° corner-to-corner. Pair with
+    `width="content"` in `st.plotly_chart` so Streamlit does not stretch it back.
+    """
+    fig.update_layout(
+        margin=dict(l=120, r=150, t=60, b=80),
+        width=_SPLIT_MARGIN_LR + max(n_cols, 1) * _SPLIT_CELL_PX,
+        height=_SPLIT_MARGIN_TB + max(n_rows, 1) * _SPLIT_CELL_PX,
+    )
+
+
 def heatmap_fig(
     pivot: pd.DataFrame,
     *,
@@ -445,30 +488,314 @@ def heatmap_fig(
     return fig
 
 
-def count_heatmap_fig(
-    pivot: pd.DataFrame,
+def split_heatmap_fig(
+    metric_pivot: pd.DataFrame,
+    f1_pivot: pd.DataFrame,
     *,
+    metric_label: str,
+    metric_bounds: tuple[float | None, float | None],
     title: str,
-    value_label: str = "clusters",
 ) -> go.Figure:
-    """Integer-valued heatmap (auto colour range), for counts like clusters-per-dataset."""
-    z = pivot.values.astype(float)
-    text = np.vectorize(lambda v: "" if not np.isfinite(v) else f"{int(round(v)):d}")(z)
-    fig = go.Figure(
-        go.Heatmap(
-            z=z,
-            x=list(pivot.columns),
-            y=list(pivot.index),
-            colorscale="Blues",
-            text=text,
-            texttemplate="%{text}",
-            hovertemplate="dataset=%{y}<br>variant=%{x}<br>"
-            + value_label
-            + "=%{z:.0f}<extra></extra>",
-            colorbar=dict(title=value_label),
+    """Diagonal-split matrix: upper-left triangle = selected metric, lower-right = f1_macro.
+
+    Each cell is cut along its main diagonal so the failure-regressor metric (or
+    extended F1) and the base-classifier F1 sit side by side in one cell, on
+    independent colour scales — the FC metric range differs from F1's 0..1. Two
+    colorbars on the right decode each half; an invisible marker layer carries
+    hover and the click-to-drill selection so behaviour matches the plain heatmap.
+    """
+    columns = list(metric_pivot.columns)
+    rows = list(metric_pivot.index)
+    m = metric_pivot.values.astype(float)
+    f = f1_pivot.values.astype(float)
+
+    mlo, mhi = metric_bounds
+    finite_m = m[np.isfinite(m)]
+    if mlo is None:
+        mlo = float(finite_m.min()) if finite_m.size else 0.0
+    if mhi is None:
+        mhi = float(finite_m.max()) if finite_m.size else 1.0
+    mspan = (mhi - mlo) or 1.0
+    neutral = "#f0f0f0"
+
+    def _color(value: float, lo: float, span: float) -> str:
+        if not np.isfinite(value):
+            return neutral
+        t = min(max((value - lo) / span, 0.0), 1.0)
+        return px.colors.sample_colorscale("Viridis", [t])[0]
+
+    fig = go.Figure()
+    annotations: list[dict] = []
+    hov_x: list[Any] = []
+    hov_y: list[Any] = []
+    hov_cd: list[list[float]] = []
+
+    for j, row in enumerate(rows):
+        for i, col in enumerate(columns):
+            mv, fv = m[j, i], f[j, i]
+            # upper-left triangle (metric): bottom-left → top-left → top-right
+            fig.add_shape(
+                type="path",
+                path=f"M {i - 0.5},{j - 0.5} L {i - 0.5},{j + 0.5} L {i + 0.5},{j + 0.5} Z",
+                fillcolor=_color(mv, mlo, mspan),
+                line=dict(color="white", width=1),
+                layer="below",
+            )
+            # lower-right triangle (f1_macro): bottom-left → bottom-right → top-right
+            fig.add_shape(
+                type="path",
+                path=f"M {i - 0.5},{j - 0.5} L {i + 0.5},{j - 0.5} L {i + 0.5},{j + 0.5} Z",
+                fillcolor=_color(fv, 0.0, 1.0),
+                line=dict(color="white", width=1),
+                layer="below",
+            )
+            if np.isfinite(mv):
+                annotations.append(
+                    dict(
+                        x=i - 0.2,
+                        y=j + 0.22,
+                        text=f"{mv:.2f}",
+                        showarrow=False,
+                        font=dict(
+                            size=10,
+                            color="white" if (mv - mlo) / mspan < 0.55 else "black",
+                        ),
+                    )
+                )
+            if np.isfinite(fv):
+                annotations.append(
+                    dict(
+                        x=i + 0.2,
+                        y=j - 0.22,
+                        text=f"{fv:.2f}",
+                        showarrow=False,
+                        font=dict(size=10, color="white" if fv < 0.55 else "black"),
+                    )
+                )
+            hov_x.append(col)
+            hov_y.append(row)
+            hov_cd.append([mv, fv])
+
+    fig.add_trace(
+        go.Scatter(
+            x=hov_x,
+            y=hov_y,
+            mode="markers",
+            marker=dict(size=36, color="rgba(0,0,0,0)", symbol="square"),
+            customdata=hov_cd,
+            hovertemplate=(
+                "dataset=%{y}<br>classifier=%{x}<br>"
+                + metric_label
+                + "=%{customdata[0]:.4f}<br>f1_macro=%{customdata[1]:.4f}<extra></extra>"
+            ),
+            showlegend=False,
         )
     )
-    _apply_matrix_layout(fig, pivot, title=title, xaxis_title="Variant")
+    # Two invisible markers exist only to render the paired colorbars.
+    fig.add_trace(
+        go.Scatter(
+            x=[None],
+            y=[None],
+            mode="markers",
+            hoverinfo="skip",
+            showlegend=False,
+            marker=dict(
+                colorscale="Viridis",
+                cmin=mlo,
+                cmax=mhi,
+                color=[mlo],
+                opacity=0,
+                showscale=True,
+                colorbar=dict(title=metric_label, len=0.46, y=1.0, yanchor="top", x=1.02),
+            ),
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=[None],
+            y=[None],
+            mode="markers",
+            hoverinfo="skip",
+            showlegend=False,
+            marker=dict(
+                colorscale="Viridis",
+                cmin=0.0,
+                cmax=1.0,
+                color=[0.0],
+                opacity=0,
+                showscale=True,
+                colorbar=dict(title="f1_macro", len=0.46, y=0.0, yanchor="bottom", x=1.02),
+            ),
+        )
+    )
+
+    fig.update_layout(annotations=annotations)
+    _apply_matrix_layout(fig, metric_pivot, title=title, xaxis_title="Classifier")
+    fig.update_xaxes(type="category", categoryorder="array", categoryarray=columns)
+    fig.update_yaxes(type="category", categoryorder="array", categoryarray=rows)
+    _size_square_cells(fig, n_cols=len(columns), n_rows=len(rows))
+    return fig
+
+
+def split_count_heatmap_fig(
+    total_pivot: pd.DataFrame,
+    failing_pivot: pd.DataFrame,
+    *,
+    title: str,
+) -> go.Figure:
+    """Diagonal-split cluster matrix: upper-left = total clusters, lower-right = clusters with failure>0.
+
+    Upper-left colour (Blues) normalises the total count by the grid-wide
+    maximum, so dataset cluster-richness is comparable across rows. Lower-right
+    colour (Reds) is the per-cell failing share (failing / total) on 0..1,
+    directly readable as the fraction of clusters the classifiers stumble on
+    (averaged across classifiers). Cell text shows the raw counts; two colorbars
+    decode the halves. An invisible marker layer carries the hover tooltip.
+    """
+    columns = list(total_pivot.columns)
+    rows = list(total_pivot.index)
+    tot = total_pivot.values.astype(float)
+    fail = failing_pivot.values.astype(float)
+
+    max_total = float(np.nanmax(tot)) if np.isfinite(tot).any() else 1.0
+    max_total = max_total or 1.0
+    neutral = "#f0f0f0"
+
+    def _col(scale: str, t: float) -> str:
+        if not np.isfinite(t):
+            return neutral
+        return px.colors.sample_colorscale(scale, [min(max(t, 0.0), 1.0)])[0]
+
+    fig = go.Figure()
+    annotations: list[dict] = []
+    hov_x: list[Any] = []
+    hov_y: list[Any] = []
+    hov_cd: list[list[float]] = []
+
+    for j, row in enumerate(rows):
+        for i, col in enumerate(columns):
+            tv, fv = tot[j, i], fail[j, i]
+            t_top = tv / max_total if np.isfinite(tv) else float("nan")
+            frac = (
+                fv / tv
+                if (np.isfinite(fv) and np.isfinite(tv) and tv > 0)
+                else float("nan")
+            )
+            # upper-left triangle (total clusters): bottom-left → top-left → top-right
+            fig.add_shape(
+                type="path",
+                path=f"M {i - 0.5},{j - 0.5} L {i - 0.5},{j + 0.5} L {i + 0.5},{j + 0.5} Z",
+                fillcolor=_col("Blues", t_top),
+                line=dict(color="white", width=1),
+                layer="below",
+            )
+            # lower-right triangle (failing share): bottom-left → bottom-right → top-right
+            fig.add_shape(
+                type="path",
+                path=f"M {i - 0.5},{j - 0.5} L {i + 0.5},{j - 0.5} L {i + 0.5},{j + 0.5} Z",
+                fillcolor=_col("Reds", frac),
+                line=dict(color="white", width=1),
+                layer="below",
+            )
+            if np.isfinite(tv):
+                annotations.append(
+                    dict(
+                        x=i - 0.2,
+                        y=j + 0.22,
+                        text=f"{int(round(tv))}",
+                        showarrow=False,
+                        font=dict(
+                            size=10, color="white" if t_top > 0.55 else "black"
+                        ),
+                    )
+                )
+            if np.isfinite(fv):
+                annotations.append(
+                    dict(
+                        x=i + 0.2,
+                        y=j - 0.22,
+                        text=f"{int(round(fv))}",
+                        showarrow=False,
+                        font=dict(
+                            size=10,
+                            color="white"
+                            if (np.isfinite(frac) and frac > 0.55)
+                            else "black",
+                        ),
+                    )
+                )
+            hov_x.append(col)
+            hov_y.append(row)
+            hov_cd.append([tv, fv, frac * 100 if np.isfinite(frac) else float("nan")])
+
+    fig.add_trace(
+        go.Scatter(
+            x=hov_x,
+            y=hov_y,
+            mode="markers",
+            marker=dict(size=36, color="rgba(0,0,0,0)", symbol="square"),
+            customdata=hov_cd,
+            hovertemplate=(
+                "dataset=%{y}<br>variant=%{x}<br>"
+                "total clusters=%{customdata[0]:.0f}<br>"
+                "failing (mean)=%{customdata[1]:.1f}<br>"
+                "failing share=%{customdata[2]:.0f}%<extra></extra>"
+            ),
+            showlegend=False,
+        )
+    )
+    # Two invisible markers exist only to render the paired colorbars.
+    fig.add_trace(
+        go.Scatter(
+            x=[None],
+            y=[None],
+            mode="markers",
+            hoverinfo="skip",
+            showlegend=False,
+            marker=dict(
+                colorscale="Blues",
+                cmin=0.0,
+                cmax=max_total,
+                color=[0.0],
+                opacity=0,
+                showscale=True,
+                colorbar=dict(
+                    title="total clusters", len=0.46, y=1.0, yanchor="top", x=1.02
+                ),
+            ),
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=[None],
+            y=[None],
+            mode="markers",
+            hoverinfo="skip",
+            showlegend=False,
+            marker=dict(
+                colorscale="Reds",
+                cmin=0.0,
+                cmax=1.0,
+                color=[0.0],
+                opacity=0,
+                showscale=True,
+                colorbar=dict(
+                    title="failing share",
+                    len=0.46,
+                    y=0.0,
+                    yanchor="bottom",
+                    x=1.02,
+                    tickformat=".0%",
+                ),
+            ),
+        )
+    )
+
+    fig.update_layout(annotations=annotations)
+    _apply_matrix_layout(fig, total_pivot, title=title, xaxis_title="Variant")
+    fig.update_xaxes(type="category", categoryorder="array", categoryarray=columns)
+    fig.update_yaxes(type="category", categoryorder="array", categoryarray=rows)
+    _size_square_cells(fig, n_cols=len(columns), n_rows=len(rows))
     return fig
 
 
@@ -1009,20 +1336,39 @@ def render_overview(
             "dataset": r.file_name,
             "variant": variant,
             "n_clusters": count_clusters(str(r.shared)),
+            "n_failing": count_failing_clusters(str(r.root)),
         }
         for variant in selected_variants
         for r in filter_records(records, variants=[variant], seed=seed)
     ]
     if cluster_rows:
-        cdf = pd.DataFrame(cluster_rows).drop_duplicates(subset=["dataset", "variant"])
+        cdf = pd.DataFrame(cluster_rows)
         present = [ds for ds in ordered_datasets if ds in cdf["dataset"].values]
-        cluster_pivot = cdf.pivot_table(
-            index="dataset", columns="variant", values="n_clusters", aggfunc="first"
+        # Total clusters is dataset+variant level (same across classifiers);
+        # failing clusters is classifier-specific, so average over classifiers.
+        total_pivot = (
+            cdf.drop_duplicates(subset=["dataset", "variant"])
+            .pivot_table(
+                index="dataset", columns="variant", values="n_clusters", aggfunc="first"
+            )
+            .reindex(index=present, columns=selected_variants)
+        )
+        failing_pivot = cdf.pivot_table(
+            index="dataset", columns="variant", values="n_failing", aggfunc="mean"
         ).reindex(index=present, columns=selected_variants)
         st.subheader("Clusters per dataset")
+        st.caption(
+            "Cells are split along the diagonal — the upper-left half shows the "
+            "**total clusters**, the lower-right half the **share with failure rate > 0** "
+            "(averaged across classifiers)."
+        )
         st.plotly_chart(
-            count_heatmap_fig(cluster_pivot, title="Total clusters per dataset"),
-            width="stretch",
+            split_count_heatmap_fig(
+                total_pivot,
+                failing_pivot,
+                title="Clusters per dataset",
+            ),
+            width="content",
             key="cluster_count_heatmap",
         )
         st.divider()
@@ -1049,11 +1395,31 @@ def render_overview(
         c2.metric("Classifiers", len(all_classifiers))
         c3.metric("Empty cells", int(pivot.isna().sum().sum()))
 
-        event = st.plotly_chart(
-            heatmap_fig(
+        is_split = metric in SPLIT_VS_F1_METRICS
+        if is_split:
+            f1_pivot = df.pivot_table(
+                index="dataset", columns="classifier", values="f1_macro", aggfunc="first"
+            ).reindex(index=present_ds, columns=all_classifiers)
+            fig = split_heatmap_fig(
+                pivot,
+                f1_pivot,
+                metric_label=metric_label,
+                metric_bounds=(zmin, zmax),
+                title=metric_label,
+            )
+        else:
+            fig = heatmap_fig(
                 pivot, title=metric_label, metric_label=metric, zmin=zmin, zmax=zmax
-            ),
-            width="stretch",
+            )
+
+        if is_split:
+            st.caption(
+                f"Cells are split along the diagonal — the upper-left half shows "
+                f"**{metric_label}**, the lower-right half the base classifier's **f1_macro**."
+            )
+        event = st.plotly_chart(
+            fig,
+            width="content" if is_split else "stretch",
             key=f"heatmap_{variant}",
             on_select="rerun",
             selection_mode="points",
@@ -1064,14 +1430,6 @@ def render_overview(
             st.session_state["drill_target"] = clicked
             st.toast(
                 f"Drill-down armed → {clicked['variant']} · {clicked['dataset']} · {clicked['classifier']}"
-            )
-
-        with st.expander("Show data", expanded=False):
-            st.dataframe(
-                pivot.style.background_gradient(cmap="viridis", vmin=0, vmax=1).format(
-                    "{:.4f}", na_rep="—"
-                ),
-                width="stretch",
             )
 
 
