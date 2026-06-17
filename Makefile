@@ -20,6 +20,8 @@
 # Flags:
 #   FORCE=1               re-run shared stages (prepare, complexity), ignoring skip markers
 #   EXTEND=1              in `run`, adds classify-extended (SHAP) to the flow for every (ds, clf)
+#   LABELFREE=1           build the extended splits with label-free nearest-centroid assignment
+#                         (injection honesty control; pair with EXTEND=1 for the full flow)
 #   CLUSTERING=<name>     select clustering strategy (ensemble/kmeans/hdbscan/birch/spectral/kprototypes)
 #
 # k-fold note: k-fold evaluation (kfold=true) is disabled automatically for LARGE_DATASETS
@@ -41,6 +43,8 @@ CLUSTERING_ALGOS ?= kmeans hdbscan spectral birch kprototypes ensemble
 FORCE      ?=
 EXTEND     ?= 1
 export EXTEND
+LABELFREE  ?=
+export LABELFREE
 
 # `run` distinguishes "passed on the command line" from "default" via $(origin).
 DATA_GIVEN := $(if $(filter command line,$(origin DATA)),1,)
@@ -78,6 +82,7 @@ LARGE_DATASETS := nb15_v2 bot_iot_v2 cic_2018_v2 ton_iot_v2
 HYDRA       := data=$(DATA) name=$(NAME) seed=$(SEED) classifier=$(CLASSIFIER) \
                clustering=$(CLUSTERING) distance=$(DISTANCE)
 FORCE_FLAG  := $(if $(FORCE),prepare.force=true complexity.force=true,)
+LF_FLAG     := $(if $(LABELFREE),extend.generate=true extend.labelfree=true,)
 KFOLD_FLAG  := $(if $(filter $(DATA),$(LARGE_DATASETS)),kfold=false,)
 
 .PHONY: prepare classify classify-extended extend complexity failure-classify render run run-clustering-sweep generate dashboard help
@@ -103,9 +108,9 @@ extend-lf:
 	PYTHONPATH=. $(PYTHON) pipelines/classify.py $(HYDRA) extend.generate=true
 	PYTHONPATH=. $(PYTHON) pipelines/render_plots.py $(HYDRA)
 
-## complexity:         Step 3a — cluster + class complexity (shared, idempotent)  (DATA, NAME, SEED, FORCE)
+## complexity:         Step 3a — cluster + class complexity (shared, idempotent)  (DATA, NAME, SEED, FORCE, LABELFREE)
 complexity:
-	PYTHONPATH=. $(PYTHON) pipelines/compute_complexity.py $(HYDRA) $(FORCE_FLAG)
+	PYTHONPATH=. $(PYTHON) pipelines/compute_complexity.py $(HYDRA) $(FORCE_FLAG) $(LF_FLAG)
 
 ## failure-classify:   Step 3b — RF to detect problematic clusters            (DATA, NAME, SEED, CLASSIFIER)
 failure-classify: complexity
@@ -193,7 +198,8 @@ run-clustering-sweep:
 		$(MAKE) --no-print-directory run \
 			NAME=$(NAME)_$$c CLUSTERING=$$c SEED=$(SEED) DISTANCE=$(DISTANCE) \
 			$(if $(DATA_GIVEN),DATA=$(DATA),) $(if $(CLF_GIVEN),CLASSIFIER=$(CLASSIFIER),) \
-			$(if $(FORCE),FORCE=$(FORCE),) $(if $(EXTEND),EXTEND=$(EXTEND),) || exit 1; \
+			$(if $(FORCE),FORCE=$(FORCE),) $(if $(EXTEND),EXTEND=$(EXTEND),) \
+			$(if $(LABELFREE),LABELFREE=$(LABELFREE),) || exit 1; \
 	done
 	@echo ""; echo "Clustering sweep done: $(CLUSTERING_ALGOS)"
 
