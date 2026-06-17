@@ -1,9 +1,9 @@
 import itertools
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 import numpy as np
-from sklearn.metrics import silhouette_score
+from sklearn.metrics import pairwise_distances, silhouette_score
 from tqdm import tqdm
 
 from src.core.utils import timed
@@ -112,6 +112,67 @@ def pairwise_hybrid_distance(
     return _hybrid_row_batch_euclidean(
         X_num, X_cat, X_num, X_cat, d_num, d_cat, feat_ranges
     )
+
+
+def assign_nearest_centroid(
+    X_num: np.ndarray,
+    centroids: dict,
+    *,
+    metric: str,
+    candidate_ids: Sequence[int] | None = None,
+    batch_size: int = 50_000,
+) -> np.ndarray:
+    """Assign each row to the nearest centroid id (batched).
+
+    Inductive counterpart of fitting a clusterer: maps new points onto an
+    existing set of centroids. If `candidate_ids` is given, only those centroids
+    are eligible. Centroid keys (str or int) are coerced to int64 so the output
+    matches the `cluster` column dtype.
+    """
+    items = [(int(k), v) for k, v in centroids.items()]
+    if candidate_ids is not None:
+        cand = {int(c) for c in candidate_ids}
+        items = [(k, v) for k, v in items if k in cand]
+    id_arr = np.array([k for k, _ in items], dtype=np.int64)
+    C = np.array([np.asarray(v, dtype=np.float64) for _, v in items], dtype=np.float64)
+    result = np.empty(len(X_num), dtype=np.int64)
+    for start in range(0, len(X_num), batch_size):
+        batch = X_num[start : start + batch_size]
+        D = pairwise_distances(batch, C, metric=metric)
+        result[start : start + batch_size] = id_arr[D.argmin(axis=1)]
+    return result
+
+
+def assign_clusters_within_class(
+    X_num: np.ndarray,
+    y_class: np.ndarray,
+    centroids: dict,
+    cluster_to_class: dict[int, int],
+    *,
+    metric: str,
+    batch_size: int = 50_000,
+) -> np.ndarray:
+    """Assign each row to the nearest centroid among clusters of its own class.
+
+    Label-aware, inductive assignment: a row is matched only against centroids of
+    clusters belonging to its class. Rows whose class has no train cluster get -1
+    (noise sentinel) — guarded so an empty candidate set never reaches
+    `pairwise_distances`.
+    """
+    result = np.full(len(X_num), -1, dtype=np.int64)
+    for cls in np.unique(y_class):
+        candidate_ids = [cid for cid, c in cluster_to_class.items() if c == cls]
+        if not candidate_ids:
+            continue
+        rows = np.where(y_class == cls)[0]
+        result[rows] = assign_nearest_centroid(
+            X_num[rows],
+            centroids,
+            metric=metric,
+            candidate_ids=candidate_ids,
+            batch_size=batch_size,
+        )
+    return result
 
 
 def make_hybrid_silhouette_fn(

@@ -4,7 +4,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import pairwise_distances
 
 from src.core.config import load_config
 from src.core.io import load_df, save_df
@@ -22,6 +21,7 @@ from src.domain.analysis.complexity import (
     compute_complexity_from_graph,
     prepare_complexity_graph,
 )
+from src.domain.clustering.base import assign_nearest_centroid
 from src.domain.data.preprocessing import (
     attach_cluster_features,
     cluster_feature_columns,
@@ -30,30 +30,6 @@ from src.domain.data.preprocessing import (
 
 setup_logger(log_file="resources/logs.txt")
 logger = logging.getLogger(__name__)
-
-
-def _assign_nearest_cluster(
-    X_num: np.ndarray,
-    centroids: dict,
-    *,
-    metric: str,
-    exclude_ids: set = frozenset(),
-    batch_size: int = 50_000,
-) -> np.ndarray:
-    """Assign each row to the nearest centroid, ignoring class labels.
-
-    Centroid keys may be strings or ints — both are coerced to int64 so the
-    output is compatible with the `cluster` column dtype in the split DataFrames.
-    """
-    valid = [(int(k), v) for k, v in centroids.items() if int(k) not in exclude_ids]
-    id_arr = np.array([k for k, _ in valid], dtype=np.int64)
-    C = np.array([v for _, v in valid], dtype=np.float64)
-    result = np.empty(len(X_num), dtype=np.int64)
-    for start in range(0, len(X_num), batch_size):
-        batch = X_num[start : start + batch_size]
-        D = pairwise_distances(batch, C, metric=metric)
-        result[start : start + batch_size] = id_arr[D.argmin(axis=1)]
-    return result
 
 
 def _compute_class_centroids(
@@ -182,15 +158,16 @@ def main():
     train_df = load_df(str(paths.processed_data / f"train.{ext}"))
     val_df = load_df(str(paths.processed_data / f"val.{ext}"))
     test_df = load_df(str(paths.processed_data / f"test.{ext}"))
-    combined = pd.concat([train_df, val_df, test_df], ignore_index=True)
 
+    # Complexity is measured inductively on train only: no val/test point feeds
+    # the geometry. The failure rate (classify.py) stays on test.
     X_num = (
-        combined[num_cols].to_numpy(dtype=np.float64)
+        train_df[num_cols].to_numpy(dtype=np.float64)
         if num_cols
-        else np.empty((len(combined), 0))
+        else np.empty((len(train_df), 0))
     )
-    X_cat = combined[cat_cols].to_numpy() if cat_cols else None
-    y_class = combined[f"encoded_{cfg.data.label_col}"].to_numpy(dtype=np.int64)
+    X_cat = train_df[cat_cols].to_numpy() if cat_cols else None
+    y_class = train_df[f"encoded_{cfg.data.label_col}"].to_numpy(dtype=np.int64)
 
     bus = LogDispatcher()
     bus.subscribe(JSONSubscriber(paths.shared))
@@ -199,7 +176,7 @@ def main():
     # both the cluster-level and class-level passes.
     graph = None
     if run_cluster or run_class:
-        y_cluster = combined["cluster"].to_numpy(dtype=np.int64)
+        y_cluster = train_df["cluster"].to_numpy(dtype=np.int64)
         graph = prepare_complexity_graph(
             X_num,
             X_cat,
@@ -256,9 +233,10 @@ def main():
                 _cm = load_from_json(paths.shared / "metadata/clusters_meta.json")
                 _centroids = _cm.get("centroids", {})
                 _noise_ids = set(_cm.get("noise_cluster_ids", []))
+                _genuine_ids = [int(k) for k in _centroids if int(k) not in _noise_ids]
                 logger.info(
                     "Label-free assignment: %d centroids, %d noise excluded",
-                    len(_centroids) - len(_noise_ids),
+                    len(_genuine_ids),
                     len(_noise_ids),
                 )
             extended: dict[str, pd.DataFrame] = {}
@@ -266,11 +244,11 @@ def main():
                 if cfg.extend.labelfree:
                     X_num_split = split_df[num_cols].to_numpy(dtype=np.float64)
                     split_df = split_df.copy()
-                    split_df["cluster"] = _assign_nearest_cluster(
+                    split_df["cluster"] = assign_nearest_centroid(
                         X_num_split,
                         _centroids,
                         metric=cfg.complexity.distance,
-                        exclude_ids=_noise_ids,
+                        candidate_ids=_genuine_ids,
                     )
                     logger.info("Label-free cluster assignment done for split '%s'", name)
                 merged = attach_cluster_features(split_df, cluster_features)

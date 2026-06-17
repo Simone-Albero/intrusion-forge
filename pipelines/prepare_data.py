@@ -37,7 +37,7 @@ from src.domain.data.preprocessing import (
 )
 from src.domain.analysis.complexity.shared import _l2_normalize
 from src.domain.clustering import build_cluster_fn
-from src.domain.clustering.base import cluster_size_balance
+from src.domain.clustering.base import assign_clusters_within_class, cluster_size_balance
 
 setup_logger(log_file="resources/logs.txt")
 logger = logging.getLogger(__name__)
@@ -300,19 +300,20 @@ def _cluster_splits(
     label_col: str,
     dispatcher: LogDispatcher,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict, set[int]]:
-    """Cluster the combined splits per class and attach the `cluster` column.
+    """Cluster train per class, then attach the `cluster` column to all splits.
 
-    Returns the splits with the new column, the cluster centroids and the
-    pseudo-cluster ids; publishes the clustering report.
+    Train points are labelled by the per-class clusterer; val/test points are
+    assigned inductively to the nearest train centroid within their own class
+    (no test information feeds the cluster definition). Returns the splits with
+    the new column, the cluster centroids and the pseudo-cluster ids; publishes
+    the clustering report.
     """
-    n_train, n_val = len(train_df), len(val_df)
-    combined = pd.concat([train_df, val_df, test_df], ignore_index=True)
-    X_num = combined[num_cols].to_numpy(dtype=np.float64)
-    X_cat = combined[cat_cols].to_numpy() if cat_cols else None
-    y_class = combined[label_col].to_numpy()
-    all_classes = sorted(combined[label_col].unique().tolist())
+    X_num = train_df[num_cols].to_numpy(dtype=np.float64)
+    X_cat = train_df[cat_cols].to_numpy() if cat_cols else None
+    y_class = train_df[label_col].to_numpy()
+    all_classes = sorted(train_df[label_col].unique().tolist())
 
-    logger.info("Running per-class clustering...")
+    logger.info("Running per-class clustering on train (n=%d)...", len(train_df))
     algorithms = OmegaConf.to_container(cfg.clustering.algorithms, resolve=True)
     # voter weighting / geometric refinement are ensemble-only knobs (ignored for a single algo)
     is_ensemble = len(algorithms) > 1
@@ -337,17 +338,36 @@ def _cluster_splits(
     dispatcher.publish(
         LogBundle.from_dict({"json/clustering_report": clustering_report})
     )
+
+    # cluster → class map from train (each cluster is single-class by construction)
+    cluster_to_class = {
+        int(cid): y_class[labels == cid][0] for cid in np.unique(labels)
+    }
+
+    train_df = train_df.copy()
+    train_df["cluster"] = labels
+    assigned: dict[str, pd.DataFrame] = {}
+    for name, split_df in (("val", val_df), ("test", test_df)):
+        split_df = split_df.copy()
+        split_df["cluster"] = assign_clusters_within_class(
+            split_df[num_cols].to_numpy(dtype=np.float64),
+            split_df[label_col].to_numpy(),
+            centroids,
+            cluster_to_class,
+            metric=cfg.clustering.distance,
+        )
+        assigned[name] = split_df
+    val_df, test_df = assigned["val"], assigned["test"]
+
+    noise_ids = sorted(noise_cluster_ids)
     noise_count = (
-        int(np.isin(labels, sorted(noise_cluster_ids)).sum())
-        if noise_cluster_ids
+        sum(
+            int(np.isin(df["cluster"], noise_ids).sum())
+            for df in (train_df, val_df, test_df)
+        )
+        if noise_ids
         else 0
     )
-
-    combined["cluster"] = labels
-    train_df = combined.iloc[:n_train].reset_index(drop=True)
-    val_df = combined.iloc[n_train : n_train + n_val].reset_index(drop=True)
-    test_df = combined.iloc[n_train + n_val :].reset_index(drop=True)
-
     logger.info(
         "Clustering complete — %d clusters (noise reassigned: %d points into pseudo-clusters)",
         len(centroids),
