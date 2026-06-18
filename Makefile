@@ -41,7 +41,7 @@ DISTANCE   ?= euclidean
 CLUSTERING ?= ensemble
 CLUSTERING_ALGOS ?= kmeans hdbscan spectral birch kprototypes ensemble
 FORCE      ?=
-EXTEND     ?= 1
+EXTEND     ?=
 export EXTEND
 LABELFREE  ?=
 export LABELFREE

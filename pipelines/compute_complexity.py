@@ -266,7 +266,14 @@ def main():
             for name, split_df in extended.items():
                 save_df(split_df, paths.processed_data / f"{name}_extended.{ext}")
             bus.publish(
-                LogBundle.from_dict({"json/complexity_meta": {"columns": complexity_cols}})
+                LogBundle.from_dict(
+                    {
+                        "json/complexity_meta": {
+                            "columns": complexity_cols,
+                            "labelfree": cfg.extend.labelfree,
+                        }
+                    }
+                )
             )
             logger.info(
                 "Extended splits saved as *_extended.%s (%d complexity columns); meta -> %s",

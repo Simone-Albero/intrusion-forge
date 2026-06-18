@@ -21,8 +21,15 @@ from src.domain.plot.charts import (
     bar_plot,
     beeswarm_plot,
     numeric_scatter_plot,
+    selective_accuracy_plot,
     strip_count_panel_plot,
     violin_plot,
+)
+from src.domain.analysis.selective_prediction import (
+    macro_recall_curve,
+    risk_coverage_curve,
+    selective_prediction_metrics,
+    selective_recall_metrics,
 )
 from src.domain.plot.base import Plot, set_figure_format
 from src.domain.plot.style import CORRECT_COLOR, FAILED_COLOR, MUTED_COLOR, PALETTE, apply_plot_style
@@ -199,6 +206,100 @@ def _plot_rf_evaluation(
     }
 
 
+def _plot_selective_accuracy(
+    summary_df: pd.DataFrame, classifier_results: dict
+) -> dict[str, Plot]:
+    """Selective-accuracy curves: reject high predicted-risk clusters first.
+
+    X = fraction of test traffic rejected (riskiest first), Y = accuracy on what
+    remains — so the curve rises as more is excluded. Three strategies: Predictor
+    rejects by predicted failure rate (label-free at inference), Oracle by the
+    true rate (best achievable ceiling), Random is the flat global-accuracy
+    baseline. The gap Predictor→Oracle is the headroom the geometry leaves on the
+    table; Predictor→Random is its operational lift.
+    """
+    predicted = classifier_results["oof_predicted_rate"]
+    cids = [c for c in predicted if c in summary_df.index]
+    if not cids:
+        return {}
+    y_pred = np.array([predicted[c] for c in cids], dtype=float)
+    y_true = summary_df.loc[cids, "failure_rate"].to_numpy(dtype=float)
+    support = summary_df.loc[cids, "n_test"].to_numpy(dtype=float)
+
+    metrics = selective_prediction_metrics(y_pred, y_true, support)
+    if not metrics:
+        return {}
+
+    def _rejection_curve(score: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        coverage, accuracy = risk_coverage_curve(score, y_true, support)
+        return 1.0 - coverage, accuracy  # x = fraction rejected
+
+    curves = {
+        "Predictor": _rejection_curve(y_pred),
+        "Oracle": _rejection_curve(y_true),
+    }
+    keep = metrics["coverage_target"]
+    return {
+        "summary/selectivity/selective_accuracy": selective_accuracy_plot(
+            curves,
+            baseline=metrics["global_accuracy"],
+            annotations={
+                f"Retained accuracy ({keep:.0%})": metrics["acc_at_target_predictor"],
+                "Random baseline": metrics["global_accuracy"],
+                "Oracle benefit recovered": metrics["oracle_benefit_recovered"],
+            },
+        )
+    }
+
+
+def _plot_selective_macro_recall(
+    summary_df: pd.DataFrame, classifier_results: dict
+) -> dict[str, Plot]:
+    """Class-balanced selective curve: macro-recall on the retained set as the
+    riskiest clusters are rejected.
+
+    Counterpart to `_plot_selective_accuracy` for imbalanced settings: it exposes
+    whether the error-greedy rejection rule sacrifices minority classes. The Oracle
+    ranks by true error (accuracy-optimal), so here it need not dominate — a dip
+    below Random means rejecting high-error regions costs class balance.
+    """
+    predicted = classifier_results["oof_predicted_rate"]
+    cids = [c for c in predicted if c in summary_df.index]
+    if not cids:
+        return {}
+    y_pred = np.array([predicted[c] for c in cids], dtype=float)
+    y_true = summary_df.loc[cids, "failure_rate"].to_numpy(dtype=float)
+    support = summary_df.loc[cids, "n_test"].to_numpy(dtype=float)
+    cluster_class = summary_df.loc[cids, "cluster_class"].to_numpy()
+
+    metrics = selective_recall_metrics(y_pred, y_true, support, cluster_class)
+    if not metrics:
+        return {}
+
+    def _rejection_curve(score: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        coverage, recall = macro_recall_curve(score, y_true, support, cluster_class)
+        return 1.0 - coverage, recall  # x = fraction rejected
+
+    curves = {
+        "Predictor": _rejection_curve(y_pred),
+        "Oracle": _rejection_curve(y_true),
+    }
+    keep = metrics["coverage_target"]
+    return {
+        "summary/selectivity/selective_macro_recall": selective_accuracy_plot(
+            curves,
+            baseline=metrics["global_macro_recall"],
+            y_label="Macro-recall on retained set",
+            title="Selective macro-recall",
+            annotations={
+                f"Retained macro-recall ({keep:.0%})": metrics["recall_at_target_predictor"],
+                "Random baseline": metrics["global_macro_recall"],
+                "Oracle benefit recovered": metrics["oracle_benefit_recovered"],
+            },
+        )
+    }
+
+
 @timed
 def assemble_analysis_figures(
     cluster_summary: dict,
@@ -238,6 +339,8 @@ def assemble_analysis_figures(
     figures.update(_plot_feature_vs_failure(summary_df, scatter_features))
     figures.update(_plot_feature_violin_by_rate_bin(summary_df, scatter_features))
     figures.update(_plot_rf_evaluation(summary_df, classifier_results))
+    figures.update(_plot_selective_accuracy(summary_df, classifier_results))
+    figures.update(_plot_selective_macro_recall(summary_df, classifier_results))
     if analysis_bus is not None:
         analysis_bus.publish(LogBundle(figures=figures))
     return figures

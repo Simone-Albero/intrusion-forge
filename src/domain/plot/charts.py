@@ -765,6 +765,68 @@ def line_plot(
     return _finalize(fig)
 
 
+def selective_accuracy_plot(
+    curves: dict[str, tuple[np.ndarray, np.ndarray]],
+    *,
+    baseline: float,
+    annotations: dict[str, float] | None = None,
+    x_label: str = "Fraction rejected (riskiest first)",
+    y_label: str = "Accuracy on retained set",
+    title: str = "Selective accuracy",
+    figsize: tuple[float, float] = (6.0, 5.0),
+    ax: Axes | None = None,
+) -> Plot | None:
+    """Selective-prediction curves with an explicit per-series x axis.
+
+    `curves` maps a strategy name to its `(x, y)` arrays, where x is the fraction
+    of test traffic rejected (riskiest regions first) and y the retained-set
+    metric (accuracy or macro-recall) — so the curve rises as more is excluded.
+    Each strategy rejects in a different order, so the x grids differ (unlike
+    `line_plot`'s shared index x). A dashed horizontal line marks the Random
+    baseline at `baseline`; `annotations` renders a scalar box.
+    """
+    ax, fig = _ensure_ax(ax, figsize)
+    palette = extended_palette(max(len(curves), 1))
+
+    for i, (name, (x, y)) in enumerate(curves.items()):
+        x = np.asarray(x, dtype=float)
+        y = np.asarray(y, dtype=float)
+        if x.size == 0:
+            continue
+        ax.plot(x, y, color=palette[i], linewidth=1.6, label=name)
+
+    ax.axhline(
+        baseline,
+        color=NEUTRAL_COLOR,
+        linewidth=1.0,
+        linestyle="--",
+        label="Random",
+    )
+    ax.set_xlim(0.0, 1.0)
+    ax.set_ylim(0.0, 1.0)
+
+    if annotations:
+        text = "\n".join(
+            f"{name} = {_format_value(value, kind='score')}"
+            for name, value in annotations.items()
+        )
+        ax.text(
+            0.95,
+            0.05,
+            text,
+            transform=ax.transAxes,
+            va="bottom",
+            ha="right",
+            fontsize=9,
+            bbox=dict(facecolor="white", edgecolor="#cccccc", boxstyle="round,pad=0.3"),
+        )
+
+    ax.grid(True, alpha=0.15, linewidth=0.5)
+    ax.legend(loc="best", fontsize=8)
+    _apply_labels(ax, x_label, y_label, title)
+    return _finalize(fig)
+
+
 def beeswarm_plot(
     shap_values: np.ndarray,
     feature_values: np.ndarray,

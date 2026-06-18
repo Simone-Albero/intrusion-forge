@@ -20,6 +20,10 @@ from src.core.log import (
 )
 from pipelines.common import paths_from_cfg
 from src.core.utils import flush_timing, load_from_json, timed
+from src.domain.analysis.selective_prediction import (
+    selective_prediction_metrics,
+    selective_recall_metrics,
+)
 
 setup_logger(log_file="resources/logs.txt")
 logger = logging.getLogger(__name__)
@@ -362,15 +366,34 @@ def fit_failure_classifier(
         **context_metrics,
         **_aggregate_oof_results(oof, feature_cols),
     }
+    # Selective prediction: what the predicted failure rate is worth operationally
+    # (reject high-risk regions → accuracy on the retained set). Uses the OOF
+    # predictions (honest, label-free at inference) weighted by test support.
+    support = df.loc[oof["indices"], "n_test"].astype(float).to_numpy()
+    cluster_class = df.loc[oof["indices"], "cluster_class"].to_numpy()
+    results["risk_coverage"] = selective_prediction_metrics(
+        oof["y_pred"], oof["y_true"], support
+    )
+    # Class-balanced view (macro-recall) — exposes whether error-greedy rejection
+    # would sacrifice minority classes, the blind spot of pooled accuracy.
+    results["selective_macro_recall"] = selective_recall_metrics(
+        oof["y_pred"], oof["y_true"], support, cluster_class
+    )
     if analysis_bus is not None:
         analysis_bus.publish(
             LogBundle.from_dict({"json/analysis/classifier_results": results})
         )
+    rc = results["risk_coverage"]
     logger.info(
-        "Classifier results — Spearman: %.4f, R²: %.4f, MAE: %.4f",
+        "Classifier results — Spearman: %.4f, R²: %.4f, MAE: %.4f; "
+        "selective acc@%.0f%%: %.4f (random %.4f, oracle benefit recovered %.2f)",
         results["spearman"],
         results["r2"],
         results["mae"],
+        100 * rc.get("coverage_target", 0.8),
+        rc.get("acc_at_target_predictor", float("nan")),
+        rc.get("global_accuracy", float("nan")),
+        rc.get("oracle_benefit_recovered", float("nan")),
     )
     return results
 
