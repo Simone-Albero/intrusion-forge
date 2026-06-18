@@ -145,9 +145,12 @@ def main():
     meta_marker = paths.shared / "complexity_meta.json"
     run_cluster = not skip_if_exists(cluster_marker, cfg.complexity.force, "complexity")
     run_class = not skip_if_exists(class_marker, cfg.complexity.force, "class_complexity")
-    run_extend = not skip_if_exists(meta_marker, cfg.complexity.force, "complexity_extend")
-    if cfg.extend.labelfree:
-        run_extend = True  # always regenerate extended splits when label-free is requested
+    # Extended splits are opt-in (extend.generate). Label-free forces a rewrite so a
+    # fresh assignment is produced even when the marker already exists.
+    run_extend = cfg.extend.generate and (
+        cfg.extend.labelfree
+        or not skip_if_exists(meta_marker, cfg.complexity.force, "complexity_extend")
+    )
     if not (run_cluster or run_class or run_extend):
         return
 

@@ -82,7 +82,7 @@ LARGE_DATASETS := nb15_v2 bot_iot_v2 cic_2018_v2 ton_iot_v2
 HYDRA       := data=$(DATA) name=$(NAME) seed=$(SEED) classifier=$(CLASSIFIER) \
                clustering=$(CLUSTERING) distance=$(DISTANCE)
 FORCE_FLAG  := $(if $(FORCE),prepare.force=true complexity.force=true,)
-LF_FLAG     := $(if $(LABELFREE),extend.generate=true extend.labelfree=true,)
+EXTEND_FLAGS := $(if $(LABELFREE),extend.generate=true extend.labelfree=true,$(if $(EXTEND),extend.generate=true,))
 KFOLD_FLAG  := $(if $(filter $(DATA),$(LARGE_DATASETS)),kfold=false,)
 
 .PHONY: prepare classify classify-extended extend complexity failure-classify render run run-clustering-sweep generate dashboard help
@@ -100,7 +100,10 @@ classify-extended:
 	PYTHONPATH=. $(PYTHON) pipelines/classify.py $(HYDRA) extend.generate=true
 
 ## extend:             complexity + classify-extended + render (assumes prepare + classify done)  (DATA, NAME, SEED, CLASSIFIER)
-extend: complexity classify-extended render
+extend:
+	PYTHONPATH=. $(PYTHON) pipelines/compute_complexity.py $(HYDRA) $(FORCE_FLAG) extend.generate=true
+	PYTHONPATH=. $(PYTHON) pipelines/classify.py $(HYDRA) extend.generate=true
+	PYTHONPATH=. $(PYTHON) pipelines/render_plots.py $(HYDRA)
 
 ## extend-lf:          label-free extended: nearest-centroid assignment, ignores class labels    (DATA, NAME, SEED, CLASSIFIER)
 extend-lf:
@@ -110,7 +113,7 @@ extend-lf:
 
 ## complexity:         Step 3a — cluster + class complexity (shared, idempotent)  (DATA, NAME, SEED, FORCE, LABELFREE)
 complexity:
-	PYTHONPATH=. $(PYTHON) pipelines/compute_complexity.py $(HYDRA) $(FORCE_FLAG) $(LF_FLAG)
+	PYTHONPATH=. $(PYTHON) pipelines/compute_complexity.py $(HYDRA) $(FORCE_FLAG) $(EXTEND_FLAGS)
 
 ## failure-classify:   Step 3b — RF to detect problematic clusters            (DATA, NAME, SEED, CLASSIFIER)
 failure-classify: complexity
