@@ -137,9 +137,18 @@ def predict_with_proba(
     X: pd.DataFrame,
     *,
     context: dict | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Return ``(predicted labels, class probability matrix)`` for the pipeline."""
-    return pipeline.predict(X), pipeline.predict_proba(X)
+    return_embedding: bool = False,
+) -> tuple:
+    """Return ``(predicted labels, class probability matrix)`` for the pipeline.
+
+    ML pipelines have no learned embedding, so ``return_embedding=True`` returns
+    ``z=None`` as a third element — kept symmetric with the DL path so callers can
+    request an embedding uniformly.
+    """
+    y_pred, y_proba = pipeline.predict(X), pipeline.predict_proba(X)
+    if return_embedding:
+        return y_pred, y_proba, None
+    return y_pred, y_proba
 
 
 def save_model(

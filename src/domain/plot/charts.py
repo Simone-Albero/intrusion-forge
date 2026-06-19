@@ -517,10 +517,15 @@ def scatter_plot(
     title: str = "",
     show_legend: bool = True,
     legend_max_items: int = 20,
+    legend_on_top: bool = False,
     figsize: tuple[float, float] = (6.5, 5.0),
     ax: Axes | None = None,
 ) -> Plot | None:
-    """Scatter 2D with label-coloring and optional highlight mask."""
+    """Scatter 2D with label-coloring and optional highlight mask.
+
+    `legend_on_top` renders an opaque legend above the points (high z-order),
+    trading the occluded points for a cleaner figure.
+    """
     X = np.asarray(X)
     labels = np.asarray(labels)
     if X.ndim != 2 or X.shape[1] != 2:
@@ -655,7 +660,14 @@ def scatter_plot(
                 )
             ncol = 1 if len(handles) <= 6 else 2 if len(handles) <= 12 else 3
             loc = _smart_legend_loc(ax, X[~noise]) if (~noise).any() else "best"
-            ax.legend(handles=handles, loc=loc, ncol=ncol)
+            legend = ax.legend(
+                handles=handles,
+                loc=loc,
+                ncol=ncol,
+                framealpha=1.0 if legend_on_top else None,
+            )
+            if legend_on_top:
+                legend.set_zorder(100)
 
     _apply_labels(ax, x_label, y_label, title)
     return _finalize(fig)

@@ -183,8 +183,13 @@ def predict_with_proba(
     X: pd.DataFrame,
     *,
     context: dict | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
+    return_embedding: bool = False,
+) -> tuple:
     """Return ``(y_pred, y_proba)`` for a DL model on a DataFrame.
+
+    With ``return_embedding=True`` also returns the latent embedding ``z`` as a
+    third element (``(y_pred, y_proba, z)``, ``z`` is ``None`` when the model
+    exposes none) — reused from the same forward pass for the latent projection plot.
 
     `context` must contain ``device``, ``num_cols``, ``cat_cols``.
     """
@@ -203,6 +208,9 @@ def predict_with_proba(
     probs = F.softmax(output["logits"].cpu(), dim=1)
     y_pred = probs.argmax(dim=1).numpy()
     y_proba = probs.numpy()
+    if return_embedding:
+        z = output["z"].cpu().numpy() if "z" in output else None
+        return y_pred, y_proba, z
     return y_pred, y_proba
 
 

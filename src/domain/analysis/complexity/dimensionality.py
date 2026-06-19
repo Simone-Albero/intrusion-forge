@@ -11,28 +11,28 @@ def t2(n: int, d_num: int, d_cat: int) -> float:
 
 
 def _t3_t4(X_num: np.ndarray) -> tuple[float, float]:
-    """Compute T3 and T4 from a single PCA fit.
+    """Compute T3 and T4 (Lorena et al. 2019 canon) from a single PCA fit.
 
-    Returns (n_pca_95 / d_num, n_pca_95 / n).
+    Returns (n_pca_95 / n, n_pca_95 / d_num) = (T3, T4).
     """
     n, d_num = X_num.shape
     if d_num < 2 or n < 2:
-        return 1.0, (d_num / n if n > 0 else 0.0)
+        return (1.0 / n if n > 0 else 0.0), 1.0
     max_components = min(n, d_num)
     cumvar = np.cumsum(
         PCA(n_components=max_components).fit(X_num).explained_variance_ratio_
     )
     n_pca_95 = min(int(np.searchsorted(cumvar, 0.95)) + 1, max_components)
-    return n_pca_95 / d_num, n_pca_95 / n
+    return n_pca_95 / n, n_pca_95 / d_num
 
 
 def t3(X_num: np.ndarray) -> float:
-    """PCA intrinsic dimensionality ratio: n_pca_95 / d_num."""
+    """PCA components-to-sample ratio: n_pca_95 / n."""
     return _t3_t4(X_num)[0]
 
 
 def t4(X_num: np.ndarray) -> float:
-    """PCA components-to-sample ratio: n_pca_95 / n."""
+    """PCA intrinsic dimensionality ratio: n_pca_95 / d_num."""
     return _t3_t4(X_num)[1]
 
 
@@ -44,9 +44,10 @@ def compute_t_measures(
 ) -> dict[str, dict[str, float]]:
     """Compute dimensionality complexity measures T2, T3, T4 per cluster.
 
+    Follows the Lorena et al. (2019) / DCoL canon:
     T2 = (d_num + d_cat) / n   — feature count relative to cluster size.
-    T3 = n_pca_95 / d_num      — fraction of PCA components needed for 95% variance.
-    T4 = n_pca_95 / n          — PCA components-to-cluster-size ratio.
+    T3 = n_pca_95 / n          — intrinsic dimensionality relative to cluster size.
+    T4 = n_pca_95 / d_num      — fraction of PCA components needed for 95% variance.
 
     Inputs:
         X_num     — (n, d_num) float array, RobustScaled numericals.

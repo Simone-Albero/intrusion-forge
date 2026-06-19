@@ -38,7 +38,7 @@ NAME       ?= exp_euc
 SEED       ?= 42
 CLASSIFIER ?= tabular
 DISTANCE   ?= euclidean
-CLUSTERING ?= ensemble
+CLUSTERING ?= kmeans
 CLUSTERING_ALGOS ?= kmeans hdbscan spectral birch kprototypes ensemble
 FORCE      ?=
 EXTEND     ?=
@@ -73,7 +73,8 @@ DATASET_FORMATS := \
     nb15_v2:mixed \
     ton_iot_v2:mixed \
     cic_2018_v2:mixed \
-    bot_iot_v2:mixed
+    bot_iot_v2:mixed \
+    synthetic_test:mixed
 
 # Datasets too large for k-fold evaluation (millions of rows → hours per classifier).
 # kfold=false is injected automatically for these; override with kfold=true if needed.

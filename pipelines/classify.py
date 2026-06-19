@@ -245,8 +245,10 @@ def _build_test_figures(
     y_pred: np.ndarray,
     label_mapping: dict,
     n_samples: int = 2000,
+    embedding: np.ndarray | None = None,
 ) -> dict[str, Plot]:
-    """Confusion matrix + per-class F1 bar + t-SNE scatter on raw features."""
+    """Confusion matrix + per-class F1 bar + t-SNE scatter of the raw features and,
+    for DL models with a latent space, of the embedding (both flat under `testing/`)."""
     figures: dict[str, Plot] = {}
 
     classes = np.unique(y_true)
@@ -272,14 +274,24 @@ def _build_test_figures(
 
     names = {int(c): label_mapping.get(str(int(c)), str(c)) for c in classes}
     correct = y_pred == y_true
+    # Shared subsample so raw and latent show the same points; misclassified
+    # highlighted; bold markers + opaque foreground legend for a clean print figure.
     vis_idx = stratified_subsample(y_true, n_samples=n_samples, stratify=False)
-    figures["figure/testing/raw/classes"] = scatter_plot(
-        tsne_projection(X[vis_idx], n_components=2),
-        y_true[vis_idx],
-        highlight_mask=~correct[vis_idx],
-        names=names,
-        marker_size=12.0,
-    )
+
+    def _projection(space: np.ndarray) -> Plot | None:
+        return scatter_plot(
+            tsne_projection(space[vis_idx], n_components=2),
+            y_true[vis_idx],
+            highlight_mask=~correct[vis_idx],
+            names=names,
+            marker_size=20.0,
+            marker_alpha=0.85,
+            legend_on_top=True,
+        )
+
+    figures["figure/testing/raw"] = _projection(X)
+    if embedding is not None:
+        figures["figure/testing/latent"] = _projection(embedding)
     return figures
 
 
@@ -451,14 +463,19 @@ def _predict_model(
     kind: str,
     context: dict,
     suffix: str = "",
-) -> tuple[np.ndarray, np.ndarray]:
+    return_embedding: bool = False,
+) -> tuple:
     """Load one model from `model_dir` and predict `df` → (y_pred, y_proba).
 
-    The backbone shared by the single-split and per-fold (k-fold OOF) evaluation paths.
+    With `return_embedding=True` also returns the latent embedding (`None` for ML)
+    as a third element. The backbone shared by the single-split and per-fold (k-fold
+    OOF) evaluation paths.
     """
     model = training_mod.load_model(model_dir, context=context, suffix=suffix)
     X = df[feat_cols] if kind == "ml" else df
-    return training_mod.predict_with_proba(model, X, context=context)
+    return training_mod.predict_with_proba(
+        model, X, context=context, return_embedding=return_embedding
+    )
 
 
 def _publish_evaluation(
@@ -472,16 +489,21 @@ def _publish_evaluation(
     *,
     eval_mode: str,
     suffix: str = "",
+    embedding: np.ndarray | None = None,
 ) -> None:
     """Build metrics, confusion matrix and figures from predictions and publish them.
 
     Shared by the single-split and k-fold OOF evaluation paths; `eval_mode` marks the
-    artifacts (`single_split` / `oof_kfold`).
+    artifacts (`single_split` / `oof_kfold`). `embedding` is the DL latent space for
+    the optional latent projection (single-split only — fold embeddings are not
+    comparable, so the k-fold path passes None).
     """
     full_metrics = {**_compute_classification_metrics(y_true, y_pred), "eval_mode": eval_mode}
     pred_infos = {**_evaluate_predictions(y_true, y_pred, y_proba, clusters), "eval_mode": eval_mode}
     cm = confusion_matrix(y_true, y_pred, labels=np.unique(y_true), normalize="true")
-    figures = _build_test_figures(X_np, y_true, y_pred, df_meta["label_mapping"])
+    figures = _build_test_figures(
+        X_np, y_true, y_pred, df_meta["label_mapping"], embedding=embedding
+    )
     bus.publish(
         LogBundle.from_dict(
             _with_suffix(
@@ -588,15 +610,16 @@ def _evaluate_stage(
     context = _build_context(cfg, paths, df_meta, num_cols, cat_cols, label_col)
 
     logger.info("Loading model from %s ...", paths.models)
-    y_pred, y_proba = _predict_model(
-        training_mod, paths.models, test_df, feat_cols, kind, context, suffix
+    y_pred, y_proba, embedding = _predict_model(
+        training_mod, paths.models, test_df, feat_cols, kind, context, suffix,
+        return_embedding=True,
     )
     y_true = test_df[label_col].to_numpy()
     clusters = test_df["cluster"].to_numpy() if "cluster" in test_df.columns else None
 
     _publish_evaluation(
         bus, df_meta, test_df[feat_cols].to_numpy(), y_true, y_pred, y_proba, clusters,
-        eval_mode="single_split", suffix=suffix,
+        eval_mode="single_split", suffix=suffix, embedding=embedding,
     )
 
 
