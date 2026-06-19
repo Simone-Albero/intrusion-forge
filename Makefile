@@ -86,7 +86,18 @@ FORCE_FLAG  := $(if $(FORCE),prepare.force=true complexity.force=true,)
 EXTEND_FLAGS := $(if $(LABELFREE),extend.generate=true extend.labelfree=true,$(if $(EXTEND),extend.generate=true,))
 KFOLD_FLAG  := $(if $(filter $(DATA),$(LARGE_DATASETS)),kfold=false,)
 
-.PHONY: prepare classify classify-extended extend complexity failure-classify render run run-clustering-sweep generate dashboard help
+# Cost/fidelity cap-sweep: self-contained experiment on the 2 largest IDS
+# datasets + one non-IDS (covertype), per distance, in a fresh experiment tree.
+COST_DATASETS := bot_iot_v2 cic_2018_v2 covertype
+COST_CELLS    := cosine:cost_cos_kmeans euclidean:cost_euc_kmeans
+COST_CAPS     ?= 5000 10000 25000 50000 100000 200000
+COST_CLF      ?= random_forest
+empty :=
+space := $(empty) $(empty)
+comma := ,
+COST_CAPS_CSV := $(subst $(space),$(comma),$(strip $(COST_CAPS)))
+
+.PHONY: prepare classify classify-extended extend complexity failure-classify render run run-clustering-sweep cost-sweep generate dashboard help
 
 ## prepare:            Step 1 — preprocess raw CSV → parquet splits           (DATA, NAME, SEED, FORCE)
 prepare:
@@ -206,6 +217,24 @@ run-clustering-sweep:
 			$(if $(LABELFREE),LABELFREE=$(LABELFREE),) || exit 1; \
 	done
 	@echo ""; echo "Clustering sweep done: $(CLUSTERING_ALGOS)"
+
+## cost-sweep:         Cost/fidelity cap-sweep: prepare+classify+sweep on 2 IDS + covertype  (COST_CAPS, COST_CLF)
+cost-sweep:
+	@for cell in $(COST_CELLS); do \
+	  dist=$${cell%%:*}; nm=$${cell##*:}; \
+	  for ds in $(COST_DATASETS); do \
+	    echo ""; echo "== cost-sweep cell: $$ds [$$dist] -> name=$$nm =="; \
+	    $(MAKE) --no-print-directory prepare \
+	      DATA=$$ds NAME=$$nm SEED=$(SEED) CLUSTERING=kmeans DISTANCE=$$dist || exit 1; \
+	    $(MAKE) --no-print-directory classify \
+	      DATA=$$ds NAME=$$nm SEED=$(SEED) CLASSIFIER=$(COST_CLF) DISTANCE=$$dist || exit 1; \
+	    PYTHONPATH=. $(PYTHON) pipelines/cap_fidelity_sweep.py \
+	      data=$$ds name=$$nm seed=$(SEED) classifier=$(COST_CLF) \
+	      clustering=kmeans distance=$$dist \
+	      +capsweep.caps=[$(COST_CAPS_CSV)] || exit 1; \
+	  done; \
+	done
+	@echo ""; echo "cost-sweep done -> shared/cap_fidelity.json per cell."
 
 ## generate:           Generate synthetic test dataset                        (ROWS)
 generate:
