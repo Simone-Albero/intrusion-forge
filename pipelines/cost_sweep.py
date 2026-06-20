@@ -25,7 +25,7 @@ from pipelines.fit_failure_classifier import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_CAPS = [5000, 10000, 25000, 50000, 100000, 200000]
+DEFAULT_CAPS = [5000, 10000, 25000, 50000, 100000, 200000, 300000]
 
 # Measure-name → complexity family. Order matters: geometry keys like
 # `frac_at_risk` start with "f" but are not F-family.
@@ -77,7 +77,7 @@ def _family_rankcorr(complexity_k: dict, complexity_ref: dict) -> dict[str, floa
 
 
 def main():
-    """Sweep the complexity sample-cap for one cell and write shared/cap_fidelity.json."""
+    """Sweep the complexity sample-cap for one cell and write shared/cost_sweep.json."""
     cfg = load_config(
         config_path=Path(__file__).parent.parent / "configs",
         config_name="config",
@@ -201,8 +201,8 @@ def main():
         "k_ref": k_ref,
         "caps": {str(k): records[k] for k in caps},
     }
-    save_to_json(out, paths.shared / "cap_fidelity.json")
-    logger.info("Cap-sweep written -> %s", paths.shared / "cap_fidelity.json")
+    save_to_json(out, paths.shared / "cost_sweep.json")
+    logger.info("Cap-sweep written -> %s", paths.shared / "cost_sweep.json")
 
 
 if __name__ == "__main__":

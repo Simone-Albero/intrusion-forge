@@ -32,7 +32,7 @@ complexity:
   distance: ${distance}              # inherited from the top-level key — must match the clustering metric
   k: 30
   top_k_clusters: 10                 # top-K nearest adversarial clusters per cluster (vs-cluster aggregation)
-  min_subsample_per_cluster: 50      # minimum samples per cluster in proportional subsampling
+  min_subsample_per_cluster: 10      # minimum samples per cluster in proportional subsampling
   max_complexity_samples: 100000     # cap on points used to build the k-NN graph
   force: false                       # re-run complexity computation even if shared output exists
 

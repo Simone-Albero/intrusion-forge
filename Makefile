@@ -88,9 +88,9 @@ KFOLD_FLAG  := $(if $(filter $(DATA),$(LARGE_DATASETS)),kfold=false,)
 
 # Cost/fidelity cap-sweep: self-contained experiment on the 2 largest IDS
 # datasets + one non-IDS (covertype), per distance, in a fresh experiment tree.
-COST_DATASETS := bot_iot_v2 cic_2018_v2 covertype
+COST_DATASETS := ton_iot_v2 cic_2018_v2 covertype
 COST_CELLS    := cosine:cost_cos_kmeans euclidean:cost_euc_kmeans
-COST_CAPS     ?= 5000 10000 25000 50000 100000 200000
+COST_CAPS     ?= 5000 10000 25000 50000 100000 200000 300000
 COST_CLF      ?= random_forest
 empty :=
 space := $(empty) $(empty)
@@ -228,13 +228,13 @@ cost-sweep:
 	      DATA=$$ds NAME=$$nm SEED=$(SEED) CLUSTERING=kmeans DISTANCE=$$dist || exit 1; \
 	    $(MAKE) --no-print-directory classify \
 	      DATA=$$ds NAME=$$nm SEED=$(SEED) CLASSIFIER=$(COST_CLF) DISTANCE=$$dist || exit 1; \
-	    PYTHONPATH=. $(PYTHON) pipelines/cap_fidelity_sweep.py \
+	    PYTHONPATH=. $(PYTHON) pipelines/cost_sweep.py \
 	      data=$$ds name=$$nm seed=$(SEED) classifier=$(COST_CLF) \
 	      clustering=kmeans distance=$$dist \
 	      +capsweep.caps=[$(COST_CAPS_CSV)] || exit 1; \
 	  done; \
 	done
-	@echo ""; echo "cost-sweep done -> shared/cap_fidelity.json per cell."
+	@echo ""; echo "cost-sweep done -> shared/cost_sweep.json per cell."
 
 ## generate:           Generate synthetic test dataset                        (ROWS)
 generate:
