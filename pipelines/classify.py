@@ -247,8 +247,8 @@ def _build_test_figures(
     n_samples: int = 2000,
     embedding: np.ndarray | None = None,
 ) -> dict[str, Plot]:
-    """Confusion matrix + per-class F1 bar + t-SNE scatter of the raw features and,
-    for DL models with a latent space, of the embedding (both flat under `testing/`)."""
+    """Confusion matrix, per-class F1 bar, and t-SNE scatter of the raw features
+    (plus the DL embedding when present), all flat under `testing/`."""
     figures: dict[str, Plot] = {}
 
     classes = np.unique(y_true)
@@ -274,8 +274,7 @@ def _build_test_figures(
 
     names = {int(c): label_mapping.get(str(int(c)), str(c)) for c in classes}
     correct = y_pred == y_true
-    # Shared subsample so raw and latent show the same points; misclassified
-    # highlighted; bold markers + opaque foreground legend for a clean print figure.
+    # shared subsample so raw and latent projections show the same points
     vis_idx = stratified_subsample(y_true, n_samples=n_samples, stratify=False)
 
     def _projection(space: np.ndarray) -> Plot | None:
@@ -343,9 +342,8 @@ def _build_dl_context(
         "optimizer_cfg": cfg.optimizer,
         "scheduler_cfg": cfg.scheduler,
         "loops_cfg": cfg.loops,
-        # per-epoch checkpoints of the extended variant get their own dir:
-        # with_checkpointing wipes the checkpoint dir, sharing it would
-        # destroy the base run's checkpoints
+        # the extended variant checkpoints to its own dir (checkpointing wipes the
+        # dir, so sharing it would destroy the base run's checkpoints)
         "models_path": paths.models / "extended"
         if cfg.extend.generate
         else paths.models,
@@ -395,12 +393,9 @@ def _resolve_dl_params(
     cat_cols: list[str],
     num_classes: int,
 ) -> dict:
-    """Inject fit-time params into a DL classifier's `params` from data shape.
-
-    Keeps `configs/classifier/*.yaml` free of `${data.num_*}` interpolation; the
-    values are derived from `num_cols` / `cat_cols` / `num_classes` at fit time
-    and persisted in the checkpoint by `save_model`, so `load_model` works
-    unchanged.
+    """Inject data-shape params (num_classes, in/num features) into a DL
+    classifier's `params` at fit time, keeping the YAML free of `${data.num_*}`
+    interpolation. Persisted in the checkpoint, so `load_model` works unchanged.
     """
     out = dict(params)
     out["num_classes"] = num_classes
@@ -442,10 +437,9 @@ def _fit_model(
     save_dir: Path,
     suffix: str = "",
 ) -> tuple[object, dict]:
-    """Fit one classifier on (X, y) and save it under `save_dir`. Returns (model, summary).
+    """Fit one classifier on (X, y), save under `save_dir`, return (model, summary).
 
-    The backbone shared by the single-model and per-fold (k-fold OOF) training paths;
-    `context` carries the (DL) checkpoint location, so callers point it where needed.
+    Shared by the single-model and per-fold (k-fold OOF) training paths.
     """
     save_dir.mkdir(parents=True, exist_ok=True)
     model, summary = training_mod.fit_classifier(
@@ -467,9 +461,8 @@ def _predict_model(
 ) -> tuple:
     """Load one model from `model_dir` and predict `df` → (y_pred, y_proba).
 
-    With `return_embedding=True` also returns the latent embedding (`None` for ML)
-    as a third element. The backbone shared by the single-split and per-fold (k-fold
-    OOF) evaluation paths.
+    With `return_embedding=True` also returns the latent embedding (`None` for ML).
+    Shared by the single-split and per-fold (k-fold OOF) evaluation paths.
     """
     model = training_mod.load_model(model_dir, context=context, suffix=suffix)
     X = df[feat_cols] if kind == "ml" else df
@@ -491,12 +484,11 @@ def _publish_evaluation(
     suffix: str = "",
     embedding: np.ndarray | None = None,
 ) -> None:
-    """Build metrics, confusion matrix and figures from predictions and publish them.
+    """Build metrics, confusion matrix and figures from predictions, then publish.
 
-    Shared by the single-split and k-fold OOF evaluation paths; `eval_mode` marks the
-    artifacts (`single_split` / `oof_kfold`). `embedding` is the DL latent space for
-    the optional latent projection (single-split only — fold embeddings are not
-    comparable, so the k-fold path passes None).
+    Shared by the single-split and k-fold OOF paths; `eval_mode` marks the artifacts
+    (`single_split` / `oof_kfold`). `embedding` (single-split only) drives the
+    optional latent projection — fold embeddings are not comparable.
     """
     full_metrics = {**_compute_classification_metrics(y_true, y_pred), "eval_mode": eval_mode}
     pred_infos = {**_evaluate_predictions(y_true, y_pred, y_proba, clusters), "eval_mode": eval_mode}
@@ -645,10 +637,10 @@ def _train_kfold_stage(
     num_cols: list[str],
     cat_cols: list[str],
 ) -> None:
-    """Train one classifier per OOF fold over train+test, saving each under `fold_{f}/`.
+    """Train one classifier per OOF fold over train+test, saved under `fold_{f}/`.
 
-    `val_df` is the shared early-stopping holdout (DL): reserved from every fold,
-    never trained on. Each fold mirrors the real balance recipe.
+    `val_df` is the shared early-stopping holdout (DL), never trained on. Each fold
+    applies the real balance recipe.
     """
     kind = cfg.classifier.kind
     training_mod = _resolve_training_module(kind)
@@ -687,9 +679,8 @@ def _evaluate_kfold_stage(
 ) -> None:
     """Assemble OOF predictions from the saved fold models; publish metrics + failure rates.
 
-    Each saved `model_f` predicts only its held-out fold → leakage-free predictions
-    over train+test feeding both the classifier metrics and the per-cluster failure
-    rates. `eval_mode` marks the artifacts as cross-validated (not single-split).
+    Each `model_f` predicts only its held-out fold → leakage-free predictions over
+    train+test, feeding both the classifier metrics and the per-cluster failure rates.
     """
     kind = cfg.classifier.kind
     training_mod = _resolve_training_module(kind)
@@ -846,9 +837,8 @@ def classify(cfg) -> None:
     )
 
     stage = cfg.stage
-    # k-fold OOF evaluates the configured pipeline over train+test; the base run
-    # uses the raw splits (balance is applied per fold), the extended variant stays
-    # single-split. kfold OFF keeps the current train→test single-split path.
+    # k-fold OOF runs over train+test (balance per fold); the extended variant
+    # stays single-split.
     use_kfold = cfg.kfold and not cfg.extend.generate
     load_cfg = replace(data, balance="none", n_samples=None) if use_kfold else data
     train_df, val_df, test_df = _load_data(load_cfg, cfg.seed)

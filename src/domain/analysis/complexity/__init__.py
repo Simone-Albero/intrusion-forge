@@ -183,24 +183,12 @@ def prepare_complexity_graph(
     metric: str = "cosine",
     random_state: int = 42,
 ) -> ComplexityGraph:
-    """Stratified-subsample by cluster and build the shared k-NN graph.
+    """Cluster-stratified subsample + shared k-NN graph.
 
-    The graph depends only on the feature space, not on the partition, so one
+    The graph depends only on the feature space, not the partition, so one
     cluster-stratified subsample serves both the cluster-level and class-level
-    analyses (every class is a union of its clusters, so a cluster-stratified
-    subsample also covers every class). Build it once; reuse for both passes.
-
-    Inputs:
-        X_num            — (n, d_num) float array, RobustScaled numericals.
-        X_cat            — (n, d_cat) int array or None.
-        y_class          — (n,) int array, class labels (encoded).
-        y_cluster        — (n,) int array, cluster labels (-1 = noise).
-        k                — number of neighbours for the k-NN graph.
-        max_samples      — if set, subsample stratified by cluster before
-                           building the k-NN graph. None = use all samples.
-        min_per_cluster  — minimum samples per cluster in the subsample.
-        metric           — "cosine" or "euclidean".
-        random_state     — seed for stratified subsampling.
+    passes (every class is a union of its clusters). Built once, reused for both.
+    `max_samples=None` uses all samples; metric is "cosine" or "euclidean".
     """
     if max_samples is not None and len(y_cluster) > max_samples:
         n_orig = len(y_cluster)
@@ -230,27 +218,13 @@ def compute_complexity_from_graph(
     noise_cluster_ids: set[int] | None = None,
     random_state: int = 42,
 ) -> dict[str, dict[str, float | None]]:
-    """Compute all complexity-measure families for one partition of `graph`.
+    """All complexity-measure families for one partition of `graph`.
 
-    `y_partition` selects the partition over the graph's subsampled points: pass
-    the cluster labels for cluster-level measures, the class labels for
-    class-level measures. All aggregations are vs the top-K nearest adversarial
-    partitions (different class). Output keys are neutral (no _class_ / _cluster_
-    suffix, no _cosine / _euclidean suffix).
-
-    Inputs:
-        graph            — shared subsample + k-NN graph from
-                           `prepare_complexity_graph`.
-        y_partition      — (n,) int array, partition labels (-1 = noise) aligned
-                           to `graph`'s subsampled points.
-        top_k_clusters   — K nearest adversarial partitions for aggregation.
-        metric           — "cosine" or "euclidean". Controls MST, F-family,
-                           G-family centroids, pairwise distances, and silhouette.
-        noise_cluster_ids — pseudo-cluster IDs of reassigned noise points. These
-                           are excluded from the graph upstream, so they get a
-                           flag-only row (is_noise_cluster=True, measures null)
-                           to preserve the downstream contract.
-        random_state     — seed for the silhouette.
+    `y_partition` selects the partition: cluster labels for cluster-level
+    measures, class labels for class-level. All aggregations are vs the top-K
+    nearest adversarial partitions (different class). Output keys are neutral.
+    `noise_cluster_ids` (excluded from the graph upstream) get a flag-only row
+    (is_noise_cluster=True, measures null) to preserve the downstream contract.
 
     Returns {partition_id: {measure_name: value}}.
     """
@@ -259,8 +233,7 @@ def compute_complexity_from_graph(
 
     cluster_mask, cluster_to_class = _build_population_masks(y_class, y_partition)
 
-    # centroids appropriate for the metric (spherical if cosine, Euclidean otherwise),
-    # computed once and reused for both the top-K map and the G-family geometry.
+    # metric-appropriate centroids, reused for both the top-K map and the G-family
     analysis_centroids = _compute_analysis_centroids(X_num, y_partition, metric=metric)
 
     top_k_map = _build_topk_map(
@@ -314,9 +287,8 @@ def compute_complexity_from_graph(
         row["is_noise_cluster"] = False
         result[cid] = row
 
-    # Noise pseudo-clusters are excluded from the graph (no geometry), but still
-    # need a row so the failure meta-model can identify and exclude them and
-    # report their test-support share. Emit a flag-only row (measures null).
+    # Noise pseudo-clusters have no geometry but still need a row so the failure
+    # meta-model can exclude them and report their test-support share.
     for nid in noise_cluster_ids or set():
         result[str(nid)] = {"is_noise_cluster": True}
 

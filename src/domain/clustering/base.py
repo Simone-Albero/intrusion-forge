@@ -214,23 +214,15 @@ def grid_search(
     silhouette_fn: SilhouetteFn | None = None,
     **fixed_params,
 ) -> dict:
-    """Generic grid search over param_grid, scored by noise-penalised silhouette.
+    """Grid search over param_grid, scored by silhouette − noise_penalty·noise_ratio.
 
-    Score = silhouette − `noise_penalty` · noise_ratio. At the default 1.0 one
-    point of silhouette trades evenly against one point of noise fraction.
-    Methods without noise (k-means, birch) have noise_ratio = 0, so their score
-    is the plain silhouette. Degenerate small clusters are handled post-hoc by
-    the absorption step in the pipeline, not by pre-grid pruning.
+    Methods without noise (k-means, birch) score on the plain silhouette.
+    `silhouette_fn` overrides the silhouette term (e.g. Gower-hybrid for
+    mixed-feature algorithms); default is Euclidean on `X_num`. fixed_params are
+    forwarded to fit_fn unchanged.
 
-    `silhouette_fn` overrides the silhouette term (e.g. Gower-hybrid silhouette
-    for mixed-feature algorithms); the default is Euclidean on `X_num`.
-
-    Returns `{"best": entry, "sweep": [entry, ...]}` where every entry has
-    `{combo, score, silhouette, n_clusters, n_noise, noise_ratio, size_balance,
-    duration_s}`. Failed fits are recorded with `score=-inf` and `error=True`.
-    Raises if no candidate produced a clustering.
-
-    fixed_params are forwarded unchanged to fit_fn on every call.
+    Returns {"best": entry, "sweep": [entry, ...]}; failed fits get score=-inf,
+    error=True. Raises if no candidate produced a clustering.
     """
     sub_num, sub_cat = _subsample(X_num, X_cat, max_fit_samples, random_state)
 

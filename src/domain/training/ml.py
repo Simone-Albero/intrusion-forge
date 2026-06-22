@@ -31,13 +31,8 @@ def fit_classifier(
 ) -> tuple[Pipeline, dict]:
     """Build an sklearn pipeline (preprocess + classifier) and fit on (X, y).
 
-    `X` is a DataFrame whose columns include both numerical and categorical
-    features. The categorical preprocessing strategy is chosen per classifier
-    in `CLASSIFIER_PREPROCESS`.
-
-    `X_val`/`y_val` are accepted for interface parity with DL but ignored.
-
-    Returns ``(pipeline, {})``.
+    `X` carries both numerical and categorical columns. `X_val`/`y_val` are
+    accepted for interface parity with DL but ignored. Returns ``(pipeline, {})``.
     """
     num_cols, cat_cols = _check_context(context)
     pipeline = build_pipeline(name, params, num_cols, cat_cols)
@@ -61,17 +56,11 @@ def grid_search_classifier(
 ) -> tuple[Pipeline, dict]:
     """Cross-validated grid search over the classifier step of the pipeline.
 
-    Grid keys (e.g. ``n_estimators``) are remapped to ``clf__<key>`` to target
-    the classifier inside the Pipeline. Returns ``(best_pipeline, summary)``.
-
-    Two optimisations are applied automatically:
-
-    * **Preprocessing cache**: the pipeline's transform steps are cached across
-      parameter combinations so that each CV fold preprocesses the data only
-      once regardless of how many classifier configurations are tried.
-    * **Stratified subsampling** (``max_samples``): when set and
-      ``len(X) > max_samples``, a stratified random sample is used for the CV
-      search; the winning configuration is then refit on the full dataset.
+    Grid keys are remapped to ``clf__<key>`` to target the classifier inside the
+    Pipeline. Transform steps are cached across combinations (each fold
+    preprocesses once); when ``max_samples`` is set and exceeded, the search runs
+    on a stratified subsample and the winner is refit on the full data.
+    Returns ``(best_pipeline, summary)``.
     """
     num_cols, cat_cols = _check_context(context)
     clf_grid = {f"clf__{k}": v for k, v in grid.items()}

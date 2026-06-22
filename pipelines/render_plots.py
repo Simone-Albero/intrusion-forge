@@ -165,11 +165,8 @@ def _plot_rf_evaluation(
 ) -> dict[str, Plot]:
     """Predicted-vs-observed scatter and importance bar for the RF regressor.
 
-    Each dot is a cluster. X = observed failure rate, Y = RF OOF prediction.
-    Dots colored by observed rate (viridis): warm = high rate, cool = low rate.
-    Mismatches between dot color and y-axis position expose systematic bias —
-    e.g. yellow dots (high rate) below the diagonal = RF underestimates hard
-    clusters. The dashed y=x reference line is perfect prediction.
+    Each dot is a cluster (X = observed rate, Y = OOF prediction), coloured by
+    observed rate; the dashed y=x line is perfect prediction.
     """
     predicted = classifier_results["oof_predicted_rate"]
     cids = [c for c in predicted if c in summary_df.index]
@@ -211,12 +208,9 @@ def _plot_selective_accuracy(
 ) -> dict[str, Plot]:
     """Selective-accuracy curves: reject high predicted-risk clusters first.
 
-    X = fraction of test traffic rejected (riskiest first), Y = accuracy on what
-    remains — so the curve rises as more is excluded. Three strategies: Predictor
-    rejects by predicted failure rate (label-free at inference), Oracle by the
-    true rate (best achievable ceiling), Random is the flat global-accuracy
-    baseline. The gap Predictor→Oracle is the headroom the geometry leaves on the
-    table; Predictor→Random is its operational lift.
+    X = fraction of test traffic rejected (riskiest first), Y = accuracy on the
+    remainder. Predictor rejects by predicted rate, Oracle by the true rate
+    (ceiling), Random is the flat global-accuracy baseline.
     """
     predicted = classifier_results["oof_predicted_rate"]
     cids = [c for c in predicted if c in summary_df.index]
@@ -258,10 +252,9 @@ def _plot_selective_macro_recall(
     """Class-balanced selective curve: macro-recall on the retained set as the
     riskiest clusters are rejected.
 
-    Counterpart to `_plot_selective_accuracy` for imbalanced settings: it exposes
-    whether the error-greedy rejection rule sacrifices minority classes. The Oracle
-    ranks by true error (accuracy-optimal), so here it need not dominate — a dip
-    below Random means rejecting high-error regions costs class balance.
+    Counterpart to `_plot_selective_accuracy` for imbalanced settings. The Oracle
+    ranks by true error, so here it need not dominate — a dip below Random means
+    error-greedy rejection costs class balance.
     """
     predicted = classifier_results["oof_predicted_rate"]
     cids = [c for c in predicted if c in summary_df.index]

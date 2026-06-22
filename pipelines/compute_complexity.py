@@ -130,8 +130,7 @@ def main():
     val_df = load_df(str(paths.processed_data / f"val.{ext}"))
     test_df = load_df(str(paths.processed_data / f"test.{ext}"))
 
-    # Complexity is measured inductively on train only: no val/test point feeds
-    # the geometry. The failure rate (classify.py) stays on test.
+    # Complexity is measured on train only; the failure rate (classify.py) on test.
     X_num = (
         train_df[num_cols].to_numpy(dtype=np.float64)
         if num_cols
@@ -143,10 +142,9 @@ def main():
     bus = LogDispatcher()
     bus.subscribe(JSONSubscriber(paths.shared))
 
-    # Subsample + k-NN graph are partition-independent: build once, reuse for
-    # both the cluster-level and class-level passes. Noise pseudo-clusters are
-    # density outliers with no geometric substructure, so they are excluded from
-    # the graph (they re-enter downstream only as flag-only rows).
+    # The k-NN graph is partition-independent: build once, reuse for the cluster-
+    # and class-level passes. Noise pseudo-clusters are excluded from the graph
+    # (they re-enter downstream only as flag-only rows).
     graph = None
     noise_cluster_ids: list[int] = []
     if run_cluster or run_class:

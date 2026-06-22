@@ -115,14 +115,11 @@ def compute_n_measures(
     *,
     metric: str = "cosine",
 ) -> dict[str, dict[str, float | None]]:
-    """Compute N1-N4 per cluster aggregated against the top-K nearest
-    adversarial clusters, returned as min/mean/max.
+    """N1-N4 per cluster vs the top-K adversarial clusters, as min/mean/max.
 
     Builds a global approximate MST once (for N1), then derives N2-N4 from the
-    k-NN graph using vectorised boolean masks. Noise points (excluded from
-    cluster_mask) may still appear as neighbours.
-    metric is forwarded to build_approx_mst to keep the MST consistent with the
-    k-NN graph metric.
+    k-NN graph via vectorised boolean masks. `metric` is forwarded to the MST so
+    it stays consistent with the k-NN graph.
     """
     edges_uv = build_approx_mst(knn_idx, knn_dist, X_num, X_cat, metric=metric)
 

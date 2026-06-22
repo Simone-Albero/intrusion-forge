@@ -1,7 +1,6 @@
 import logging
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
@@ -187,10 +186,8 @@ def predict_with_proba(
 ) -> tuple:
     """Return ``(y_pred, y_proba)`` for a DL model on a DataFrame.
 
-    With ``return_embedding=True`` also returns the latent embedding ``z`` as a
-    third element (``(y_pred, y_proba, z)``, ``z`` is ``None`` when the model
-    exposes none) — reused from the same forward pass for the latent projection plot.
-
+    With ``return_embedding=True`` also returns the latent embedding ``z`` from
+    the same forward pass (``None`` when the model exposes none).
     `context` must contain ``device``, ``num_cols``, ``cat_cols``.
     """
     if context is None:

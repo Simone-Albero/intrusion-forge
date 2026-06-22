@@ -123,15 +123,11 @@ def _cluster_per_class(
         X_cat_cls = X_cat[mask] if X_cat is not None else None
 
         algo_reports: dict[str, dict] = {}
-
-        def _reporter(name: str, result: dict, _store=algo_reports) -> None:
-            _store[name] = result
-
         cluster_fn = build_cluster_fn(
             algorithms=algorithms,
             max_fit_samples=max_fit_samples,
             random_state=random_state,
-            reporter=_reporter,
+            reporter=algo_reports.__setitem__,
             metric=metric,
         )
         raw_labels = cluster_fn(X_num_cls, X_cat_cls)
@@ -257,11 +253,9 @@ def _cluster_splits(
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict, set[int]]:
     """Cluster train per class, then attach the `cluster` column to all splits.
 
-    Train points are labelled by the per-class clusterer; val/test points are
-    assigned inductively to the nearest train centroid within their own class
-    (no test information feeds the cluster definition). Returns the splits with
-    the new column, the cluster centroids and the pseudo-cluster ids; publishes
-    the clustering report.
+    Train is labelled by the per-class clusterer; val/test points are assigned
+    inductively to the nearest train centroid within their own class. Returns the
+    splits, centroids and pseudo-cluster ids; publishes the clustering report.
     """
     X_num = train_df[num_cols].to_numpy(dtype=np.float64)
     X_cat = train_df[cat_cols].to_numpy() if cat_cols else None
