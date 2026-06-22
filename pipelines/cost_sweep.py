@@ -52,18 +52,31 @@ def _family(measure: str) -> str | None:
     return None
 
 
-def _family_rankcorr(complexity_k: dict, complexity_ref: dict) -> dict[str, float]:
-    """Mean per-family Spearman rank-corr of per-cluster measure values, K vs k_ref."""
-    cluster_ids = [c for c in complexity_k if c in complexity_ref]
+# True-size bins (cluster members in train) for stratifying intrinsic fidelity.
+# Half-open [lo, hi); the last bin is open-ended (hi=None).
+_SIZE_BINS = [(0, 20), (20, 50), (50, 200), (200, None)]
+
+
+def _size_bin_label(lo: int, hi: int | None) -> str:
+    return f">={lo}" if hi is None else f"{lo}-{hi}"
+
+
+def _per_family_rankcorr(
+    cluster_ids: list[str], complexity_k: dict, complexity_ref: dict
+) -> dict[str, float]:
+    """Mean per-family Spearman of per-cluster measure values over `cluster_ids`."""
     measures = {
-        m for cid in cluster_ids for m in complexity_k[cid] if _family(m) is not None
+        m
+        for cid in cluster_ids
+        for m in complexity_k.get(cid, {})
+        if _family(m) is not None
     }
     per_family: dict[str, list[float]] = {}
     for m in measures:
         a, b = [], []
         for cid in cluster_ids:
-            va = complexity_k[cid].get(m)
-            vb = complexity_ref[cid].get(m)
+            va = complexity_k.get(cid, {}).get(m)
+            vb = complexity_ref.get(cid, {}).get(m)
             if va is not None and vb is not None:
                 a.append(va)
                 b.append(vb)
@@ -73,6 +86,54 @@ def _family_rankcorr(complexity_k: dict, complexity_ref: dict) -> dict[str, floa
         if not np.isnan(rho):
             per_family.setdefault(_family(m), []).append(float(rho))
     return {fam: float(np.mean(vals)) for fam, vals in sorted(per_family.items())}
+
+
+def _shared_ids(complexity_k: dict, complexity_ref: dict) -> list[str]:
+    return [c for c in complexity_k if c in complexity_ref]
+
+
+def _family_rankcorr(complexity_k: dict, complexity_ref: dict) -> dict[str, float]:
+    """Mean per-family Spearman rank-corr of per-cluster measure values, K vs k_ref."""
+    return _per_family_rankcorr(
+        _shared_ids(complexity_k, complexity_ref), complexity_k, complexity_ref
+    )
+
+
+def _family_rankcorr_by_size(
+    complexity_k: dict, complexity_ref: dict, cluster_size: dict[str, int]
+) -> dict[str, dict]:
+    """`_family_rankcorr` stratified by true cluster size (members in train).
+
+    Isolates whether low fidelity is concentrated in small clusters — the ones
+    governed by `min_subsample_per_cluster`. Noise rows (absent from
+    `cluster_size`) are dropped.
+    """
+    shared = _shared_ids(complexity_k, complexity_ref)
+    out: dict[str, dict] = {}
+    for lo, hi in _SIZE_BINS:
+        ids = [
+            c
+            for c in shared
+            if c in cluster_size
+            and cluster_size[c] >= lo
+            and (hi is None or cluster_size[c] < hi)
+        ]
+        out[_size_bin_label(lo, hi)] = {
+            "n_clusters": len(ids),
+            "rankcorr": _per_family_rankcorr(ids, complexity_k, complexity_ref),
+        }
+    return out
+
+
+def _floor_bound_frac(counts: np.ndarray, n_total: int, cap: int, floor: int) -> float:
+    """Fraction of clusters whose subsample size is set by the floor, not the cap.
+
+    A cluster is floor-bound when its proportional share round(cap·n_c/n_total) ≤ floor;
+    below that the cap is inert for it. When this →1 the cap no longer drives n_subsample
+    (the degenerate tail of the sweep).
+    """
+    prop = np.round(cap * counts / n_total).astype(int)
+    return float((prop <= floor).mean())
 
 
 def main():
@@ -114,6 +175,13 @@ def main():
 
     predictions = load_from_json(paths.outputs / "analysis/predictions/test.json")
     param_grid = to_container(cfg.failure_classifier.param_grid)
+
+    # True genuine-cluster sizes: drive intrinsic size-stratification and the
+    # floor-bound fraction (cap-invariant, so computed once).
+    unique_clusters, counts = np.unique(y_cluster, return_counts=True)
+    n_total = int(counts.sum())
+    cluster_size = {str(c): int(n) for c, n in zip(unique_clusters, counts)}
+    floor = int(cfg.complexity.min_subsample_per_cluster)
 
     logger.info(
         "Cap-sweep on %s [%s], caps=%s, k_ref=%d",
@@ -174,6 +242,7 @@ def main():
             "mae": results.get("mae"),
             "n_clusters_used": results.get("n_clusters_used"),
             "n_subsample": int(graph.y_cluster.shape[0]),
+            "floor_bound_frac": _floor_bound_frac(counts, n_total, min(k, n_total), floor),
             "graph_build_s": graph_build_s,
         }
         logger.info(
@@ -188,10 +257,14 @@ def main():
             graph_build_s,
         )
 
-    # Intrinsic fidelity: per-family stability of the measure vectors vs k_ref.
+    # Intrinsic fidelity: per-family stability of the measure vectors vs k_ref,
+    # overall and stratified by true cluster size.
     for k in caps:
         records[k]["intrinsic_family_rankcorr"] = _family_rankcorr(
             complexity_by_cap[k], complexity_by_cap[k_ref]
+        )
+        records[k]["intrinsic_by_size"] = _family_rankcorr_by_size(
+            complexity_by_cap[k], complexity_by_cap[k_ref], cluster_size
         )
 
     out = {
