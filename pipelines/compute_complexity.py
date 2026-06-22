@@ -32,10 +32,20 @@ setup_logger(log_file="resources/logs.txt")
 logger = logging.getLogger(__name__)
 
 
+def cluster_class_map(y_cluster: np.ndarray, y_class: np.ndarray) -> dict[str, int]:
+    """Full cluster_id → class_id map from unfiltered train labels (noise included)."""
+    return {
+        str(c): int(y_class[y_cluster == c][0])
+        for c in np.unique(y_cluster)
+        if c != -1
+    }
+
+
 @timed
 def compute_cluster_complexity(
     graph: ComplexityGraph,
     noise_cluster_ids: list[int],
+    cluster_to_class: dict[str, int],
     *,
     top_k_clusters: int,
     metric: str,
@@ -44,7 +54,9 @@ def compute_cluster_complexity(
     """Compute per-cluster complexity measures + cluster→class mapping.
 
     Output schema: {cluster_id: {<measure>: ..., "cluster_class": <int>}}.
-    Noise pseudo-clusters (excluded from the graph) carry a flag-only row.
+    Noise pseudo-clusters (excluded from the graph) carry a flag-only row;
+    their `cluster_class` comes from `cluster_to_class`, which must cover the
+    full (unfiltered) clustering — graph labels alone omit the noise ids.
     """
     logger.info("Computing cluster-level complexity measures ...")
     complexity = compute_complexity_from_graph(
@@ -55,13 +67,6 @@ def compute_cluster_complexity(
         noise_cluster_ids=set(noise_cluster_ids),
         random_state=random_state,
     )
-
-    cluster_to_class: dict[str, int] = {}
-    for cid in np.unique(graph.y_cluster):
-        if cid == -1:
-            continue
-        mask = graph.y_cluster == cid
-        cluster_to_class[str(cid)] = int(graph.y_class[mask][0])
 
     return {
         str(cid): {**measures, "cluster_class": cluster_to_class.get(str(cid))}
@@ -152,6 +157,9 @@ def main():
         noise_cluster_ids = clusters_meta.get("noise_cluster_ids", [])
 
         y_cluster = train_df["cluster"].to_numpy(dtype=np.int64)
+        # Full map (noise included): genuine clusters leave the graph, but their
+        # noise siblings still need a class for the flag-only rows downstream.
+        cluster_to_class = cluster_class_map(y_cluster, y_class)
         if noise_cluster_ids:
             genuine = ~np.isin(y_cluster, noise_cluster_ids)
             X_num_g = X_num[genuine]
@@ -177,6 +185,7 @@ def main():
         cluster_complexity = compute_cluster_complexity(
             graph,
             noise_cluster_ids,
+            cluster_to_class,
             top_k_clusters=cfg.complexity.top_k_clusters,
             metric=cfg.complexity.distance,
             random_state=cfg.seed,

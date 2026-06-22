@@ -14,6 +14,7 @@ from src.core.utils import load_from_json, save_to_json
 from src.domain.analysis.complexity import prepare_complexity_graph
 from pipelines.common import paths_from_cfg
 from pipelines.compute_complexity import (
+    cluster_class_map,
     compute_class_complexity,
     compute_cluster_complexity,
 )
@@ -162,6 +163,8 @@ def main():
     X_cat = train_df[cat_cols].to_numpy() if cat_cols else None
     y_class = train_df[f"encoded_{cfg.data.label_col}"].to_numpy(dtype=np.int64)
     y_cluster = train_df["cluster"].to_numpy(dtype=np.int64)
+    # Full map (noise included) for the flag-only noise rows injected downstream.
+    cluster_to_class = cluster_class_map(y_cluster, y_class)
 
     clusters_meta = load_from_json(paths.shared / "metadata/clusters_meta.json")
     noise_cluster_ids = clusters_meta.get("noise_cluster_ids", [])
@@ -211,6 +214,7 @@ def main():
         cluster_complexity = compute_cluster_complexity(
             graph,
             noise_cluster_ids,
+            cluster_to_class,
             top_k_clusters=cfg.complexity.top_k_clusters,
             metric=cfg.complexity.distance,
             random_state=cfg.seed,
