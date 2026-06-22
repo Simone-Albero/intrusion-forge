@@ -14,7 +14,6 @@ from src.core.utils import load_from_json, save_to_json
 from src.domain.analysis.complexity import prepare_complexity_graph
 from pipelines.common import paths_from_cfg
 from pipelines.compute_complexity import (
-    _compute_class_centroids,
     compute_class_complexity,
     compute_cluster_complexity,
 )
@@ -104,11 +103,14 @@ def main():
     y_cluster = train_df["cluster"].to_numpy(dtype=np.int64)
 
     clusters_meta = load_from_json(paths.shared / "metadata/clusters_meta.json")
-    cluster_centroids = clusters_meta.get("centroids", {})
     noise_cluster_ids = clusters_meta.get("noise_cluster_ids", [])
-    class_centroids = _compute_class_centroids(
-        X_num, y_class, metric=cfg.complexity.distance
-    )
+
+    # Exclude noise pseudo-clusters from the graph (they re-enter downstream only
+    # as flag-only rows), matching pipelines/compute_complexity.py.
+    if noise_cluster_ids:
+        genuine = ~np.isin(y_cluster, noise_cluster_ids)
+        X_num, y_class, y_cluster = X_num[genuine], y_class[genuine], y_cluster[genuine]
+        X_cat = X_cat[genuine] if X_cat is not None else None
 
     predictions = load_from_json(paths.outputs / "analysis/predictions/test.json")
     param_grid = to_container(cfg.failure_classifier.param_grid)
@@ -140,7 +142,6 @@ def main():
 
         cluster_complexity = compute_cluster_complexity(
             graph,
-            cluster_centroids,
             noise_cluster_ids,
             top_k_clusters=cfg.complexity.top_k_clusters,
             metric=cfg.complexity.distance,
@@ -148,7 +149,6 @@ def main():
         )
         class_complexity = compute_class_complexity(
             graph,
-            class_centroids,
             top_k_clusters=cfg.complexity.top_k_clusters,
             metric=cfg.complexity.distance,
             random_state=cfg.seed,

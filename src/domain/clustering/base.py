@@ -14,8 +14,12 @@ from src.domain.analysis.complexity.shared import (
 )
 
 FitFn = Callable[..., np.ndarray]  # (X_num, X_cat=None, **params) -> labels
-ClusterFn = Callable[[np.ndarray, np.ndarray | None], np.ndarray]  # (X_num, X_cat) -> labels
-SilhouetteFn = Callable[[np.ndarray, np.ndarray | None, np.ndarray], float]  # (X_num, X_cat, labels) -> sil
+ClusterFn = Callable[
+    [np.ndarray, np.ndarray | None], np.ndarray
+]  # (X_num, X_cat) -> labels
+SilhouetteFn = Callable[
+    [np.ndarray, np.ndarray | None, np.ndarray], float
+]  # (X_num, X_cat, labels) -> sil
 
 
 def cluster_size_balance(labels: np.ndarray) -> float:
@@ -30,17 +34,6 @@ def cluster_size_balance(labels: np.ndarray) -> float:
     p = counts / counts.sum()
     h = float(-(p * np.log(p)).sum())
     return h / float(np.log(k))
-
-
-def floor_coverage(labels: np.ndarray, floor: int) -> float:
-    """Fraction of non-noise points belonging to clusters of size >= floor."""
-    mask = labels != -1
-    if not mask.any():
-        return 0.0
-    _, inverse, counts = np.unique(
-        labels[mask], return_inverse=True, return_counts=True
-    )
-    return float((counts[inverse] >= floor).mean())
 
 
 def _measure(labels: np.ndarray, score: float, combo: dict, duration_s: float) -> dict:
@@ -217,30 +210,25 @@ def grid_search(
     *,
     max_fit_samples: int = 50_000,
     random_state: int = 0,
-    min_cluster_floor: int = 50,
-    noise_penalty: float = 0.5,
+    noise_penalty: float = 1.0,
     silhouette_fn: SilhouetteFn | None = None,
     **fixed_params,
 ) -> dict:
     """Generic grid search over param_grid, scored by noise-penalised silhouette.
 
-    Score = silhouette − `noise_penalty` · noise_ratio. The silhouette is measured
-    on non-noise points only, so without a coverage term selection would prefer the
-    tightest cores regardless of how much data they leave as noise — for density
-    methods (HDBSCAN) the highest-noise combo systematically wins. The additive
-    penalty (chosen over multiplicative `(1 - noise_ratio)`, which mis-ranks
-    negative silhouettes) balances tightness against coverage. Methods without noise
-    (k-means, birch) have noise_ratio = 0, so their score is unaffected.
-    `_prune_grid_by_floor` upstream already blocks degenerate K values (average
-    cluster size < floor) from entering the grid.
+    Score = silhouette − `noise_penalty` · noise_ratio. At the default 1.0 one
+    point of silhouette trades evenly against one point of noise fraction.
+    Methods without noise (k-means, birch) have noise_ratio = 0, so their score
+    is the plain silhouette. Degenerate small clusters are handled post-hoc by
+    the absorption step in the pipeline, not by pre-grid pruning.
 
     `silhouette_fn` overrides the silhouette term (e.g. Gower-hybrid silhouette
     for mixed-feature algorithms); the default is Euclidean on `X_num`.
 
     Returns `{"best": entry, "sweep": [entry, ...]}` where every entry has
-    `{combo, score, silhouette, floor_coverage, n_clusters, n_noise,
-    noise_ratio, size_balance, duration_s}`. Failed fits are recorded with
-    `score=-inf` and `error=True`. Raises if no candidate produced a clustering.
+    `{combo, score, silhouette, n_clusters, n_noise, noise_ratio, size_balance,
+    duration_s}`. Failed fits are recorded with `score=-inf` and `error=True`.
+    Raises if no candidate produced a clustering.
 
     fixed_params are forwarded unchanged to fit_fn on every call.
     """
@@ -264,16 +252,18 @@ def grid_search(
         try:
             labels = fit_fn(sub_num, X_cat=sub_cat, **combo, **fixed_params)
         except Exception:
-            sweep.append({
-                "combo": combo,
-                "score": float("-inf"),
-                "n_clusters": 0,
-                "n_noise": 0,
-                "noise_ratio": 0.0,
-                "size_balance": 0.0,
-                "duration_s": time.perf_counter() - t0,
-                "error": True,
-            })
+            sweep.append(
+                {
+                    "combo": combo,
+                    "score": float("-inf"),
+                    "n_clusters": 0,
+                    "n_noise": 0,
+                    "noise_ratio": 0.0,
+                    "size_balance": 0.0,
+                    "duration_s": time.perf_counter() - t0,
+                    "error": True,
+                }
+            )
             continue
 
         duration = time.perf_counter() - t0
@@ -282,12 +272,10 @@ def grid_search(
             if silhouette_fn is not None
             else _score_silhouette(sub_num, labels)
         )
-        cov = floor_coverage(labels, min_cluster_floor)
         noise_ratio = float((labels == -1).mean())
         s = sil - noise_penalty * noise_ratio
         entry = _measure(labels, s, combo, duration)
         entry["silhouette"] = sil
-        entry["floor_coverage"] = cov
         sweep.append(entry)
         if fallback_entry is None:
             fallback_entry = entry

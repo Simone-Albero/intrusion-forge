@@ -43,25 +43,6 @@ setup_logger(log_file="resources/logs.txt")
 logger = logging.getLogger(__name__)
 
 
-def _rekey_consensus_by_algo_name(diagnostics: dict, algo_names: list[str]) -> dict:
-    """Rewrite the `*_idx` diagnostics (pairwise agreement, ARI, voter weights) to use names."""
-    out = {k: v for k, v in diagnostics.items() if not k.endswith("_idx")}
-    pairwise_idx = diagnostics.get("pairwise_algo_agreement_idx", {})
-    out["pairwise_algo_agreement"] = {
-        f"{algo_names[int(k.split('-')[0])]}-{algo_names[int(k.split('-')[1])]}": v
-        for k, v in pairwise_idx.items()
-    }
-    ari_idx = diagnostics.get("algorithm_consensus_ari_idx", [])
-    out["algorithm_consensus_ari"] = {
-        algo_names[i]: ari_idx[i] for i in range(len(ari_idx))
-    }
-    weights_idx = diagnostics.get("voter_weights_idx", [])
-    out["voter_weights"] = {
-        algo_names[i]: weights_idx[i] for i in range(len(weights_idx))
-    }
-    return out
-
-
 def _absorb_small_clusters(
     labels: np.ndarray, floor: int
 ) -> tuple[np.ndarray, int, int]:
@@ -114,33 +95,24 @@ def _cluster_per_class(
     *,
     X_cat: np.ndarray | None = None,
     algorithms: dict[str, dict],
-    consensus_threshold: float,
     max_fit_samples: int,
-    min_consensus_size: int,
     random_state: int,
     metric: str = "euclidean",
-    weight_voters: bool = True,
-    refine_geometry: bool = True,
-    refine_margin: float = 0.8,
     min_cluster_floor: int = 50,
     target_cluster_size: int = 25000,
-    target_size_frac: float = 0.05,
 ) -> tuple[np.ndarray, dict[int, np.ndarray], set[int], dict[str, dict]]:
     """Per-class clustering. Returns (labels, centroids, noise_cluster_ids, report).
 
-    Cluster IDs are globally unique via offset. Residual -1 noise points (from
-    single-HDBSCAN runs, clusters absorbed by `min_cluster_floor` are reassigned
-    to per-class pseudo-clusters; their IDs are collected in noise_cluster_ids.
+    Cluster IDs are globally unique via offset. Residual -1 noise points (and
+    clusters absorbed by `min_cluster_floor`) are reassigned to per-class
+    pseudo-clusters; their IDs are collected in noise_cluster_ids.
     """
     n = X_num.shape[0]
-    target_eff = max(
-        2 * min_cluster_floor, min(round(n * target_size_frac), target_cluster_size)
-    )
+    target_eff = max(2 * min_cluster_floor, target_cluster_size)
     labels = np.full(n, -1, dtype=np.int64)
     centroids: dict[int, np.ndarray] = {}
     offset = 0
     report: dict[str, dict] = {}
-    algo_names = list(algorithms.keys())
 
     for cls in tqdm(classes, desc="Clustering classes"):
         mask = y_class == cls
@@ -151,26 +123,15 @@ def _cluster_per_class(
         X_cat_cls = X_cat[mask] if X_cat is not None else None
 
         algo_reports: dict[str, dict] = {}
-        consensus_diag: dict = {}
 
         def _reporter(name: str, result: dict, _store=algo_reports) -> None:
             _store[name] = result
 
-        def _consensus_reporter(diag: dict, _store=consensus_diag) -> None:
-            _store.update(diag)
-
         cluster_fn = build_cluster_fn(
             algorithms=algorithms,
-            consensus_threshold=consensus_threshold,
             max_fit_samples=max_fit_samples,
             random_state=random_state,
-            min_consensus_size=min_consensus_size,
             reporter=_reporter,
-            consensus_reporter=_consensus_reporter,
-            weight_voters=weight_voters,
-            refine_geometry=refine_geometry,
-            refine_margin=refine_margin,
-            min_cluster_floor=min_cluster_floor,
             metric=metric,
         )
         raw_labels = cluster_fn(X_num_cls, X_cat_cls)
@@ -183,24 +144,18 @@ def _cluster_per_class(
 
         n_cls = int(raw_labels.shape[0])
         n_noise_cls = int((raw_labels == -1).sum())
-        consensus_block = {
-            "n_clusters": int(np.unique(raw_labels[raw_labels != -1]).size),
-            "n_noise": n_noise_cls,
-            "noise_ratio": n_noise_cls / n_cls if n_cls > 0 else 0.0,
-            "size_balance": cluster_size_balance(raw_labels),
-            "floor_absorbed_clusters": n_floor_clusters,
-            "floor_absorbed_points": n_floor_points,
-            "split_added_clusters": n_split_added,
-        }
-        if consensus_diag:
-            consensus_block.update(
-                _rekey_consensus_by_algo_name(consensus_diag, algo_names)
-            )
-
         report[str(cls)] = {
             "n_samples": n_cls,
             "algorithms": algo_reports,
-            "consensus": consensus_block,
+            "summary": {
+                "n_clusters": int(np.unique(raw_labels[raw_labels != -1]).size),
+                "n_noise": n_noise_cls,
+                "noise_ratio": n_noise_cls / n_cls if n_cls > 0 else 0.0,
+                "size_balance": cluster_size_balance(raw_labels),
+                "floor_absorbed_clusters": n_floor_clusters,
+                "floor_absorbed_points": n_floor_points,
+                "split_added_clusters": n_split_added,
+            },
         }
 
         cluster_ids = np.unique(raw_labels[raw_labels != -1])
@@ -315,25 +270,17 @@ def _cluster_splits(
 
     logger.info("Running per-class clustering on train (n=%d)...", len(train_df))
     algorithms = OmegaConf.to_container(cfg.clustering.algorithms, resolve=True)
-    # voter weighting / geometric refinement are ensemble-only knobs (ignored for a single algo)
-    is_ensemble = len(algorithms) > 1
     labels, centroids, noise_cluster_ids, clustering_report = _cluster_per_class(
         X_num,
         y_class,
         all_classes,
         X_cat=X_cat,
         algorithms=algorithms,
-        consensus_threshold=cfg.clustering.consensus_threshold,
         max_fit_samples=cfg.clustering.max_fit_samples,
-        min_consensus_size=cfg.clustering.min_consensus_size,
         random_state=cfg.seed,
         metric=cfg.clustering.distance,
-        weight_voters=cfg.clustering.weight_voters if is_ensemble else True,
-        refine_geometry=cfg.clustering.refine_geometry if is_ensemble else True,
-        refine_margin=cfg.clustering.refine_margin if is_ensemble else 0.8,
         min_cluster_floor=cfg.clustering.min_cluster_floor,
         target_cluster_size=cfg.clustering.target_cluster_size,
-        target_size_frac=cfg.clustering.target_size_frac,
     )
     dispatcher.publish(
         LogBundle.from_dict({"json/clustering_report": clustering_report})

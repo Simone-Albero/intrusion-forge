@@ -224,7 +224,6 @@ def prepare_complexity_graph(
 def compute_complexity_from_graph(
     graph: ComplexityGraph,
     y_partition: np.ndarray,
-    centroids: dict[str, list[float]],
     *,
     top_k_clusters: int = 10,
     metric: str = "cosine",
@@ -244,14 +243,13 @@ def compute_complexity_from_graph(
                            `prepare_complexity_graph`.
         y_partition      — (n,) int array, partition labels (-1 = noise) aligned
                            to `graph`'s subsampled points.
-        centroids        — {str(partition_id): [float, ...]} Euclidean centroids.
-                           Used only by the Euclidean G-family path; the cosine
-                           path recomputes spherical centroids.
         top_k_clusters   — K nearest adversarial partitions for aggregation.
         metric           — "cosine" or "euclidean". Controls MST, F-family,
                            G-family centroids, pairwise distances, and silhouette.
-        noise_cluster_ids — set of pseudo-partition IDs (reassigned noise points).
-                           Adds is_noise_cluster flag to the output rows.
+        noise_cluster_ids — pseudo-cluster IDs of reassigned noise points. These
+                           are excluded from the graph upstream, so they get a
+                           flag-only row (is_noise_cluster=True, measures null)
+                           to preserve the downstream contract.
         random_state     — seed for the silhouette.
 
     Returns {partition_id: {measure_name: value}}.
@@ -261,7 +259,8 @@ def compute_complexity_from_graph(
 
     cluster_mask, cluster_to_class = _build_population_masks(y_class, y_partition)
 
-    # centroids appropriate for the metric (spherical if cosine, Euclidean otherwise)
+    # centroids appropriate for the metric (spherical if cosine, Euclidean otherwise),
+    # computed once and reused for both the top-K map and the G-family geometry.
     analysis_centroids = _compute_analysis_centroids(X_num, y_partition, metric=metric)
 
     top_k_map = _build_topk_map(
@@ -297,12 +296,11 @@ def compute_complexity_from_graph(
 
         pbar.set_description("G measures")
         g_out = compute_cluster_geometry(
-            X_num, y_partition, centroids,
+            X_num, y_partition, analysis_centroids,
             metric=metric, random_state=random_state,
         )
         pbar.update(1)
 
-    noise_ids = noise_cluster_ids or set()
     all_ids = set(f_out) | set(n_out) | set(nd_out) | set(t_out) | set(g_out)
 
     result: dict[str, dict[str, float | None]] = {}
@@ -313,7 +311,13 @@ def compute_complexity_from_graph(
         row.update(nd_out.get(cid, {}))
         row.update(t_out.get(cid, {}))
         row.update(g_out.get(cid, {}))
-        row["is_noise_cluster"] = int(cid) in noise_ids
+        row["is_noise_cluster"] = False
         result[cid] = row
+
+    # Noise pseudo-clusters are excluded from the graph (no geometry), but still
+    # need a row so the failure meta-model can identify and exclude them and
+    # report their test-support share. Emit a flag-only row (measures null).
+    for nid in noise_cluster_ids or set():
+        result[str(nid)] = {"is_noise_cluster": True}
 
     return result
