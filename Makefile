@@ -86,10 +86,9 @@ FORCE_FLAG  := $(if $(FORCE),prepare.force=true complexity.force=true,)
 EXTEND_FLAGS := $(if $(LABELFREE),extend.generate=true extend.labelfree=true,$(if $(EXTEND),extend.generate=true,))
 KFOLD_FLAG  := $(if $(filter $(DATA),$(LARGE_DATASETS)),kfold=false,)
 
-# Cost/fidelity cap-sweep. Cells ordered cheapest→heaviest: cosine before euclidean
-# (~4× cheaper), datasets small→large (covertype 0.6M < ton_iot 17M < cic 19M). The
-# cosine 3-dataset sub-result lands first; euclidean closes the matrix. Triples are
-# dataset:distance:name.
+# Cost-model cells. Ordered cheapest→heaviest: cosine before euclidean (~4× cheaper),
+# datasets small→large (covertype 0.6M < ton_iot 17M < cic 19M). The cosine 3-dataset
+# sub-result lands first; euclidean closes the matrix. Triples are dataset:distance:name.
 COST_CELLS := \
   covertype:cosine:cost_cos_kmeans \
   ton_iot_v2:cosine:cost_cos_kmeans \
@@ -97,14 +96,8 @@ COST_CELLS := \
   covertype:euclidean:cost_euc_kmeans \
   ton_iot_v2:euclidean:cost_euc_kmeans \
   cic_2018_v2:euclidean:cost_euc_kmeans
-COST_CAPS        ?= 10000 15000 25000 35000 50000 75000 100000 200000 300000
-COST_SANITY_CAPS ?= 10000 15000 25000 35000 50000 100000
-COST_CLF         ?= random_forest
-empty :=
-space := $(empty) $(empty)
-comma := ,
-COST_CAPS_CSV        := $(subst $(space),$(comma),$(strip $(COST_CAPS)))
-COST_SANITY_CAPS_CSV := $(subst $(space),$(comma),$(strip $(COST_SANITY_CAPS)))
+COST_CLF        ?= random_forest
+EXPERIMENTS_DIR ?= resources/experiments
 
 .PHONY: prepare classify classify-extended extend complexity failure-classify render run run-clustering-sweep cost-sweep cost-sanity generate dashboard help
 
@@ -227,7 +220,7 @@ run-clustering-sweep:
 	done
 	@echo ""; echo "Clustering sweep done: $(CLUSTERING_ALGOS)"
 
-## cost-sweep:         Full cap-sweep, cheapest→heaviest cell (3 datasets × 2 distances)  (COST_CAPS, COST_CLF)
+## cost-sweep:         k-NN build cost model per cell (cheapest→heaviest) + cross-run table  (COST_CLF)
 cost-sweep:
 	@for cell in $(COST_CELLS); do \
 	  ds=$${cell%%:*}; rest=$${cell#*:}; dist=$${rest%%:*}; nm=$${rest##*:}; \
@@ -238,24 +231,23 @@ cost-sweep:
 	    DATA=$$ds NAME=$$nm SEED=$(SEED) CLASSIFIER=$(COST_CLF) DISTANCE=$$dist || exit 1; \
 	  PYTHONPATH=. $(PYTHON) pipelines/cost_sweep.py \
 	    data=$$ds name=$$nm seed=$(SEED) classifier=$(COST_CLF) \
-	    clustering=kmeans distance=$$dist \
-	    +capsweep.caps=[$(COST_CAPS_CSV)] || exit 1; \
+	    clustering=kmeans distance=$$dist || exit 1; \
 	done
-	@echo ""; echo "cost-sweep done -> shared/cost_sweep.json per cell."
+	@PYTHONPATH=. $(PYTHON) pipelines/cost_sweep.py aggregate=$(EXPERIMENTS_DIR)
+	@echo ""; echo "cost-sweep done -> shared/cost_model.json per cell + $(EXPERIMENTS_DIR)/cost_quality_table.json."
 
-## cost-sanity:        Quick ton_iot cosine sweep (caps ≤100k) for preliminary signal  (SEED, COST_SANITY_CAPS)
+## cost-sanity:        Quick ton_iot cosine cost model for preliminary signal (alpha≈2)  (SEED)
 cost-sanity:
 	@ds=ton_iot_v2; dist=cosine; nm=cost_sanity; \
-	echo ""; echo "== cost-sanity: $$ds [$$dist] caps=$(COST_SANITY_CAPS) =="; \
+	echo ""; echo "== cost-sanity: $$ds [$$dist] cost model =="; \
 	$(MAKE) --no-print-directory prepare \
 	  DATA=$$ds NAME=$$nm SEED=$(SEED) CLUSTERING=kmeans DISTANCE=$$dist || exit 1; \
 	$(MAKE) --no-print-directory classify \
 	  DATA=$$ds NAME=$$nm SEED=$(SEED) CLASSIFIER=$(COST_CLF) DISTANCE=$$dist || exit 1; \
 	PYTHONPATH=. $(PYTHON) pipelines/cost_sweep.py \
 	  data=$$ds name=$$nm seed=$(SEED) classifier=$(COST_CLF) \
-	  clustering=kmeans distance=$$dist \
-	  +capsweep.caps=[$(COST_SANITY_CAPS_CSV)] || exit 1
-	@echo ""; echo "cost-sanity done -> inspect shared/cost_sweep.json (cost_analysis, iso_quality_bootstrap)."
+	  clustering=kmeans distance=$$dist || exit 1
+	@echo ""; echo "cost-sanity done -> inspect shared/cost_model.json (cost_model.alpha, pipeline_cost)."
 
 ## generate:           Generate synthetic test dataset                        (ROWS)
 generate:
