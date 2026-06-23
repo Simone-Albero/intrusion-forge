@@ -1,13 +1,16 @@
 """Complexity cost analysis: a deterministic k-NN build cost model per cell, plus a
 cross-run aggregator of the cost↔quality trade-off.
 
-Two modes (dispatched in `main`):
+Three modes (dispatched in `main`):
   * default — fit T(m)=c·m^alpha by timing `build_knn_graph` over a controlled m grid on
     one cell's train set, and report the complexity share of end-to-end wall time.
     Writes `shared/cost_model.json`.
   * `aggregate=<root>` — scan finished runs under <root> and assemble a tidy table of
     (n_clusters, complexity build time, rho) from existing artifacts. Writes
     `<root>/cost_quality_table.json`.
+  * `summary=<root>` — roll up the per-cell `cost_model.json` files under <root> into
+    alpha (mean±std per distance, the Θ(m²) robustness check) plus the cosine/euclidean c
+    ratio per dataset. Writes `<root>/cost_model_summary.json`.
 
 The build is brute-force kNN = Θ(m²) distance evals, so the cap on complexity samples
 decouples cost from corpus size N. After tying cluster count to the cap (cap // floor),
@@ -237,12 +240,72 @@ def _aggregate_runs(root: Path) -> None:
     logger.info("Aggregated %d rows -> %s", len(rows), out_path)
 
 
+def _summarize_cost_models(root: Path) -> None:
+    """Roll up per-cell `cost_model.json` files under `root` into a robustness summary.
+
+    Groups fits by (dataset, distance): reports alpha mean±std across seeds (the Θ(m²)
+    check) and c mean±std, then the euclidean/cosine c ratio per dataset. Degenerate fits
+    (alpha=None) are skipped. Writes `<root>/cost_model_summary.json`.
+    """
+    groups: dict[tuple[str, str], list[dict]] = {}
+    for cm_path in sorted(root.glob("**/shared/cost_model.json")):
+        try:
+            cm = load_from_json(cm_path)
+        except (FileNotFoundError, OSError):
+            continue
+        model = cm.get("cost_model", {})
+        if model.get("alpha") is None:
+            logger.warning("skip %s (degenerate fit, alpha=None)", cm_path)
+            continue
+        key = (cm.get("dataset"), cm.get("distance"))
+        groups.setdefault(key, []).append(model)
+
+    by_distance: list[dict] = []
+    c_by_dataset: dict[str, dict[str, float]] = {}
+    for (dataset, distance), fits in sorted(
+        groups.items(), key=lambda kv: (kv[0][0] or "", kv[0][1] or "")
+    ):
+        alphas = np.array([f["alpha"] for f in fits], dtype=float)
+        cs = np.array([f["c"] for f in fits], dtype=float)
+        r2s = [f["r2"] for f in fits if f.get("r2") is not None]
+        row = {
+            "dataset": dataset,
+            "distance": distance,
+            "n_seeds": len(fits),
+            "alpha_mean": float(alphas.mean()),
+            "alpha_std": float(alphas.std(ddof=1)) if len(fits) > 1 else 0.0,
+            "c_mean": float(cs.mean()),
+            "c_std": float(cs.std(ddof=1)) if len(fits) > 1 else 0.0,
+            "r2_min": min(r2s) if r2s else None,
+        }
+        by_distance.append(row)
+        c_by_dataset.setdefault(dataset, {})[distance] = row["c_mean"]
+
+    c_ratio = [
+        {"dataset": ds, "euclidean_over_cosine": d["euclidean"] / d["cosine"]}
+        for ds, d in sorted(c_by_dataset.items())
+        if d.get("cosine") and d.get("euclidean")
+    ]
+
+    n_models = sum(len(v) for v in groups.values())
+    out_path = root / "cost_model_summary.json"
+    save_to_json(
+        {"n_models": n_models, "by_distance": by_distance, "c_ratio": c_ratio}, out_path
+    )
+    logger.info("Summarised %d cost models -> %s", n_models, out_path)
+
+
 def main():
-    """Dispatch: `aggregate=<root>` → cross-run table; else per-cell cost model."""
+    """Dispatch: `aggregate=<root>` → cross-run table; `summary=<root>` → cost-model
+    roll-up; else per-cell cost model."""
     argv = sys.argv[1:]
     agg = [a for a in argv if a.startswith("aggregate=")]
     if agg:
         _aggregate_runs(Path(agg[0].split("=", 1)[1]))
+        return
+    summ = [a for a in argv if a.startswith("summary=")]
+    if summ:
+        _summarize_cost_models(Path(summ[0].split("=", 1)[1]))
         return
 
     cfg = load_config(

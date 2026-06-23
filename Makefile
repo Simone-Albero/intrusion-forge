@@ -86,20 +86,14 @@ FORCE_FLAG  := $(if $(FORCE),prepare.force=true complexity.force=true,)
 EXTEND_FLAGS := $(if $(LABELFREE),extend.generate=true extend.labelfree=true,$(if $(EXTEND),extend.generate=true,))
 KFOLD_FLAG  := $(if $(filter $(DATA),$(LARGE_DATASETS)),kfold=false,)
 
-# Cost-model cells. Ordered cheapest→heaviest: cosine before euclidean (~4× cheaper),
-# datasets small→large (covertype 0.6M < ton_iot 17M < cic 19M). The cosine 3-dataset
-# sub-result lands first; euclidean closes the matrix. Triples are dataset:distance:name.
-COST_CELLS := \
-  covertype:cosine:cost_cos_kmeans \
-  ton_iot_v2:cosine:cost_cos_kmeans \
-  cic_2018_v2:cosine:cost_cos_kmeans \
-  covertype:euclidean:cost_euc_kmeans \
-  ton_iot_v2:euclidean:cost_euc_kmeans \
-  cic_2018_v2:euclidean:cost_euc_kmeans
+# Cost analysis. `cost-model` characterises the k-NN build cost for one dataset over both
+# distances × COST_SEEDS: α (≈2, Θ(m²)) gets a confidence interval across seeds, while c
+# contrasts cosine vs euclidean (~4×). The aggregator scans EXPERIMENTS_DIR.
 COST_CLF        ?= random_forest
+COST_SEEDS      ?= 42 0 1
 EXPERIMENTS_DIR ?= resources/experiments
 
-.PHONY: prepare classify classify-extended extend complexity failure-classify render run run-clustering-sweep cost-sweep cost-sanity generate dashboard help
+.PHONY: prepare classify classify-extended extend complexity failure-classify render run run-clustering-sweep cost-model cost-summary cost-aggregate generate dashboard help
 
 ## prepare:            Step 1 — preprocess raw CSV → parquet splits           (DATA, NAME, SEED, FORCE)
 prepare:
@@ -220,34 +214,32 @@ run-clustering-sweep:
 	done
 	@echo ""; echo "Clustering sweep done: $(CLUSTERING_ALGOS)"
 
-## cost-sweep:         k-NN build cost model per cell (cheapest→heaviest) + cross-run table  (COST_CLF)
-cost-sweep:
-	@for cell in $(COST_CELLS); do \
-	  ds=$${cell%%:*}; rest=$${cell#*:}; dist=$${rest%%:*}; nm=$${rest##*:}; \
-	  echo ""; echo "== cost-sweep cell: $$ds [$$dist] -> name=$$nm =="; \
-	  $(MAKE) --no-print-directory prepare \
-	    DATA=$$ds NAME=$$nm SEED=$(SEED) CLUSTERING=kmeans DISTANCE=$$dist || exit 1; \
-	  $(MAKE) --no-print-directory classify \
-	    DATA=$$ds NAME=$$nm SEED=$(SEED) CLASSIFIER=$(COST_CLF) DISTANCE=$$dist || exit 1; \
-	  PYTHONPATH=. $(PYTHON) pipelines/cost_sweep.py \
-	    data=$$ds name=$$nm seed=$(SEED) classifier=$(COST_CLF) \
-	    clustering=kmeans distance=$$dist || exit 1; \
+## cost-model:         Deliverable A — k-NN build cost model T(m)=c·m^α over 2 distances × COST_SEEDS for one dataset  (DATA, NAME, COST_SEEDS, COST_CLF)
+cost-model:
+	@for dist in cosine euclidean; do \
+	  for seed in $(COST_SEEDS); do \
+	    nm=$(NAME)_$$dist; \
+	    echo ""; echo "== cost-model: $(DATA) [$$dist] seed=$$seed -> name=$$nm =="; \
+	    $(MAKE) --no-print-directory prepare \
+	      DATA=$(DATA) NAME=$$nm SEED=$$seed CLUSTERING=kmeans DISTANCE=$$dist || exit 1; \
+	    $(MAKE) --no-print-directory classify \
+	      DATA=$(DATA) NAME=$$nm SEED=$$seed CLASSIFIER=$(COST_CLF) CLUSTERING=kmeans DISTANCE=$$dist || exit 1; \
+	    PYTHONPATH=. $(PYTHON) pipelines/cost_sweep.py \
+	      data=$(DATA) name=$$nm seed=$$seed classifier=$(COST_CLF) \
+	      clustering=kmeans distance=$$dist || exit 1; \
+	  done; \
 	done
-	@PYTHONPATH=. $(PYTHON) pipelines/cost_sweep.py aggregate=$(EXPERIMENTS_DIR)
-	@echo ""; echo "cost-sweep done -> shared/cost_model.json per cell + $(EXPERIMENTS_DIR)/cost_quality_table.json."
+	@echo ""; echo "cost-model done -> <NAME>_<distance>/$(DATA)_<seed>/shared/cost_model.json (α across COST_SEEDS; c cosine vs euclidean)."
 
-## cost-sanity:        Quick ton_iot cosine cost model for preliminary signal (alpha≈2)  (SEED)
-cost-sanity:
-	@ds=ton_iot_v2; dist=cosine; nm=cost_sanity; \
-	echo ""; echo "== cost-sanity: $$ds [$$dist] cost model =="; \
-	$(MAKE) --no-print-directory prepare \
-	  DATA=$$ds NAME=$$nm SEED=$(SEED) CLUSTERING=kmeans DISTANCE=$$dist || exit 1; \
-	$(MAKE) --no-print-directory classify \
-	  DATA=$$ds NAME=$$nm SEED=$(SEED) CLASSIFIER=$(COST_CLF) DISTANCE=$$dist || exit 1; \
-	PYTHONPATH=. $(PYTHON) pipelines/cost_sweep.py \
-	  data=$$ds name=$$nm seed=$(SEED) classifier=$(COST_CLF) \
-	  clustering=kmeans distance=$$dist || exit 1
-	@echo ""; echo "cost-sanity done -> inspect shared/cost_model.json (cost_model.alpha, pipeline_cost)."
+## cost-summary:       Roll up cost_model.json files: α mean±std per distance + c euclidean/cosine ratio  (EXPERIMENTS_DIR)
+cost-summary:
+	@PYTHONPATH=. $(PYTHON) pipelines/cost_sweep.py summary=$(EXPERIMENTS_DIR)
+	@echo ""; echo "cost-summary done -> $(EXPERIMENTS_DIR)/cost_model_summary.json."
+
+## cost-aggregate:     Deliverable B — cross-run cost↔quality table (ρ vs cluster count vs build time) from finished runs  (EXPERIMENTS_DIR)
+cost-aggregate:
+	@PYTHONPATH=. $(PYTHON) pipelines/cost_sweep.py aggregate=$(EXPERIMENTS_DIR)
+	@echo ""; echo "cost-aggregate done -> $(EXPERIMENTS_DIR)/cost_quality_table.json."
 
 ## generate:           Generate synthetic test dataset                        (ROWS)
 generate:
