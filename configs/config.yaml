@@ -33,7 +33,7 @@ complexity:
   k: 30
   top_k_clusters: 10                 # top-K nearest adversarial clusters per cluster (vs-cluster aggregation)
   min_subsample_per_cluster: 20      # min samples per cluster (measurement floor); keep ≤ clustering.min_cluster_floor
-  max_complexity_samples: 100000     # cap on points used to build the k-NN graph
+  max_complexity_samples: 50000      # cap on points used to build the k-NN graph; iso-quality knee from the cost sweep (build is Θ(m²))
   force: false                       # re-run complexity computation even if shared output exists
 
 failure_classifier:
