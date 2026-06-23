@@ -47,6 +47,7 @@ def _make_single_cluster_fn(
     random_state: int,
     reporter: Reporter | None = None,
     metric: str = "cosine",
+    max_clusters: int | None = None,
     grid_target_cluster_size: int | None = None,
     resolution_weight: float = 0.1,
 ) -> ClusterFn:
@@ -71,9 +72,12 @@ def _make_single_cluster_fn(
         if name in _N_CLUSTERS_ALGOS and grid_target_cluster_size:
             # Per-class n_clusters band, sized so the finest candidate targets
             # ~grid_target_cluster_size points/cluster. Capped so each cluster
-            # keeps ≥25 subsample points (a meaningful silhouette). Replaces any
-            # static n_clusters list from config.
+            # keeps ≥25 subsample points (a meaningful silhouette) and, when
+            # `max_clusters` is set, so the total cluster count stays within the
+            # complexity budget. Replaces any static n_clusters list from config.
             k_cap = max(2, max_fit_samples // 25)
+            if max_clusters is not None:
+                k_cap = min(k_cap, max_clusters)
             algo_grid["n_clusters"] = _n_clusters_grid(
                 X_num.shape[0], grid_target_cluster_size, k_cap
             )
@@ -101,6 +105,7 @@ def build_cluster_fn(
     random_state: int,
     reporter: Reporter | None = None,
     metric: str = "cosine",
+    max_clusters: int | None = None,
     grid_target_cluster_size: int | None = None,
     resolution_weight: float = 0.1,
 ) -> ClusterFn:
@@ -123,6 +128,7 @@ def build_cluster_fn(
         random_state,
         reporter=reporter,
         metric=metric,
+        max_clusters=max_clusters,
         grid_target_cluster_size=grid_target_cluster_size,
         resolution_weight=resolution_weight,
     )

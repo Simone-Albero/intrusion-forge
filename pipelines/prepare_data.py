@@ -22,7 +22,6 @@ from src.domain.analysis.metadata import (
     get_df_info,
 )
 from src.core.io import load_df, save_df
-from sklearn.cluster import MiniBatchKMeans
 from sklearn.preprocessing import RobustScaler
 
 from src.domain.data.preprocessing import (
@@ -55,39 +54,6 @@ def _absorb_small_clusters(
     return np.where(mask, -1, labels), int(small.size), int(mask.sum())
 
 
-def _split_large_clusters(
-    labels: np.ndarray, X_fit: np.ndarray, target: int, floor: int, random_state: int
-) -> tuple[np.ndarray, int]:
-    """Split clusters larger than `target` using MiniBatchKMeans on the full cluster points.
-
-    Noise pseudo-clusters (-1) are skipped. Sub-cluster 0 keeps the original id;
-    additional sub-clusters receive fresh ids above the current maximum.
-    """
-    ids, counts = np.unique(labels[labels != -1], return_counts=True)
-    large_mask = counts > target
-    if not large_mask.any():
-        return labels, 0
-
-    labels = labels.copy()
-    next_id = int(ids.max()) + 1
-    n_added = 0
-
-    for cid, n in zip(ids[large_mask], counts[large_mask]):
-        k = min(int(np.ceil(n / target)), int(n) // floor)
-        if k < 2:
-            continue
-        idx = np.where(labels == cid)[0]
-        sub = MiniBatchKMeans(n_clusters=k, random_state=random_state).fit_predict(
-            X_fit[idx]
-        )
-        for s in range(1, k):
-            labels[idx[sub == s]] = next_id
-            next_id += 1
-        n_added += k - 1
-
-    return labels, n_added
-
-
 def _cluster_per_class(
     X_num: np.ndarray,
     y_class: np.ndarray,
@@ -99,7 +65,7 @@ def _cluster_per_class(
     random_state: int,
     metric: str = "euclidean",
     min_cluster_floor: int = 50,
-    target_cluster_size: int = 25000,
+    max_clusters_total: int | None = None,
     grid_target_cluster_size: int | None = None,
     resolution_weight: float = 0.1,
 ) -> tuple[np.ndarray, dict[int, np.ndarray], set[int], dict[str, dict]]:
@@ -108,9 +74,17 @@ def _cluster_per_class(
     Cluster IDs are globally unique via offset. Residual -1 noise points (and
     clusters absorbed by `min_cluster_floor`) are reassigned to per-class
     pseudo-clusters; their IDs are collected in noise_cluster_ids.
+
+    `max_clusters_total` caps the total number of genuine clusters so the complexity
+    subsample floor never exceeds the cap (= max_complexity_samples // floor). It is
+    split equally across classes; None leaves the count driven by the data-relative grid.
     """
     n = X_num.shape[0]
-    target_eff = max(2 * min_cluster_floor, target_cluster_size)
+    max_clusters_per_class = (
+        max(2, max_clusters_total // len(classes))
+        if max_clusters_total is not None
+        else None
+    )
     labels = np.full(n, -1, dtype=np.int64)
     centroids: dict[int, np.ndarray] = {}
     offset = 0
@@ -131,15 +105,13 @@ def _cluster_per_class(
             random_state=random_state,
             reporter=algo_reports.__setitem__,
             metric=metric,
+            max_clusters=max_clusters_per_class,
             grid_target_cluster_size=grid_target_cluster_size,
             resolution_weight=resolution_weight,
         )
         raw_labels = cluster_fn(X_num_cls, X_cat_cls)
         raw_labels, n_floor_clusters, n_floor_points = _absorb_small_clusters(
             raw_labels, min_cluster_floor
-        )
-        raw_labels, n_split_added = _split_large_clusters(
-            raw_labels, X_num_cls, target_eff, min_cluster_floor, random_state
         )
 
         n_cls = int(raw_labels.shape[0])
@@ -154,7 +126,6 @@ def _cluster_per_class(
                 "size_balance": cluster_size_balance(raw_labels),
                 "floor_absorbed_clusters": n_floor_clusters,
                 "floor_absorbed_points": n_floor_points,
-                "split_added_clusters": n_split_added,
             },
         }
 
@@ -268,6 +239,12 @@ def _cluster_splits(
 
     logger.info("Running per-class clustering on train (n=%d)...", len(train_df))
     algorithms = OmegaConf.to_container(cfg.clustering.algorithms, resolve=True)
+    # Cap genuine clusters so the complexity subsample floor never exceeds the cap
+    # (floor·n_clusters ≤ max_complexity_samples). Ties cluster count to the complexity
+    # budget; split equally across classes inside _cluster_per_class.
+    max_clusters_total = (
+        cfg.complexity.max_complexity_samples // cfg.complexity.min_subsample_per_cluster
+    )
     labels, centroids, noise_cluster_ids, clustering_report = _cluster_per_class(
         X_num,
         y_class,
@@ -278,7 +255,7 @@ def _cluster_splits(
         random_state=cfg.seed,
         metric=cfg.clustering.distance,
         min_cluster_floor=cfg.clustering.min_cluster_floor,
-        target_cluster_size=cfg.clustering.target_cluster_size,
+        max_clusters_total=max_clusters_total,
         grid_target_cluster_size=cfg.clustering.grid_target_cluster_size,
         resolution_weight=cfg.clustering.resolution_weight,
     )

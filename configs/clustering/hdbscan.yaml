@@ -1,8 +1,7 @@
 distance: ${distance}              # inherited from the top-level key
 max_fit_samples: 20000
-min_cluster_floor: 20              # min genuine cluster size (smaller → noise); also caps splitting. Keep ≥ complexity.min_subsample_per_cluster
-target_cluster_size: 25000         # clusters above this size are split into sub-clusters (post-hoc, full-data MiniBatchKMeans)
-grid_target_cluster_size: 200      # inert for hdbscan (no n_clusters knob); kept for schema uniformity. Cluster count is driven by min_cluster_size + the resolution tilt in grid_search
+min_cluster_floor: 20              # min genuine cluster size (smaller → noise). Keep ≥ complexity.min_subsample_per_cluster
+grid_target_cluster_size: 200      # inert for hdbscan (no n_clusters knob; the per-class cluster-count cap is also unenforced here); kept for schema uniformity. Cluster count is driven by min_cluster_size + the resolution tilt in grid_search
 resolution_weight: 0.5             # resolution tilt strength: favours the min_cluster_size giving more clusters unless a coarser one's silhouette is >this better
 algorithms:
   hdbscan:
