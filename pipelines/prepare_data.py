@@ -100,6 +100,8 @@ def _cluster_per_class(
     metric: str = "euclidean",
     min_cluster_floor: int = 50,
     target_cluster_size: int = 25000,
+    grid_target_cluster_size: int | None = None,
+    resolution_weight: float = 0.1,
 ) -> tuple[np.ndarray, dict[int, np.ndarray], set[int], dict[str, dict]]:
     """Per-class clustering. Returns (labels, centroids, noise_cluster_ids, report).
 
@@ -129,6 +131,8 @@ def _cluster_per_class(
             random_state=random_state,
             reporter=algo_reports.__setitem__,
             metric=metric,
+            grid_target_cluster_size=grid_target_cluster_size,
+            resolution_weight=resolution_weight,
         )
         raw_labels = cluster_fn(X_num_cls, X_cat_cls)
         raw_labels, n_floor_clusters, n_floor_points = _absorb_small_clusters(
@@ -275,6 +279,8 @@ def _cluster_splits(
         metric=cfg.clustering.distance,
         min_cluster_floor=cfg.clustering.min_cluster_floor,
         target_cluster_size=cfg.clustering.target_cluster_size,
+        grid_target_cluster_size=cfg.clustering.grid_target_cluster_size,
+        resolution_weight=cfg.clustering.resolution_weight,
     )
     dispatcher.publish(
         LogBundle.from_dict({"json/clustering_report": clustering_report})

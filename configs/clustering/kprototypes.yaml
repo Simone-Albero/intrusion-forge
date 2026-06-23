@@ -2,7 +2,8 @@ distance: ${distance}              # inherited from the top-level key
 max_fit_samples: 20000
 min_cluster_floor: 20              # min genuine cluster size (smaller → noise); also caps splitting. Keep ≥ complexity.min_subsample_per_cluster
 target_cluster_size: 25000         # clusters above this size are split into sub-clusters (post-hoc, full-data MiniBatchKMeans)
+grid_target_cluster_size: 200      # finest n_clusters candidate targets ~this avg cluster size (k≈n/this); band fans coarser ×2 per step. Count-based algos only. Distinct from the hard split cap above
+resolution_weight: 0.5             # resolution tilt strength: prefer finer partitions unless a coarser one's silhouette is >this better. Higher → more clusters (more downstream regression support)
 algorithms:
-  kprototypes:                       # mixed-type: k-means on numerics + matching dissimilarity on categoricals
-    n_clusters: [4, 8, 16, 32, 64]
+  kprototypes:                       # mixed-type: k-means on numerics + matching dissimilarity on categoricals. n_clusters derived per class
     gamma: [0.25, 0.5, 1.0, 2.0]     # weight of the categorical contribution (kmodes default ≈ 0.5 on scaled data)

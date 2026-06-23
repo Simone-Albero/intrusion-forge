@@ -18,6 +18,27 @@ def _split_grid_fixed(params: dict) -> tuple[dict, dict]:
 # algorithms clustering on mixed features: scored with the Gower-hybrid silhouette
 _HYBRID_SCORED_ALGOS = ("kprototypes",)
 
+# algorithms parameterised by an explicit cluster count: their `n_clusters` grid
+# is derived per class from the target average cluster size (see _n_clusters_grid)
+# instead of a static, dataset-blind list.
+_N_CLUSTERS_ALGOS = ("kmeans", "spectral", "birch", "kprototypes")
+
+
+def _n_clusters_grid(
+    n_class: int, target_size: int, k_cap: int, levels: int = 7
+) -> list[int]:
+    """Data-relative `n_clusters` candidates for a class of `n_class` points.
+
+    Spans a geometric band of average cluster sizes from `target_size` (finest)
+    upward by powers of two, so the finest candidate always targets ~target_size
+    points/cluster regardless of class size — large classes are no longer capped
+    at a static ceiling. Each candidate is clamped to [2, k_cap] (k_cap is the
+    subsample-support floor) and de-duplicated.
+    """
+    sizes = (target_size * (2**i) for i in range(levels))
+    ks = {min(k_cap, max(2, round(n_class / s))) for s in sizes}
+    return sorted(ks)
+
 
 def _make_single_cluster_fn(
     name: str,
@@ -26,10 +47,14 @@ def _make_single_cluster_fn(
     random_state: int,
     reporter: Reporter | None = None,
     metric: str = "cosine",
+    grid_target_cluster_size: int | None = None,
+    resolution_weight: float = 0.1,
 ) -> ClusterFn:
     """Build a ClusterFn for a single registered algorithm."""
     fit_fn = ClusteringFactory.get(name)
-    grid, fixed = _split_grid_fixed(params)
+    # An algorithm with no explicit params (e.g. kmeans, whose n_clusters grid is
+    # derived per class) parses from YAML as None.
+    grid, fixed = _split_grid_fixed(params or {})
     silhouette_fn = (
         make_hybrid_silhouette_fn(metric=metric, random_state=random_state)
         if name in _HYBRID_SCORED_ALGOS
@@ -42,12 +67,23 @@ def _make_single_cluster_fn(
             "random_state": random_state,
             **fixed,
         }
-        if grid:
+        algo_grid = dict(grid)
+        if name in _N_CLUSTERS_ALGOS and grid_target_cluster_size:
+            # Per-class n_clusters band, sized so the finest candidate targets
+            # ~grid_target_cluster_size points/cluster. Capped so each cluster
+            # keeps ≥25 subsample points (a meaningful silhouette). Replaces any
+            # static n_clusters list from config.
+            k_cap = max(2, max_fit_samples // 25)
+            algo_grid["n_clusters"] = _n_clusters_grid(
+                X_num.shape[0], grid_target_cluster_size, k_cap
+            )
+        if algo_grid:
             result = grid_search(
                 X_num,
                 X_cat,
                 fit_fn,
-                grid,
+                algo_grid,
+                resolution_weight=resolution_weight,
                 silhouette_fn=silhouette_fn,
                 **common,
             )
@@ -65,6 +101,8 @@ def build_cluster_fn(
     random_state: int,
     reporter: Reporter | None = None,
     metric: str = "cosine",
+    grid_target_cluster_size: int | None = None,
+    resolution_weight: float = 0.1,
 ) -> ClusterFn:
     """Build a ClusterFn from a single {algorithm_name: params} entry.
 
@@ -85,4 +123,6 @@ def build_cluster_fn(
         random_state,
         reporter=reporter,
         metric=metric,
+        grid_target_cluster_size=grid_target_cluster_size,
+        resolution_weight=resolution_weight,
     )

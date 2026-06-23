@@ -210,11 +210,23 @@ def grid_search(
     *,
     max_fit_samples: int = 50_000,
     random_state: int = 0,
-    noise_penalty: float = 1.0,
+    noise_penalty: float = 3.0,
+    resolution_weight: float = 0.1,
     silhouette_fn: SilhouetteFn | None = None,
     **fixed_params,
 ) -> dict:
-    """Grid search over param_grid, scored by silhouette − noise_penalty·noise_ratio.
+    """Grid search scored by silhouette − noise_penalty·noise_ratio + resolution.
+
+    The silhouette is monotone-decreasing in k on weakly-structured data, so on
+    its own it favours coarse partitions and starves the downstream
+    complexity→failure regression of cluster-level support. A gentle
+    `resolution_weight`-scaled tilt, increasing with the cluster count and
+    self-normalised by the finest partition in the sweep, is added so a flat
+    silhouette drifts to the fine end of the (data-relative) `n_clusters` band;
+    a genuine silhouette peak still dominates the small tilt, so well-separated
+    data keeps its natural resolution. The tilt has no fixed target — the
+    resolution band lives in the candidate grid (see `compose._n_clusters_grid`),
+    not here.
 
     Methods without noise (k-means, birch) score on the plain silhouette.
     `silhouette_fn` overrides the silhouette term (e.g. Gower-hybrid for
@@ -229,11 +241,9 @@ def grid_search(
     keys = list(param_grid.keys())
     values = list(param_grid.values())
 
-    best_score = float("-inf")
-    best_entry: dict | None = None
-    fallback_entry: dict | None = None
     sweep: list[dict] = []
 
+    # Pass 1: fit each combo, record its silhouette (provisional score = silhouette).
     for combo_values in tqdm(
         itertools.product(*values),
         total=int(np.prod([len(v) for v in values])),
@@ -264,19 +274,28 @@ def grid_search(
             if silhouette_fn is not None
             else _score_silhouette(sub_num, labels)
         )
-        noise_ratio = float((labels == -1).mean())
-        s = sil - noise_penalty * noise_ratio
-        entry = _measure(labels, s, combo, duration)
+        entry = _measure(labels, sil, combo, duration)
         entry["silhouette"] = sil
         sweep.append(entry)
-        if fallback_entry is None:
-            fallback_entry = entry
-        if s > best_score:
-            best_score = s
-            best_entry = entry
+
+    # Pass 2: final score = silhouette − noise_penalty·noise_ratio + resolution
+    # tilt, where the tilt grows with the cluster count, self-normalised by the
+    # finest partition in the sweep. Done after the loop so HDBSCAN (whose k is
+    # only known post-fit) shares the same normalisation as the n_clusters grids.
+    valid = [e for e in sweep if not e.get("error")]
+    max_k = max((e["n_clusters"] for e in valid), default=0)
+    best_score = float("-inf")
+    best_entry: dict | None = None
+    for e in valid:
+        tilt = resolution_weight * (e["n_clusters"] / max_k) if max_k > 0 else 0.0
+        e["resolution_tilt"] = tilt
+        e["score"] = e["silhouette"] - noise_penalty * e["noise_ratio"] + tilt
+        if e["score"] > best_score:
+            best_score = e["score"]
+            best_entry = e
 
     if best_entry is None:
-        best_entry = fallback_entry
+        best_entry = sweep[0] if sweep else None
 
     if best_entry is None:
         raise RuntimeError(
