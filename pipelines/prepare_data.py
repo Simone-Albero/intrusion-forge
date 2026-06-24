@@ -36,7 +36,11 @@ from src.domain.data.preprocessing import (
 )
 from src.domain.analysis.complexity.shared import _l2_normalize
 from src.domain.clustering import build_cluster_fn
-from src.domain.clustering.base import assign_clusters_within_class, cluster_size_balance
+from src.domain.clustering.base import (
+    assign_clusters_within_class,
+    assign_nearest_centroid,
+    cluster_size_balance,
+)
 
 setup_logger(log_file="resources/logs.txt")
 logger = logging.getLogger(__name__)
@@ -273,13 +277,20 @@ def _cluster_splits(
     assigned: dict[str, pd.DataFrame] = {}
     for name, split_df in (("val", val_df), ("test", test_df)):
         split_df = split_df.copy()
-        split_df["cluster"] = assign_clusters_within_class(
-            split_df[num_cols].to_numpy(dtype=np.float64),
-            split_df[label_col].to_numpy(),
-            centroids,
-            cluster_to_class,
-            metric=cfg.clustering.distance,
-        )
+        if cfg.label_free_assignment:
+            split_df["cluster"] = assign_nearest_centroid(
+                split_df[num_cols].to_numpy(dtype=np.float64),
+                centroids,
+                metric=cfg.clustering.distance,
+            )
+        else:
+            split_df["cluster"] = assign_clusters_within_class(
+                split_df[num_cols].to_numpy(dtype=np.float64),
+                split_df[label_col].to_numpy(),
+                centroids,
+                cluster_to_class,
+                metric=cfg.clustering.distance,
+            )
         assigned[name] = split_df
     val_df, test_df = assigned["val"], assigned["test"]
 
