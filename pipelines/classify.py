@@ -272,10 +272,29 @@ def _build_test_figures(
         ylim=(0, 1),
     )
 
-    names = {int(c): label_mapping.get(str(int(c)), str(c)) for c in classes}
     correct = y_pred == y_true
-    # shared subsample so raw and latent projections show the same points
-    vis_idx = stratified_subsample(y_true, n_samples=n_samples, stratify=False)
+
+    # Keep only the "problematic" classes: the smallest set of classes whose
+    # misclassified points together cover >=90% of all errors (top error-mass
+    # contributors). This focuses the t-SNE on where the model actually fails.
+    mis = ~correct
+    total_mis = int(mis.sum())
+    mis_per_class = {int(c): int((mis & (y_true == c)).sum()) for c in classes}
+    keep_classes: list[int] = []
+    cumulative = 0
+    for c in sorted(mis_per_class, key=mis_per_class.get, reverse=True):
+        if total_mis and cumulative >= 0.9 * total_mis:
+            break
+        keep_classes.append(c)
+        cumulative += mis_per_class[c]
+    if not keep_classes:  # perfect classifier: fall back to all classes
+        keep_classes = [int(c) for c in classes]
+
+    names = {c: label_mapping.get(str(c), str(c)) for c in keep_classes}
+    # shared subsample (over the kept classes) so raw and latent show the same points
+    prob_pos = np.flatnonzero(np.isin(y_true, keep_classes))
+    sub = stratified_subsample(y_true[prob_pos], n_samples=n_samples, stratify=False)
+    vis_idx = prob_pos[sub]
 
     def _projection(space: np.ndarray) -> Plot | None:
         return scatter_plot(
@@ -283,7 +302,7 @@ def _build_test_figures(
             y_true[vis_idx],
             highlight_mask=~correct[vis_idx],
             names=names,
-            marker_size=20.0,
+            marker_size=35.0,
             marker_alpha=0.85,
             legend_on_top=True,
         )

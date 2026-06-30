@@ -18,11 +18,16 @@ from src.core.log import (
 from pipelines.common import paths_from_cfg
 from src.core.utils import flush_timing, load_from_json, load_from_pickle, timed
 from src.domain.plot.charts import (
+    band_curve_plot,
     bar_plot,
     beeswarm_plot,
+    box_strip_plot,
     cost_model_plot,
+    cost_quality_plot,
+    line_whisker_plot,
     numeric_scatter_plot,
     selective_accuracy_plot,
+    stacked_bar_plot,
     strip_count_panel_plot,
     violin_plot,
 )
@@ -152,7 +157,6 @@ def _plot_feature_violin_by_rate_bin(
             category_order=ordered,
             x_label="Failure rate bin",
             y_label=feature,
-            title=f"{feature} — distribution by failure rate",
             show_legend=False,
             inner="box",
         )
@@ -189,17 +193,16 @@ def _plot_rf_evaluation(
             },
             x_label="Observed failure rate",
             y_label="Predicted failure rate (OOF)",
-            title="Failure-rate regression (OOF)",
         ),
         "summary/correlation/feature_importances": bar_plot(
             labels=list(importances.keys()),
             values=list(importances.values()),
-            orientation="h",
-            sort="asc",
-            top_k=20,
+            orientation="v",
+            sort="desc",
+            top_k=10,
             annotate_values=False,
             color_gradient=True,
-            x_label="Importance",
+            y_label="Importance",
         ),
     }
 
@@ -238,6 +241,7 @@ def _plot_selective_accuracy(
         "summary/selectivity/selective_accuracy": selective_accuracy_plot(
             curves,
             baseline=metrics["global_accuracy"],
+            title="",
             annotations={
                 f"Retained accuracy ({keep:.0%})": metrics["acc_at_target_predictor"],
                 "Random baseline": metrics["global_accuracy"],
@@ -284,7 +288,7 @@ def _plot_selective_macro_recall(
             curves,
             baseline=metrics["global_macro_recall"],
             y_label="Macro-recall on retained set",
-            title="Selective macro-recall",
+            title="",
             annotations={
                 f"Retained macro-recall ({keep:.0%})": metrics["recall_at_target_predictor"],
                 "Random baseline": metrics["global_macro_recall"],
@@ -369,7 +373,6 @@ def _plot_base_vs_extended_f1(
             axvline=0.0,
             axvline_color=MUTED_COLOR,
             x_label="F1 improvement (extended − base)",
-            title="Extended vs base — per-class F1 delta",
         )
     }
 
@@ -454,9 +457,13 @@ def _aggregate_cost_models(root: Path) -> tuple[dict, dict, dict, float | None]:
         }
         comp = np.array([cm["pipeline_cost"]["complexity_build_s_pred"] for cm in cms], dtype=float)
         rest = np.array([cm["pipeline_cost"]["non_complexity_s"] for cm in cms], dtype=float)
+        prep = np.array([cm["pipeline_cost"]["prep_clustering_s"] for cm in cms], dtype=float)
+        clf = np.array([cm["pipeline_cost"]["classify_s"] for cm in cms], dtype=float)
         shr = np.array([cm["pipeline_cost"]["complexity_share_pred"] for cm in cms], dtype=float)
         share[dist] = {
             "complexity_s": float(comp.mean()),
+            "prep_clustering_s": float(prep.mean()),
+            "classify_s": float(clf.mean()),
             "non_complexity_s": float(rest.mean()),
             "share": float(shr.mean()),
         }
@@ -487,9 +494,292 @@ def _render_cost_model(root: Path, fmt: str = "pdf", out: Path | None = None) ->
     logger.info("Cost-model figure (%s) -> %s/cost_model.%s", ", ".join(sorted(points)), base, fmt)
 
 
+_DATASET_LABEL = {
+    "bank_marketing": "Bank",
+    "bot_iot_v2": "Bot-IoT",
+    "cic_ids2018_v2": "CIC",
+    "covertype": "Covertype",
+    "letter_recognition": "Letter",
+    "statlog_landsat_satellite": "Statlog",
+    "thyroid_disease": "Thyroid",
+    "ton_iot_v2": "ToN-IoT",
+    "unsw_nb15_v2": "UNSW",
+}
+
+
+def _render_cost_quality(table: Path, fmt: str = "pdf", out: Path | None = None) -> None:
+    """Render the cost-vs-quality figure (Deliverable B) from a cost-quality table.
+
+    `table` is either the `cost_quality_table.json` file or a directory containing
+    it. Rows are grouped per (dataset, distance) into median build time and median
+    Spearman rho, drawn as one cosine/euclidean point pair per dataset.
+    """
+    set_figure_format(fmt)
+    table_path = table / "cost_quality_table.json" if table.is_dir() else table
+    rows = load_from_json(table_path)["rows"]
+
+    def _median(dataset: str, distance: str, key: str) -> float | None:
+        vals = [r[key] for r in rows
+                if r["dataset"] == dataset and r["distance"] == distance
+                and r.get(key) is not None]
+        return float(np.median(vals)) if vals else None
+
+    datasets = sorted(
+        {r["dataset"] for r in rows},
+        key=lambda d: _median(d, "cosine", "complexity_build_s") or float("inf"),
+    )
+    labels, cosine, euclidean = [], [], []
+    for d in datasets:
+        labels.append(_DATASET_LABEL.get(d, d))
+        cos_c = _median(d, "cosine", "complexity_build_s")
+        cos_r = _median(d, "cosine", "rho")
+        euc_c = _median(d, "euclidean", "complexity_build_s")
+        euc_r = _median(d, "euclidean", "rho")
+        cosine.append((cos_c, cos_r) if cos_c is not None and cos_r is not None else None)
+        euclidean.append((euc_c, euc_r) if euc_c is not None and euc_r is not None else None)
+
+    plot = cost_quality_plot(labels, cosine, euclidean, cos_color=_COS, euc_color=_EUC)
+    base = out or table_path.parent
+    bus = LogDispatcher()
+    bus.subscribe(FilesystemFigureSubscriber(base))
+    bus.publish(LogBundle.from_dict({"figure/cost_quality": plot}))
+    logger.info("Cost-quality figure (%d datasets) -> %s/cost_quality.%s", len(datasets), base, fmt)
+
+
+# ---- sweep-level paper figures -------------------------------------------------
+
+_ALGO_ORDER = ["kmeans", "spectral", "birch", "hdbscan"]
+_ALGO_LABEL = {"kmeans": "$k$-means", "spectral": "spectral", "birch": "BIRCH", "hdbscan": "HDBSCAN"}
+_FEATURE_FAMILIES = [
+    ("feature-overlap", ("f1", "f2", "f3", "f4")),
+    ("neighbourhood", ("n1", "n2", "n3", "n4")),
+    ("network", ("network_density", "cls_coef", "hub")),
+    ("cluster-geometry",
+     ("max_dispersion", "p95_dispersion", "dist_to_nearest_centroid", "p5_silhouette", "frac_at_risk")),
+    ("dimensionality", ("t2", "t3", "t4")),
+]
+_COS, _EUC, _ORACLE = PALETTE[0], PALETTE[1], PALETTE[2]
+
+
+def _load_sweep_runs(root: Path) -> list[dict]:
+    """Collect one record per `<config>/<dataset>/<classifier>` run under `root`.
+
+    `distance` and `algorithm` are read from each run's composed config (the
+    verifiable source), not parsed from directory names. Runs without a results
+    file are skipped.
+    """
+    runs: list[dict] = []
+    for cfg_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+        for ds_dir in sorted(p for p in cfg_dir.iterdir() if p.is_dir()):
+            cfg_path = ds_dir / "shared/config_composed.json"
+            if not cfg_path.exists():
+                continue
+            composed = load_from_json(cfg_path)
+            algorithm = next(iter(composed["clustering"]["algorithms"]), None)
+            for clf_dir in sorted(p for p in ds_dir.iterdir() if p.is_dir() and p.name != "shared"):
+                base = clf_dir / "outputs/analysis"
+                results_path = base / "classifier_results.json"
+                if not results_path.exists():
+                    continue
+                runs.append({
+                    "config": cfg_dir.name,
+                    "dataset": ds_dir.name,
+                    "clf": clf_dir.name,
+                    "distance": composed.get("distance"),
+                    "algorithm": algorithm,
+                    "base": base,
+                    "results": load_from_json(results_path),
+                })
+    return runs
+
+
+def _dist_color(distance: str) -> str:
+    return _COS if distance == "cosine" else _EUC
+
+
+def _fig_rho_by_config(runs: list[dict]) -> Plot | None:
+    """Figure A: Spearman rho distribution per clustering configuration."""
+    def sort_key(cfg: str) -> tuple[int, int]:
+        meta = next(r for r in runs if r["config"] == cfg)
+        algo = meta["algorithm"]
+        return (0 if meta["distance"] == "cosine" else 1,
+                _ALGO_ORDER.index(algo) if algo in _ALGO_ORDER else 99)
+
+    labels, values, colors, faded = [], [], [], []
+    for cfg in sorted({r["config"] for r in runs}, key=sort_key):
+        crows = [r for r in runs if r["config"] == cfg]
+        vals = [r["results"]["spearman"] for r in crows if r["results"].get("spearman") is not None]
+        if not vals:
+            continue
+        meta = crows[0]
+        is_hdb = meta["algorithm"] == "hdbscan"
+        label = f"{meta['distance']} {_ALGO_LABEL.get(meta['algorithm'], meta['algorithm'])}"
+        labels.append(label + (r"$^\dagger$" if is_hdb else ""))
+        values.append(np.asarray(vals, dtype=float))
+        colors.append(_dist_color(meta["distance"]))
+        faded.append(False)
+    return box_strip_plot(
+        labels, values, colors=colors, faded=faded, show_points=False,
+        x_label=r"Spearman $\rho$", x_lim=(-1.05, 1.05), axvline=0.0,
+        legend={"cosine": _COS, "euclidean": _EUC},
+    )
+
+
+def _fig_rho_vs_clusters(runs: list[dict]) -> Plot | None:
+    """Figure C: Spearman rho against the number of clusters per run."""
+    series: dict[str, tuple[np.ndarray, np.ndarray, str]] = {}
+    for distance in ("cosine", "euclidean"):
+        xs, ys = [], []
+        for r in runs:
+            if r["distance"] != distance:
+                continue
+            n = r["results"].get("n_clusters_used")
+            rho = r["results"].get("spearman")
+            if n and rho is not None:
+                xs.append(n)
+                ys.append(rho)
+        series[distance] = (np.asarray(xs, float), np.asarray(ys, float), _dist_color(distance))
+    return line_whisker_plot(
+        series, x_label="number of clusters per run (log scale)",
+        y_label=r"Spearman $\rho$", log_x=True, y_lim=(-1.05, 1.05),
+        vline=10, vline_label="unstable regime", hline=0.0,
+    )
+
+
+def _fig_family_importance(runs: list[dict]) -> Plot | None:
+    """Figure E: feature-family importance, cluster- vs class-level (full sweep)."""
+    acc: dict[str, list[float]] = {}
+    for r in runs:
+        for k, v in r["results"].get("feature_importances", {}).items():
+            acc.setdefault(k, []).append(v)
+    if not acc:
+        return None
+    mean_imp = {k: float(np.mean(v)) for k, v in acc.items()}
+
+    def part(prefix: str, members: tuple[str, ...]) -> float:
+        return 100.0 * sum(
+            v for k, v in mean_imp.items()
+            if k.startswith(prefix) and any(k[len(prefix):].startswith(m) for m in members)
+        )
+
+    names = [name for name, _ in _FEATURE_FAMILIES]
+    cluster = [part("cluster_", members) for _, members in _FEATURE_FAMILIES]
+    klass = [part("class_", members) for _, members in _FEATURE_FAMILIES]
+    return stacked_bar_plot(
+        names,
+        [("cluster-level", cluster, _COS), ("class-level", klass, _EUC)],
+        x_label="mean importance (% of total)", total_format="{:.1f}%",
+    )
+
+
+def _fig_selective_sweep(runs: list[dict]) -> Plot | None:
+    """Figure B: accuracy-coverage curves aggregated over the full sweep.
+
+    Each run's curve is reconstructed from its OOF predictions and cluster
+    summary via `risk_coverage_curve`, interpolated onto a shared grid, then
+    aggregated (median, with an IQR band for the predictor).
+    """
+    grid = np.linspace(0.0, 1.0, 101)
+    predictor, oracle, randoms = [], [], []
+    for r in runs:
+        oof = r["results"].get("oof_predicted_rate", {})
+        summary_path = r["base"] / "cluster_summary.json"
+        if not oof or not summary_path.exists():
+            continue
+        summary = load_from_json(summary_path)
+        ids = [c for c in oof if c in summary]
+        if len(ids) < 2:
+            continue
+        pred = np.array([oof[c] for c in ids], dtype=float)
+        fail = np.array([summary[c]["failure_rate"] for c in ids], dtype=float)
+        support = np.array([summary[c]["n_test"] for c in ids], dtype=float)
+        if support.sum() <= 0:
+            continue
+        cov_p, acc_p = risk_coverage_curve(pred, fail, support)
+        cov_o, acc_o = risk_coverage_curve(fail, fail, support)
+        predictor.append(np.interp(grid, cov_p, acc_p))
+        oracle.append(np.interp(grid, cov_o, acc_o))
+        randoms.append(1.0 - (fail * support).sum() / support.sum())
+    if not predictor:
+        return None
+
+    # Mirror coverage -> fraction rejected (riskiest first), so the curves rise
+    # left-to-right and match the single-run selective figure (Fig.~\ref{fig:cic_selective}).
+    pred_curves = np.vstack(predictor)[:, ::-1]
+    oracle_curves = np.vstack(oracle)[:, ::-1]
+    return band_curve_plot(
+        grid,
+        [("Oracle", np.median(oracle_curves, axis=0), _ORACLE),
+         ("Predictor", np.median(pred_curves, axis=0), _COS)],
+        band=(np.percentile(pred_curves, 25, axis=0),
+              np.percentile(pred_curves, 75, axis=0), _COS, "Predictor (IQR across runs)"),
+        baseline=float(np.median(randoms)),
+        x_label="fraction rejected (riskiest first)",
+        y_label="accuracy on retained points",
+    )
+
+
+def _render_sweep(root: Path, fmt: str = "pdf", out: Path | None = None) -> None:
+    """Aggregate the sweep under `root` and write the four sweep-level paper
+    figures to `out` (defaults to `root`).
+
+    All clustering configurations, including HDBSCAN, contribute to every
+    figure; HDBSCAN's higher variability is reported rather than hidden.
+    """
+    set_figure_format(fmt)
+    runs = _load_sweep_runs(root)
+    if not runs:
+        logger.warning("No sweep runs found under %s; nothing to render.", root)
+        return
+    n_hdb = sum(1 for r in runs if r["algorithm"] == "hdbscan")
+    logger.info(
+        "Sweep figures from %d runs (%d main, %d hdbscan) under %s",
+        len(runs), len(runs) - n_hdb, n_hdb, root,
+    )
+
+    figures = {
+        "figure/rho_by_config": _fig_rho_by_config(runs),
+        "figure/rho_vs_clusters": _fig_rho_vs_clusters(runs),
+        "figure/family_importance": _fig_family_importance(runs),
+        "figure/selective_sweep": _fig_selective_sweep(runs),
+    }
+    figures = {k: v for k, v in figures.items() if v is not None}
+
+    base = out or root
+    bus = LogDispatcher()
+    bus.subscribe(FilesystemFigureSubscriber(base))
+    bus.publish(LogBundle.from_dict(figures))
+    logger.info(
+        "Sweep figures (%s) -> %s",
+        ", ".join(sorted(k.split("/")[-1] for k in figures)), base,
+    )
+
+
 def main():
     """Main entry point for plot rendering."""
     argv = sys.argv[1:]
+    if any(a.startswith("sweep=") for a in argv):
+        kv = dict(
+            a.split("=", 1) for a in argv
+            if "=" in a and a.split("=", 1)[0] in ("sweep", "format", "out")
+        )
+        _render_sweep(
+            Path(kv["sweep"]),
+            fmt=kv.get("format", "pdf"),
+            out=Path(kv["out"]) if kv.get("out") else None,
+        )
+        return
+    if any(a.startswith("cost_quality=") for a in argv):
+        kv = dict(
+            a.split("=", 1) for a in argv
+            if "=" in a and a.split("=", 1)[0] in ("cost_quality", "format", "out")
+        )
+        _render_cost_quality(
+            Path(kv["cost_quality"]),
+            fmt=kv.get("format", "pdf"),
+            out=Path(kv["out"]) if kv.get("out") else None,
+        )
+        return
     if any(a.startswith("cost_model=") for a in argv):
         kv = dict(
             a.split("=", 1) for a in argv

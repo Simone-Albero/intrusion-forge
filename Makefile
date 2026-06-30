@@ -96,7 +96,13 @@ COST_CLF        ?= random_forest
 COST_SEEDS      ?= 42 0 1
 EXPERIMENTS_DIR ?= resources/experiments
 
-.PHONY: prepare classify classify-extended extend complexity failure-classify render run cost-model cost-summary cost-aggregate generate dashboard help
+# Sweep-level paper figures: aggregate the full experiment tree under SWEEP_DIR
+# into the four cross-run figures (rho by config / vs clusters, family importance,
+# selective curves) written to FIGURES_DIR.
+SWEEP_DIR       ?= paper/exp
+FIGURES_DIR     ?= paper/figures
+
+.PHONY: prepare classify classify-extended extend complexity failure-classify render sweep-figures run cost-model cost-summary cost-aggregate generate dashboard help
 
 ## prepare:            Step 1 — preprocess raw CSV → parquet splits           (DATA, NAME, SEED, FORCE)
 prepare:
@@ -133,6 +139,11 @@ failure-classify: complexity
 ## render:             Step 4 — render plots from analysis artifacts          (DATA, NAME, SEED, CLASSIFIER)
 render:
 	PYTHONPATH=. $(PYTHON) pipelines/render_plots.py $(HYDRA)
+
+## sweep-figures:      Aggregate the experiment tree into the cross-run paper figures  (SWEEP_DIR, FIGURES_DIR)
+sweep-figures:
+	PYTHONPATH=. $(PYTHON) pipelines/render_plots.py sweep=$(SWEEP_DIR) out=$(FIGURES_DIR)
+	@echo ""; echo "sweep-figures done -> $(FIGURES_DIR)/{rho_by_config,rho_vs_clusters,family_importance,selective_sweep}.pdf"
 
 ## run:                Whole flow — fix passed vars, iterate the rest (DATA?, CLASSIFIER?, CLUSTERING?)  (NAME, SEED, DISTANCE, FORCE, EXTEND)
 run:
@@ -233,10 +244,11 @@ cost-summary:
 	@PYTHONPATH=. $(PYTHON) pipelines/cost_sweep.py summary=$(EXPERIMENTS_DIR)
 	@echo ""; echo "cost-summary done -> $(EXPERIMENTS_DIR)/cost_model_summary.json."
 
-## cost-aggregate:     Deliverable B — cross-run cost↔quality table (ρ vs cluster count vs build time) from finished runs  (EXPERIMENTS_DIR)
+## cost-aggregate:     Deliverable B — cross-run cost↔quality table + figure (ρ vs cluster count vs build time) from finished runs  (EXPERIMENTS_DIR, FIGURES_DIR)
 cost-aggregate:
 	@PYTHONPATH=. $(PYTHON) pipelines/cost_sweep.py aggregate=$(EXPERIMENTS_DIR)
-	@echo ""; echo "cost-aggregate done -> $(EXPERIMENTS_DIR)/cost_quality_table.json."
+	PYTHONPATH=. $(PYTHON) pipelines/render_plots.py cost_quality=$(EXPERIMENTS_DIR) out=$(FIGURES_DIR)
+	@echo ""; echo "cost-aggregate done -> $(EXPERIMENTS_DIR)/cost_quality_table.json + $(FIGURES_DIR)/cost_quality.pdf"
 
 ## generate:           Generate synthetic test dataset                        (ROWS)
 generate:

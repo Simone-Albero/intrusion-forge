@@ -1,10 +1,10 @@
 font.family: serif
 font.serif: TeX Gyre Pagella, Palatino, Palatino Linotype, Book Antiqua, DejaVu Serif, serif
 mathtext.fontset: stix
-font.size: 10
+font.size: 14
 
-axes.labelsize: 11
-axes.titlesize: 12
+axes.labelsize: 15
+axes.titlesize: 16
 axes.titleweight: bold
 axes.titlelocation: left
 axes.labelpad: 6
@@ -15,8 +15,8 @@ axes.grid: True
 axes.grid.axis: y
 axes.axisbelow: True
 
-xtick.labelsize: 9
-ytick.labelsize: 9
+xtick.labelsize: 13
+ytick.labelsize: 13
 xtick.direction: out
 ytick.direction: out
 xtick.major.size: 3.5
@@ -28,7 +28,7 @@ grid.alpha: 0.15
 grid.linewidth: 0.5
 grid.linestyle: -
 
-legend.fontsize: 9
+legend.fontsize: 13
 legend.framealpha: 0.92
 legend.edgecolor: 0.75
 legend.frameon: True
