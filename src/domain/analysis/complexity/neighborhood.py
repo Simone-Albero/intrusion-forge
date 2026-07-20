@@ -78,7 +78,6 @@ def _pair_metrics(
     j_mask: np.ndarray,
     edges_uv: np.ndarray,
 ) -> tuple[float, float, float, float]:
-    """Compute (n1, n2, n3, n4) for cluster c against population j."""
     in_c = c_mask[nbs]
     in_j = j_mask[nbs]
     n1 = _n1_vec(c_mask, j_mask, edges_uv)
@@ -95,7 +94,6 @@ def _aggregate_pairs(
     population_masks: list[np.ndarray],
     edges_uv: np.ndarray,
 ) -> dict[str, list[float]]:
-    """Run _pair_metrics over each population mask, skipping empty ones."""
     out: dict[str, list[float]] = {k: [] for k in _N_KEYS}
     for j_mask in population_masks:
         if not j_mask.any():

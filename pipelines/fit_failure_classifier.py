@@ -18,7 +18,7 @@ from src.core.log import (
     LogDispatcher,
     setup_logger,
 )
-from pipelines.common import paths_from_cfg
+from pipelines import paths_from_cfg
 from src.core.utils import flush_timing, load_from_json, timed
 from src.domain.analysis.selective_prediction import (
     selective_prediction_metrics,
@@ -87,14 +87,7 @@ def build_cluster_summary(
     class_complexity: dict,
     predictions: dict,
 ) -> dict:
-    """Merge per-cluster complexity with class-level complexity (joined on the
-    cluster's class via `cluster_class`) and per-classifier failure rates.
-
-    Output schema per cluster:
-        cluster_<measure>  — cluster-level complexity (vs top-K adversarial clusters)
-        class_<measure>    — class-level complexity of the cluster's class
-        cluster_class, is_noise_cluster, n_test, failure_rate
-    """
+    """Merge per-cluster and class-level complexity (joined on the cluster's class) with per-classifier failure rates."""
     cluster_errors = predictions.get("clusters", {}).get("global", {}) or {}
     summary: dict[str, dict] = {}
     for cid, cluster_measures in complexity.items():
@@ -222,13 +215,10 @@ def fit_failure_classifier(
     min_test_support: int = 5,
     analysis_bus: LogDispatcher | None = None,
 ) -> dict:
-    """Nested-CV Random Forest regressor predicting each cluster's failure rate
-    from its separability features.
+    """Nested-CV Random Forest predicting each cluster's failure rate from its separability features.
 
-    Target is `failure_rate` (from `build_cluster_summary`). Clusters with no test
-    samples or fewer than `min_test_support` are excluded (unreliable rate). Outer
-    loop (StratifiedKFold on rate quantile bins, KFold fallback) gives unbiased OOF
-    predictions; inner GridSearchCV tunes hyperparameters. Headline metric: Spearman ρ.
+    Clusters with no test samples or fewer than `min_test_support` are excluded
+    (unreliable rate); the outer CV loop yields unbiased out-of-fold predictions.
     """
     logger.info("Running failure classifier ...")
     df = pd.DataFrame.from_dict(cluster_stats, orient="index")

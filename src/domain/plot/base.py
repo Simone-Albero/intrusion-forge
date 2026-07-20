@@ -19,7 +19,6 @@ def set_figure_format(fmt: str) -> None:
 
 
 def _fig_to_plot(fig: Figure) -> Plot:
-    """Render figure to bytes in the configured format, close it, return a Plot."""
     buf = io.BytesIO()
     fig.savefig(buf, format=_FIGURE_FORMAT, bbox_inches="tight")
     plt.close(fig)
@@ -30,7 +29,6 @@ def _ensure_ax(
     ax: Axes | None,
     figsize: tuple[float, float],
 ) -> tuple[Axes, Figure | None]:
-    """If ax is None, create a new figure+axes; otherwise return ax and None."""
     if ax is None:
         fig, ax = plt.subplots(figsize=figsize)
         return ax, fig
@@ -38,7 +36,6 @@ def _ensure_ax(
 
 
 def _finalize(fig: Figure | None) -> Plot | None:
-    """Render and close fig if owned, else return None (caller owns ax)."""
     if fig is None:
         return None
     return _fig_to_plot(fig)
@@ -50,7 +47,6 @@ def _apply_labels(
     y_label: str = "",
     title: str = "",
 ) -> None:
-    """Set non-empty axis labels and title on `ax`."""
     if x_label:
         ax.set_xlabel(x_label)
     if y_label:

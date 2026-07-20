@@ -79,7 +79,7 @@ class _ClassificationMetric(Metric):
         if self._average == "weighted":
             weights = self._support.float() / (self._support.sum().float() + _EPS)
             return (per_class * weights).sum().item()
-        return per_class  # None → per-class tensor
+        return per_class
 
     def _check_initialized(self, name: str) -> None:
         if self._tp is None:
@@ -87,10 +87,7 @@ class _ClassificationMetric(Metric):
 
 
 class Precision(_ClassificationMetric):
-    """Precision for binary or multiclass classification.
-
-    average: 'micro' | 'macro' | 'weighted' | None
-    """
+    """Precision for binary or multiclass classification."""
 
     @sync_all_reduce("_tp", "_fp", "_support")
     def compute(self) -> torch.Tensor | float:
@@ -102,10 +99,7 @@ class Precision(_ClassificationMetric):
 
 
 class Recall(_ClassificationMetric):
-    """Recall for binary or multiclass classification.
-
-    average: 'micro' | 'macro' | 'weighted' | None
-    """
+    """Recall for binary or multiclass classification."""
 
     @sync_all_reduce("_tp", "_fn", "_support")
     def compute(self) -> torch.Tensor | float:
@@ -117,10 +111,7 @@ class Recall(_ClassificationMetric):
 
 
 class F1(_ClassificationMetric):
-    """F1 score for binary or multiclass classification.
-
-    average: 'micro' | 'macro' | 'weighted' | None
-    """
+    """F1 score for binary or multiclass classification."""
 
     @sync_all_reduce("_tp", "_fp", "_fn", "_support")
     def compute(self) -> torch.Tensor | float:

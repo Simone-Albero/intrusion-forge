@@ -20,10 +20,8 @@ def confusion_matrix_plot(
 ) -> Plot | None:
     """Plot a confusion matrix with optional row/column normalization and a metrics row.
 
-    The layout adapts to the number of classes: figsize grows with `n_classes`
-    (unless given explicitly), x tick labels are rotated and long class names
-    truncated to `max_label_chars`, in-cell annotations shrink with the class
-    count and are dropped above `max_annotated_classes` (the colorbar remains).
+    Layout adapts to class count: figsize grows with it, and in-cell annotations
+    shrink and are dropped above `max_annotated_classes` (the colorbar remains).
     """
     if cm.ndim != 2 or cm.shape[0] != cm.shape[1]:
         raise ValueError("`cm` must be a square 2D array (n_classes x n_classes).")

@@ -6,11 +6,7 @@ import shap
 
 
 def summarize_background(background: pd.DataFrame, k: int) -> object:
-    """Compress the background to k weighted k-means centroids (shap.kmeans).
-
-    Returned object is accepted by KernelExplainer in place of the raw rows;
-    backgrounds with at most k rows pass through unchanged.
-    """
+    """Compress the background to k weighted k-means centroids; pass through if it has at most k rows."""
     if len(background) <= k:
         return background
     return shap.kmeans(background, k)
@@ -23,14 +19,7 @@ def kernel_shap_values(
     *,
     nsamples: int | str = "auto",
 ) -> np.ndarray:
-    """Model-agnostic SHAP values via KernelExplainer.
-
-    `predict_fn` maps a 2D feature array to an ``(n, n_outputs)`` probability
-    matrix. `background` is a DataFrame or a `summarize_background` result;
-    `nsamples` bounds the coalition samples per explained instance. Returns
-    values shaped ``(n_samples, n_features, n_outputs)`` (lower-dimensional
-    results are promoted to 3D).
-    """
+    """Model-agnostic SHAP values via KernelExplainer, shaped (n_samples, n_features, n_outputs)."""
     explainer = shap.KernelExplainer(predict_fn, background)
     values = explainer.shap_values(samples, nsamples=nsamples, silent=True)
     if isinstance(values, list):

@@ -33,6 +33,20 @@ def rare_category_filter(
     return df
 
 
+def _stratified_sample(
+    df: pd.DataFrame,
+    label_col: str,
+    per_group: int,
+    *,
+    random_state: int | None = None,
+) -> pd.DataFrame:
+    return (
+        df.groupby(df[label_col].values, group_keys=False)
+        .apply(lambda g: g.sample(n=min(len(g), per_group), random_state=random_state))
+        .reset_index(drop=True)
+    )
+
+
 def subsample_df(
     df: pd.DataFrame,
     n_samples: int,
@@ -44,11 +58,7 @@ def subsample_df(
     if label_col is None:
         return df.sample(n=min(n_samples, len(df)), random_state=random_state)
     per_class = n_samples // df[label_col].nunique()
-    return (
-        df.groupby(df[label_col].values, group_keys=False)
-        .apply(lambda x: x.sample(n=min(len(x), per_class), random_state=random_state))
-        .reset_index(drop=True)
-    )
+    return _stratified_sample(df, label_col, per_class, random_state=random_state)
 
 
 def random_undersample_df(
@@ -56,11 +66,7 @@ def random_undersample_df(
 ) -> pd.DataFrame:
     """Undersample to balance classes."""
     min_count = df[label_col].value_counts().min()
-    return (
-        df.groupby(df[label_col].values, group_keys=False)
-        .apply(lambda g: g.sample(n=min_count, random_state=random_state))
-        .reset_index(drop=True)
-    )
+    return _stratified_sample(df, label_col, min_count, random_state=random_state)
 
 
 def ml_split(
@@ -111,6 +117,9 @@ class TopNHashEncoder(BaseEstimator, TransformerMixin):
       0              — missing / NaN
       1 … top_n      — top-N most frequent categories
       top_n+1 …      — hash buckets for rare/OOV categories
+
+    With hash_buckets=0 there are no OOV slots, so rare/OOV values fold into the
+    missing token (0).
     """
 
     def __init__(
@@ -157,19 +166,18 @@ class TopNHashEncoder(BaseEstimator, TransformerMixin):
         out = {}
         for col in (c for c in self.columns_ if c in X.columns):
             cmap = self.category_maps_[col]
-            ids = []
-            for val in X[col]:
-                if pd.isna(val):
-                    ids.append(self.missing_token)
-                elif val in cmap:
-                    ids.append(cmap[val])
-                elif self.hash_buckets > 0:
-                    ids.append(
-                        hashed_start + self._hash_bucket(col, val, self.hash_buckets)
-                    )
-                else:
-                    ids.append(self.missing_token)
-            out[col] = np.asarray(ids, dtype=self.dtype)
+            s = X[col]
+            ids = s.map(cmap)  # top-N -> id, NaN for missing/OOV
+            if self.hash_buckets > 0:
+                oov = ids.isna() & s.notna()
+                # hash only the distinct OOV values, then broadcast
+                hash_map = {
+                    v: hashed_start + self._hash_bucket(col, v, self.hash_buckets)
+                    for v in s[oov].unique()
+                }
+                ids = ids.where(~oov, s.map(hash_map))
+            ids = ids.fillna(self.missing_token)
+            out[col] = ids.to_numpy(dtype=self.dtype)
         return pd.DataFrame(out, index=X.index)
 
 
@@ -181,10 +189,7 @@ def encode_labels(
     *,
     dst_label_col: str | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict]:
-    """Encode string labels to integers using a fitted LabelEncoder.
-
-    Returns: (train_df, val_df, test_df, label_mapping)
-    """
+    """Encode string labels to integers using a LabelEncoder fitted on train."""
     le = LabelEncoder()
     dst = dst_label_col or f"encoded_{src_label_col}"
     train_df = train_df.copy()
@@ -205,15 +210,7 @@ def build_preprocessor(
     cat_steps: list[tuple[str, BaseEstimator]] | None = None,
     remainder: str = "passthrough",
 ) -> ColumnTransformer:
-    """Assemble a :class:`ColumnTransformer` from per-type transformer steps.
-
-    Args:
-        num_cols: Numerical columns to transform.
-        cat_cols: Categorical columns to transform.
-        num_steps: ``(name, transformer)`` pairs assembled into a numerical pipeline.
-        cat_steps: ``(name, transformer)`` pairs assembled into a categorical pipeline.
-        remainder: Strategy for columns not covered by any transformer.
-    """
+    """Assemble a ColumnTransformer from per-type (name, transformer) steps."""
     set_config(transform_output="pandas")
     transformers = []
     if num_cols and num_steps:
@@ -248,8 +245,8 @@ def attach_cluster_features(
 ) -> pd.DataFrame:
     """Left-join per-cluster complexity rows onto `df` by `cluster_col`.
 
-    Existing target columns are dropped first (idempotent overwrite); `exclude`
-    keys (leakage-prone `cluster_class`) are never attached; unmatched rows get NaN.
+    Target columns already present are dropped first (idempotent), `exclude` keys
+    are never attached (leakage-prone), and unmatched rows get NaN.
     """
     columns = cluster_feature_columns(cluster_features, exclude=exclude)
     feature_df = pd.DataFrame.from_dict(cluster_features, orient="index").reindex(
@@ -266,11 +263,10 @@ def scale_columns_on_train(
     *,
     train_key: str = "train",
 ) -> dict[str, pd.DataFrame]:
-    """Median-impute then RobustScale `columns`, fitting both on ``splits[train_key]``.
+    """Median-impute then RobustScale `columns`, fitting both on the train split.
 
-    Residual NaN (e.g. clusters with undefined measures) are filled with the train
-    median before scaling, since RobustScaler cannot fit on NaN. Statistics come
-    only from the train split, so val/test are transformed without leakage.
+    Residual NaN are median-filled first (RobustScaler cannot fit on NaN); stats
+    come only from train, so val/test are transformed without leakage.
     """
     if not columns:
         return splits

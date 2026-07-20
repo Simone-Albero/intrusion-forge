@@ -22,19 +22,6 @@ HIGHLIGHT_COLOR: str = "#B22222"
 MUTED_COLOR: str = "#777777"
 NEUTRAL_COLOR: str = "#cccccc"
 
-OUTLINE_COLORS: list[str] = [
-    "#FF0000",
-    "#000000",
-    "#0000FF",
-    "#FF00FF",
-    "#00CCCC",
-    "#FF8800",
-    "#6600CC",
-    "#00CC66",
-    "#FF0066",
-    "#CCCC00",
-]
-
 
 def extended_palette(n: int) -> list[str]:
     """Return n distinct hex colors: PALETTE first, then tab20 for overflow."""

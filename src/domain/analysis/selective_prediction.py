@@ -8,11 +8,9 @@ def risk_coverage_curve(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Coverage vs accuracy as clusters are admitted in ascending `score` order.
 
-    Selection is per cluster (the deployable unit). Both axes are support-weighted,
-    so coverage is the fraction of test traffic retained:
+    Both axes are support-weighted:
         coverage = Σ support(admitted) / Σ support
         accuracy = 1 − Σ(failure_rate·support, admitted) / Σ(support, admitted)
-    Returns empty arrays when there is nothing to rank.
     """
     score = np.asarray(score, dtype=float)
     failure_rate = np.asarray(failure_rate, dtype=float)
@@ -38,9 +36,8 @@ def macro_recall_curve(
     """Coverage vs macro-averaged recall on the retained set (ascending `score`).
 
     Each cluster is intra-class, so its `1 − failure_rate` is its class's recall
-    contribution. Recall is pooled per class over admitted clusters, then averaged
-    over the classes still present — the class-balanced counterpart of
-    `risk_coverage_curve`. Returns empty arrays when there is nothing to rank.
+    contribution; recall is pooled per class over admitted clusters, then averaged
+    over the classes still present.
     """
     score = np.asarray(score, dtype=float)
     failure_rate = np.asarray(failure_rate, dtype=float)
@@ -75,29 +72,24 @@ def _curve_summary(
     val_predictor: np.ndarray,
     cov_oracle: np.ndarray,
     val_oracle: np.ndarray,
-    baseline: float,
     coverage_target: float,
 ) -> dict:
-    """AURC over coverage ∈ [0, 1] (np.interp clamps the low-coverage tail to the
-    best-cluster value) plus each curve's value at `coverage_target`. Shared by the
-    accuracy and macro-recall summaries; `baseline` is the flat Random value."""
+    """AURC over coverage ∈ [0, 1] plus each curve's value at `coverage_target`.
+
+    np.interp clamps the low-coverage tail to the best-cluster value."""
     grid = np.linspace(0.0, 1.0, 101)
     return {
         "aurc_predictor": float(np.trapezoid(np.interp(grid, cov_predictor, val_predictor), grid)),
         "aurc_oracle": float(np.trapezoid(np.interp(grid, cov_oracle, val_oracle), grid)),
-        "aurc_random": baseline,
         "at_target_predictor": float(np.interp(coverage_target, cov_predictor, val_predictor)),
         "at_target_oracle": float(np.interp(coverage_target, cov_oracle, val_oracle)),
     }
 
 
 def _recovered(value_predictor: float, value_oracle: float, baseline: float) -> float:
-    """Fraction of the oracle's gain over Random that the predictor captures.
-
-    NaN when the oracle leaves no positive headroom — which on the macro-recall
-    axis legitimately happens, since the oracle ranks by error (not recall) and
-    need not dominate there.
-    """
+    """Fraction of the oracle's gain over Random the predictor captures; NaN when the
+    oracle leaves no positive headroom (legitimate on the macro-recall axis, where the
+    error-ranked oracle need not dominate)."""
     gain = value_oracle - baseline
     return float((value_predictor - baseline) / gain) if gain > 1e-9 else float("nan")
 
@@ -111,10 +103,8 @@ def selective_prediction_metrics(
 ) -> dict:
     """Scalar risk–coverage summary (pooled accuracy) for the failure regressor.
 
-    Three rankings of the same (actual rate, support): predictor (by predicted
-    rate, label-free), oracle (by true rate, best achievable), random (flat at
-    global accuracy). `oracle_benefit_recovered` is the fraction of the oracle's
-    gain at `coverage_target` the predictor captures. Returns {} without support.
+    Three rankings of the same (actual rate, support): predictor (by predicted rate,
+    label-free), oracle (by true rate), random (flat at global accuracy).
     """
     predicted = np.asarray(predicted, dtype=float)
     actual = np.asarray(actual, dtype=float)
@@ -126,7 +116,7 @@ def selective_prediction_metrics(
     global_accuracy = float(1.0 - (actual * support).sum() / total)
     cov_p, acc_p = risk_coverage_curve(predicted, actual, support)
     cov_o, acc_o = risk_coverage_curve(actual, actual, support)
-    s = _curve_summary(cov_p, acc_p, cov_o, acc_o, global_accuracy, coverage_target)
+    s = _curve_summary(cov_p, acc_p, cov_o, acc_o, coverage_target)
 
     return {
         "coverage_target": coverage_target,
@@ -154,9 +144,8 @@ def selective_recall_metrics(
     """Class-balanced counterpart of `selective_prediction_metrics`: macro-recall
     on the retained set instead of pooled accuracy.
 
-    The Oracle still ranks by true *error* rate (accuracy-optimal), so on this axis
-    it need not dominate — a dip below the Random baseline signals that error-greedy
-    rejection costs class balance. Returns ``{}`` when there is no usable support.
+    The oracle still ranks by true *error* rate, so on this axis it need not dominate —
+    a dip below Random signals that error-greedy rejection costs class balance.
     """
     predicted = np.asarray(predicted, dtype=float)
     actual = np.asarray(actual, dtype=float)
@@ -167,8 +156,8 @@ def selective_recall_metrics(
 
     cov_p, rec_p = macro_recall_curve(predicted, actual, support, cluster_class)
     cov_o, rec_o = macro_recall_curve(actual, actual, support, cluster_class)
-    global_macro_recall = float(rec_p[-1])  # full retention = whole-set macro recall
-    s = _curve_summary(cov_p, rec_p, cov_o, rec_o, global_macro_recall, coverage_target)
+    global_macro_recall = float(rec_p[-1])
+    s = _curve_summary(cov_p, rec_p, cov_o, rec_o, coverage_target)
 
     return {
         "coverage_target": coverage_target,

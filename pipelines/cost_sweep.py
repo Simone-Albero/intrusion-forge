@@ -1,23 +1,3 @@
-"""Complexity cost analysis: a deterministic k-NN build cost model per cell, plus a
-cross-run aggregator of the cost↔quality trade-off.
-
-Three modes (dispatched in `main`):
-  * default — fit T(m)=c·m^alpha by timing `build_knn_graph` over a controlled m grid on
-    one cell's train set, and report the complexity share of end-to-end wall time.
-    Writes `shared/cost_model.json`.
-  * `aggregate=<root>` — scan finished runs under <root> and assemble a tidy table of
-    (n_clusters, complexity build time, rho) from existing artifacts. Writes
-    `<root>/cost_quality_table.json`.
-  * `summary=<root>` — roll up the per-cell `cost_model.json` files under <root> into
-    alpha (mean±std per distance, the Θ(m²) robustness check) plus the cosine/euclidean c
-    ratio per dataset. Writes `<root>/cost_model_summary.json`.
-
-The build is brute-force kNN = Θ(m²) distance evals, so the cap on complexity samples
-decouples cost from corpus size N. After tying cluster count to the cap (cap // floor),
-m tracks the cap directly, so the cost model is measured by subsampling m deliberately
-(no per-cluster floor) rather than by sweeping a production clustering.
-"""
-
 import logging
 import sys
 from pathlib import Path
@@ -31,7 +11,7 @@ from src.core.config import load_config
 from src.core.io import load_df
 from src.core.utils import load_from_json, save_to_json
 from src.domain.analysis.complexity.shared import build_knn_graph
-from pipelines.common import paths_from_cfg
+from pipelines import paths_from_cfg
 
 logger = logging.getLogger(__name__)
 
@@ -41,10 +21,15 @@ _N_REPEATS = 3
 
 # Complexity-stage function names in a timing.json (graph build + measures).
 _COMPLEXITY_FNS = {
-    "build_knn_graph", "prepare_complexity_graph",
-    "compute_f_measures", "compute_n_measures", "compute_network_measures",
-    "compute_t_measures", "compute_cluster_geometry",
-    "compute_complexity_from_graph", "compute_cluster_complexity",
+    "build_knn_graph",
+    "prepare_complexity_graph",
+    "compute_f_measures",
+    "compute_n_measures",
+    "compute_network_measures",
+    "compute_t_measures",
+    "compute_cluster_geometry",
+    "compute_complexity_from_graph",
+    "compute_cluster_complexity",
     "compute_class_complexity",
 }
 
@@ -84,28 +69,35 @@ def _timing_rows(timing_path: Path) -> list[dict]:
 
 
 def _stage_seconds(timing_path: Path, exclude: set[str] | None = None) -> float:
-    """Sum durations in a timing.json, skipping `exclude`d function names."""
     exclude = exclude or set()
     return float(
-        sum(r.get("duration_s", 0.0) for r in _timing_rows(timing_path)
-            if r.get("function") not in exclude)
+        sum(
+            r.get("duration_s", 0.0)
+            for r in _timing_rows(timing_path)
+            if r.get("function") not in exclude
+        )
     )
 
 
 def _complexity_seconds(timing_path: Path) -> float:
-    """Sum durations of the complexity-stage functions in a timing.json."""
     return float(
-        sum(r.get("duration_s", 0.0) for r in _timing_rows(timing_path)
-            if r.get("function") in _COMPLEXITY_FNS)
+        sum(
+            r.get("duration_s", 0.0)
+            for r in _timing_rows(timing_path)
+            if r.get("function") in _COMPLEXITY_FNS
+        )
     )
 
 
-# --------------------------------------------------------------------------- #
-# Mode 1: per-cell cost model harness                                          #
-# --------------------------------------------------------------------------- #
+# Mode 1: per-cell cost model harness
 def _time_build(
-    X_num: np.ndarray, X_cat: np.ndarray | None, m: int, k: int, metric: str,
-    rng: np.random.Generator, repeats: int = _N_REPEATS,
+    X_num: np.ndarray,
+    X_cat: np.ndarray | None,
+    m: int,
+    k: int,
+    metric: str,
+    rng: np.random.Generator,
+    repeats: int = _N_REPEATS,
 ) -> float:
     """Median wall time of `build_knn_graph` on a random m-row subsample."""
     n = X_num.shape[0]
@@ -125,11 +117,13 @@ def _pipeline_cost(paths, cost_model: dict, m_prod: int) -> dict:
     The build time is the cost model's prediction c·m_prod^alpha; prep+classify come
     from the cell's own timing.json files.
     """
-    prep_clustering_s = _stage_seconds(paths.shared / "timing.json", exclude=_COMPLEXITY_FNS)
+    prep_clustering_s = _stage_seconds(
+        paths.shared / "timing.json", exclude=_COMPLEXITY_FNS
+    )
     classify_s = _stage_seconds(paths.outputs / "timing.json")
     non_complexity_s = prep_clustering_s + classify_s
     alpha, c = cost_model.get("alpha"), cost_model.get("c")
-    build_s = float(c * m_prod ** alpha) if alpha is not None and c is not None else None
+    build_s = float(c * m_prod**alpha) if alpha is not None and c is not None else None
     total = (build_s + non_complexity_s) if build_s is not None else None
     return {
         "prep_clustering_s": prep_clustering_s,
@@ -148,8 +142,7 @@ def _run_cost_model(cfg, paths) -> None:
     train_df = load_df(str(paths.processed_data / f"train.{cfg.data.extension}"))
     n = len(train_df)
     X_num = (
-        train_df[num_cols].to_numpy(dtype=np.float64)
-        if num_cols else np.empty((n, 0))
+        train_df[num_cols].to_numpy(dtype=np.float64) if num_cols else np.empty((n, 0))
     )
     X_cat = train_df[cat_cols].to_numpy() if cat_cols else None
     k = int(cfg.complexity.k)
@@ -158,17 +151,23 @@ def _run_cost_model(cfg, paths) -> None:
 
     grid = OmegaConf.select(cfg, "costmodel.m_grid")
     grid = [int(x) for x in grid] if grid else list(DEFAULT_M_GRID)
-    m_grid = sorted({min(int(m), n) for m in grid})  # truncate to n, dedup
+    m_grid = sorted({min(int(m), n) for m in grid})
 
     logger.info(
         "Cost model on %s [%s], k=%d, n_train=%d, m_grid=%s",
-        cfg.data.file_name, metric, k, n, m_grid,
+        cfg.data.file_name,
+        metric,
+        k,
+        n,
+        m_grid,
     )
     rng = np.random.default_rng(cfg.seed)
     measurements: list[dict] = []
     for m in m_grid:
         build_s = _time_build(X_num, X_cat, m, k, metric, rng)
-        measurements.append({"m": m, "build_s": build_s, "cost_units": _cost_units(m, k, d_feat)})
+        measurements.append(
+            {"m": m, "build_s": build_s, "cost_units": _cost_units(m, k, d_feat)}
+        )
         logger.info("m=%d: build=%.3fs (median of %d)", m, build_s, _N_REPEATS)
 
     cost_model = _fit_cost_model([(r["m"], r["build_s"]) for r in measurements])
@@ -186,13 +185,12 @@ def _run_cost_model(cfg, paths) -> None:
     logger.info(
         "Cost model written -> %s (alpha=%s, r2=%s)",
         paths.shared / "cost_model.json",
-        cost_model.get("alpha"), cost_model.get("r2"),
+        cost_model.get("alpha"),
+        cost_model.get("r2"),
     )
 
 
-# --------------------------------------------------------------------------- #
-# Mode 2: cross-run aggregator                                                 #
-# --------------------------------------------------------------------------- #
+# Mode 2: cross-run aggregator
 def _aggregate_runs(root: Path) -> None:
     """Assemble a tidy cost↔quality table from finished runs under `root`.
 
@@ -210,7 +208,9 @@ def _aggregate_runs(root: Path) -> None:
             build_s = _complexity_seconds(run / "shared/timing.json")
             cfg_c = load_from_json(run / "shared/config_composed.json")
             dataset = cfg_c.get("data", {}).get("file_name")
-            distance = cfg_c.get("distance") or cfg_c.get("complexity", {}).get("distance")
+            distance = cfg_c.get("distance") or cfg_c.get("complexity", {}).get(
+                "distance"
+            )
             cap = cfg_c.get("complexity", {}).get("max_complexity_samples")
         except (FileNotFoundError, OSError, KeyError) as exc:
             logger.warning("skip %s (shared artifacts): %s", run, exc)
@@ -221,19 +221,21 @@ def _aggregate_runs(root: Path) -> None:
                 res = load_from_json(res_path)
             except (FileNotFoundError, OSError):
                 continue
-            rows.append({
-                "run": str(run.relative_to(root)),
-                "dataset": dataset,
-                "distance": distance,
-                "classifier": res_path.parents[2].name,
-                "n_clusters_genuine": n_genuine,
-                "n_clusters_used": res.get("n_clusters_used"),
-                "max_complexity_samples": cap,
-                "complexity_build_s": build_s,
-                "rho": res.get("spearman"),
-                "r2": res.get("r2"),
-                "mae": res.get("mae"),
-            })
+            rows.append(
+                {
+                    "run": str(run.relative_to(root)),
+                    "dataset": dataset,
+                    "distance": distance,
+                    "classifier": res_path.parents[2].name,
+                    "n_clusters_genuine": n_genuine,
+                    "n_clusters_used": res.get("n_clusters_used"),
+                    "max_complexity_samples": cap,
+                    "complexity_build_s": build_s,
+                    "rho": res.get("spearman"),
+                    "r2": res.get("r2"),
+                    "mae": res.get("mae"),
+                }
+            )
 
     out_path = root / "cost_quality_table.json"
     save_to_json({"n_rows": len(rows), "rows": rows}, out_path)
@@ -296,8 +298,7 @@ def _summarize_cost_models(root: Path) -> None:
 
 
 def main():
-    """Dispatch: `aggregate=<root>` → cross-run table; `summary=<root>` → cost-model
-    roll-up; else per-cell cost model."""
+    """Dispatch: `aggregate=<root>` → cross-run table; `summary=<root>` → cost-model roll-up; else per-cell cost model."""
     argv = sys.argv[1:]
     agg = [a for a in argv if a.startswith("aggregate=")]
     if agg:

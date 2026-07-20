@@ -1,4 +1,5 @@
 import itertools
+import logging
 import time
 from collections.abc import Callable, Sequence
 
@@ -12,6 +13,8 @@ from src.domain.analysis.complexity.shared import (
     _hybrid_row_batch_euclidean,
     _l2_normalize,
 )
+
+logger = logging.getLogger(__name__)
 
 FitFn = Callable[..., np.ndarray]  # (X_num, X_cat=None, **params) -> labels
 ClusterFn = Callable[
@@ -37,7 +40,6 @@ def cluster_size_balance(labels: np.ndarray) -> float:
 
 
 def _measure(labels: np.ndarray, score: float, combo: dict, duration_s: float) -> dict:
-    """Headline metrics for a single clustering candidate."""
     n = int(labels.shape[0])
     n_noise = int((labels == -1).sum())
     n_clusters = int(np.unique(labels[labels != -1]).size) if n - n_noise > 0 else 0
@@ -58,7 +60,6 @@ def _subsample(
     max_samples: int,
     random_state: int = 0,
 ) -> tuple[np.ndarray, np.ndarray | None]:
-    """Random subsample of X_num (and X_cat) to at most max_samples rows."""
     n = X_num.shape[0]
     if n <= max_samples:
         return X_num, X_cat
@@ -215,26 +216,13 @@ def grid_search(
     silhouette_fn: SilhouetteFn | None = None,
     **fixed_params,
 ) -> dict:
-    """Grid search scored by silhouette − noise_penalty·noise_ratio + resolution.
+    """Grid search scored by silhouette − noise_penalty·noise_ratio + resolution tilt.
 
-    The silhouette is monotone-decreasing in k on weakly-structured data, so on
-    its own it favours coarse partitions and starves the downstream
-    complexity→failure regression of cluster-level support. A gentle
-    `resolution_weight`-scaled tilt, increasing with the cluster count and
-    self-normalised by the finest partition in the sweep, is added so a flat
-    silhouette drifts to the fine end of the (data-relative) `n_clusters` band;
-    a genuine silhouette peak still dominates the small tilt, so well-separated
-    data keeps its natural resolution. The tilt has no fixed target — the
-    resolution band lives in the candidate grid (see `compose._n_clusters_grid`),
-    not here.
-
-    Methods without noise (k-means, birch) score on the plain silhouette.
-    `silhouette_fn` overrides the silhouette term (e.g. Gower-hybrid for
-    mixed-feature algorithms); default is Euclidean on `X_num`. fixed_params are
-    forwarded to fit_fn unchanged.
-
-    Returns {"best": entry, "sweep": [entry, ...]}; failed fits get score=-inf,
-    error=True. Raises if no candidate produced a clustering.
+    The resolution tilt (scaled by `resolution_weight`, growing with the cluster
+    count, self-normalised by the finest partition in the sweep) breaks the
+    silhouette's monotone preference for coarse partitions without overriding a
+    genuine silhouette peak. `silhouette_fn` overrides the silhouette term (e.g.
+    Gower-hybrid for mixed-feature algorithms); default is Euclidean on `X_num`.
     """
     sub_num, sub_cat = _subsample(X_num, X_cat, max_fit_samples, random_state)
 
@@ -295,6 +283,11 @@ def grid_search(
             best_entry = e
 
     if best_entry is None:
+        logger.warning(
+            "grid_search: no scoreable clustering across %d combination(s); "
+            "falling back to the first sweep entry (may be a failed fit).",
+            len(sweep),
+        )
         best_entry = sweep[0] if sweep else None
 
     if best_entry is None:

@@ -13,7 +13,6 @@ def _forward_and_loss(
     batch: Batch,
     loss_fn: BaseLoss | None = None,
 ) -> tuple[ModelOutput, torch.Tensor | None]:
-    """Forward pass with optional loss computation."""
     output = model(*batch.features)
     if loss_fn is None:
         return output, None
@@ -54,6 +53,8 @@ def eval_step(engine: Engine, batch: Batch) -> dict[str, float]:
     with torch.no_grad():
         _, loss = _forward_and_loss(model, batch, loss_fn)
 
+    if loss is None:
+        raise ValueError("eval_step requires a loss_fn in the engine state.")
     return {"loss": loss.item()}
 
 

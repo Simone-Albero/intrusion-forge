@@ -13,7 +13,6 @@ def compute_cls_coef(
 
     For each cluster c, average over its members the fraction of intra-c
     neighbour pairs that are themselves connected in the k-NN graph.
-    Vectorised via boolean indexing into `knn_idx[intra_nbs]`.
     """
     result: dict[str, float] = {}
     for cid, c_mask in cluster_mask.items():
@@ -38,10 +37,7 @@ def compute_hub(
     cluster_mask: dict[str, np.ndarray],
     knn_idx: np.ndarray,
 ) -> dict[str, float]:
-    """Hub score per cluster: mean in-degree in the reverse kNN graph (hubness proxy).
-
-    Vectorised via np.bincount on the flattened k-NN index matrix.
-    """
+    """Hub score per cluster: mean in-degree in the reverse kNN graph (hubness proxy)."""
     n = knn_idx.shape[0]
     in_degree = np.bincount(knn_idx.ravel(), minlength=n)
     return {
@@ -51,7 +47,6 @@ def compute_hub(
 
 
 def _density(nbs: np.ndarray, j_mask: np.ndarray, k: int) -> float:
-    """Cross-class k-NN density for cluster c against population mask j_mask."""
     return float(j_mask[nbs].sum()) / (nbs.shape[0] * k)
 
 

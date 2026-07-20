@@ -52,7 +52,6 @@ def _approx_silhouette(
 def _dispersion(
     samples: np.ndarray, centroid: np.ndarray, metric: str
 ) -> tuple[float | None, float | None]:
-    """(max_dispersion, p95_dispersion) for given metric."""
     if len(samples) == 0:
         return None, None
     dists = pairwise_distances(samples, centroid.reshape(1, -1), metric=metric).ravel()
@@ -60,7 +59,6 @@ def _dispersion(
 
 
 def _nearest_other(pw_row: np.ndarray) -> float | None:
-    """Min centroid distance to any other cluster (diagonal already set to inf)."""
     finite = pw_row[np.isfinite(pw_row)]
     if finite.size == 0:
         return None
@@ -87,9 +85,8 @@ def compute_cluster_geometry(
 ) -> dict[str, dict[str, float | None]]:
     """Geometry measures per cluster under a single metric ("cosine"/"euclidean").
 
-    Noise (-1) is excluded. metric controls centroid type, pairwise distances and
-    silhouette. Output keys: max_dispersion, p95_dispersion,
-    dist_to_nearest_centroid, p5_silhouette, frac_at_risk.
+    Noise (-1) is excluded; metric controls centroid type, pairwise distances and
+    silhouette.
     """
     mask_valid = y_cluster != -1
     X_v = X_num[mask_valid]

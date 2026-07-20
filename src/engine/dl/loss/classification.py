@@ -1,9 +1,13 @@
+import logging
+
 import torch
 import torch.nn.functional as F
 from torch import Tensor
 
 from . import LossFactory
 from .base import BaseLoss
+
+logger = logging.getLogger(__name__)
 
 
 def _make_class_weight(
@@ -81,6 +85,7 @@ class FocalLoss(BaseLoss):
             self.class_weight = None
 
     def forward(self, x: Tensor, target: Tensor) -> Tensor:
+        valid = target != self.ignore_index
         ce_loss = F.cross_entropy(
             x,
             target,
@@ -88,8 +93,18 @@ class FocalLoss(BaseLoss):
             label_smoothing=self.label_smoothing,
             ignore_index=self.ignore_index,
         )
-        p_t = torch.softmax(x, dim=1).gather(1, target.unsqueeze(1)).squeeze(1)
+        if not bool(valid.all()):
+            logger.warning(
+                "FocalLoss: %d target(s) equal ignore_index (%d); clamping to a "
+                "dummy index for gather (masked out of the reduction).",
+                int((~valid).sum()),
+                self.ignore_index,
+            )
+        # Ignored positions get a valid dummy index so gather stays in range;
+        # they are dropped by the mask below.
+        safe_target = target.clamp_min(0)
+        p_t = torch.softmax(x, dim=1).gather(1, safe_target.unsqueeze(1)).squeeze(1)
         loss = (1 - p_t) ** self.gamma * ce_loss
         if self.class_weight is not None:
-            loss = self.class_weight.gather(0, target) * loss
-        return self._reduce(loss[target != self.ignore_index])
+            loss = self.class_weight.gather(0, safe_target) * loss
+        return self._reduce(loss[valid])

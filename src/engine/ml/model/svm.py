@@ -7,13 +7,7 @@ from . import MLClassifierFactory
 
 
 class CalibratedLinearSVC(BaseEstimator, ClassifierMixin):
-    """LinearSVC wrapped in CalibratedClassifierCV for predict_proba support.
-
-    Exposes C and max_iter directly so GridSearchCV can tune them via the
-    standard clf__C / clf__max_iter parameter path without nesting.
-    Uses sigmoid calibration with cv=3 to stay O(n) and avoid the Platt-scaling
-    5-fold overhead of SVC(probability=True).
-    """
+    """LinearSVC wrapped in CalibratedClassifierCV for predict_proba; sigmoid cv=3 stays O(n), avoiding SVC(probability=True)'s Platt-scaling overhead."""
 
     def __init__(self, C: float = 1.0, max_iter: int = 2000, random_state: int | None = None):
         self.C = C

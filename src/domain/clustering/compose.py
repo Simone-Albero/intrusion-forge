@@ -27,13 +27,9 @@ _N_CLUSTERS_ALGOS = ("kmeans", "spectral", "birch", "kprototypes")
 def _n_clusters_grid(
     n_class: int, target_size: int, k_cap: int, levels: int = 7
 ) -> list[int]:
-    """Data-relative `n_clusters` candidates for a class of `n_class` points.
-
-    Spans a geometric band of average cluster sizes from `target_size` (finest)
-    upward by powers of two, so the finest candidate always targets ~target_size
-    points/cluster regardless of class size — large classes are no longer capped
-    at a static ceiling. Each candidate is clamped to [2, k_cap] (k_cap is the
-    subsample-support floor) and de-duplicated.
+    """Data-relative `n_clusters` candidates: a geometric band of average cluster
+    sizes from `target_size` (finest) up by powers of two, each clamped to
+    [2, k_cap] and de-duplicated.
     """
     sizes = (target_size * (2**i) for i in range(levels))
     ks = {min(k_cap, max(2, round(n_class / s))) for s in sizes}

@@ -25,11 +25,7 @@ def _f2_pair(X_c: np.ndarray, X_j: np.ndarray, eps: float = 1e-8) -> float:
 
 
 def _f3_pair(X_c: np.ndarray, X_j: np.ndarray) -> float:
-    """F3: min over features of the fraction of cluster-c samples in the overlap region.
-
-    Measures how well a single feature can separate cluster c from cluster j.
-    Higher = harder (no single feature separates well).
-    """
+    """F3: min over features of the fraction of cluster-c samples in the overlap region (higher = harder)."""
     min_c, max_c = X_c.min(axis=0), X_c.max(axis=0)
     min_j, max_j = X_j.min(axis=0), X_j.max(axis=0)
     lo = np.maximum(min_c, min_j)
@@ -45,10 +41,7 @@ def _f3_pair(X_c: np.ndarray, X_j: np.ndarray) -> float:
 
 
 def _f4_pair(X_c: np.ndarray, X_j: np.ndarray) -> float:
-    """F4: fraction of cluster-c samples in the overlap region on ALL features simultaneously.
-
-    Higher = harder (many samples overlap jointly in all features).
-    """
+    """F4: fraction of cluster-c samples in the overlap region on ALL features simultaneously (higher = harder)."""
     min_c, max_c = X_c.min(axis=0), X_c.max(axis=0)
     min_j, max_j = X_j.min(axis=0), X_j.max(axis=0)
     lo = np.maximum(min_c, min_j)
@@ -65,10 +58,6 @@ _F_KEYS = ("f1", "f2", "f3", "f4")
 
 
 def _pair_block(X_c: np.ndarray, X_others: list[np.ndarray]) -> dict[str, list[float]]:
-    """Compute F1-F4 for cluster X_c against each population in X_others.
-
-    Skips populations with fewer than 2 samples.
-    """
     out: dict[str, list[float]] = {k: [] for k in _F_KEYS}
     for X_o in X_others:
         if len(X_o) < 2:
@@ -92,7 +81,6 @@ def compute_f_measures(
 
     Noise (-1) is excluded. metric="cosine" L2-normalises samples first (angular
     space, matching the Gower-cosine k-NN); "euclidean" uses raw samples.
-    Output keys: f{1..4}_{min,mean,max}.
     """
     mask_valid = y_cluster != -1
     X_raw = X_num[mask_valid]

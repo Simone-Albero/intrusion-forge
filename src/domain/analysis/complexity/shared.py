@@ -18,8 +18,7 @@ def aggregate_min_mean_max(
 
 
 def make_null_row(metric_keys: tuple[str, ...]) -> dict[str, float | None]:
-    """Build a dict of `f"{metric}_{stat}": None` for the standard pairwise
-    output schema (stats min/mean/max)."""
+    """Null pairwise-output row: `f"{metric}_{stat}": None` for stats min/mean/max."""
     return {
         f"{m}_{stat}": None
         for m in metric_keys
@@ -47,7 +46,6 @@ def _hybrid_row_batch(
 
     cos_dist = clip(||q/||q|| - r/||r||||^2 / 2, 0, 1) ∈ [0, 1].
     The numeric block is weighted by `d_num` to preserve Gower proportionality.
-    Returns shape (b, n) distance matrix in [0, 1].
     """
     euclid = cdist(query_num_norm, X_num_norm, metric="euclidean")
     dist = np.clip(euclid**2 / 2, 0.0, 1.0) * d_num
@@ -73,7 +71,6 @@ def _hybrid_row_batch_euclidean(
     d = ( Σ_f |x_f - y_f| / range_f + Σ_j [x_cat_j != y_cat_j] ) / (d_num + d_cat)
 
     feat_ranges[f] = max(X_num[:, f]) - min(X_num[:, f]) for each numerical feature f.
-    Returns shape (b, n) distance matrix in [0, 1].
     """
     dist = np.zeros((query_num.shape[0], X_num.shape[0]), dtype=np.float64)
     for f in range(d_num):
@@ -96,8 +93,7 @@ def build_knn_graph(
     metric: str = "cosine",
     batch_size: int = 1024,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Build a k-NN graph via batched Gower-hybrid distance, never materialising
-    the full n×n matrix. Returns (indices, distances), both shape (n, k).
+    """Build a k-NN graph via batched Gower-hybrid distance, never materialising the full n×n matrix.
 
     metric="cosine": cosine on L2-normalised numerics + Hamming on categorics.
     metric="euclidean": range-normalised Manhattan on numerics + Hamming.
@@ -183,9 +179,8 @@ def _bridge_disconnected(
 ) -> scipy.sparse.csr_matrix:
     """Add one cross-component bridge edge per disconnected component.
 
-    Used when the k-NN graph is disconnected (categoricals can partition the
-    space such that the k neighbours of every node sit in the same category).
-    metric controls which distance function is used for bridge distances.
+    Categoricals can partition the space so the k neighbours of every node sit in
+    the same category, leaving the k-NN graph disconnected.
     """
     n_comp, comp_labels = scipy.sparse.csgraph.connected_components(mat, directed=False)
     if n_comp == 1:
@@ -228,10 +223,9 @@ def build_approx_mst(
     *,
     metric: str = "cosine",
 ) -> np.ndarray:
-    """Approximate MST on the sparse k-NN graph. Returns an (E, 2) int64 array
-    of MST edges (row, col). One bridge edge is added per disconnected
-    component so the MST connects every cluster.
-    metric is forwarded to _bridge_disconnected for the bridge distance computation.
+    """Approximate MST on the sparse k-NN graph.
+
+    One bridge edge is added per disconnected component so the MST connects every cluster.
     """
     n, d_num = X_num.shape
     d_cat = X_cat.shape[1] if X_cat is not None else 0
@@ -260,9 +254,7 @@ def topk_adversarial_clusters(
 ) -> dict[str, list[str]]:
     """For each cluster, return the top-K nearest cluster IDs of a different class.
 
-    Result is sorted by ascending centroid distance and capped at `top_k`
-    (or all available adversarial clusters if fewer).
-    metric: "euclidean" (default) or "cosine".
+    Sorted by ascending centroid distance, capped at `top_k` (or all available).
     """
     if centroid_matrix.shape[0] == 0:
         return {}
@@ -271,13 +263,14 @@ def topk_adversarial_clusters(
     classes = np.array(
         [id_to_class.get(cid, -1) for cid in cluster_ids], dtype=np.int64
     )
+    known = np.array([cid in id_to_class for cid in cluster_ids])
     out: dict[str, list[str]] = {}
     for i, cid in enumerate(cluster_ids):
         cls_c = id_to_class.get(cid)
         if cls_c is None:
             out[cid] = []
             continue
-        adv_idx = np.where(classes != cls_c)[0]
+        adv_idx = np.where((classes != cls_c) & known)[0]
         if adv_idx.size == 0:
             out[cid] = []
             continue

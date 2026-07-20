@@ -15,10 +15,9 @@ def stratified_subsample(
 ) -> np.ndarray:
     """Sample up to n_samples indices from labels, stratified by group.
 
-    Returns an indices array. If n_samples is None or >= len(labels), returns all indices.
-    When stratify=True, samples proportionally to group size (at least one per group).
-    When stratify=False, samples equally per group, capped at the smallest group.
-    If noise_mask is provided, noise points fill the remaining budget after stratified sampling.
+    stratify=True samples proportionally to group size (at least one per group);
+    stratify=False samples equally per group, capped at the smallest. Any
+    noise_mask points fill the remaining budget after stratified sampling.
     """
     n = len(labels)
     if n_samples is None or n_samples >= n:

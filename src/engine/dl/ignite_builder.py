@@ -8,15 +8,7 @@ from ignite.metrics import Metric
 
 
 class EngineBuilder:
-    """Builder for creating and configuring Ignite engines with dynamic state.
-
-    Example:
-        >>> engine = (EngineBuilder(train_step)
-        ...     .with_state(model=model, optimizer=optimizer, device=device)
-        ...     .with_metric("loss", Average(output_transform=lambda x: x["loss"]))
-        ...     .with_history(output_transform=lambda out: {"loss": out["loss"]})
-        ...     .build())
-    """
+    """Builder for creating and configuring Ignite engines with dynamic state."""
 
     def __init__(self, step_function: Callable):
         self._step_function = step_function
@@ -95,11 +87,7 @@ class EngineBuilder:
         *,
         event: Events = Events.ITERATION_COMPLETED,
     ) -> "EngineBuilder":
-        """Collect scalar values per `event` into `self.history`.
-
-        `output_transform(engine.state.output)` must return a flat dict
-        `{name: float}`. Each value is appended to `history[name]`.
-        """
+        """Collect scalars per `event` into `self.history`; `output_transform` must return a flat `{name: float}` dict."""
 
         def _collect(engine):
             for name, value in output_transform(engine.state.output).items():

@@ -19,6 +19,10 @@ def _check_context(context: dict | None) -> tuple[list[str], list[str]]:
     return context["num_cols"], context["cat_cols"]
 
 
+def _strip_clf_prefix(params: dict) -> dict:
+    return {k.replace("clf__", "", 1): v for k, v in params.items()}
+
+
 def fit_classifier(
     name: str,
     params: dict,
@@ -29,10 +33,9 @@ def fit_classifier(
     y_val: np.ndarray | None = None,
     context: dict | None = None,
 ) -> tuple[Pipeline, dict]:
-    """Build an sklearn pipeline (preprocess + classifier) and fit on (X, y).
+    """Build an sklearn pipeline (preprocess + classifier), fit it on (X, y).
 
-    `X` carries both numerical and categorical columns. `X_val`/`y_val` are
-    accepted for interface parity with DL but ignored. Returns ``(pipeline, {})``.
+    `X_val`/`y_val` are accepted for interface parity with DL but ignored.
     """
     num_cols, cat_cols = _check_context(context)
     pipeline = build_pipeline(name, params, num_cols, cat_cols)
@@ -56,11 +59,9 @@ def grid_search_classifier(
 ) -> tuple[Pipeline, dict]:
     """Cross-validated grid search over the classifier step of the pipeline.
 
-    Grid keys are remapped to ``clf__<key>`` to target the classifier inside the
-    Pipeline. Transform steps are cached across combinations (each fold
-    preprocesses once); when ``max_samples`` is set and exceeded, the search runs
-    on a stratified subsample and the winner is refit on the full data.
-    Returns ``(best_pipeline, summary)``.
+    Transform steps are cached so each fold preprocesses once; when `max_samples`
+    is exceeded the search runs on a stratified subsample and the winner is refit
+    on the full data.
     """
     num_cols, cat_cols = _check_context(context)
     clf_grid = {f"clf__{k}": v for k, v in grid.items()}
@@ -87,9 +88,7 @@ def grid_search_classifier(
         search.fit(X_search, y_search)
 
     if subsampled:
-        best_clf_params = {
-            k.replace("clf__", "", 1): v for k, v in search.best_params_.items()
-        }
+        best_clf_params = _strip_clf_prefix(search.best_params_)
         best_pipeline = build_pipeline(
             name, {**params, **best_clf_params}, num_cols, cat_cols
         )
@@ -99,7 +98,7 @@ def grid_search_classifier(
 
     cv_results = [
         {
-            "params": {k.replace("clf__", "", 1): v for k, v in p.items()},
+            "params": _strip_clf_prefix(p),
             "mean_test_score": float(s),
             "std_test_score": float(std),
         }
@@ -110,9 +109,7 @@ def grid_search_classifier(
         )
     ]
     summary = {
-        "best_params": {
-            k.replace("clf__", "", 1): v for k, v in search.best_params_.items()
-        },
+        "best_params": _strip_clf_prefix(search.best_params_),
         "best_score": float(search.best_score_),
         "scoring": scoring,
         "cv": cv,
@@ -128,11 +125,10 @@ def predict_with_proba(
     context: dict | None = None,
     return_embedding: bool = False,
 ) -> tuple:
-    """Return ``(predicted labels, class probability matrix)`` for the pipeline.
+    """Return (y_pred, y_proba) for the pipeline.
 
-    ML pipelines have no learned embedding, so ``return_embedding=True`` returns
-    ``z=None`` as a third element — kept symmetric with the DL path so callers can
-    request an embedding uniformly.
+    ML pipelines have no embedding, so `return_embedding=True` returns z=None as
+    a third element, symmetric with the DL path.
     """
     y_pred, y_proba = pipeline.predict(X), pipeline.predict_proba(X)
     if return_embedding:

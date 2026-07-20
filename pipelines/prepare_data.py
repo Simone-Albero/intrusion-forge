@@ -49,7 +49,6 @@ logger = logging.getLogger(__name__)
 def _absorb_small_clusters(
     labels: np.ndarray, floor: int
 ) -> tuple[np.ndarray, int, int]:
-    """Reassign clusters smaller than `floor` to noise (-1)."""
     ids, counts = np.unique(labels[labels != -1], return_counts=True)
     small = ids[counts < floor]
     if small.size == 0:
@@ -143,7 +142,6 @@ def _cluster_per_class(
         if len(cluster_ids) > 0:
             offset += int(cluster_ids.max()) + 1
 
-    # reassign noise points (-1) to per-class pseudo-clusters
     noise_cluster_ids: set[int] = set()
     noise_count = int((labels == -1).sum())
     if noise_count > 0:

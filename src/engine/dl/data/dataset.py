@@ -9,15 +9,8 @@ Sample = tuple[list[torch.Tensor], list[torch.Tensor]]
 class TabularDataset(Dataset):
     """Dataset for tabular data with mixed numerical and categorical features.
 
-    Args:
-        df: Source DataFrame.
-        num_cols: Numerical column names.
-        cat_cols: Categorical column names.
-        label_col: Single label column name or list of label column names.
-
-    Returns:
-        ``(features, labels)`` where each is a list of tensors. When no labels
-        are provided, ``labels`` is the same list as ``features``.
+    Yields ``(features, labels)`` as lists of tensors; with no label column,
+    ``labels`` aliases ``features``.
     """
 
     def __init__(

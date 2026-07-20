@@ -30,7 +30,7 @@ from src.core.log import (
     setup_logger,
 )
 from src.core.paths import OutputPaths
-from pipelines.common import paths_from_cfg
+from pipelines import paths_from_cfg
 from src.core.utils import flush_timing, load_from_json, skip_if_exists, timed
 from src.core.io import load_listed_dfs
 from src.domain.analysis.explain import kernel_shap_values, summarize_background
@@ -48,7 +48,6 @@ logger = logging.getLogger(__name__)
 
 
 def _seed_everything(seed: int) -> None:
-    """Seed python, numpy and torch RNGs for reproducible runs."""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -65,7 +64,6 @@ def _supports_random_state(clf_cls: type) -> bool:
 
 
 def _variant_suffix(cfg) -> str:
-    """Artifact-name suffix of the run variant ("" base, "_extended" extend)."""
     return "_extended" if cfg.extend.generate else ""
 
 
@@ -274,16 +272,18 @@ def _build_test_figures(
 
     correct = y_pred == y_true
 
-    # Keep only the "problematic" classes: the smallest set of classes whose
+    # Keep the "problematic" classes: the smallest set of classes whose
     # misclassified points together cover >=90% of all errors (top error-mass
     # contributors). This focuses the t-SNE on where the model actually fails.
+    # Always keep at least two classes so the scatter is a comparison, not a single
+    # blob — when one dominant class (e.g. Benign) alone clears the 90% threshold.
     mis = ~correct
     total_mis = int(mis.sum())
     mis_per_class = {int(c): int((mis & (y_true == c)).sum()) for c in classes}
     keep_classes: list[int] = []
     cumulative = 0
     for c in sorted(mis_per_class, key=mis_per_class.get, reverse=True):
-        if total_mis and cumulative >= 0.9 * total_mis:
+        if len(keep_classes) >= 2 and total_mis and cumulative >= 0.9 * total_mis:
             break
         keep_classes.append(c)
         cumulative += mis_per_class[c]
@@ -350,7 +350,6 @@ def _build_dl_context(
     cat_cols: list[str],
     label_col: str,
 ) -> dict:
-    """Bundle the per-call args the DL training module expects."""
     return {
         "device": torch.device(cfg.device),
         "df_meta": df_meta,
@@ -387,7 +386,6 @@ def _prepare_train_payload(
 
 
 def _build_ml_context(num_cols: list[str], cat_cols: list[str]) -> dict:
-    """Pack the column groups needed by ML preprocessing pipeline."""
     return {"num_cols": num_cols, "cat_cols": cat_cols}
 
 
@@ -399,7 +397,6 @@ def _build_context(
     cat_cols: list[str],
     label_col: str,
 ) -> dict:
-    """Build the training-module context for the configured classifier kind."""
     if cfg.classifier.kind == "dl":
         return _build_dl_context(cfg, paths, df_meta, num_cols, cat_cols, label_col)
     return _build_ml_context(num_cols, cat_cols)

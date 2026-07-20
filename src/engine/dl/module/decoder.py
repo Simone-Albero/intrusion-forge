@@ -13,7 +13,6 @@ def _build_trunk(
     norm_layer: Callable[[int], nn.Module] | None,
     dropout: float,
 ) -> tuple[nn.Module, int]:
-    """Return (trunk, trunk_out_features)."""
     if hidden_dims:
         return (
             MLPModule(

@@ -6,6 +6,19 @@ The pipeline covers data preparation, classifier training, per-cluster complexit
 
 ---
 
+## Approach
+
+The framework tests a single hypothesis: **the geometric structure of the data space predicts classification failure before any classifier is trained** — regions where classes overlap in feature space are hard to separate regardless of the learning algorithm. The procedure is classifier-agnostic and runs in four sequential stages:
+
+1. **Intra-class clustering** — partition each class (train split only) into compact sub-regions via HDBSCAN; noise points collapse into a per-class pseudo-cluster.
+2. **Complexity measurement** — quantify each sub-region's separability against its top-K nearest adversarial partitions, at both cluster and class granularity.
+3. **Classifier training** — train an independent downstream classifier on the full dataset (the complexity vector carries no information from it).
+4. **Failure–complexity correlation** — a Random Forest regresses each cluster's failure rate on its complexity vector; the headline **Spearman ρ** measures whether geometry ranks clusters by risk correctly.
+
+Clustering is fit on train only; held-out samples are assigned a posteriori to the nearest training centroid within their own class, so the correlation measures how well train-derived geometry predicts failure on unseen points. Analysis runs primarily at the cluster level because classes are often multimodal (one class can occupy several geometrically distinct sub-regions); the class level is kept as a coarse-grained reference.
+
+---
+
 ## Project Structure
 
 ```
@@ -29,12 +42,6 @@ intrusion-forge/
 │   ├── optimizer/                   # DL optimizer configs
 │   ├── scheduler/                   # DL LR scheduler configs
 │   └── path/                        # Output path templates
-│
-├── docs/                            # Reference documentation
-│   ├── approach.md                  # Methodological description of the pipeline
-│   ├── complexity_measures.md       # Per-cluster complexity measures (F, N, ND, T, G families)
-│   ├── synthetic_dataset.md         # Synthetic dataset class specifications
-│   └── pipeline.png                 # Pipeline overview diagram
 │
 ├── src/                             # Pure library code (no cfg, no logger, no I/O)
 │   ├── core/                        # Config loading, factory, logging, I/O, paths, utilities
@@ -86,7 +93,7 @@ make generate              # default: ~69,500 rows
 make generate ROWS=50000
 ```
 
-This writes `resources/raw_data/synthetic/synthetic_test.csv` and can be used immediately with `data=synthetic_test`. The dataset has 10 classes (~69 500 rows) designed to demonstrate the core hypothesis end-to-end: each attack class has canonical / medium / evasive sub-groups positioned at increasing distances from the nearest adversarial class. After per-class clustering and complexity analysis, complexity scores should rank correctly and correlate with classifier failure rates (high Spearman ρ). A `true_subgroup` column records the intended difficulty for post-hoc validation; it is not used by the pipeline. See [docs/synthetic_dataset.md](docs/synthetic_dataset.md) for the full specification.
+This writes `resources/raw_data/synthetic/synthetic_test.csv` and can be used immediately with `data=synthetic_test`. The dataset has 10 classes (~69 500 rows) designed to demonstrate the core hypothesis end-to-end: each attack class has canonical / medium / evasive sub-groups positioned at increasing distances toward the nearest adversarial class along the discriminating features — canonical at the class center (α=0.0), medium (α=0.5), evasive (α=0.8). HDBSCAN recovers the density peaks, complexity scores rank them correctly, and the classifier fails progressively more on the evasive sub-clusters (high Spearman ρ in Step 4). A `true_subgroup` column records the intended difficulty for post-hoc validation; it is not used by the pipeline.
 
 ---
 
@@ -198,7 +205,7 @@ make ml-all   DATA=cic_2018_v2 NAME=my_exp     # every ML classifier in turn
 make dl-all   DATA=cic_2018_v2 NAME=my_exp     # every DL classifier in turn
 ```
 
-Trains and evaluates a single classifier (ML or DL, selected via the `classifier` config group), then writes per-class metrics and per-sample predictions used downstream by the failure classifier. The training split is balanced via random undersampling at load time (`balance=undersample`, the default); pass `balance=none` to train on the original distribution. By default (`kfold=true`) evaluation is **k-fold out-of-fold over train+test**: one model is trained per fold and saved under `models/fold_*`, and the reported metrics and per-cluster failure rates both come from the leakage-free OOF predictions (`eval_mode: oof_kfold`). Pass `kfold=false` for single held-out test-split evaluation (e.g. to skip the K× cost on the largest datasets). With `extend.generate=true` (or `make ... EXTEND=1`) the classifier is instead trained on the complexity-extended splits (`*_extended.parquet`, produced by Step 3a) and explained with SHAP — every artifact of this variant is written next to the base one with an `_extended` leaf-name suffix (`summary_extended.json`, `model_extended.joblib`, …). Its F1 is a transductive upper bound, reported as "F1 extended (transductive)"; see [docs/approach.md](docs/approach.md).
+Trains and evaluates a single classifier (ML or DL, selected via the `classifier` config group), then writes per-class metrics and per-sample predictions used downstream by the failure classifier. The training split is balanced via random undersampling at load time (`balance=undersample`, the default); pass `balance=none` to train on the original distribution. By default (`kfold=true`) evaluation is **k-fold out-of-fold over train+test**: one model is trained per fold and saved under `models/fold_*`, and the reported metrics and per-cluster failure rates both come from the leakage-free OOF predictions (`eval_mode: oof_kfold`). Pass `kfold=false` for single held-out test-split evaluation (e.g. to skip the K× cost on the largest datasets). With `extend.generate=true` (or `make ... EXTEND=1`) the classifier is instead trained on the complexity-extended splits (`*_extended.parquet`, produced by Step 3a) and explained with SHAP — every artifact of this variant is written next to the base one with an `_extended` leaf-name suffix (`summary_extended.json`, `model_extended.joblib`, …). Its F1 is reported as "F1 extended (transductive)" and is **not comparable** with the base F1 as a measure of generalisation: because the cluster assignment is label-aware, the attached complexity vector acts as a per-cluster fingerprint (`fingerprint → cluster → class`, each cluster class-pure) that leaks the label. The score measures how completely the cluster structure encodes the label space — an upper bound, never a model improvement.
 
 **Per-classifier outputs:**
 
@@ -225,7 +232,15 @@ Computes complexity measures at **two parallel partition levels** under a single
 - **Cluster-level** (`complexity.json`): each cluster aggregated against its top-K nearest adversarial clusters.
 - **Class-level** (`class_complexity.json`): each class aggregated against its top-K nearest adversarial classes.
 
-Both levels share the same Gower-style mixed-distance k-NN backbone (governed by the top-level `distance` key, the same metric used by the clustering) and the same five families: F (feature), N (neighbourhood), ND (network density), T (dimensionality), G (geometry). The two outputs are independent and can be compared row-wise. See [docs/complexity_measures.md](docs/complexity_measures.md) for definitions.
+Both levels share the same Gower-style mixed-distance k-NN backbone (governed by the top-level `distance` key, the same metric used by the clustering) and the same five families. Each pairwise measure is reported as min (worst-case adversary) / mean / max over the top-K adversarial partitions:
+
+- **F — feature-based**: how well individual numerical features separate the partition (Fisher discriminant ratio, bounding-box and joint-feature overlap fractions).
+- **N — neighbourhood-based**: local class intermingling in the k-NN graph (MST boundary fraction, intra/inter distance ratio, 1-NN and k-NN majority-vote error rates).
+- **ND — network density**: fraction of k-NN edges crossing to an adversarial partition, plus clustering-coefficient and hubness proxies.
+- **T — dimensionality**: feature-to-sample and PCA-based intrinsic-dimensionality ratios (curse-of-dimensionality proxy).
+- **G — geometry**: dispersion, distance to nearest centroid, and silhouette-based risk fractions under `complexity.distance`.
+
+The two outputs are independent and can be compared row-wise.
 
 **Shared outputs:**
 
@@ -260,6 +275,14 @@ make render DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=random_forest
 ```
 
 Renders figures from the JSON / pickle artifacts produced by the previous steps (confusion matrices, per-class F1, complexity distributions, the failure-regressor predicted-vs-observed scatter, failure–complexity scatters). All figures land under `${classifier.name}/figures/`.
+
+### Sweep Aggregation (Paper Results)
+
+```bash
+make sweep-results SWEEP_DIR=paper/exp FIGURES_DIR=paper/figures
+```
+
+`pipelines/sweep_results.py` aggregates an entire experiment sweep (many `data` × `classifier` × `clustering`/`distance` cells under `SWEEP_DIR`, as produced by `make run`) into the cross-run artifacts reported in the paper's Results section: the four figures (`rho_by_config`, `rho_vs_clusters`, `family_importance`, `selective_sweep`, written to `FIGURES_DIR`) and four JSON tables — Spearman ρ by clustering configuration, cluster count by configuration, Spearman ρ by classifier and by dataset, and selective-prediction lift by configuration at τ=0.8 — written back under `SWEEP_DIR` next to the raw per-run trees they were computed from.
 
 ### Full Pipeline Shortcuts
 

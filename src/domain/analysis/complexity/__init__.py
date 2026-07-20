@@ -97,12 +97,7 @@ def _stratified_subsample(
 def _build_population_masks(
     y_class: np.ndarray, y_cluster: np.ndarray
 ) -> tuple[dict[str, np.ndarray], dict[str, int]]:
-    """Build cluster boolean masks reused by all pairwise families.
-
-    Returns:
-        cluster_mask      : {str(cluster_id): (n,) bool}, restricted to non-noise points.
-        cluster_to_class  : {str(cluster_id): class_label} for non-noise clusters.
-    """
+    """Cluster boolean masks (non-noise) + cluster→class map, reused by all pairwise families."""
     mask_valid = y_cluster != -1
     yc_v = y_class[mask_valid]
     yk_v = y_cluster[mask_valid]
@@ -150,7 +145,6 @@ def _compute_analysis_centroids(
 
     metric="cosine": spherical centroid (mean of L2-normalised samples, re-normalised).
     metric="euclidean": arithmetic mean.
-    Returns {str(cluster_id): centroid_vector}.
     """
     result: dict[str, list[float]] = {}
     for cid in np.unique(y_cluster):
@@ -225,8 +219,6 @@ def compute_complexity_from_graph(
     nearest adversarial partitions (different class). Output keys are neutral.
     `noise_cluster_ids` (excluded from the graph upstream) get a flag-only row
     (is_noise_cluster=True, measures null) to preserve the downstream contract.
-
-    Returns {partition_id: {measure_name: value}}.
     """
     X_num, X_cat, y_class = graph.X_num, graph.X_cat, graph.y_class
     knn_idx, knn_dist = graph.knn_idx, graph.knn_dist

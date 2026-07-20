@@ -13,7 +13,7 @@ from src.core.log import (
     LogDispatcher,
     setup_logger,
 )
-from pipelines.common import paths_from_cfg
+from pipelines import paths_from_cfg
 from src.core.utils import flush_timing, load_from_json, skip_if_exists, timed
 
 from src.domain.analysis.complexity import (
@@ -53,10 +53,8 @@ def compute_cluster_complexity(
 ) -> dict:
     """Compute per-cluster complexity measures + cluster→class mapping.
 
-    Output schema: {cluster_id: {<measure>: ..., "cluster_class": <int>}}.
-    Noise pseudo-clusters (excluded from the graph) carry a flag-only row;
-    their `cluster_class` comes from `cluster_to_class`, which must cover the
-    full (unfiltered) clustering — graph labels alone omit the noise ids.
+    `cluster_to_class` must cover the full (unfiltered) clustering: noise
+    pseudo-clusters are absent from the graph but still need a class.
     """
     logger.info("Computing cluster-level complexity measures ...")
     complexity = compute_complexity_from_graph(
@@ -82,12 +80,7 @@ def compute_class_complexity(
     metric: str,
     random_state: int,
 ) -> dict:
-    """Compute per-class complexity measures.
-
-    Treats each class as a partition: passes the graph's `y_class` as the
-    partition labels to `compute_complexity_from_graph`. Output schema is
-    identical to the cluster-level one (neutral keys, no `cluster_class`).
-    """
+    """Compute per-class complexity measures, treating each class as a partition."""
     logger.info("Computing class-level complexity measures ...")
     return compute_complexity_from_graph(
         graph,
@@ -100,12 +93,7 @@ def compute_class_complexity(
 
 
 def main():
-    """Main entry point for complexity computation (dataset-level, shared).
-
-    Runs both per-cluster and per-class analyses under the same `cfg.complexity`
-    config, producing `shared/complexity.json` and `shared/class_complexity.json`.
-    Each stage is independently skippable via its own marker file.
-    """
+    """Main entry point for complexity computation (dataset-level, shared)."""
     cfg = load_config(
         config_path=Path(__file__).parent.parent / "configs",
         config_name="config",
@@ -157,9 +145,6 @@ def main():
         noise_cluster_ids = clusters_meta.get("noise_cluster_ids", [])
 
         y_cluster = train_df["cluster"].to_numpy(dtype=np.int64)
-        # Full map (noise included): genuine clusters leave the graph, but their
-        # noise siblings still need a class for the flag-only rows downstream.
-        cluster_to_class = cluster_class_map(y_cluster, y_class)
         if noise_cluster_ids:
             genuine = ~np.isin(y_cluster, noise_cluster_ids)
             X_num_g = X_num[genuine]
@@ -182,6 +167,9 @@ def main():
         )
 
     if run_cluster:
+        # Full map (noise included): genuine clusters leave the graph, but their
+        # noise siblings still need a class for the flag-only rows downstream.
+        cluster_to_class = cluster_class_map(y_cluster, y_class)
         cluster_complexity = compute_cluster_complexity(
             graph,
             noise_cluster_ids,

@@ -31,10 +31,7 @@ def compute_df_metadata(
     *,
     label_mapping: dict | None = None,
 ) -> dict:
-    """Compute the metadata dict for named DataFrame splits.
-
-    Class weights are computed on the "train" split (or the first split if absent).
-    """
+    """Metadata dict for named DataFrame splits; class weights come from the "train" split (or the first if absent)."""
     if not splits:
         raise ValueError("splits must contain at least one DataFrame.")
 
@@ -42,7 +39,8 @@ def compute_df_metadata(
 
     class_counts = ref_df[label_col].value_counts().sort_index()
     class_weights = len(ref_df) / (len(class_counts) * class_counts)
-    class_weights = np.log1p(class_weights) / np.log1p(class_weights).max()
+    log_weights = np.log1p(class_weights)
+    class_weights = log_weights / log_weights.max()
 
     return {
         "label_mapping": label_mapping or {},
@@ -68,11 +66,7 @@ def compute_clusters_metadata(
     *,
     noise_cluster_ids: list[int] | None = None,
 ) -> dict:
-    """Aggregate cluster metadata across all splits.
-
-    Returns {class_to_clusters, clusters_distribution, centroids,
-    noise_cluster_ids}.
-    """
+    """Aggregate cluster metadata across all splits."""
     df_ = pd.concat([train_df, val_df, test_df], ignore_index=True)
     encoded_label_col = f"encoded_{label_col}"
 

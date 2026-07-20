@@ -25,7 +25,6 @@ logger = logging.getLogger(__name__)
 
 
 def _create_model(name: str, params: dict, device: torch.device) -> nn.Module:
-    """Instantiate a DL classifier via factory and move to `device`."""
     return DLClassifierFactory.create(name, params).to(device)
 
 
@@ -82,17 +81,12 @@ def fit_classifier(
     y_val: object = None,
     context: dict | None = None,
 ) -> tuple[nn.Module, dict]:
-    """Fit a DL classifier and return ``(model, fit_summary)``.
+    """Fit a DL classifier and return (model, {"history": ...}).
 
-    `X` and `X_val` are DataFrames; the label column is read internally via
-    ``context['label_col']``. `y`/`y_val` are accepted (interface parity with
-    ML) but ignored.
-
-    `context` is required and must contain:
-      device, df_meta, num_cols, cat_cols, label_col,
-      loss_cfg, optimizer_cfg, scheduler_cfg, loops_cfg, models_path.
-
-    Returns ``(model, {"history": {scalar_name: [values_per_step, ...]}})``.
+    The label column is read from the DataFrames via `context['label_col']`;
+    `y`/`y_val` are accepted for interface parity with ML but ignored. `context`
+    is required with keys: device, df_meta, num_cols, cat_cols, label_col,
+    loss_cfg, optimizer_cfg, scheduler_cfg, loops_cfg, models_path.
     """
     if context is None:
         raise ValueError("DL fit_classifier requires `context`.")
@@ -171,7 +165,7 @@ def fit_classifier(
 
 
 def grid_search_classifier(*args, **kwargs):
-    """DL grid search is not implemented in this PR."""
+    """DL grid search is not implemented; train a single configuration instead."""
     raise NotImplementedError(
         "DL grid search is not implemented. Train a single configuration instead."
     )
@@ -184,11 +178,11 @@ def predict_with_proba(
     context: dict | None = None,
     return_embedding: bool = False,
 ) -> tuple:
-    """Return ``(y_pred, y_proba)`` for a DL model on a DataFrame.
+    """Return (y_pred, y_proba) for a DL model on a DataFrame.
 
-    With ``return_embedding=True`` also returns the latent embedding ``z`` from
-    the same forward pass (``None`` when the model exposes none).
-    `context` must contain ``device``, ``num_cols``, ``cat_cols``.
+    With `return_embedding=True` also returns the latent embedding `z` from the
+    same forward pass (None if the model exposes none). `context` must contain
+    device, num_cols, cat_cols.
     """
     if context is None:
         raise ValueError("DL predict_with_proba requires `context`.")
