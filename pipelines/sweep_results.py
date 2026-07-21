@@ -264,33 +264,61 @@ def _table_perclf_perdataset(runs: list[dict]) -> dict:
     return {"by_classifier": _group("clf"), "by_dataset": _group("dataset")}
 
 
+def _lift_stats(values: list[float]) -> dict:
+    """Median lift (pp) and % of runs with positive lift, over a coverage-target value list."""
+    arr = np.array(values, dtype=float)
+    return {
+        "lift_pp": 100.0 * float(np.median(arr)),
+        "pos_pct": 100.0 * float((arr > 0).mean()),
+    }
+
+
 def _table_selective(runs: list[dict]) -> dict:
     """Table: selective-prediction lift by configuration at tau=0.8 (tab:selective).
 
     Reads the `risk_coverage` block already persisted by `fit_failure_classifier.py`
     (`selective_prediction_metrics`, default `coverage_target=0.8`) — no recomputation.
+    Also reports the native-classifier-confidence baselines (`mcp_risk`/`margin_risk`/
+    `entropy_risk`, from `confidence_baselines`) alongside the predictor, when present —
+    absent (columns omitted) for runs that predate that field.
     """
     groups: dict[tuple[str, str], list[dict]] = {}
     for r in runs:
         if r["results"].get("spearman") is None:
             continue
-        rc = r["results"].get("risk_coverage")
-        if not rc:
+        if not r["results"].get("risk_coverage"):
             continue
-        groups.setdefault((r["distance"], r["algorithm"]), []).append(rc)
+        groups.setdefault((r["distance"], r["algorithm"]), []).append(r["results"])
 
     rows = []
-    for (distance, algorithm), rcs in sorted(groups.items()):
-        lift = np.array([rc["lift_over_random"] for rc in rcs], dtype=float)
-        oracle = np.array([rc["oracle_benefit_recovered"] for rc in rcs], dtype=float)
-        rows.append({
+    for (distance, algorithm), results_list in sorted(groups.items()):
+        lift = [res["risk_coverage"]["lift_over_random"] for res in results_list]
+        oracle = np.array(
+            [res["risk_coverage"]["oracle_benefit_recovered"] for res in results_list],
+            dtype=float,
+        )
+        row = {
             "distance": distance,
             "algorithm": algorithm,
-            "lift_pp": 100.0 * float(np.median(lift)),
-            "pos_pct": 100.0 * float((lift > 0).mean()),
+            **_lift_stats(lift),
             "oracle_pct": 100.0 * float(np.nanmedian(oracle)),
-            "n_runs": len(rcs),
-        })
+            "n_runs": len(results_list),
+        }
+        for name in ("mcp_risk", "margin_risk", "entropy_risk"):
+            baselines = [
+                res["confidence_baselines"][name]["risk_coverage"]
+                for res in results_list
+                if res.get("confidence_baselines", {}).get(name)
+            ]
+            if not baselines:
+                continue
+            stats = _lift_stats([b["lift_over_random"] for b in baselines])
+            row[f"{name}_lift_pp"] = stats["lift_pp"]
+            row[f"{name}_pos_pct"] = stats["pos_pct"]
+            row[f"{name}_oracle_pct"] = 100.0 * float(
+                np.nanmedian([b["oracle_benefit_recovered"] for b in baselines])
+            )
+        rows.append(row)
     return {"rows": rows}
 
 

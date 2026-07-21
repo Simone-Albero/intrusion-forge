@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from scipy.stats import spearmanr
+from scipy.stats import rankdata, spearmanr
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error, r2_score
 from sklearn.model_selection import GridSearchCV, KFold, StratifiedKFold
@@ -21,6 +21,7 @@ from src.core.log import (
 from pipelines import paths_from_cfg
 from src.core.utils import flush_timing, load_from_json, timed
 from src.domain.analysis.selective_prediction import (
+    bootstrap_compare,
     selective_prediction_metrics,
     selective_recall_metrics,
 )
@@ -61,13 +62,36 @@ def _run_outer_fold(
         best = grid.best_estimator_
 
     y_pred = best.predict(X_test)
+    has_variance = len(y_test) > 1 and np.std(y_test) > 0 and np.std(y_pred) > 0
     return {
         "r2": float(r2_score(y_test, y_pred)) if len(y_test) > 1 else float("nan"),
         "mae": float(mean_absolute_error(y_test, y_pred)),
+        "spearman": float(spearmanr(y_pred, y_test).statistic) if has_variance else float("nan"),
         "importances": best.feature_importances_,
         "y_pred": y_pred.tolist(),
         "indices": X_test.index.tolist(),
     }
+
+
+def _rank_normalize_within_fold(values: np.ndarray, fold_ids: np.ndarray) -> np.ndarray:
+    """Percentile-rank `values` within each fold, onto a common [0, 1] range.
+
+    Each outer fold fits an independent model, so raw OOF values pooled across
+    folds can carry a fold-specific scale/offset that scrambles the global
+    ranking even when each fold's own order is fine. Rank-normalizing within a
+    fold keeps that fold's relative order intact while removing the cross-fold
+    scale mismatch before pooling.
+    """
+    out = np.empty_like(values, dtype=float)
+    for f in np.unique(fold_ids):
+        mask = fold_ids == f
+        n = int(mask.sum())
+        if n <= 1:
+            out[mask] = 0.5
+            continue
+        ranks = rankdata(values[mask], method="average")
+        out[mask] = (ranks - 1) / (n - 1)
+    return out
 
 
 def _quantile_strata(y: pd.Series, q: int) -> pd.Series | None:
@@ -113,6 +137,9 @@ def build_cluster_summary(
             "is_noise_cluster": int(cluster_measures.get("is_noise_cluster", False)),
             "n_test": error_entry.get("n_total", 0),
             "failure_rate": error_entry.get("error_rate"),
+            "mcp_risk": error_entry.get("mcp_risk"),
+            "margin_risk": error_entry.get("margin_risk"),
+            "entropy_risk": error_entry.get("entropy_risk"),
         }
     return summary
 
@@ -130,13 +157,15 @@ def _run_nested_cv(
     """Run the outer CV loop and collect per-fold scores + out-of-fold predictions."""
     fold_r2s: list[float] = []
     fold_maes: list[float] = []
+    fold_spearmans: list[float] = []
     fold_importances: list[np.ndarray] = []
     oof_y_true: list[float] = []
     oof_y_pred: list[float] = []
     oof_indices: list = []
+    oof_fold_ids: list[int] = []
 
-    for train_idx, test_idx in tqdm(
-        outer_cv.split(X, split_labels), total=outer_k, desc="Outer CV"
+    for f, (train_idx, test_idx) in enumerate(
+        tqdm(outer_cv.split(X, split_labels), total=outer_k, desc="Outer CV")
     ):
         fold = _run_outer_fold(
             X.iloc[train_idx],
@@ -149,31 +178,57 @@ def _run_nested_cv(
         )
         fold_r2s.append(fold["r2"])
         fold_maes.append(fold["mae"])
+        fold_spearmans.append(fold["spearman"])
         fold_importances.append(fold["importances"])
         oof_y_true.extend(y.iloc[test_idx].tolist())
         oof_y_pred.extend(fold["y_pred"])
         oof_indices.extend(fold["indices"])
+        oof_fold_ids.extend([f] * len(fold["y_pred"]))
 
     return {
         "fold_r2s": fold_r2s,
         "fold_maes": fold_maes,
+        "fold_spearmans": fold_spearmans,
         "fold_importances": fold_importances,
         "y_true": np.array(oof_y_true),
         "y_pred": np.array(oof_y_pred),
         "indices": oof_indices,
+        "fold_ids": np.array(oof_fold_ids),
     }
 
 
 def _aggregate_oof_results(oof: dict, feature_cols: list[str]) -> dict:
-    """Aggregate out-of-fold predictions into the published regression-metrics block."""
+    """Aggregate out-of-fold predictions into the published regression-metrics block.
+
+    `spearman` (pooled) ranks all OOF predictions together across folds; each fold's
+    own model is fit independently, so a pooled rho notably below the per-fold mean
+    signals a cross-fold scale mismatch (fold A's regressor systematically over/under-
+    predicting relative to fold B) rather than a genuinely weaker model.
+    """
     y_true, y_pred = oof["y_true"], oof["y_pred"]
     mean_importances = np.mean(oof["fold_importances"], axis=0)
     # headline metric: rank correlation between predicted and observed failure rate
     rho = spearmanr(y_pred, y_true)
+    fold_spearmans = np.array(oof["fold_spearmans"], dtype=float)
+
+    # Alternative pooling: rank-normalize each fold's OOF predictions onto a common
+    # [0, 1] scale before pooling, removing any cross-fold scale mismatch while
+    # keeping each fold's own ordering intact. Compared against the raw pooled
+    # spearman above — not used as the default score, see fit_failure_classifier.
+    rank_normalized_pred = _rank_normalize_within_fold(y_pred, oof["fold_ids"])
+    rho_rank_norm = spearmanr(rank_normalized_pred, y_true)
 
     return {
         "spearman": float(rho.statistic),
         "spearman_pvalue": float(rho.pvalue),
+        "spearman_per_fold_mean": float(np.nanmean(fold_spearmans)),
+        "spearman_per_fold_std": float(np.nanstd(fold_spearmans)),
+        "spearman_per_fold": fold_spearmans.tolist(),
+        "spearman_pooled_vs_perfold_gap": float(rho.statistic - np.nanmean(fold_spearmans)),
+        "spearman_rank_normalized": float(rho_rank_norm.statistic),
+        "oof_predicted_rate_rank_normalized": {
+            str(cid): float(pred) for cid, pred in zip(oof["indices"], rank_normalized_pred)
+        },
         "r2": float(r2_score(y_true, y_pred)),
         "r2_std": float(np.nanstd(oof["fold_r2s"])),
         "r2_per_fold": oof["fold_r2s"],
@@ -188,7 +243,11 @@ def _aggregate_oof_results(oof: dict, feature_cols: list[str]) -> dict:
 
 
 def _failure_rate_distribution(rates: pd.Series) -> dict:
-    """Summary stats of the failure-rate distribution over the used clusters."""
+    """Summary stats of the failure-rate distribution over the used clusters.
+
+    `pct_zero` flags zero-inflation: a target this skewed leaves the RF regressor
+    a needle-in-haystack problem regardless of clustering granularity.
+    """
     if rates.empty:
         return {}
     quantiles = rates.quantile([0.25, 0.5, 0.75, 0.9])
@@ -200,6 +259,7 @@ def _failure_rate_distribution(rates: pd.Series) -> dict:
         "p90": float(quantiles[0.9]),
         "max": float(rates.max()),
         "mean": float(rates.mean()),
+        "pct_zero": float((rates == 0).mean()),
     }
 
 
@@ -213,6 +273,7 @@ def fit_failure_classifier(
     n_inner_splits: int = 5,
     random_state: int = 42,
     min_test_support: int = 5,
+    n_bootstrap: int = 2000,
     analysis_bus: LogDispatcher | None = None,
 ) -> dict:
     """Nested-CV Random Forest predicting each cluster's failure rate from its separability features.
@@ -275,7 +336,15 @@ def fit_failure_classifier(
         feature_cols = [
             c
             for c in df.select_dtypes("number").columns
-            if c not in ("failure_rate", "n_test", "is_noise_cluster")
+            if c
+            not in (
+                "failure_rate",
+                "n_test",
+                "is_noise_cluster",
+                "mcp_risk",
+                "margin_risk",
+                "entropy_risk",
+            )
         ]
     X = df[feature_cols].copy()
     y = df["failure_rate"].astype(float)
@@ -349,6 +418,21 @@ def fit_failure_classifier(
         **context_metrics,
         **_aggregate_oof_results(oof, feature_cols),
     }
+    gap = results["spearman_pooled_vs_perfold_gap"]
+    if gap < -0.05:
+        rank_norm_recovers = results["spearman_rank_normalized"] - results["spearman"]
+        logger.warning(
+            "Pooled Spearman (%.3f) is notably lower than the per-fold mean (%.3f, "
+            "gap=%.3f) — possible cross-fold OOF scale mismatch when pooling "
+            "predictions from independently-fit fold models into one global ranking. "
+            "Rank-normalized pooling gives %.3f (%+.3f vs raw pooling).",
+            results["spearman"],
+            results["spearman_per_fold_mean"],
+            gap,
+            results["spearman_rank_normalized"],
+            rank_norm_recovers,
+        )
+
     # Selective prediction: reject high predicted-risk clusters → accuracy on the
     # retained set, from support-weighted OOF predictions.
     support = df.loc[oof["indices"], "n_test"].astype(float).to_numpy()
@@ -361,6 +445,47 @@ def fit_failure_classifier(
     results["selective_macro_recall"] = selective_recall_metrics(
         oof["y_pred"], oof["y_true"], support, cluster_class
     )
+    # Rank-normalized variant (see _rank_normalize_within_fold): same Oracle/Random
+    # denominators, ranking by within-fold percentile instead of the raw pooled
+    # prediction. Reported alongside risk_coverage, not in place of it.
+    rank_normalized_pred = _rank_normalize_within_fold(oof["y_pred"], oof["fold_ids"])
+    results["risk_coverage_rank_normalized"] = selective_prediction_metrics(
+        rank_normalized_pred, oof["y_true"], support
+    )
+    # Native-classifier-confidence baselines: same Oracle/Random denominators as the
+    # RF predictor above, ranking clusters by mean per-sample MCP/margin/entropy instead.
+    baseline_scores = {
+        name: df.loc[oof["indices"], name].astype(float).to_numpy()
+        for name in ("mcp_risk", "margin_risk", "entropy_risk")
+        if name in df.columns and df[name].notna().all()
+    }
+    results["confidence_baselines"] = {
+        name: {
+            "risk_coverage": selective_prediction_metrics(risk, oof["y_true"], support),
+            "selective_macro_recall": selective_recall_metrics(
+                risk, oof["y_true"], support, cluster_class
+            ),
+        }
+        for name, risk in baseline_scores.items()
+    }
+    # Bootstrap significance: resamples the existing OOF clusters (no re-training, no
+    # extra seeds) to get CIs and paired-difference tests of each confidence baseline
+    # against the RF predictor.
+    results["significance"] = bootstrap_compare(
+        {"predictor": oof["y_pred"], **baseline_scores},
+        oof["y_true"],
+        support,
+        n_resamples=n_bootstrap,
+        random_state=random_state,
+    )
+    # Redundancy check: correlation between the RF predictor and each confidence
+    # baseline (not against the true rate) — high correlation means the cluster-
+    # geometry predictor is largely reconstructing the same signal as native
+    # confidence; low correlation means the two are complementary.
+    results["baseline_redundancy"] = {
+        name: float(spearmanr(oof["y_pred"], risk).statistic)
+        for name, risk in baseline_scores.items()
+    }
     if analysis_bus is not None:
         analysis_bus.publish(
             LogBundle.from_dict({"json/analysis/classifier_results": results})
@@ -377,6 +502,15 @@ def fit_failure_classifier(
         rc.get("global_accuracy", float("nan")),
         rc.get("oracle_benefit_recovered", float("nan")),
     )
+    significant_vs = [
+        name for name, v in results["significance"]["vs_reference"].items() if v["lift_significant"]
+    ]
+    if significant_vs:
+        logger.info(
+            "Bootstrap (n=%d): significantly different lift vs predictor: %s",
+            n_bootstrap,
+            ", ".join(significant_vs),
+        )
     return results
 
 
@@ -419,6 +553,7 @@ def main():
         n_outer_splits=cfg.failure_classifier.n_outer_splits,
         n_inner_splits=cfg.failure_classifier.n_inner_splits,
         min_test_support=cfg.failure_classifier.min_test_support,
+        n_bootstrap=cfg.failure_classifier.n_bootstrap,
         random_state=cfg.seed,
         analysis_bus=bus,
     )

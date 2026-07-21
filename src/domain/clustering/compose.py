@@ -36,6 +36,19 @@ def _n_clusters_grid(
     return sorted(ks)
 
 
+def resolution_aware_floor(n_class: int, target_size: int, floor_cap: int) -> int:
+    """Absorption floor for a class's finest clustering candidate, capped at `floor_cap`.
+
+    Ties the floor to the same finest-candidate average size `_n_clusters_grid`
+    targets, so a class too small (or a `target_size` too aggressive) for that
+    candidate to clear `floor_cap` gets a proportionally lower floor instead of
+    having its finest partition absorbed wholesale.
+    """
+    finest_k = max(2, round(n_class / target_size))
+    finest_avg_size = n_class / finest_k
+    return min(floor_cap, max(5, round(0.5 * finest_avg_size)))
+
+
 def _make_single_cluster_fn(
     name: str,
     params: dict,
@@ -44,6 +57,7 @@ def _make_single_cluster_fn(
     reporter: Reporter | None = None,
     metric: str = "cosine",
     max_clusters: int | None = None,
+    min_clusters: int | None = None,
     grid_target_cluster_size: int | None = None,
     resolution_weight: float = 0.1,
 ) -> ClusterFn:
@@ -78,12 +92,20 @@ def _make_single_cluster_fn(
                 X_num.shape[0], grid_target_cluster_size, k_cap
             )
         if algo_grid:
+            # min_clusters only applies to n_clusters-parameterised algorithms: there,
+            # cluster count and average size are the same knob, so the guard stays
+            # coherent with the (separate) absorption floor. For hdbscan, count and
+            # size are decoupled (min_cluster_size/min_samples) — a raw-count guard
+            # would happily admit many tiny clusters that the absorption floor then
+            # wipes out, making things worse rather than better.
+            effective_min_clusters = min_clusters if name in _N_CLUSTERS_ALGOS else None
             result = grid_search(
                 X_num,
                 X_cat,
                 fit_fn,
                 algo_grid,
                 resolution_weight=resolution_weight,
+                min_clusters=effective_min_clusters,
                 silhouette_fn=silhouette_fn,
                 **common,
             )
@@ -102,14 +124,17 @@ def build_cluster_fn(
     reporter: Reporter | None = None,
     metric: str = "cosine",
     max_clusters: int | None = None,
+    min_clusters: int | None = None,
     grid_target_cluster_size: int | None = None,
     resolution_weight: float = 0.1,
 ) -> ClusterFn:
     """Build a ClusterFn from a single {algorithm_name: params} entry.
 
     `reporter` is invoked once with the algorithm's grid-search result. Exactly
-    one algorithm is supported; degenerate K values are handled post-hoc by the
-    small-cluster absorption in the pipeline, not by a pre-grid prune.
+    one algorithm is supported; small genuine clusters are handled post-hoc by
+    the resolution-aware absorption floor in the pipeline, not by a pre-grid
+    prune — `min_clusters` only guards against the *selected* partition having
+    too few clusters overall, regardless of individual cluster size.
     """
     if len(algorithms) != 1:
         raise ValueError(
@@ -125,6 +150,7 @@ def build_cluster_fn(
         reporter=reporter,
         metric=metric,
         max_clusters=max_clusters,
+        min_clusters=min_clusters,
         grid_target_cluster_size=grid_target_cluster_size,
         resolution_weight=resolution_weight,
     )

@@ -34,6 +34,7 @@ from pipelines import paths_from_cfg
 from src.core.utils import flush_timing, load_from_json, skip_if_exists, timed
 from src.core.io import load_listed_dfs
 from src.domain.analysis.explain import kernel_shap_values, summarize_background
+from src.domain.analysis.selective_prediction import entropy_risk, margin_risk, mcp_risk
 from src.domain.data.preprocessing import random_undersample_df, subsample_df
 from src.domain.projection import stratified_subsample, tsne_projection
 from src.domain.plot.base import Plot, set_figure_format
@@ -144,18 +145,26 @@ def _compute_classification_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> d
 
 
 def _cluster_error_rates(
-    clusters: np.ndarray, error_mask: np.ndarray
+    clusters: np.ndarray,
+    error_mask: np.ndarray,
+    extra_scores: dict[str, np.ndarray] | None = None,
 ) -> dict[str, dict]:
-    """Return {cluster_id: {n_error, n_total, error_rate}} sorted by error_rate desc."""
+    """Return {cluster_id: {n_error, n_total, error_rate, **mean(extra_scores)}} sorted by error_rate desc."""
     failed = clusters[error_mask]
+    extra_scores = extra_scores or {}
     stats: dict[str, dict] = {}
     for c in np.unique(clusters):
-        n_total = int((clusters == c).sum())
+        mask = clusters == c
+        n_total = int(mask.sum())
         n_error = int((failed == c).sum())
         stats[str(c)] = {
             "n_error": n_error,
             "n_total": n_total,
             "error_rate": (n_error / n_total) if n_total > 0 else None,
+            **{
+                name: float(scores[mask].mean()) if n_total > 0 else None
+                for name, scores in extra_scores.items()
+            },
         }
     return dict(
         sorted(stats.items(), key=lambda x: x[1]["error_rate"] or 0.0, reverse=True)
@@ -165,23 +174,30 @@ def _cluster_error_rates(
 def _evaluate_predictions(
     y_true: np.ndarray,
     y_pred: np.ndarray,
-    confidences: np.ndarray,
+    y_proba: np.ndarray,
     clusters: np.ndarray | None = None,
 ) -> dict:
     """Per-class prediction quality and cluster-level error rates.
 
-    `confidences` may be a 1D max-prob array or a 2D (n_samples, n_classes)
-    probability matrix; in the latter case the max per row is used.
+    `y_proba` is the full (n_samples, n_classes) probability matrix; MCP/margin/entropy
+    risk scores are aggregated per cluster for the failure-classifier's confidence
+    baselines (`pipelines/fit_failure_classifier.py`).
     """
-    confidences = np.asarray(confidences)
-    if confidences.ndim == 2:
-        confidences = confidences.max(axis=1)
+    y_proba = np.asarray(y_proba)
+    mcp, margin, entropy = mcp_risk(y_proba), margin_risk(y_proba), entropy_risk(y_proba)
+    confidences = 1.0 - mcp
 
     has_cluster = clusters is not None
     global_error_mask = y_true != y_pred
 
     cluster_errors_total = (
-        _cluster_error_rates(clusters, global_error_mask) if has_cluster else None
+        _cluster_error_rates(
+            clusters,
+            global_error_mask,
+            extra_scores={"mcp_risk": mcp, "margin_risk": margin, "entropy_risk": entropy},
+        )
+        if has_cluster
+        else None
     )
     cluster_errors_by_class: dict[str, dict] | None = {} if has_cluster else None
 

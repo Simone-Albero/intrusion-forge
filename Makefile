@@ -41,7 +41,7 @@ SEED       ?= 42
 CLASSIFIER ?= tabular
 DISTANCE   ?= euclidean
 CLUSTERING ?= kmeans
-CLUSTERING_ALGOS ?= kmeans hdbscan spectral birch kprototypes
+CLUSTERING_ALGOS ?= kmeans spectral birch hdbscan
 FORCE      ?=
 EXTEND     ?=
 export EXTEND

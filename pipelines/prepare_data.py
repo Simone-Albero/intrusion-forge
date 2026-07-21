@@ -35,7 +35,7 @@ from src.domain.data.preprocessing import (
     rare_category_filter,
 )
 from src.domain.analysis.complexity.shared import _l2_normalize
-from src.domain.clustering import build_cluster_fn
+from src.domain.clustering import build_cluster_fn, resolution_aware_floor
 from src.domain.clustering.base import (
     assign_clusters_within_class,
     assign_nearest_centroid,
@@ -68,6 +68,7 @@ def _cluster_per_class(
     random_state: int,
     metric: str = "euclidean",
     min_cluster_floor: int = 50,
+    min_clusters: int | None = None,
     max_clusters_total: int | None = None,
     grid_target_cluster_size: int | None = None,
     resolution_weight: float = 0.1,
@@ -75,12 +76,15 @@ def _cluster_per_class(
     """Per-class clustering. Returns (labels, centroids, noise_cluster_ids, report).
 
     Cluster IDs are globally unique via offset. Residual -1 noise points (and
-    clusters absorbed by `min_cluster_floor`) are reassigned to per-class
-    pseudo-clusters; their IDs are collected in noise_cluster_ids.
+    clusters absorbed by the resolution-aware floor, capped at `min_cluster_floor`
+    — see `resolution_aware_floor`) are reassigned to per-class pseudo-clusters;
+    their IDs are collected in noise_cluster_ids.
 
     `max_clusters_total` caps the total number of genuine clusters so the complexity
     subsample floor never exceeds the cap (= max_complexity_samples // floor). It is
     split equally across classes; None leaves the count driven by the data-relative grid.
+    `min_clusters` is the symmetric per-class floor passed to `grid_search`, guarding
+    against the selected partition collapsing to too few clusters regardless of size.
     """
     n = X_num.shape[0]
     max_clusters_per_class = (
@@ -109,12 +113,20 @@ def _cluster_per_class(
             reporter=algo_reports.__setitem__,
             metric=metric,
             max_clusters=max_clusters_per_class,
+            min_clusters=min_clusters,
             grid_target_cluster_size=grid_target_cluster_size,
             resolution_weight=resolution_weight,
         )
         raw_labels = cluster_fn(X_num_cls, X_cat_cls)
+        effective_floor = (
+            resolution_aware_floor(
+                X_num_cls.shape[0], grid_target_cluster_size, min_cluster_floor
+            )
+            if grid_target_cluster_size
+            else min_cluster_floor
+        )
         raw_labels, n_floor_clusters, n_floor_points = _absorb_small_clusters(
-            raw_labels, min_cluster_floor
+            raw_labels, effective_floor
         )
 
         n_cls = int(raw_labels.shape[0])
@@ -127,6 +139,7 @@ def _cluster_per_class(
                 "n_noise": n_noise_cls,
                 "noise_ratio": n_noise_cls / n_cls if n_cls > 0 else 0.0,
                 "size_balance": cluster_size_balance(raw_labels),
+                "floor_used": effective_floor,
                 "floor_absorbed_clusters": n_floor_clusters,
                 "floor_absorbed_points": n_floor_points,
             },
@@ -257,6 +270,7 @@ def _cluster_splits(
         random_state=cfg.seed,
         metric=cfg.clustering.distance,
         min_cluster_floor=cfg.clustering.min_cluster_floor,
+        min_clusters=cfg.clustering.min_clusters,
         max_clusters_total=max_clusters_total,
         grid_target_cluster_size=cfg.clustering.grid_target_cluster_size,
         resolution_weight=cfg.clustering.resolution_weight,

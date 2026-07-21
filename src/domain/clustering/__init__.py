@@ -8,6 +8,13 @@ ClusteringFactory = Factory[FitFn](component_type_name="clustering_algorithm")
 _package_path = Path(__file__).parent
 discover_and_import_modules(package_path=_package_path, package_name=__name__)
 
-from src.domain.clustering.compose import build_cluster_fn
+from src.domain.clustering.compose import build_cluster_fn, resolution_aware_floor
 
-__all__ = ["ClusteringFactory", "ClusterFn", "FitFn", "build_cluster_fn", "grid_search"]
+__all__ = [
+    "ClusteringFactory",
+    "ClusterFn",
+    "FitFn",
+    "build_cluster_fn",
+    "grid_search",
+    "resolution_aware_floor",
+]

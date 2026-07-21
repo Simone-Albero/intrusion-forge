@@ -213,6 +213,7 @@ def grid_search(
     random_state: int = 0,
     noise_penalty: float = 3.0,
     resolution_weight: float = 0.1,
+    min_clusters: int | None = None,
     silhouette_fn: SilhouetteFn | None = None,
     **fixed_params,
 ) -> dict:
@@ -223,6 +224,11 @@ def grid_search(
     silhouette's monotone preference for coarse partitions without overriding a
     genuine silhouette peak. `silhouette_fn` overrides the silhouette term (e.g.
     Gower-hybrid for mixed-feature algorithms); default is Euclidean on `X_num`.
+
+    `min_clusters`, when set, restricts the winner to candidates with at least
+    that many clusters whenever one exists in the sweep — a hard floor against
+    silhouette collapsing to a pathologically coarse partition regardless of the
+    resolution tilt. Falls back to the unrestricted sweep if none clears it.
     """
     sub_num, sub_cat = _subsample(X_num, X_cat, max_fit_samples, random_state)
 
@@ -272,12 +278,27 @@ def grid_search(
     # only known post-fit) shares the same normalisation as the n_clusters grids.
     valid = [e for e in sweep if not e.get("error")]
     max_k = max((e["n_clusters"] for e in valid), default=0)
-    best_score = float("-inf")
-    best_entry: dict | None = None
     for e in valid:
         tilt = resolution_weight * (e["n_clusters"] / max_k) if max_k > 0 else 0.0
         e["resolution_tilt"] = tilt
         e["score"] = e["silhouette"] - noise_penalty * e["noise_ratio"] + tilt
+
+    candidates = valid
+    if min_clusters is not None:
+        above_floor = [e for e in valid if e["n_clusters"] >= min_clusters]
+        if above_floor:
+            candidates = above_floor
+        elif valid:
+            logger.warning(
+                "grid_search: no candidate reaches min_clusters=%d (max available "
+                "%d); scoring the full sweep instead.",
+                min_clusters,
+                max_k,
+            )
+
+    best_score = float("-inf")
+    best_entry: dict | None = None
+    for e in candidates:
         if e["score"] > best_score:
             best_score = e["score"]
             best_entry = e

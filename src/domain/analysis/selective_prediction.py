@@ -1,4 +1,22 @@
 import numpy as np
+from scipy.stats import spearmanr
+
+
+def mcp_risk(y_proba: np.ndarray) -> np.ndarray:
+    """1 - max predicted class probability, per sample."""
+    return 1.0 - y_proba.max(axis=1)
+
+
+def margin_risk(y_proba: np.ndarray) -> np.ndarray:
+    """1 - the gap between the top-2 predicted class probabilities, per sample."""
+    top2 = np.sort(y_proba, axis=1)[:, -2:]
+    return 1.0 - (top2[:, 1] - top2[:, 0])
+
+
+def entropy_risk(y_proba: np.ndarray) -> np.ndarray:
+    """Predictive entropy, per sample: -sum(p * log(p))."""
+    p = np.clip(y_proba, 1e-12, 1.0)
+    return -(p * np.log(p)).sum(axis=1)
 
 
 def risk_coverage_curve(
@@ -130,6 +148,94 @@ def selective_prediction_metrics(
         "oracle_benefit_recovered": _recovered(
             s["at_target_predictor"], s["at_target_oracle"], global_accuracy
         ),
+    }
+
+
+def bootstrap_compare(
+    scores: dict[str, np.ndarray],
+    actual: np.ndarray,
+    support: np.ndarray,
+    *,
+    coverage_target: float = 0.8,
+    n_resamples: int = 2000,
+    alpha: float = 0.05,
+    random_state: int = 0,
+) -> dict:
+    """Cluster-level bootstrap CIs for spearman/lift/oracle-recovery per score, plus
+    paired-difference significance of every non-reference score against the first
+    (reference) entry in `scores`.
+
+    Resamples clusters with replacement `n_resamples` times, reusing the same
+    resampled indices across all scores within an iteration (paired bootstrap) so
+    the difference distributions reflect paired variation, not independent noise.
+    This quantifies sampling variability of the existing OOF clusters, not the
+    variability of re-clustering/re-training with a different seed.
+    """
+    names = list(scores.keys())
+    reference = names[0]
+    actual = np.asarray(actual, dtype=float)
+    support = np.asarray(support, dtype=float)
+    n = actual.size
+    rng = np.random.default_rng(random_state)
+
+    spearman_draws = {name: np.full(n_resamples, np.nan) for name in names}
+    lift_draws = {name: np.full(n_resamples, np.nan) for name in names}
+    oracle_draws = {name: np.full(n_resamples, np.nan) for name in names}
+
+    for b in range(n_resamples):
+        idx = rng.integers(0, n, size=n)
+        a, s = actual[idx], support[idx]
+        total = s.sum()
+        if total <= 0:
+            continue
+        global_accuracy = 1.0 - (a * s).sum() / total
+        cov_o, acc_o = risk_coverage_curve(a, a, s)
+
+        for name in names:
+            sc = scores[name][idx]
+            if np.std(a) > 0 and np.std(sc) > 0:
+                spearman_draws[name][b] = spearmanr(sc, a).statistic
+            cov_p, acc_p = risk_coverage_curve(sc, a, s)
+            summary = _curve_summary(cov_p, acc_p, cov_o, acc_o, coverage_target)
+            lift_draws[name][b] = summary["at_target_predictor"] - global_accuracy
+            oracle_draws[name][b] = _recovered(
+                summary["at_target_predictor"], summary["at_target_oracle"], global_accuracy
+            )
+
+    def _ci(draws: np.ndarray) -> dict:
+        lo, hi = np.nanpercentile(draws, [100 * alpha / 2, 100 * (1 - alpha / 2)])
+        return {"mean": float(np.nanmean(draws)), "ci_low": float(lo), "ci_high": float(hi)}
+
+    per_score = {
+        name: {
+            "spearman": _ci(spearman_draws[name]),
+            "lift_over_random": _ci(lift_draws[name]),
+            "oracle_benefit_recovered": _ci(oracle_draws[name]),
+        }
+        for name in names
+    }
+
+    vs_reference = {}
+    for name in names:
+        if name == reference:
+            continue
+        lift_diff = _ci(lift_draws[name] - lift_draws[reference])
+        spearman_diff = _ci(spearman_draws[name] - spearman_draws[reference])
+        vs_reference[name] = {
+            "reference": reference,
+            "lift_diff": lift_diff,
+            "lift_significant": not (lift_diff["ci_low"] <= 0 <= lift_diff["ci_high"]),
+            "spearman_diff": spearman_diff,
+            "spearman_significant": not (
+                spearman_diff["ci_low"] <= 0 <= spearman_diff["ci_high"]
+            ),
+        }
+
+    return {
+        "n_resamples": n_resamples,
+        "alpha": alpha,
+        "per_score": per_score,
+        "vs_reference": vs_reference,
     }
 
 

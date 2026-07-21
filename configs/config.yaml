@@ -41,6 +41,7 @@ failure_classifier:
   min_test_support: 5                # clusters with fewer test samples are excluded from the failure dataset
   n_outer_splits: 5
   n_inner_splits: 5
+  n_bootstrap: 2000                  # cluster-level bootstrap resamples for the predictor-vs-confidence-baseline significance test (no re-training, no extra seeds)
   param_grid:
     n_estimators: [100, 200, 300, 500]
     max_depth: [null, 3, 5, 10, 20]
