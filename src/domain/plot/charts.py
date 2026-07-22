@@ -833,9 +833,11 @@ def selective_accuracy_plot(
     ax.grid(True, alpha=0.15, linewidth=0.5)
     # The curves fill the whole upper region and the annotation box sits lower-right,
     # so no in-axes spot is clear; run the legend horizontally above the axes instead.
+    # Capped so a wide legend (5+ series, once the confidence baselines are added)
+    # wraps onto multiple rows instead of forcing the axes to shrink to fit one.
     ax.legend(
         loc="lower center", bbox_to_anchor=(0.5, 1.0),
-        ncol=len(curves) + 1, columnspacing=1.2, frameon=False,
+        ncol=min(len(curves) + 1, 4), columnspacing=1.2, frameon=False,
     )
     _apply_labels(ax, x_label, y_label, title)
     return _finalize(fig)

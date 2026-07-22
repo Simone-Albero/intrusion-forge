@@ -26,7 +26,6 @@ HEATMAP_METRICS: dict[str, str] = {
     "accuracy": "Test accuracy",
     "precision_macro": "Test precision macro",
     "recall_macro": "Test recall macro",
-    "f1_extended": "F1 extended (transductive)",
     "fc_spearman": "Failure-regressor Spearman ρ",
     "fc_r2": "Failure-regressor R²",
     "fc_mae": "Failure-regressor MAE",
@@ -41,7 +40,6 @@ METRIC_COLORSCALE_BOUNDS: dict[str, tuple[float | None, float | None]] = {
     "accuracy": (0.0, 1.0),
     "precision_macro": (0.0, 1.0),
     "recall_macro": (0.0, 1.0),
-    "f1_extended": (0.0, 1.0),
     "fc_spearman": (-1.0, 1.0),
     "fc_r2": (-1.0, 1.0),
     "fc_mae": (None, None),  # auto-range; lower-is-better
@@ -49,13 +47,6 @@ METRIC_COLORSCALE_BOUNDS: dict[str, tuple[float | None, float | None]] = {
     "fc_sel_recall_lift": (None, None),
     "fc_oracle_recovered": (0.0, 1.0),
 }
-
-# Metrics whose Overview heatmap is split diagonally against f1_macro, so the
-# failure-regressor quality (or extended F1) can be eyeballed against the base
-# classifier's F1 within each cell.
-SPLIT_VS_F1_METRICS: frozenset[str] = frozenset(
-    {"fc_spearman", "fc_r2", "fc_mae", "f1_extended"}
-)
 
 GALLERY_CATEGORIES: list[str] = [
     "testing",
@@ -89,7 +80,6 @@ class ExperimentRecord:
     f1_weighted: float | None
     precision_macro: float | None
     recall_macro: float | None
-    f1_extended: float | None
     fc_spearman: float | None
     fc_r2: float | None
     fc_mae: float | None
@@ -177,10 +167,6 @@ def _extract_headline_metrics(classifier_dir: Path) -> dict[str, float | bool | 
         _read_json(classifier_dir / "outputs" / "analysis" / "classifier_results.json")
         or {}
     )
-    extended = (
-        _read_json(classifier_dir / "outputs" / "testing" / "summary_extended.json")
-        or {}
-    )
     rc = fc.get("risk_coverage") or {}
     smr = fc.get("selective_macro_recall") or {}
     return {
@@ -189,7 +175,6 @@ def _extract_headline_metrics(classifier_dir: Path) -> dict[str, float | bool | 
         "f1_weighted": _safe_float(summary.get("f1_weighted")),
         "precision_macro": _safe_float(summary.get("precision_macro")),
         "recall_macro": _safe_float(summary.get("recall_macro")),
-        "f1_extended": _safe_float(extended.get("f1_macro")),
         "fc_spearman": _safe_float(fc.get("spearman")),
         "fc_r2": _safe_float(fc.get("r2")),
         "fc_mae": _safe_float(fc.get("mae")),
@@ -361,7 +346,6 @@ def records_to_df(records: list[ExperimentRecord]) -> pd.DataFrame:
                 "f1_weighted": r.f1_weighted,
                 "precision_macro": r.precision_macro,
                 "recall_macro": r.recall_macro,
-                "f1_extended": r.f1_extended,
                 "fc_spearman": r.fc_spearman,
                 "fc_r2": r.fc_r2,
                 "fc_mae": r.fc_mae,
@@ -508,155 +492,6 @@ def heatmap_fig(
         )
     )
     _apply_matrix_layout(fig, pivot, title=title, xaxis_title="Classifier")
-    return fig
-
-
-def split_heatmap_fig(
-    metric_pivot: pd.DataFrame,
-    f1_pivot: pd.DataFrame,
-    *,
-    metric_label: str,
-    metric_bounds: tuple[float | None, float | None],
-    title: str,
-) -> go.Figure:
-    """Diagonal-split matrix: upper-left triangle = selected metric, lower-right = f1_macro.
-
-    Each cell is cut along its main diagonal so the failure-regressor metric (or
-    extended F1) and the base-classifier F1 sit side by side in one cell, on
-    independent colour scales — the FC metric range differs from F1's 0..1. Two
-    colorbars on the right decode each half; an invisible marker layer carries
-    hover and the click-to-drill selection so behaviour matches the plain heatmap.
-    """
-    columns = list(metric_pivot.columns)
-    rows = list(metric_pivot.index)
-    m = metric_pivot.values.astype(float)
-    f = f1_pivot.values.astype(float)
-
-    mlo, mhi = metric_bounds
-    finite_m = m[np.isfinite(m)]
-    if mlo is None:
-        mlo = float(finite_m.min()) if finite_m.size else 0.0
-    if mhi is None:
-        mhi = float(finite_m.max()) if finite_m.size else 1.0
-    mspan = (mhi - mlo) or 1.0
-    neutral = "#f0f0f0"
-
-    def _color(value: float, lo: float, span: float) -> str:
-        if not np.isfinite(value):
-            return neutral
-        t = min(max((value - lo) / span, 0.0), 1.0)
-        return px.colors.sample_colorscale("Viridis", [t])[0]
-
-    fig = go.Figure()
-    annotations: list[dict] = []
-    hov_x: list[Any] = []
-    hov_y: list[Any] = []
-    hov_cd: list[list[float]] = []
-
-    for j, row in enumerate(rows):
-        for i, col in enumerate(columns):
-            mv, fv = m[j, i], f[j, i]
-            # upper-left triangle (metric): bottom-left → top-left → top-right
-            fig.add_shape(
-                type="path",
-                path=f"M {i - 0.5},{j - 0.5} L {i - 0.5},{j + 0.5} L {i + 0.5},{j + 0.5} Z",
-                fillcolor=_color(mv, mlo, mspan),
-                line=dict(color="white", width=1),
-                layer="below",
-            )
-            # lower-right triangle (f1_macro): bottom-left → bottom-right → top-right
-            fig.add_shape(
-                type="path",
-                path=f"M {i - 0.5},{j - 0.5} L {i + 0.5},{j - 0.5} L {i + 0.5},{j + 0.5} Z",
-                fillcolor=_color(fv, 0.0, 1.0),
-                line=dict(color="white", width=1),
-                layer="below",
-            )
-            if np.isfinite(mv):
-                annotations.append(
-                    dict(
-                        x=i - 0.2,
-                        y=j + 0.22,
-                        text=f"{mv:.2f}",
-                        showarrow=False,
-                        font=dict(
-                            size=10,
-                            color="white" if (mv - mlo) / mspan < 0.55 else "black",
-                        ),
-                    )
-                )
-            if np.isfinite(fv):
-                annotations.append(
-                    dict(
-                        x=i + 0.2,
-                        y=j - 0.22,
-                        text=f"{fv:.2f}",
-                        showarrow=False,
-                        font=dict(size=10, color="white" if fv < 0.55 else "black"),
-                    )
-                )
-            hov_x.append(col)
-            hov_y.append(row)
-            hov_cd.append([mv, fv])
-
-    fig.add_trace(
-        go.Scatter(
-            x=hov_x,
-            y=hov_y,
-            mode="markers",
-            marker=dict(size=36, color="rgba(0,0,0,0)", symbol="square"),
-            customdata=hov_cd,
-            hovertemplate=(
-                "dataset=%{y}<br>classifier=%{x}<br>"
-                + metric_label
-                + "=%{customdata[0]:.4f}<br>f1_macro=%{customdata[1]:.4f}<extra></extra>"
-            ),
-            showlegend=False,
-        )
-    )
-    # Two invisible markers exist only to render the paired colorbars.
-    fig.add_trace(
-        go.Scatter(
-            x=[None],
-            y=[None],
-            mode="markers",
-            hoverinfo="skip",
-            showlegend=False,
-            marker=dict(
-                colorscale="Viridis",
-                cmin=mlo,
-                cmax=mhi,
-                color=[mlo],
-                opacity=0,
-                showscale=True,
-                colorbar=dict(title=metric_label, len=0.46, y=1.0, yanchor="top", x=1.02),
-            ),
-        )
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=[None],
-            y=[None],
-            mode="markers",
-            hoverinfo="skip",
-            showlegend=False,
-            marker=dict(
-                colorscale="Viridis",
-                cmin=0.0,
-                cmax=1.0,
-                color=[0.0],
-                opacity=0,
-                showscale=True,
-                colorbar=dict(title="f1_macro", len=0.46, y=0.0, yanchor="bottom", x=1.02),
-            ),
-        )
-    )
-
-    fig.update_layout(annotations=annotations)
-    _apply_matrix_layout(fig, metric_pivot, title=title, xaxis_title="Classifier")
-    fig.update_xaxes(type="category", categoryorder="array", categoryarray=columns)
-    fig.update_yaxes(type="category", categoryorder="array", categoryarray=rows)
-    _size_square_cells(fig, n_cols=len(columns), n_rows=len(rows))
     return fig
 
 
@@ -966,20 +801,6 @@ def selective_curve_fig(
     return fig
 
 
-def complexity_vs_failure_scatter(cluster_df: pd.DataFrame, feature: str) -> go.Figure:
-    df = cluster_df.dropna(subset=[feature, "failure_rate"])
-    fig = px.scatter(
-        df,
-        x=feature,
-        y="failure_rate",
-        color="failure_rate",
-        color_continuous_scale="Viridis",
-        hover_data=["cluster_id", "cluster_class"],
-    )
-    fig.update_layout(height=400, xaxis_title=feature, yaxis_title="Failure rate")
-    return fig
-
-
 def failure_rate_strip(cluster_df: pd.DataFrame, label_map: dict) -> go.Figure:
     plot_df = cluster_df[["cluster_id", "cluster_class", "failure_rate"]].copy()
     plot_df["class_name"] = plot_df["cluster_class"].map(
@@ -1178,29 +999,9 @@ def panel_feature_distribution(
     fig.update_layout(height=380, yaxis_title=feature)
     st.plotly_chart(fig, width="stretch", key=_wkey(key_prefix, "fd_chart", record))
     render_figure_if_present(
-        record, f"summary/global/{feature}.png", f"summary/global/{feature}"
-    )
-
-
-def panel_complexity_vs_failure(
-    record: ExperimentRecord, detail: ExperimentDetail, key_prefix: str = "drill"
-) -> None:
-    st.markdown("**Complexity feature → failure rate**")
-    cdf = detail.cluster_summary
-    if cdf is None or cdf.empty or "failure_rate" not in cdf.columns:
-        st.caption("Need cluster_summary with `failure_rate`.")
-        return
-    candidates, default = _cluster_feature_candidates(cdf)
-    feature = st.selectbox(
-        "X axis",
-        candidates,
-        index=candidates.index(default),
-        key=_wkey(key_prefix, "sc_feat", record),
-    )
-    st.plotly_chart(
-        complexity_vs_failure_scatter(cdf, feature),
-        width="stretch",
-        key=_wkey(key_prefix, "sc_chart", record),
+        record,
+        f"summary/global/{feature}_violin.png",
+        f"summary/global/{feature}_violin",
     )
 
 
@@ -1217,9 +1018,6 @@ def panel_failure_rate_distribution(
         failure_rate_strip(cdf, label_map),
         width="stretch",
         key=_wkey(key_prefix, "fr_chart", record),
-    )
-    render_figure_if_present(
-        record, "summary/failure_rate_strip_box.png", "summary/failure_rate_strip_box"
     )
 
 
@@ -1321,49 +1119,6 @@ def panel_sibling_classifiers(
         hide_index=True,
         key=_wkey(key_prefix, "siblings_tbl", record),
     )
-
-
-def panel_explain(
-    record: ExperimentRecord, detail: ExperimentDetail, key_prefix: str = "drill"
-) -> None:
-    """Extended-classifier metrics + SHAP figures of the extend variant."""
-    st.markdown("**Explain — extended classifier (transductive)**")
-    summary = _read_json(record.root / "outputs" / "testing" / "summary_extended.json")
-    figures_dir = record.root / "figures" / "explain"
-    figures = (
-        sorted(
-            p for p in figures_dir.rglob("*") if p.suffix.lower() in FIGURE_EXTENSIONS
-        )
-        if figures_dir.is_dir()
-        else []
-    )
-    if summary is None and not figures:
-        st.caption("No extend run for this classifier — run with `EXTEND=1`.")
-        return
-    if summary:
-        cols = st.columns(3)
-        ext_f1 = summary.get("f1_macro")
-        cols[0].metric(
-            "F1 extended (transductive)",
-            f"{ext_f1:.4f}" if ext_f1 is not None else "—",
-        )
-        if record.f1_macro is not None:
-            cols[1].metric("F1 base", f"{record.f1_macro:.4f}")
-            if ext_f1 is not None:
-                cols[2].metric("Δ vs base", f"{ext_f1 - record.f1_macro:+.4f}")
-        st.caption(
-            "⚠️ The extended F1 is a transductive upper bound: complexity "
-            "features are constant per cluster and clusters are class-pure, "
-            "so this measures how strongly the geometry encodes the label — "
-            "not a generalisation gain over the base classifier."
-        )
-    for start in range(0, len(figures), 2):
-        cols = st.columns(2)
-        for col, fig_path in zip(cols, figures[start : start + 2]):
-            with col:
-                _show_figure(
-                    fig_path, caption=fig_path.relative_to(figures_dir).as_posix()
-                )
 
 
 def panel_training_curve(record: ExperimentRecord) -> None:
@@ -1518,31 +1273,13 @@ def render_overview(
         c2.metric("Classifiers", len(all_classifiers))
         c3.metric("Empty cells", int(pivot.isna().sum().sum()))
 
-        is_split = metric in SPLIT_VS_F1_METRICS
-        if is_split:
-            f1_pivot = df.pivot_table(
-                index="dataset", columns="classifier", values="f1_macro", aggfunc="first"
-            ).reindex(index=present_ds, columns=all_classifiers)
-            fig = split_heatmap_fig(
-                pivot,
-                f1_pivot,
-                metric_label=metric_label,
-                metric_bounds=(zmin, zmax),
-                title=metric_label,
-            )
-        else:
-            fig = heatmap_fig(
-                pivot, title=metric_label, metric_label=metric, zmin=zmin, zmax=zmax
-            )
+        fig = heatmap_fig(
+            pivot, title=metric_label, metric_label=metric, zmin=zmin, zmax=zmax
+        )
 
-        if is_split:
-            st.caption(
-                f"Cells are split along the diagonal — the upper-left half shows "
-                f"**{metric_label}**, the lower-right half the base classifier's **f1_macro**."
-            )
         event = st.plotly_chart(
             fig,
-            width="content" if is_split else "stretch",
+            width="stretch",
             key=f"heatmap_{variant}",
             on_select="rerun",
             selection_mode="points",
@@ -1653,8 +1390,7 @@ def render_drilldown(records: list[ExperimentRecord], seed: int) -> None:
     row_pairs = [
         (panel_test_performance, panel_confusion_matrix),
         (panel_failure_classifier, panel_feature_importances),
-        (panel_complexity_vs_failure, panel_failure_rate_distribution),
-        (panel_per_class_breakdown, panel_feature_distribution),
+        (panel_failure_rate_distribution, panel_per_class_breakdown),
     ]
     for left_panel, right_panel in row_pairs:
         left, right = st.columns(2, gap="medium")
@@ -1667,6 +1403,10 @@ def render_drilldown(records: list[ExperimentRecord], seed: int) -> None:
 
     st.divider()
     with st.container(border=True):
+        panel_feature_distribution(record, detail)
+
+    st.divider()
+    with st.container(border=True):
         panel_sibling_classifiers(record, records)
 
     st.divider()
@@ -1675,10 +1415,6 @@ def render_drilldown(records: list[ExperimentRecord], seed: int) -> None:
             panel_training_curve(record)
         else:
             panel_grid_search(record, detail)
-
-    st.divider()
-    with st.container(border=True):
-        panel_explain(record, detail)
 
     st.divider()
     with st.container(border=True):

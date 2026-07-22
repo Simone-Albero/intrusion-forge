@@ -32,6 +32,8 @@ _FEATURE_FAMILIES = [
     ("dimensionality", ("t2", "t3", "t4")),
 ]
 _COS, _EUC, _ORACLE = PALETTE[0], PALETTE[1], PALETTE[2]
+_BASELINE_LABEL = {"mcp_risk": "MCP", "margin_risk": "Margin", "entropy_risk": "Entropy"}
+_BASELINE_COLOR = {"mcp_risk": PALETTE[3], "margin_risk": PALETTE[4], "entropy_risk": PALETTE[5]}
 
 
 def _load_sweep_runs(root: Path) -> list[dict]:
@@ -144,9 +146,15 @@ def _fig_family_importance(runs: list[dict]) -> Plot | None:
 
 
 def _fig_selective_sweep(runs: list[dict]) -> Plot | None:
-    """Figure B: accuracy-coverage curves aggregated (median + predictor IQR band) over the full sweep."""
+    """Figure B: accuracy-coverage curves aggregated (median + predictor IQR band) over the full sweep.
+
+    The native-confidence baselines (MCP/margin/entropy) are added as plain median
+    curves (no band, to keep the figure readable) wherever `cluster_summary.json`
+    carries that score — absent for runs that predate the confidence-baseline feature.
+    """
     grid = np.linspace(0.0, 1.0, 101)
     predictor, oracle, randoms = [], [], []
+    baselines: dict[str, list[np.ndarray]] = {name: [] for name in _BASELINE_LABEL}
     for r in runs:
         oof = r["results"].get("oof_predicted_rate", {})
         summary_path = r["base"] / "cluster_summary.json"
@@ -166,6 +174,12 @@ def _fig_selective_sweep(runs: list[dict]) -> Plot | None:
         predictor.append(np.interp(grid, cov_p, acc_p))
         oracle.append(np.interp(grid, cov_o, acc_o))
         randoms.append(1.0 - (fail * support).sum() / support.sum())
+        for name in _BASELINE_LABEL:
+            if not all(name in summary[c] for c in ids):
+                continue
+            risk = np.array([summary[c][name] for c in ids], dtype=float)
+            cov_b, acc_b = risk_coverage_curve(risk, fail, support)
+            baselines[name].append(np.interp(grid, cov_b, acc_b))
     if not predictor:
         return None
 
@@ -173,15 +187,52 @@ def _fig_selective_sweep(runs: list[dict]) -> Plot | None:
     # left-to-right and match the single-run selective figure (Fig.~\ref{fig:cic_selective}).
     pred_curves = np.vstack(predictor)[:, ::-1]
     oracle_curves = np.vstack(oracle)[:, ::-1]
+    lines = [
+        ("Oracle", np.median(oracle_curves, axis=0), _ORACLE),
+        ("Predictor", np.median(pred_curves, axis=0), _COS),
+    ]
+    for name, label in _BASELINE_LABEL.items():
+        if not baselines[name]:
+            continue
+        curves = np.vstack(baselines[name])[:, ::-1]
+        lines.append((label, np.median(curves, axis=0), _BASELINE_COLOR[name]))
     return band_curve_plot(
         grid,
-        [("Oracle", np.median(oracle_curves, axis=0), _ORACLE),
-         ("Predictor", np.median(pred_curves, axis=0), _COS)],
+        lines,
         band=(np.percentile(pred_curves, 25, axis=0),
               np.percentile(pred_curves, 75, axis=0), _COS, "Predictor (IQR across runs)"),
         baseline=float(np.median(randoms)),
         x_label="fraction rejected (riskiest first)",
         y_label="accuracy on retained points",
+    )
+
+
+def _fig_baseline_redundancy(runs: list[dict]) -> Plot | None:
+    """Figure F: Spearman rho between the RF predicted rate and each confidence baseline,
+    aggregated over the full sweep — how redundant the predictor is with native confidence.
+
+    Reads the per-run `baseline_redundancy` block (`fit_failure_classifier.py`); absent
+    for runs that predate the confidence-baseline feature, so groups may be smaller than
+    `_fig_rho_by_config`'s.
+    """
+    labels, values, colors = [], [], []
+    for name, label in _BASELINE_LABEL.items():
+        vals = [
+            r["results"]["baseline_redundancy"][name]
+            for r in runs
+            if r["results"].get("baseline_redundancy", {}).get(name) is not None
+        ]
+        if not vals:
+            continue
+        labels.append(label)
+        values.append(np.asarray(vals, dtype=float))
+        colors.append(_BASELINE_COLOR[name])
+    if not labels:
+        return None
+    return box_strip_plot(
+        labels, values, colors=colors, show_points=True,
+        x_label=r"Spearman $\rho$(RF predicted rate, baseline risk)",
+        x_lim=(-1.05, 1.05), axvline=0.0,
     )
 
 
@@ -281,6 +332,13 @@ def _table_selective(runs: list[dict]) -> dict:
     Also reports the native-classifier-confidence baselines (`mcp_risk`/`margin_risk`/
     `entropy_risk`, from `confidence_baselines`) alongside the predictor, when present —
     absent (columns omitted) for runs that predate that field.
+
+    `{name}_sig_better_pct` / `{name}_sig_worse_pct` read the paired cluster-level
+    bootstrap in `significance` (no re-training, no extra seeds): the % of runs where
+    the predictor is significantly better / worse than that baseline (95% CI on
+    `lift_diff` excludes 0) — a numeric lift can be noise, this asks whether it's
+    provably real, in either direction. `bootstrap_compare`'s `lift_diff` is defined as
+    baseline − predictor (`reference="predictor"`), so "better" is `mean < 0`, not `> 0`.
     """
     groups: dict[tuple[str, str], list[dict]] = {}
     for r in runs:
@@ -318,12 +376,24 @@ def _table_selective(runs: list[dict]) -> dict:
             row[f"{name}_oracle_pct"] = 100.0 * float(
                 np.nanmedian([b["oracle_benefit_recovered"] for b in baselines])
             )
+            sig_vs = [
+                res["significance"]["vs_reference"][name]
+                for res in results_list
+                if res.get("significance", {}).get("vs_reference", {}).get(name)
+            ]
+            if sig_vs:
+                row[f"{name}_sig_better_pct"] = 100.0 * float(np.mean([
+                    s["lift_significant"] and s["lift_diff"]["mean"] < 0 for s in sig_vs
+                ]))
+                row[f"{name}_sig_worse_pct"] = 100.0 * float(np.mean([
+                    s["lift_significant"] and s["lift_diff"]["mean"] > 0 for s in sig_vs
+                ]))
         rows.append(row)
     return {"rows": rows}
 
 
 def _render_sweep_results(root: Path, fmt: str = "pdf", out: Path | None = None) -> None:
-    """Aggregate the sweep under `root` into the four cross-run paper figures (written to
+    """Aggregate the sweep under `root` into the five cross-run paper figures (written to
     `out`) and the four Results-section JSON tables (written to `root`, next to the raw
     per-run trees they were aggregated from): tab:perconfig, tab:nclusters,
     tab:perclf_perdataset, tab:selective.
@@ -347,6 +417,7 @@ def _render_sweep_results(root: Path, fmt: str = "pdf", out: Path | None = None)
         "figure/rho_vs_clusters": _fig_rho_vs_clusters(runs),
         "figure/family_importance": _fig_family_importance(runs),
         "figure/selective_sweep": _fig_selective_sweep(runs),
+        "figure/baseline_redundancy": _fig_baseline_redundancy(runs),
     }
     figures = {k: v for k, v in figures.items() if v is not None}
 

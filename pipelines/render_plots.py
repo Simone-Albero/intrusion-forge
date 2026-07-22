@@ -228,6 +228,20 @@ def _plot_rf_evaluation(
     }
 
 
+_BASELINE_LABEL = {"mcp_risk": "MCP", "margin_risk": "Margin", "entropy_risk": "Entropy"}
+
+
+def _baseline_curves(
+    summary_df: pd.DataFrame, cids: list, rejection_curve
+) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    """Native-classifier-confidence baseline curves (MCP/margin/entropy), where present."""
+    return {
+        label: rejection_curve(summary_df.loc[cids, col].to_numpy(dtype=float))
+        for col, label in _BASELINE_LABEL.items()
+        if col in summary_df.columns
+    }
+
+
 def _plot_selective_accuracy(
     summary_df: pd.DataFrame, classifier_results: dict
 ) -> dict[str, Plot]:
@@ -251,6 +265,7 @@ def _plot_selective_accuracy(
     curves = {
         "Predictor": _rejection_curve(y_pred),
         "Oracle": _rejection_curve(y_true),
+        **_baseline_curves(summary_df, cids, _rejection_curve),
     }
     keep = metrics["coverage_target"]
     return {
@@ -295,6 +310,7 @@ def _plot_selective_macro_recall(
     curves = {
         "Predictor": _rejection_curve(y_pred),
         "Oracle": _rejection_curve(y_true),
+        **_baseline_curves(summary_df, cids, _rejection_curve),
     }
     keep = metrics["coverage_target"]
     return {
