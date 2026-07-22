@@ -162,13 +162,17 @@ def _plot_feature_violin_by_rate_bin(
     if bins.nunique() < 2:
         return {}
 
+    # Iterate over observed bins only: qcut(duplicates="drop") on few distinct
+    # rates (small datasets) can leave empty interval categories that the
+    # observed=True groupby drops — indexing them below would KeyError.
     bin_means = rate.groupby(bins, observed=True).mean()
+    categories = list(bin_means.index)
     bin_labels = [
-        f"Q{i + 1}\n({bin_means[cat]:.2f})" for i, cat in enumerate(bins.cat.categories)
+        f"Q{i + 1}\n({bin_means[cat]:.2f})" for i, cat in enumerate(categories)
     ]
-    label_map = {cat: lab for cat, lab in zip(bins.cat.categories, bin_labels)}
+    label_map = {cat: lab for cat, lab in zip(categories, bin_labels)}
     bin_str = bins.map(label_map)
-    ordered = [label_map[c] for c in bins.cat.categories]
+    ordered = bin_labels
 
     out: dict[str, Plot] = {}
     for feature in features:
