@@ -68,6 +68,8 @@ DL_CLASSIFIERS_MIXED     := tabular
 DL_CLASSIFIERS_NUMERICAL := numerical
 
 DATASET_FORMATS := \
+    seeds:numerical \
+    parkinsons:numerical \
     statlog_landsat_satellite:numerical \
     thyroid_disease:numerical \
     letter_recognition:numerical \
@@ -274,7 +276,7 @@ help:
 	@echo "Clustering strategies:  ensemble kmeans hdbscan birch spectral kprototypes"
 	@echo ""
 	@echo "Datasets (smallest → largest, kfold auto-disabled for large):"
-	@echo "  small (kfold=true):   statlog_landsat_satellite  thyroid_disease  letter_recognition  bank_marketing  covertype"
+	@echo "  small (kfold=true):   seeds  parkinsons  statlog_landsat_satellite  thyroid_disease  letter_recognition  bank_marketing  covertype"
 	@echo "  large (kfold=false):  nb15_v2  ton_iot_v2  cic_2018_v2  bot_iot_v2"
 	@echo ""
 	@echo "Run examples (omitted vars iterate; passed vars are fixed):"

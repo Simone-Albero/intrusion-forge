@@ -1,0 +1,27 @@
+dir: extra/seeds
+file_name: seeds
+extension: parquet
+
+label_col: class
+benign_tag: "kama"  # arbitrary — 3 varieties, exactly balanced (70 each); no natural "normal" class
+
+num_cols:
+  - area
+  - perimeter
+  - compactness
+  - kernel_length
+  - kernel_width
+  - asymmetry_coefficient
+  - groove_length
+
+cat_cols: []
+
+train_frac: 0.8
+val_frac: 0.1
+test_frac: 0.1
+
+# 3 classes, 70 instances each (~56 train) — keep min_cat_count below the class size
+min_cat_count: 50
+top_n: 32
+hash_buckets: 64
+filter_query: null
