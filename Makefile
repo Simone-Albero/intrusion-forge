@@ -96,6 +96,9 @@ STAGE_FLAG  := $(if $(STAGE),stage=$(STAGE),)
 # computing only the instance baselines — used by sweep-infer on already-trained runs.
 REUSE       ?=
 REUSE_FLAG  := $(if $(REUSE),failure_classifier.reuse=true,)
+# NOSIG=1 skips the instance-level bootstrap significance test (fastest — point estimates only).
+NOSIG       ?=
+NOSIG_FLAG  := $(if $(NOSIG),failure_classifier.significance=false,)
 
 # Cost analysis. `cost-model` characterises the k-NN build cost for one dataset over both
 # distances × COST_SEEDS: α (≈2, Θ(m²)) gets a confidence interval across seeds, while c
@@ -145,9 +148,9 @@ extend-lf:
 complexity:
 	PYTHONPATH=. $(PYTHON) pipelines/compute_complexity.py $(HYDRA) $(FORCE_FLAG) $(EXTEND_FLAGS)
 
-## failure-classify:   Step 3b — RF to detect problematic clusters            (DATA, NAME, SEED, CLASSIFIER, REUSE)
+## failure-classify:   Step 3b — RF to detect problematic clusters            (DATA, NAME, SEED, CLASSIFIER, REUSE, NOSIG)
 failure-classify: complexity
-	PYTHONPATH=. $(PYTHON) pipelines/fit_failure_classifier.py $(HYDRA) $(REUSE_FLAG)
+	PYTHONPATH=. $(PYTHON) pipelines/fit_failure_classifier.py $(HYDRA) $(REUSE_FLAG) $(NOSIG_FLAG)
 
 ## render:             Step 4 — render plots from analysis artifacts          (DATA, NAME, SEED, CLASSIFIER)
 render:

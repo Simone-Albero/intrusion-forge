@@ -551,14 +551,16 @@ def _instance_baselines(
     n_bootstrap: int,
     max_bootstrap_samples: int,
     random_state: int,
+    run_significance: bool = True,
 ) -> dict:
     """Instance-level (per test sample) selective-prediction comparison, label-free.
 
     Each method produces a per-sample risk; the geometric `region` risk broadcasts the
     predictor's cluster rate (`predicted_rate`) to its samples, falling back to the mean
     rate for clusters the meta-model dropped. `y_true`/`y_pred` enter only the accuracy
-    scoring, never the risk scores. Significance is a paired cluster-block bootstrap over a
-    per-cluster subsample capped at `max_bootstrap_samples` (point estimates use full data).
+    scoring, never the risk scores. When `run_significance`, a paired cluster-block bootstrap
+    over a per-cluster subsample capped at `max_bootstrap_samples` runs (point estimates
+    always use full data); otherwise the significance block is omitted.
     """
     cluster = samples["cluster"].to_numpy()
     failure = (samples["y_true"].to_numpy() != samples["y_pred"].to_numpy()).astype(float)
@@ -596,17 +598,20 @@ def _instance_baselines(
             else float("nan")
         )
         point[name]["spearman"] = rho
-    sub = _cluster_stratified_subsample(
-        cluster, max_bootstrap_samples, np.random.default_rng(random_state)
-    )
-    significance = block_bootstrap_instance(
-        {name: sc[sub] for name, sc in scores.items()},
-        failure[sub],
-        cluster[sub],
-        n_resamples=n_bootstrap,
-        random_state=random_state,
-    )
-    significance["n_bootstrap_samples"] = int(sub.size)
+    if run_significance:
+        sub = _cluster_stratified_subsample(
+            cluster, max_bootstrap_samples, np.random.default_rng(random_state)
+        )
+        significance = block_bootstrap_instance(
+            {name: sc[sub] for name, sc in scores.items()},
+            failure[sub],
+            cluster[sub],
+            n_resamples=n_bootstrap,
+            random_state=random_state,
+        )
+        significance["n_bootstrap_samples"] = int(sub.size)
+    else:
+        significance = {"skipped": True}
     return {
         "n_test": int(len(samples)),
         "n_clusters": int(np.unique(cluster).size),
@@ -714,6 +719,7 @@ def main():
             n_bootstrap=cfg.failure_classifier.n_bootstrap,
             max_bootstrap_samples=cfg.failure_classifier.max_bootstrap_samples,
             random_state=cfg.seed,
+            run_significance=cfg.failure_classifier.significance,
         )
         bus.publish(LogBundle.from_dict({"json/analysis/instance_baselines": instance}))
         logger.info(
