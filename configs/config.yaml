@@ -20,6 +20,9 @@ label_free_assignment: true          # val/test cluster routing: true = label-fr
 kfold: true                          # classifier evaluation: true = k-fold OOF over train+test (metrics + failure rates); false = single test split
 kfold_splits: 5                      # number of OOF folds when kfold=true
 
+testing:
+  figures: true                      # build testing figures (confusion matrix, F1 bar, t-SNE); set false for inference-only runs that need only test_samples.parquet
+
 grid_search:
   enabled: true
   scoring: f1_macro
@@ -38,10 +41,12 @@ complexity:
   force: false                       # re-run complexity computation even if shared output exists
 
 failure_classifier:
+  reuse: false                       # reuse an existing classifier_results.json (skip the predictor re-fit) and only (re)compute instance baselines — for inference-only re-runs
   min_test_support: 5                # clusters with fewer test samples are excluded from the failure dataset
   n_outer_splits: 5
   n_inner_splits: 5
   n_bootstrap: 2000                  # cluster-level bootstrap resamples for the predictor-vs-confidence-baseline significance test (no re-training, no extra seeds)
+  max_bootstrap_samples: 20000       # cap on test samples fed to the instance-level bootstrap CI (point estimates always use full data); stratified per cluster so every cluster stays represented — the bootstrap's resampling unit is the cluster, so per-cluster depth can be shallow
   param_grid:
     n_estimators: [100, 200, 300, 500]
     max_depth: [null, 3, 5, 10, 20]

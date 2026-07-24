@@ -541,6 +541,7 @@ def _publish_evaluation(
     suffix: str = "",
     embedding: np.ndarray | None = None,
     predictions_dir: Path | None = None,
+    build_figures: bool = True,
 ) -> None:
     """Build metrics, confusion matrix and figures from predictions, then publish.
 
@@ -548,13 +549,16 @@ def _publish_evaluation(
     (`single_split` / `oof_kfold`). `embedding` (single-split only) drives the
     optional latent projection — fold embeddings are not comparable. When
     `predictions_dir` is given and clusters exist, a per-sample risk table is dumped
-    for the instance-level baseline comparison.
+    for the instance-level baseline comparison. `build_figures=False` skips the
+    testing figures (t-SNE is the costly part) for inference-only dump runs.
     """
     full_metrics = {**_compute_classification_metrics(y_true, y_pred), "eval_mode": eval_mode}
     pred_infos = {**_evaluate_predictions(y_true, y_pred, y_proba, clusters), "eval_mode": eval_mode}
     cm = confusion_matrix(y_true, y_pred, labels=np.unique(y_true), normalize="true")
-    figures = _build_test_figures(
-        X_np, y_true, y_pred, df_meta["label_mapping"], embedding=embedding
+    figures = (
+        _build_test_figures(X_np, y_true, y_pred, df_meta["label_mapping"], embedding=embedding)
+        if build_figures
+        else {}
     )
     if predictions_dir is not None and clusters is not None:
         save_df(
@@ -678,6 +682,7 @@ def _evaluate_stage(
         bus, df_meta, test_df[feat_cols].to_numpy(), y_true, y_pred, y_proba, clusters,
         eval_mode="single_split", suffix=suffix, embedding=embedding,
         predictions_dir=paths.outputs / "analysis/predictions",
+        build_figures=cfg.testing.figures,
     )
 
 
@@ -768,6 +773,7 @@ def _evaluate_kfold_stage(
         bus, df_meta, base[feat_cols].to_numpy(), y_true, y_pred, y_proba, clusters,
         eval_mode="oof_kfold",
         predictions_dir=paths.outputs / "analysis/predictions",
+        build_figures=cfg.testing.figures,
     )
     logger.info("k-fold OOF evaluation: %d samples over %d folds", len(base), f + 1)
 

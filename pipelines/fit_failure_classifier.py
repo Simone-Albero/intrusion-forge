@@ -524,11 +524,32 @@ _INSTANCE_METRIC_KEYS = (
 )
 
 
+def _cluster_stratified_subsample(
+    cluster: np.ndarray, cap: int, rng: np.random.Generator
+) -> np.ndarray:
+    """Indices of a per-cluster proportional subsample of size ~cap (all clusters kept).
+
+    Every cluster keeps at least one sample so the cluster-block bootstrap still resamples
+    the full set of clusters; only the per-cluster depth shrinks.
+    """
+    n = cluster.size
+    if cap <= 0 or n <= cap:
+        return np.arange(n)
+    frac = cap / n
+    keep = []
+    for c in np.unique(cluster):
+        idx = np.where(cluster == c)[0]
+        k = max(1, int(round(idx.size * frac)))
+        keep.append(idx if k >= idx.size else rng.choice(idx, size=k, replace=False))
+    return np.concatenate(keep)
+
+
 def _instance_baselines(
     samples: pd.DataFrame,
     predicted_rate: dict,
     *,
     n_bootstrap: int,
+    max_bootstrap_samples: int,
     random_state: int,
 ) -> dict:
     """Instance-level (per test sample) selective-prediction comparison, label-free.
@@ -536,7 +557,8 @@ def _instance_baselines(
     Each method produces a per-sample risk; the geometric `region` risk broadcasts the
     predictor's cluster rate (`predicted_rate`) to its samples, falling back to the mean
     rate for clusters the meta-model dropped. `y_true`/`y_pred` enter only the accuracy
-    scoring, never the risk scores. Significance is a paired cluster-block bootstrap.
+    scoring, never the risk scores. Significance is a paired cluster-block bootstrap over a
+    per-cluster subsample capped at `max_bootstrap_samples` (point estimates use full data).
     """
     cluster = samples["cluster"].to_numpy()
     failure = (samples["y_true"].to_numpy() != samples["y_pred"].to_numpy()).astype(float)
@@ -574,9 +596,17 @@ def _instance_baselines(
             else float("nan")
         )
         point[name]["spearman"] = rho
-    significance = block_bootstrap_instance(
-        scores, failure, cluster, n_resamples=n_bootstrap, random_state=random_state
+    sub = _cluster_stratified_subsample(
+        cluster, max_bootstrap_samples, np.random.default_rng(random_state)
     )
+    significance = block_bootstrap_instance(
+        {name: sc[sub] for name, sc in scores.items()},
+        failure[sub],
+        cluster[sub],
+        n_resamples=n_bootstrap,
+        random_state=random_state,
+    )
+    significance["n_bootstrap_samples"] = int(sub.size)
     return {
         "n_test": int(len(samples)),
         "n_clusters": int(np.unique(cluster).size),
@@ -632,39 +662,47 @@ def main():
     paths = paths_from_cfg(cfg)
     save_config(cfg, paths.configs / "config_composed.json")
 
-    complexity_path = paths.shared / "complexity.json"
-    class_complexity_path = paths.shared / "class_complexity.json"
-    for p in (complexity_path, class_complexity_path):
-        if not p.exists():
-            raise FileNotFoundError(
-                f"Missing complexity artifact at {p}. "
-                "Run `make complexity` first."
-            )
-    complexity = load_from_json(complexity_path)
-    class_complexity = load_from_json(class_complexity_path)
-    predictions = load_from_json(paths.outputs / "analysis/predictions/test.json")
-
-    cluster_summary = build_cluster_summary(
-        complexity,
-        class_complexity,
-        predictions,
-    )
-
     bus = LogDispatcher()
     bus.subscribe(JSONSubscriber(paths.outputs))
-    bus.publish(LogBundle.from_dict({"json/analysis/cluster_summary": cluster_summary}))
-    logger.info("Cluster summary published.")
 
-    results = fit_failure_classifier(
-        cluster_summary,
-        to_container(cfg.failure_classifier.param_grid),
-        n_outer_splits=cfg.failure_classifier.n_outer_splits,
-        n_inner_splits=cfg.failure_classifier.n_inner_splits,
-        min_test_support=cfg.failure_classifier.min_test_support,
-        n_bootstrap=cfg.failure_classifier.n_bootstrap,
-        random_state=cfg.seed,
-        analysis_bus=bus,
-    )
+    # Fast path: reuse the already-fitted predictor. The instance-level baselines only
+    # need `oof_predicted_rate`, which classifier_results.json already carries — so we
+    # skip the expensive nested-CV re-fit + bootstrap entirely on inference-only re-runs.
+    results_path = paths.outputs / "analysis/classifier_results.json"
+    if cfg.failure_classifier.reuse and results_path.exists():
+        results = load_from_json(results_path)
+        logger.info("Reusing %s; skipping predictor re-fit.", results_path)
+    else:
+        complexity_path = paths.shared / "complexity.json"
+        class_complexity_path = paths.shared / "class_complexity.json"
+        for p in (complexity_path, class_complexity_path):
+            if not p.exists():
+                raise FileNotFoundError(
+                    f"Missing complexity artifact at {p}. "
+                    "Run `make complexity` first."
+                )
+        complexity = load_from_json(complexity_path)
+        class_complexity = load_from_json(class_complexity_path)
+        predictions = load_from_json(paths.outputs / "analysis/predictions/test.json")
+
+        cluster_summary = build_cluster_summary(
+            complexity,
+            class_complexity,
+            predictions,
+        )
+        bus.publish(LogBundle.from_dict({"json/analysis/cluster_summary": cluster_summary}))
+        logger.info("Cluster summary published.")
+
+        results = fit_failure_classifier(
+            cluster_summary,
+            to_container(cfg.failure_classifier.param_grid),
+            n_outer_splits=cfg.failure_classifier.n_outer_splits,
+            n_inner_splits=cfg.failure_classifier.n_inner_splits,
+            min_test_support=cfg.failure_classifier.min_test_support,
+            n_bootstrap=cfg.failure_classifier.n_bootstrap,
+            random_state=cfg.seed,
+            analysis_bus=bus,
+        )
 
     # Instance-level baselines: only when the per-sample dump exists (produced by the
     # classify testing stage) and the predictor actually ran.
@@ -674,6 +712,7 @@ def main():
             load_df(dump_path),
             results["oof_predicted_rate"],
             n_bootstrap=cfg.failure_classifier.n_bootstrap,
+            max_bootstrap_samples=cfg.failure_classifier.max_bootstrap_samples,
             random_state=cfg.seed,
         )
         bus.publish(LogBundle.from_dict({"json/analysis/instance_baselines": instance}))

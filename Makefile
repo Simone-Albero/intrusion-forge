@@ -92,6 +92,10 @@ KFOLD_FLAG  := $(if $(filter $(DATA),$(LARGE_DATASETS)),kfold=false,)
 # per-sample test confidences for the instance-level baseline comparison.
 STAGE       ?=
 STAGE_FLAG  := $(if $(STAGE),stage=$(STAGE),)
+# REUSE=1 skips the failure-predictor re-fit and reuses an existing classifier_results.json,
+# computing only the instance baselines — used by sweep-infer on already-trained runs.
+REUSE       ?=
+REUSE_FLAG  := $(if $(REUSE),failure_classifier.reuse=true,)
 
 # Cost analysis. `cost-model` characterises the k-NN build cost for one dataset over both
 # distances × COST_SEEDS: α (≈2, Θ(m²)) gets a confidence interval across seeds, while c
@@ -117,9 +121,9 @@ prepare:
 classify:
 	PYTHONPATH=. $(PYTHON) pipelines/classify.py $(HYDRA) $(KFOLD_FLAG) $(STAGE_FLAG)
 
-## infer:              Inference only (loads saved model) → dump per-sample test confidences  (DATA, NAME, SEED, CLASSIFIER)
+## infer:              Inference only (loads saved model) → dump per-sample test confidences, skip figures  (DATA, NAME, SEED, CLASSIFIER)
 infer:
-	PYTHONPATH=. $(PYTHON) pipelines/classify.py $(HYDRA) $(KFOLD_FLAG) stage=testing
+	PYTHONPATH=. $(PYTHON) pipelines/classify.py $(HYDRA) $(KFOLD_FLAG) stage=testing testing.figures=false
 
 ## classify-extended:  Step 2b — train classifier on complexity-extended features + SHAP  (DATA, NAME, SEED, CLASSIFIER)
 classify-extended:
@@ -141,9 +145,9 @@ extend-lf:
 complexity:
 	PYTHONPATH=. $(PYTHON) pipelines/compute_complexity.py $(HYDRA) $(FORCE_FLAG) $(EXTEND_FLAGS)
 
-## failure-classify:   Step 3b — RF to detect problematic clusters            (DATA, NAME, SEED, CLASSIFIER)
+## failure-classify:   Step 3b — RF to detect problematic clusters            (DATA, NAME, SEED, CLASSIFIER, REUSE)
 failure-classify: complexity
-	PYTHONPATH=. $(PYTHON) pipelines/fit_failure_classifier.py $(HYDRA)
+	PYTHONPATH=. $(PYTHON) pipelines/fit_failure_classifier.py $(HYDRA) $(REUSE_FLAG)
 
 ## render:             Step 4 — render plots from analysis artifacts          (DATA, NAME, SEED, CLASSIFIER)
 render:
@@ -272,7 +276,7 @@ sweep-infer:
 					CLUSTERING=$$clu DISTANCE=$(DISTANCE) || exit 1; \
 				$(MAKE) --no-print-directory failure-classify \
 					DATA=$$ds NAME=$$name SEED=$(SEED) CLASSIFIER=$$clf \
-					CLUSTERING=$$clu DISTANCE=$(DISTANCE) || exit 1; \
+					CLUSTERING=$$clu DISTANCE=$(DISTANCE) REUSE=1 || exit 1; \
 			done; \
 		done; \
 	done
