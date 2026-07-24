@@ -358,6 +358,24 @@ def atc_cluster_risk(
     return out
 
 
+def _decision_stable(diff: np.ndarray, alpha: float, margin: float) -> bool:
+    """Whether the significance verdict for a difference is safe from more resamples.
+
+    A verdict flips near the boundary where |mean| equals the CI half-width. It is stable
+    when the mean sits `margin` half-widths clear of that boundary — i.e. `|mean|/half_width`
+    lies outside `[1-margin, 1+margin]` (comfortably significant or comfortably not).
+    """
+    d = diff[~np.isnan(diff)]
+    if d.size < 2:
+        return False
+    lo, hi = np.quantile(d, alpha / 2), np.quantile(d, 1 - alpha / 2)
+    hw = (hi - lo) / 2
+    if hw <= 0:
+        return True
+    ratio = abs(np.mean(d)) / hw
+    return ratio < (1 - margin) or ratio > (1 + margin)
+
+
 def block_bootstrap_instance(
     scores: dict[str, np.ndarray],
     failure: np.ndarray,
@@ -365,7 +383,10 @@ def block_bootstrap_instance(
     *,
     reference: str = "mcp_sample",
     coverage_target: float = 0.8,
-    n_resamples: int = 1000,
+    n_resamples: int = 2000,
+    batch_size: int = 500,
+    decide_margin: float = 0.5,
+    decide_on: list[str] | None = None,
     alpha: float = 0.05,
     random_state: int = 0,
 ) -> dict:
@@ -375,6 +396,13 @@ def block_bootstrap_instance(
     respecting their correlation — a per-sample bootstrap would badly understate the
     variance), reusing the same resample across scores so the differences against
     `reference` reflect paired variation. Support is 1 per sample (instance level).
+
+    Adaptive: draws accumulate in batches of `batch_size` and stop as soon as the verdicts
+    that matter are stable (`_decision_stable`), or when `n_resamples` is reached. The batch
+    count is bounded by `ceil(n_resamples / batch_size)`. `decide_on` names the comparisons
+    that gate the stop (default: all of them); the reported comparisons should gate it, so a
+    borderline secondary diagnostic does not hold the whole run to the full budget — its CI
+    is simply reported at whatever depth the gating comparisons settled on.
     """
     failure = np.asarray(failure, dtype=float)
     cluster = np.asarray(cluster)
@@ -382,23 +410,36 @@ def block_bootstrap_instance(
     keys = list(groups)
     rng = np.random.default_rng(random_state)
     names = list(scores)
+    comparisons = [n for n in names if n != reference]
+    gate = [n for n in comparisons if n in decide_on] if decide_on else comparisons
     draws = {name: np.full(n_resamples, np.nan) for name in names}
 
-    for b in range(n_resamples):
-        pick = rng.integers(0, len(keys), size=len(keys))
-        idx = np.concatenate([groups[keys[k]] for k in pick])
-        a = failure[idx]
-        if a.std() < 1e-12:
-            continue
-        s = np.ones(idx.size)
-        global_accuracy = 1.0 - a.mean()
-        cov_o, acc_o = risk_coverage_curve(a, a, s)
-        for name in names:
-            cov_p, acc_p = risk_coverage_curve(scores[name][idx], a, s)
-            summary = _curve_summary(cov_p, acc_p, cov_o, acc_o, coverage_target)
-            draws[name][b] = _recovered(
-                summary["at_target_predictor"], summary["at_target_oracle"], global_accuracy
-            )
+    filled = 0
+    while filled < n_resamples:
+        upper = min(filled + batch_size, n_resamples)
+        for b in range(filled, upper):
+            pick = rng.integers(0, len(keys), size=len(keys))
+            idx = np.concatenate([groups[keys[k]] for k in pick])
+            a = failure[idx]
+            if a.std() < 1e-12:
+                continue
+            s = np.ones(idx.size)
+            global_accuracy = 1.0 - a.mean()
+            cov_o, acc_o = risk_coverage_curve(a, a, s)
+            for name in names:
+                cov_p, acc_p = risk_coverage_curve(scores[name][idx], a, s)
+                summary = _curve_summary(cov_p, acc_p, cov_o, acc_o, coverage_target)
+                draws[name][b] = _recovered(
+                    summary["at_target_predictor"], summary["at_target_oracle"], global_accuracy
+                )
+        filled = upper
+        if filled >= n_resamples or all(
+            _decision_stable(draws[name][:filled] - draws[reference][:filled], alpha, decide_margin)
+            for name in gate
+        ):
+            break
+
+    draws = {name: draws[name][:filled] for name in names}
 
     def _ci(d: np.ndarray) -> dict:
         d = d[~np.isnan(d)]
@@ -412,9 +453,7 @@ def block_bootstrap_instance(
 
     per_score = {name: {"oracle_benefit_recovered": _ci(draws[name])} for name in names}
     vs_reference = {}
-    for name in names:
-        if name == reference:
-            continue
+    for name in comparisons:
         diff = _ci(draws[name] - draws[reference])
         vs_reference[name] = {
             "oracle_diff": diff,
@@ -424,7 +463,7 @@ def block_bootstrap_instance(
         }
     return {
         "reference": reference,
-        "n_resamples": n_resamples,
+        "n_resamples": int(filled),
         "alpha": alpha,
         "per_score": per_score,
         "vs_reference": vs_reference,

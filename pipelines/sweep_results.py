@@ -605,9 +605,9 @@ def _table_selective_by_clf(runs: list[dict]) -> dict:
 def _table_instance(runs: list[dict]) -> dict:
     """Table: instance-level oracle-benefit recovered per score, plus the cross-run test.
 
-    Median over runs for each per-sample method, the per-run rate at which `combo_within`
+    Median over runs for each per-sample method, the per-run rate at which `combo_rankavg`
     beats `mcp_sample` (within-run block-bootstrap significance), and a cross-run headline:
-    the mean `combo_within - mcp_sample` delta with a dataset-level bootstrap CI (the
+    the mean `combo_rankavg - mcp_sample` delta with a dataset-level bootstrap CI (the
     exchangeable unit is the dataset, not the correlated 720 runs). Empty when no run
     carries a per-sample dump.
     """
@@ -622,14 +622,14 @@ def _table_instance(runs: list[dict]) -> dict:
         }
         # A run qualifies on the core variants; newer additions (e.g. combo_atc_rankavg)
         # may be absent in older runs and are aggregated per-key over whoever carries them.
-        core = ("mcp_sample", "region", "combo_within")
+        core = ("mcp_sample", "region", "combo_rankavg")
         if any(vals[k] is None or np.isnan(vals[k]) for k in core):
             continue
         spear = {
             key: inst["scores"].get(key, {}).get("spearman")
             for key, _ in _INSTANCE_METHODS
         }
-        sig = inst.get("significance", {}).get("vs_reference", {}).get("combo_within", {})
+        sig = inst.get("significance", {}).get("vs_reference", {}).get("combo_rankavg", {})
         cal = inst.get("calibration", {})
         rows.append({
             "dataset": _dataset_base(r["dataset"]),
@@ -661,7 +661,7 @@ def _table_instance(runs: list[dict]) -> dict:
     atc_errs = [row["atc_accuracy_abs_error"] for row in rows if row["atc_accuracy_abs_error"] is not None]
     per_ds = {}
     for d in sorted({row["dataset"] for row in rows}):
-        deltas = [row["combo_within"] - row["mcp_sample"] for row in rows if row["dataset"] == d]
+        deltas = [row["combo_rankavg"] - row["mcp_sample"] for row in rows if row["dataset"] == d]
         per_ds[d] = float(np.mean(deltas))
     ds_vals = np.array(list(per_ds.values()), dtype=float)
     rng = np.random.default_rng(0)
@@ -676,7 +676,7 @@ def _table_instance(runs: list[dict]) -> dict:
         "median_spearman": median_spearman,
         "median_cluster_rate_mse": median_rate_mse,
         "median_atc_accuracy_abs_error": float(np.median(atc_errs)) if atc_errs else None,
-        "combo_within_vs_mcp_sample": {
+        "combo_rankavg_vs_mcp_sample": {
             "per_run_sig_better_pct": 100.0 * float(np.mean([row["sig_combo"] for row in rows])),
             "mean_delta_over_datasets": float(np.mean(ds_vals)),
             "dataset_bootstrap_ci": [ci_low, ci_high],

@@ -609,11 +609,15 @@ def _instance_baselines(
         sub = _cluster_stratified_subsample(
             cluster, max_bootstrap_samples, np.random.default_rng(random_state)
         )
+        # combo_within tracks region almost exactly (redundant), so it keeps its point
+        # estimate but stays out of the bootstrap — one fewer curve per resample.
+        boot_scores = {name: sc[sub] for name, sc in scores.items() if name != "combo_within"}
         significance = block_bootstrap_instance(
-            {name: sc[sub] for name, sc in scores.items()},
+            boot_scores,
             failure[sub],
             cluster[sub],
             n_resamples=n_bootstrap,
+            decide_on=["region", "combo_rankavg", "combo_atc_rankavg"],
             random_state=random_state,
         )
         significance["n_bootstrap_samples"] = int(sub.size)
