@@ -19,9 +19,14 @@ from src.core.log import (
     setup_logger,
 )
 from pipelines import paths_from_cfg
+from src.core.io import load_df
 from src.core.utils import flush_timing, load_from_json, timed
 from src.domain.analysis.selective_prediction import (
+    atc_cluster_risk,
+    atc_threshold,
+    block_bootstrap_instance,
     bootstrap_compare,
+    instance_risk_scores,
     selective_prediction_metrics,
     selective_recall_metrics,
 )
@@ -459,15 +464,20 @@ def fit_failure_classifier(
         for name in ("mcp_risk", "margin_risk", "entropy_risk")
         if name in df.columns and df[name].notna().all()
     }
-    results["confidence_baselines"] = {
-        name: {
+    # `spearman` mirrors the RF predictor's pooled Spearman: how well ranking clusters by
+    # mean confidence recovers the observed failure-rate ranking, directly comparable to
+    # results["spearman"].
+    results["confidence_baselines"] = {}
+    for name, risk in baseline_scores.items():
+        rho = spearmanr(risk, oof["y_true"])
+        results["confidence_baselines"][name] = {
+            "spearman": float(rho.statistic),
+            "spearman_pvalue": float(rho.pvalue),
             "risk_coverage": selective_prediction_metrics(risk, oof["y_true"], support),
             "selective_macro_recall": selective_recall_metrics(
                 risk, oof["y_true"], support, cluster_class
             ),
         }
-        for name, risk in baseline_scores.items()
-    }
     # Bootstrap significance: resamples the existing OOF clusters (no re-training, no
     # extra seeds) to get CIs and paired-difference tests of each confidence baseline
     # against the RF predictor.
@@ -478,14 +488,6 @@ def fit_failure_classifier(
         n_resamples=n_bootstrap,
         random_state=random_state,
     )
-    # Redundancy check: correlation between the RF predictor and each confidence
-    # baseline (not against the true rate) — high correlation means the cluster-
-    # geometry predictor is largely reconstructing the same signal as native
-    # confidence; low correlation means the two are complementary.
-    results["baseline_redundancy"] = {
-        name: float(spearmanr(oof["y_pred"], risk).statistic)
-        for name, risk in baseline_scores.items()
-    }
     if analysis_bus is not None:
         analysis_bus.publish(
             LogBundle.from_dict({"json/analysis/classifier_results": results})
@@ -512,6 +514,112 @@ def fit_failure_classifier(
             ", ".join(significant_vs),
         )
     return results
+
+
+_INSTANCE_METRIC_KEYS = (
+    "oracle_benefit_recovered",
+    "lift_over_random",
+    "aurc_predictor",
+    "global_accuracy",
+)
+
+
+def _instance_baselines(
+    samples: pd.DataFrame,
+    predicted_rate: dict,
+    *,
+    n_bootstrap: int,
+    random_state: int,
+) -> dict:
+    """Instance-level (per test sample) selective-prediction comparison, label-free.
+
+    Each method produces a per-sample risk; the geometric `region` risk broadcasts the
+    predictor's cluster rate (`predicted_rate`) to its samples, falling back to the mean
+    rate for clusters the meta-model dropped. `y_true`/`y_pred` enter only the accuracy
+    scoring, never the risk scores. Significance is a paired cluster-block bootstrap.
+    """
+    cluster = samples["cluster"].to_numpy()
+    failure = (samples["y_true"].to_numpy() != samples["y_pred"].to_numpy()).astype(float)
+    correct = 1.0 - failure
+    mcp = samples["mcp_risk"].to_numpy(dtype=float)
+    confidence = 1.0 - mcp
+    fallback = float(np.mean(list(predicted_rate.values()))) if predicted_rate else 0.0
+    region = np.array([predicted_rate.get(str(c), fallback) for c in cluster], dtype=float)
+
+    scores = instance_risk_scores(mcp, region, cluster)
+    # ATC adapted to the cluster level (Garg 2022): fraction of a cluster below the global
+    # confidence threshold. Per-sample ATC would rank identically to mcp_sample, so only the
+    # cluster adaptation joins the ranking comparison; ATC's per-sample accuracy estimate
+    # goes to the calibration block below.
+    scores["atc_cluster"] = atc_cluster_risk(confidence, correct, cluster)
+
+    support = np.ones(failure.size)
+    point = {
+        name: {
+            k: float(v)
+            for k, v in selective_prediction_metrics(sc, failure, support).items()
+            if k in _INSTANCE_METRIC_KEYS
+        }
+        for name, sc in scores.items()
+    }
+    # Cluster-level Spearman per variant: rank clusters by the variant's per-cluster score
+    # against the observed failure rate — the same rho the paper reports for the predictor.
+    clusters = np.unique(cluster)
+    observed = np.array([failure[cluster == c].mean() for c in clusters], dtype=float)
+    for name, sc in scores.items():
+        pred = np.array([sc[cluster == c].mean() for c in clusters], dtype=float)
+        rho = (
+            float(spearmanr(pred, observed).statistic)
+            if np.std(pred) > 1e-12 and np.std(observed) > 1e-12
+            else float("nan")
+        )
+        point[name]["spearman"] = rho
+    significance = block_bootstrap_instance(
+        scores, failure, cluster, n_resamples=n_bootstrap, random_state=random_state
+    )
+    return {
+        "n_test": int(len(samples)),
+        "n_clusters": int(np.unique(cluster).size),
+        "scores": point,
+        "significance": significance,
+        "calibration": _instance_calibration(confidence, correct, failure, cluster, scores),
+    }
+
+
+def _instance_calibration(
+    confidence: np.ndarray,
+    correct: np.ndarray,
+    failure: np.ndarray,
+    cluster: np.ndarray,
+    scores: dict,
+) -> dict:
+    """ATC on its own axis (rate estimation), at both granularities.
+
+    Per-sample: ATC's predicted accuracy vs the actual accuracy. Per-cluster: the squared
+    error of each method's predicted rate against the observed cluster failure rate — where
+    `region`, `mcp_cluster` and `atc_cluster` are all per-cluster rate estimates.
+    """
+    t = atc_threshold(confidence, correct)
+    atc_accuracy = float((confidence >= t).mean())
+    actual_accuracy = float(correct.mean())
+
+    clusters = np.unique(cluster)
+    observed = np.array([failure[cluster == c].mean() for c in clusters], dtype=float)
+
+    def _rate_mse(per_sample: np.ndarray) -> float:
+        pred = np.array([per_sample[cluster == c][0] for c in clusters], dtype=float)
+        return float(np.mean((pred - observed) ** 2))
+
+    return {
+        "atc_sample_predicted_accuracy": atc_accuracy,
+        "actual_accuracy": actual_accuracy,
+        "atc_accuracy_abs_error": abs(atc_accuracy - actual_accuracy),
+        "cluster_rate_mse": {
+            "region": _rate_mse(scores["region"]),
+            "mcp_cluster": _rate_mse(scores["mcp_cluster"]),
+            "atc_cluster": _rate_mse(scores["atc_cluster"]),
+        },
+    }
 
 
 def main():
@@ -547,7 +655,7 @@ def main():
     bus.publish(LogBundle.from_dict({"json/analysis/cluster_summary": cluster_summary}))
     logger.info("Cluster summary published.")
 
-    fit_failure_classifier(
+    results = fit_failure_classifier(
         cluster_summary,
         to_container(cfg.failure_classifier.param_grid),
         n_outer_splits=cfg.failure_classifier.n_outer_splits,
@@ -557,6 +665,25 @@ def main():
         random_state=cfg.seed,
         analysis_bus=bus,
     )
+
+    # Instance-level baselines: only when the per-sample dump exists (produced by the
+    # classify testing stage) and the predictor actually ran.
+    dump_path = paths.outputs / "analysis/predictions/test_samples.parquet"
+    if not results.get("skipped") and results.get("oof_predicted_rate") and dump_path.exists():
+        instance = _instance_baselines(
+            load_df(dump_path),
+            results["oof_predicted_rate"],
+            n_bootstrap=cfg.failure_classifier.n_bootstrap,
+            random_state=cfg.seed,
+        )
+        bus.publish(LogBundle.from_dict({"json/analysis/instance_baselines": instance}))
+        logger.info(
+            "Instance-level baselines published (%d test samples, %d clusters).",
+            instance["n_test"],
+            instance["n_clusters"],
+        )
+    else:
+        logger.info("Instance-level baselines skipped (no per-sample dump at %s).", dump_path)
 
     flush_timing(paths.outputs / "timing.json")
 

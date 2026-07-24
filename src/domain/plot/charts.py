@@ -683,6 +683,9 @@ def numeric_scatter_plot(
     annotations: dict[str, float] | None = None,
     cmap: str = "viridis",
     colorbar_label: str = "",
+    alpha: float = 0.7,
+    vmin: float | None = None,
+    vmax: float | None = None,
     x_label: str = "",
     y_label: str = "",
     title: str = "",
@@ -705,8 +708,10 @@ def numeric_scatter_plot(
         c=color_values if color_values is not None else PALETTE[0],
         cmap=cmap if color_values is not None else None,
         s=22,
-        alpha=0.7,
+        alpha=alpha,
         edgecolors="none",
+        vmin=vmin,
+        vmax=vmax,
     )
     if color_values is not None and fig is not None:
         cbar = fig.colorbar(sc, ax=ax, fraction=0.046, pad=0.04)
@@ -1092,6 +1097,46 @@ def box_strip_plot(
     return _finalize(fig)
 
 
+def box_strip_facets(
+    panels: list[tuple[str, list[str], list[np.ndarray], list[str]]],
+    *,
+    x_label: str = "",
+    x_lim: tuple[float, float] | None = None,
+    axvline: float | None = None,
+    legend: dict[str, str] | None = None,
+    figsize: tuple[float, float] = (9.5, 5.5),
+) -> Plot | None:
+    """Row of horizontal box-strip panels sharing the row (y) axis.
+
+    Each panel is `(title, labels, values, colors)` and is drawn with `box_strip_plot`;
+    panels share x and y, so row labels need be set on the first panel only (pass blanks for
+    the rest). A single x-label and legend are drawn at the figure level.
+    """
+    # sharey is intentionally off: box_strip_plot sets per-axis y-tick labels, and a shared
+    # y-axis would let the last (blank) panel overwrite the first panel's row labels.
+    fig, axes = plt.subplots(1, len(panels), figsize=figsize, sharex=True)
+    axes = np.atleast_1d(axes)
+    for ax, (title, labels, values, colors) in zip(axes, panels):
+        box_strip_plot(
+            labels, values, colors=colors, show_points=False,
+            x_lim=x_lim, axvline=axvline, ax=ax,
+        )
+        ax.set_title(title, fontweight="normal")
+    if x_label:
+        fig.supxlabel(x_label)
+    if legend:
+        handles = [
+            Patch(facecolor=c, alpha=0.65, edgecolor="0.3", label=lab)
+            for lab, c in legend.items()
+        ]
+        fig.legend(
+            handles=handles, loc="lower center", bbox_to_anchor=(0.5, 1.0),
+            ncol=len(legend), frameon=False, columnspacing=1.6,
+        )
+    fig.tight_layout()
+    return _finalize(fig)
+
+
 def line_whisker_plot(
     series: dict[str, tuple[np.ndarray, np.ndarray, str]],
     *,
@@ -1210,120 +1255,73 @@ def stacked_bar_plot(
     return _finalize(fig)
 
 
-def band_curve_plot(
-    x: np.ndarray,
-    lines: list[tuple[str, np.ndarray, str]],
-    *,
-    band: tuple[np.ndarray, np.ndarray, str, str] | None = None,
-    baseline: float | None = None,
-    baseline_label: str = "Random",
-    x_label: str = "",
-    y_label: str = "",
-    x_lim: tuple[float, float] | None = (0.0, 1.0),
-    figsize: tuple[float, float] = (5.4, 3.4),
-    ax: Axes | None = None,
-) -> Plot | None:
-    """Curves on a shared x grid with an optional shaded band and flat baseline."""
-    x = np.asarray(x, dtype=float)
-    ax, fig = _ensure_ax(ax, figsize)
-    if band is not None:
-        lo, hi, color, label = band
-        ax.fill_between(x, lo, hi, color=color, alpha=0.18, linewidth=0, label=label)
-    for name, y, color in lines:
-        ax.plot(x, np.asarray(y, dtype=float), color=color, linewidth=1.8, label=name)
-    if baseline is not None:
-        ax.axhline(baseline, color=MUTED_COLOR, linewidth=1.2, linestyle="--", label=baseline_label)
-    if x_lim:
-        ax.set_xlim(*x_lim)
-    ax.grid(True, axis="both")
-    # The shaded band fills most of the interior, so any in-axes legend hides part of
-    # it; place it above the axes instead, two columns wide, covering nothing.
-    ax.legend(
-        loc="lower center", bbox_to_anchor=(0.5, 1.0),
-        ncol=2, columnspacing=1.2, frameon=False,
-    )
-    _apply_labels(ax, x_label=x_label, y_label=y_label)
-    return _finalize(fig)
-
-
 def cost_quality_plot(
-    labels: list[str],
-    cosine: list[tuple[float, float] | None],
-    euclidean: list[tuple[float, float] | None],
+    panels: list[tuple[str, list[str], np.ndarray, np.ndarray, np.ndarray]],
     *,
-    cos_color: str,
-    euc_color: str,
-    y_floor: float = 0.42,
-    x_label: str = "complexity build time (seconds)",
-    y_label: str = r"Spearman $\rho$",
-    figsize: tuple[float, float] = (5.4, 3.4),
-) -> Plot:
-    """Cost-vs-quality trade-off: one cosine/euclidean point pair per dataset.
+    rho_color: str,
+    time_color: str,
+    n_cols: int = 2,
+    rho_label: str = r"Spearman $\rho$",
+    time_label: str = r"$k$-NN graph build time (s)",
+    figsize: tuple[float, float] = (10.0, 11.5),
+) -> Plot | None:
+    """Grid of dual-axis bar panels: build cost vs correlation across dataset scale.
 
-    The two points per dataset are joined by a thin connector, so a near-horizontal
-    rightward shift reads as "more cost, no quality gain". Any point with
-    `rho < y_floor` is drawn as a downward triangle clipped to the floor and
-    labelled with its true value, so a single deep outlier does not waste vertical
-    space. Dataset names sit in a sorted right-hand column joined by leaders.
+    Each panel is `(title, dataset_labels, rho_mean, rho_std, build_s)`, drawn as one
+    group per dataset (datasets pre-sorted by size on the x-axis): a Spearman-rho bar on
+    the left axis (with a grey std whisker) and a k-NN graph build-time bar on the right
+    axis. The rho axis is fixed to [0, 1] for cross-panel comparison; the time axis
+    auto-scales per panel. Each axis is tinted with its bar colour so the two scales stay
+    unambiguous without repeating labels on every panel. Bars of height NaN (a dataset
+    missing for that configuration) simply draw nothing, keeping x-positions aligned.
     """
-    fig, ax = plt.subplots(figsize=figsize)
-    pts_all = [p for p in (cosine + euclidean) if p is not None]
-    xs = [p[0] for p in pts_all]
-    top = max(p[1] for p in pts_all)
-    ax.set_ylim(y_floor, top + 0.05)
-    floor_y = y_floor + 0.012
-
-    def _y(v: float) -> float:
-        return max(v, floor_y)
-
-    # connectors + off-scale markers
-    for c, e in zip(cosine, euclidean):
-        if c is not None and e is not None:
-            ax.plot([c[0], e[0]], [_y(c[1]), _y(e[1])], color="0.2",
-                    linewidth=1.0, alpha=0.8, zorder=1)
-        for p, color in ((c, cos_color), (e, euc_color)):
-            if p is not None and p[1] < y_floor:
-                ax.scatter([p[0]], [floor_y], marker="v", s=60, color=color,
-                           edgecolor="white", linewidth=0.6, zorder=3)
-                ax.annotate(f"{p[1]:.2f}", (p[0], floor_y), textcoords="offset points",
-                            xytext=(7, 1), va="center", ha="left", fontsize=12, color=color)
-
-    # in-range points
-    for pts, color, name in ((cosine, cos_color, "cosine"), (euclidean, euc_color, "euclidean")):
-        xy = [p for p in pts if p is not None and p[1] >= y_floor]
-        if xy:
-            ax.scatter([p[0] for p in xy], [p[1] for p in xy],
-                       s=60, color=color, edgecolor="white", linewidth=0.6,
-                       zorder=3, label=name)
-
-    # right-side label column (sorted by anchor y => leaders never cross)
-    # Linear x-axis: pad additively and reserve the right margin for the labels.
-    x_lo, x_hi = min(xs), max(xs)
-    x_rng = (x_hi - x_lo) or x_hi or 1.0
-    col_x = x_hi + 0.02 * x_rng
-    ax.set_xlim(x_lo - 0.04 * x_rng, x_hi + 0.20 * x_rng)
-    anchors = []
-    for label, c, e in zip(labels, cosine, euclidean):
-        rightmost = max(
-            (p for p in (c, e) if p is not None and p[1] >= y_floor),
-            key=lambda p: p[0], default=None,
+    if not panels:
+        return None
+    n = len(panels)
+    n_rows = (n + n_cols - 1) // n_cols
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize)
+    if fig.get_layout_engine() is not None:
+        fig.get_layout_engine().set(wspace=0.12, w_pad=0.08)
+    axes = np.atleast_1d(axes).ravel()
+    w = 0.4
+    for idx, ax in enumerate(axes):
+        if idx >= n:
+            ax.set_visible(False)
+            continue
+        title, labels, rho_mean, rho_std, build_s = panels[idx]
+        x = np.arange(len(labels))
+        ax2 = ax.twinx()
+        ax.bar(
+            x - w / 2, rho_mean, w, yerr=rho_std, capsize=2,
+            error_kw={"elinewidth": 0.9, "capthick": 0.9, "ecolor": MUTED_COLOR},
+            color=rho_color, zorder=2,
         )
-        if rightmost is None:  # both off-scale: anchor at the clipped floor point
-            rightmost = max((p for p in (c, e) if p is not None), key=lambda p: p[0])
-            anchors.append((label, rightmost[0], floor_y))
-        else:
-            anchors.append((label, rightmost[0], rightmost[1]))
-    anchors.sort(key=lambda a: a[2])
-    lo, hi = y_floor + 0.02, top + 0.03
-    slots = np.linspace(lo, hi, len(anchors)) if len(anchors) > 1 else [(lo + hi) / 2]
-    for (label, ax_x, ax_y), slot_y in zip(anchors, slots):
-        ax.annotate(
-            label, (ax_x, ax_y), xytext=(col_x, slot_y), textcoords="data",
-            ha="left", va="center", fontsize=14, color="black",
-            arrowprops=dict(arrowstyle="-", color="0.35", lw=0.7, shrinkA=2, shrinkB=2),
-        )
+        ax2.bar(x + w / 2, build_s, w, color=time_color, zorder=2)
 
-    ax.grid(True, axis="both")
-    ax.legend(loc="lower center")
-    _apply_labels(ax, x_label=x_label, y_label=y_label)
-    return _fig_to_plot(fig)
+        ax.set_ylim(0.0, 1.0)
+        ax.set_xlim(-0.6, len(labels) - 0.4)
+        ax.set_xticks(x)
+        bottom_row = idx >= n - n_cols
+        ax.set_xticklabels(labels if bottom_row else [""] * len(labels),
+                           rotation=45, ha="right")
+        ax.set_title(title, fontweight="normal")
+        ax.grid(True, axis="y")
+        ax.set_axisbelow(True)
+
+        # Tint each axis with its bar colour so left=rho / right=time reads at a glance;
+        # the figure legend names both measures, so no per-panel axis titles are needed.
+        ax.tick_params(axis="y", colors=rho_color)
+        ax.spines["left"].set_color(rho_color)
+        ax2.tick_params(axis="y", colors=time_color)
+        ax2.spines["right"].set_color(time_color)
+        ax2.spines["left"].set_visible(False)
+
+    handles = [
+        Patch(facecolor=rho_color, edgecolor="0.3", label=rho_label),
+        Patch(facecolor=time_color, edgecolor="0.3", label=time_label),
+    ]
+    fig.legend(
+        handles=handles, loc="lower center", bbox_to_anchor=(0.5, 1.0),
+        ncol=2, frameon=False, columnspacing=1.6,
+    )
+    return _finalize(fig)

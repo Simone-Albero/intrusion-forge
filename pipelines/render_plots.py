@@ -21,7 +21,6 @@ from src.domain.plot.charts import (
     bar_plot,
     beeswarm_plot,
     cost_impact_plot,
-    cost_quality_plot,
     cost_scaling_plot,
     numeric_scatter_plot,
     selective_accuracy_plot,
@@ -204,12 +203,21 @@ def _plot_rf_evaluation(
     y_true = summary_df.loc[cids, "failure_rate"].to_numpy(dtype=float)
     importances = classifier_results["feature_importances"]
 
+    # Squared error is heavily right-skewed; cap the colour scale at the 95th
+    # percentile so the bulk of the points spread across the full gradient
+    # instead of collapsing to one end dominated by a few outliers.
+    squared_error = (y_pred - y_true) ** 2
+    mse_vmax = float(np.quantile(squared_error, 0.95)) if squared_error.size else None
+
     return {
         "summary/correlation/pred_vs_actual": numeric_scatter_plot(
             y_true,
             y_pred,
-            color_values=y_true,
-            colorbar_label="Observed failure rate",
+            color_values=squared_error,
+            cmap="RdYlGn_r",
+            colorbar_label="Squared error (pred − obs)²",
+            alpha=0.9,
+            vmax=mse_vmax,
             reference_line=True,
             annotations={
                 "Spearman": classifier_results["spearman"],
@@ -529,55 +537,6 @@ def _render_cost_model(root: Path, fmt: str = "pdf", out: Path | None = None) ->
     )
 
 
-_COS, _EUC = PALETTE[0], PALETTE[1]
-
-_DATASET_LABEL = {
-    "bank_marketing": "Bank",
-    "bot_iot_v2": "Bot-IoT",
-    "cic_ids2018_v2": "CIC",
-    "covertype": "Covertype",
-    "letter_recognition": "Letter",
-    "statlog_landsat_satellite": "Statlog",
-    "thyroid_disease": "Thyroid",
-    "ton_iot_v2": "ToN-IoT",
-    "unsw_nb15_v2": "UNSW",
-}
-
-
-def _render_cost_quality(table: Path, fmt: str = "pdf", out: Path | None = None) -> None:
-    """Render the cost-vs-quality figure from a cost-quality table (file or containing directory)."""
-    set_figure_format(fmt)
-    table_path = table / "cost_quality_table.json" if table.is_dir() else table
-    rows = load_from_json(table_path)["rows"]
-
-    def _median(dataset: str, distance: str, key: str) -> float | None:
-        vals = [r[key] for r in rows
-                if r["dataset"] == dataset and r["distance"] == distance
-                and r.get(key) is not None]
-        return float(np.median(vals)) if vals else None
-
-    datasets = sorted(
-        {r["dataset"] for r in rows},
-        key=lambda d: _median(d, "cosine", "complexity_build_s") or float("inf"),
-    )
-    labels, cosine, euclidean = [], [], []
-    for d in datasets:
-        labels.append(_DATASET_LABEL.get(d, d))
-        cos_c = _median(d, "cosine", "complexity_build_s")
-        cos_r = _median(d, "cosine", "rho")
-        euc_c = _median(d, "euclidean", "complexity_build_s")
-        euc_r = _median(d, "euclidean", "rho")
-        cosine.append((cos_c, cos_r) if cos_c is not None and cos_r is not None else None)
-        euclidean.append((euc_c, euc_r) if euc_c is not None and euc_r is not None else None)
-
-    plot = cost_quality_plot(labels, cosine, euclidean, cos_color=_COS, euc_color=_EUC)
-    base = out or table_path.parent
-    bus = LogDispatcher()
-    bus.subscribe(FilesystemFigureSubscriber(base))
-    bus.publish(LogBundle.from_dict({"figure/cost_quality": plot}))
-    logger.info("Cost-quality figure (%d datasets) -> %s/cost_quality.%s", len(datasets), base, fmt)
-
-
 def _parse_render_args(argv: list[str], key: str) -> tuple[Path, str, Path | None] | None:
     """Parse `key=<path> [format=..] [out=..]` from argv; None if `key` is absent."""
     if not any(a.startswith(f"{key}=") for a in argv):
@@ -597,7 +556,6 @@ def main():
     """Main entry point for plot rendering."""
     argv = sys.argv[1:]
     special = (
-        ("cost_quality", _render_cost_quality),
         ("cost_model", _render_cost_model),
     )
     for key, render_fn in special:

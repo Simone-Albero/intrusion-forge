@@ -32,7 +32,7 @@ from src.core.log import (
 from src.core.paths import OutputPaths
 from pipelines import paths_from_cfg
 from src.core.utils import flush_timing, load_from_json, skip_if_exists, timed
-from src.core.io import load_listed_dfs
+from src.core.io import load_listed_dfs, save_df
 from src.domain.analysis.explain import kernel_shap_values, summarize_background
 from src.domain.analysis.selective_prediction import entropy_risk, margin_risk, mcp_risk
 from src.domain.data.preprocessing import random_undersample_df, subsample_df
@@ -251,6 +251,31 @@ def _evaluate_predictions(
             "by_class": cluster_errors_by_class,
         },
     }
+
+
+def _per_sample_scores(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    y_proba: np.ndarray,
+    clusters: np.ndarray,
+) -> pd.DataFrame:
+    """Per-sample risk readouts for the instance-level baseline comparison.
+
+    The risk columns (MCP/margin/entropy) are label-free confidence signals; `y_true`
+    and `y_pred` are stored only so downstream analysis can score accuracy--coverage,
+    never consumed by the methods themselves. `cluster` maps each sample to its region.
+    """
+    yp = np.asarray(y_proba)
+    return pd.DataFrame(
+        {
+            "cluster": np.asarray(clusters),
+            "y_true": np.asarray(y_true),
+            "y_pred": np.asarray(y_pred),
+            "mcp_risk": mcp_risk(yp),
+            "margin_risk": margin_risk(yp),
+            "entropy_risk": entropy_risk(yp),
+        }
+    ).astype({"mcp_risk": "float32", "margin_risk": "float32", "entropy_risk": "float32"})
 
 
 def _build_test_figures(
@@ -515,12 +540,15 @@ def _publish_evaluation(
     eval_mode: str,
     suffix: str = "",
     embedding: np.ndarray | None = None,
+    predictions_dir: Path | None = None,
 ) -> None:
     """Build metrics, confusion matrix and figures from predictions, then publish.
 
     Shared by the single-split and k-fold OOF paths; `eval_mode` marks the artifacts
     (`single_split` / `oof_kfold`). `embedding` (single-split only) drives the
-    optional latent projection — fold embeddings are not comparable.
+    optional latent projection — fold embeddings are not comparable. When
+    `predictions_dir` is given and clusters exist, a per-sample risk table is dumped
+    for the instance-level baseline comparison.
     """
     full_metrics = {**_compute_classification_metrics(y_true, y_pred), "eval_mode": eval_mode}
     pred_infos = {**_evaluate_predictions(y_true, y_pred, y_proba, clusters), "eval_mode": eval_mode}
@@ -528,6 +556,11 @@ def _publish_evaluation(
     figures = _build_test_figures(
         X_np, y_true, y_pred, df_meta["label_mapping"], embedding=embedding
     )
+    if predictions_dir is not None and clusters is not None:
+        save_df(
+            _per_sample_scores(y_true, y_pred, y_proba, clusters),
+            predictions_dir / f"test_samples{suffix}.parquet",
+        )
     bus.publish(
         LogBundle.from_dict(
             _with_suffix(
@@ -644,6 +677,7 @@ def _evaluate_stage(
     _publish_evaluation(
         bus, df_meta, test_df[feat_cols].to_numpy(), y_true, y_pred, y_proba, clusters,
         eval_mode="single_split", suffix=suffix, embedding=embedding,
+        predictions_dir=paths.outputs / "analysis/predictions",
     )
 
 
@@ -733,6 +767,7 @@ def _evaluate_kfold_stage(
     _publish_evaluation(
         bus, df_meta, base[feat_cols].to_numpy(), y_true, y_pred, y_proba, clusters,
         eval_mode="oof_kfold",
+        predictions_dir=paths.outputs / "analysis/predictions",
     )
     logger.info("k-fold OOF evaluation: %d samples over %d folds", len(base), f + 1)
 

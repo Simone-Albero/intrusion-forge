@@ -1,5 +1,5 @@
 import numpy as np
-from scipy.stats import spearmanr
+from scipy.stats import rankdata, spearmanr
 
 
 def mcp_risk(y_proba: np.ndarray) -> np.ndarray:
@@ -277,4 +277,155 @@ def selective_recall_metrics(
         "oracle_benefit_recovered": _recovered(
             s["at_target_predictor"], s["at_target_oracle"], global_macro_recall
         ),
+    }
+
+
+def instance_risk_scores(
+    mcp_sample: np.ndarray,
+    region: np.ndarray,
+    cluster: np.ndarray,
+) -> dict[str, np.ndarray]:
+    """Per-sample risk scores for the instance-level baseline comparison (higher = riskier).
+
+    `region` is the geometric predictor's rate for each sample's cluster. `mcp_cluster`
+    averages MCP within each region (the cluster-level baseline). The two `combo_*`
+    fuse geometry and confidence: rank-average, and region-primary with per-sample MCP
+    as an intra-region tie-break (region sets the level, MCP orders within it).
+    """
+    mcp_sample = np.asarray(mcp_sample, dtype=float)
+    region = np.asarray(region, dtype=float)
+    cluster = np.asarray(cluster)
+
+    mcp_cluster = np.empty_like(mcp_sample)
+    for c in np.unique(cluster):
+        m = cluster == c
+        mcp_cluster[m] = mcp_sample[m].mean()
+
+    n = mcp_sample.size
+    mcp_frac = rankdata(mcp_sample) / (n + 1)
+    combo_rankavg = rankdata(region) / (n + 1) + mcp_frac
+    combo_within = (rankdata(region, method="dense") - 1) + mcp_frac
+    return {
+        "mcp_sample": mcp_sample,
+        "mcp_cluster": mcp_cluster,
+        "region": region,
+        "combo_rankavg": combo_rankavg,
+        "combo_within": combo_within,
+    }
+
+
+def atc_threshold(confidence: np.ndarray, correct: np.ndarray) -> float:
+    """Average Thresholded Confidence cut (Garg et al. 2022).
+
+    The confidence value where the number of samples below it equals the number of
+    misclassified samples in the calibration set (balancing wrong-above vs correct-below).
+    `confidence` is higher-is-more-confident (e.g. max softmax, or negative entropy).
+    """
+    order = np.argsort(np.asarray(confidence, dtype=float), kind="stable")
+    conf_sorted = np.asarray(confidence, dtype=float)[order]
+    correct_sorted = np.asarray(correct).astype(bool)[order]
+    fp = float((~correct_sorted).sum())  # wrong still above the cut
+    fn = 0.0                             # correct already below the cut
+    best_gap, thr = abs(fp - fn), conf_sorted[0]
+    for i in range(conf_sorted.size):
+        if correct_sorted[i]:
+            fn += 1
+        else:
+            fp -= 1
+        if abs(fp - fn) < best_gap:
+            best_gap, thr = abs(fp - fn), conf_sorted[i]
+    return float(thr)
+
+
+def atc_cluster_risk(
+    confidence: np.ndarray,
+    correct: np.ndarray,
+    cluster: np.ndarray,
+) -> np.ndarray:
+    """ATC adapted to the cluster level: each cluster's fraction of samples below the
+    global ATC threshold (its predicted failure rate), broadcast back to its samples.
+
+    A region-level risk distinct from the mean confidence, because a fraction-below-threshold
+    depends on the intra-cluster confidence distribution, not just its mean.
+    """
+    confidence = np.asarray(confidence, dtype=float)
+    below = (confidence < atc_threshold(confidence, correct)).astype(float)
+    cluster = np.asarray(cluster)
+    out = np.empty_like(below)
+    for c in np.unique(cluster):
+        m = cluster == c
+        out[m] = below[m].mean()
+    return out
+
+
+def block_bootstrap_instance(
+    scores: dict[str, np.ndarray],
+    failure: np.ndarray,
+    cluster: np.ndarray,
+    *,
+    reference: str = "mcp_sample",
+    coverage_target: float = 0.8,
+    n_resamples: int = 1000,
+    alpha: float = 0.05,
+    random_state: int = 0,
+) -> dict:
+    """Paired cluster-block bootstrap of oracle-benefit-recovered for each per-sample score.
+
+    Resamples whole clusters with replacement (samples within a cluster move together,
+    respecting their correlation — a per-sample bootstrap would badly understate the
+    variance), reusing the same resample across scores so the differences against
+    `reference` reflect paired variation. Support is 1 per sample (instance level).
+    """
+    failure = np.asarray(failure, dtype=float)
+    cluster = np.asarray(cluster)
+    groups = {c: np.where(cluster == c)[0] for c in np.unique(cluster)}
+    keys = list(groups)
+    rng = np.random.default_rng(random_state)
+    names = list(scores)
+    draws = {name: np.full(n_resamples, np.nan) for name in names}
+
+    for b in range(n_resamples):
+        pick = rng.integers(0, len(keys), size=len(keys))
+        idx = np.concatenate([groups[keys[k]] for k in pick])
+        a = failure[idx]
+        if a.std() < 1e-12:
+            continue
+        s = np.ones(idx.size)
+        global_accuracy = 1.0 - a.mean()
+        cov_o, acc_o = risk_coverage_curve(a, a, s)
+        for name in names:
+            cov_p, acc_p = risk_coverage_curve(scores[name][idx], a, s)
+            summary = _curve_summary(cov_p, acc_p, cov_o, acc_o, coverage_target)
+            draws[name][b] = _recovered(
+                summary["at_target_predictor"], summary["at_target_oracle"], global_accuracy
+            )
+
+    def _ci(d: np.ndarray) -> dict:
+        d = d[~np.isnan(d)]
+        if d.size == 0:
+            return {"mean": float("nan"), "ci_low": float("nan"), "ci_high": float("nan")}
+        return {
+            "mean": float(np.mean(d)),
+            "ci_low": float(np.quantile(d, alpha / 2)),
+            "ci_high": float(np.quantile(d, 1 - alpha / 2)),
+        }
+
+    per_score = {name: {"oracle_benefit_recovered": _ci(draws[name])} for name in names}
+    vs_reference = {}
+    for name in names:
+        if name == reference:
+            continue
+        diff = _ci(draws[name] - draws[reference])
+        vs_reference[name] = {
+            "oracle_diff": diff,
+            "significant": bool(
+                not np.isnan(diff["ci_low"]) and not (diff["ci_low"] <= 0 <= diff["ci_high"])
+            ),
+        }
+    return {
+        "reference": reference,
+        "n_resamples": n_resamples,
+        "alpha": alpha,
+        "per_score": per_score,
+        "vs_reference": vs_reference,
     }

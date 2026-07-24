@@ -68,8 +68,6 @@ DL_CLASSIFIERS_MIXED     := tabular
 DL_CLASSIFIERS_NUMERICAL := numerical
 
 DATASET_FORMATS := \
-    seeds:numerical \
-    parkinsons:numerical \
     statlog_landsat_satellite:numerical \
     thyroid_disease:numerical \
     letter_recognition:numerical \
@@ -79,7 +77,7 @@ DATASET_FORMATS := \
     ton_iot_v2:mixed \
     cic_2018_v2:mixed \
     bot_iot_v2:mixed \
-#    synthetic_test:mixed
+   synthetic_test:mixed
 
 # Datasets too large for k-fold evaluation (millions of rows → hours per classifier).
 # kfold=false is injected automatically for these; override with kfold=true if needed.
@@ -90,6 +88,10 @@ HYDRA       := data=$(DATA) name=$(NAME) seed=$(SEED) classifier=$(CLASSIFIER) \
 FORCE_FLAG  := $(if $(FORCE),prepare.force=true complexity.force=true,)
 EXTEND_FLAGS := $(if $(LABELFREE),extend.generate=true extend.labelfree=true,$(if $(EXTEND),extend.generate=true,))
 KFOLD_FLAG  := $(if $(filter $(DATA),$(LARGE_DATASETS)),kfold=false,)
+# STAGE=testing runs inference only (loads saved models, no retrain), used to dump
+# per-sample test confidences for the instance-level baseline comparison.
+STAGE       ?=
+STAGE_FLAG  := $(if $(STAGE),stage=$(STAGE),)
 
 # Cost analysis. `cost-model` characterises the k-NN build cost for one dataset over both
 # distances × COST_SEEDS: α (≈2, Θ(m²)) gets a confidence interval across seeds, while c
@@ -105,15 +107,19 @@ EXPERIMENTS_DIR ?= resources/experiments
 SWEEP_DIR       ?= paper/exp
 FIGURES_DIR     ?= paper/figures
 
-.PHONY: prepare classify classify-extended extend complexity failure-classify render sweep-results run cost-model cost-summary cost-aggregate generate dashboard help
+.PHONY: prepare classify classify-extended extend complexity failure-classify render sweep-results run infer sweep-infer cost-model cost-summary cost-aggregate generate dashboard help
 
 ## prepare:            Step 1 — preprocess raw CSV → parquet splits           (DATA, NAME, SEED, FORCE)
 prepare:
 	PYTHONPATH=. $(PYTHON) pipelines/prepare_data.py $(HYDRA) $(FORCE_FLAG)
 
-## classify:           Step 2 — train & evaluate one classifier (ML or DL)    (DATA, NAME, SEED, CLASSIFIER)
+## classify:           Step 2 — train & evaluate one classifier (ML or DL)    (DATA, NAME, SEED, CLASSIFIER, STAGE)
 classify:
-	PYTHONPATH=. $(PYTHON) pipelines/classify.py $(HYDRA) $(KFOLD_FLAG)
+	PYTHONPATH=. $(PYTHON) pipelines/classify.py $(HYDRA) $(KFOLD_FLAG) $(STAGE_FLAG)
+
+## infer:              Inference only (loads saved model) → dump per-sample test confidences  (DATA, NAME, SEED, CLASSIFIER)
+infer:
+	PYTHONPATH=. $(PYTHON) pipelines/classify.py $(HYDRA) $(KFOLD_FLAG) stage=testing
 
 ## classify-extended:  Step 2b — train classifier on complexity-extended features + SHAP  (DATA, NAME, SEED, CLASSIFIER)
 classify-extended:
@@ -146,7 +152,7 @@ render:
 ## sweep-results:      Aggregate the experiment tree into cross-run paper figures + result tables  (SWEEP_DIR, FIGURES_DIR)
 sweep-results:
 	PYTHONPATH=. $(PYTHON) pipelines/sweep_results.py sweep=$(SWEEP_DIR) out=$(FIGURES_DIR)
-	@echo ""; echo "sweep-results done -> $(FIGURES_DIR)/{rho_by_config,rho_vs_clusters,family_importance,selective_sweep}.pdf + $(SWEEP_DIR)/{perconfig,nclusters,perclf_perdataset,selective}_table.json"
+	@echo ""; echo "sweep-results done -> $(FIGURES_DIR)/{rho_by_config,rho_vs_clusters,family_importance,gain_by_algo,selective_stability,instance_gain,cost_quality_*}.pdf + $(SWEEP_DIR)/{perconfig,nclusters,perclf_perdataset,selective,selective_by_clf,instance}_table.json"
 
 ## run:                Whole flow — fix passed vars, iterate the rest (DATA?, CLASSIFIER?, CLUSTERING?)  (NAME, SEED, DISTANCE, FORCE, EXTEND)
 run:
@@ -225,6 +231,53 @@ run:
 	@echo ""
 	@echo "Done."
 
+## sweep-infer:        Re-run inference (testing) + failure-classify over the tree → per-sample dumps + instance baselines  (NAME, SEED, DISTANCE, CLUSTERING?, DATA?, CLASSIFIER?)
+sweep-infer:
+	@data_given="$(DATA_GIVEN)"; \
+	clf_given="$(CLF_GIVEN)"; \
+	clu_given="$(CLUSTER_GIVEN)"; \
+	requested_data="$(DATA)"; \
+	requested_clf="$(CLASSIFIER)"; \
+	if [ -n "$$clu_given" ]; then clu_list="$(CLUSTERING)"; else clu_list="$(CLUSTERING_ALGOS)"; fi; \
+	if [ -n "$$data_given" ]; then \
+		pairs=""; \
+		for entry in $(DATASET_FORMATS); do \
+			ds=$${entry%%:*}; \
+			if [ "$$ds" = "$$requested_data" ]; then pairs="$$entry"; break; fi; \
+		done; \
+		if [ -z "$$pairs" ]; then echo "ERROR: DATA='$$requested_data' not in DATASET_FORMATS."; exit 1; fi; \
+	else \
+		pairs="$(DATASET_FORMATS)"; \
+	fi; \
+	for clu in $$clu_list; do \
+		if [ -n "$$clu_given" ]; then name="$(NAME)"; else name="$(NAME)_$$clu"; fi; \
+		echo ""; echo "### sweep-infer  CLUSTERING=$$clu  name=$$name"; \
+		for entry in $$pairs; do \
+			ds=$${entry%%:*}; fmt=$${entry##*:}; \
+			if [ -n "$$clf_given" ]; then \
+				skip=""; \
+				if [ "$$requested_clf" = "tabular" ]   && [ "$$fmt" != "mixed" ];     then skip=1; fi; \
+				if [ "$$requested_clf" = "numerical" ] && [ "$$fmt" != "numerical" ]; then skip=1; fi; \
+				if [ -n "$$skip" ]; then echo "skip: $$requested_clf not compatible with $$ds ($$fmt)"; continue; fi; \
+				clf_list="$$requested_clf"; \
+			elif [ "$$fmt" = "mixed" ]; then \
+				clf_list="$(ML_CLASSIFIERS) $(DL_CLASSIFIERS_MIXED)"; \
+			else \
+				clf_list="$(ML_CLASSIFIERS) $(DL_CLASSIFIERS_NUMERICAL)"; \
+			fi; \
+			for clf in $$clf_list; do \
+				echo "── infer+failure: $$ds / $$clf ($$clu)"; \
+				$(MAKE) --no-print-directory infer \
+					DATA=$$ds NAME=$$name SEED=$(SEED) CLASSIFIER=$$clf \
+					CLUSTERING=$$clu DISTANCE=$(DISTANCE) || exit 1; \
+				$(MAKE) --no-print-directory failure-classify \
+					DATA=$$ds NAME=$$name SEED=$(SEED) CLASSIFIER=$$clf \
+					CLUSTERING=$$clu DISTANCE=$(DISTANCE) || exit 1; \
+			done; \
+		done; \
+	done
+	@echo ""; echo "sweep-infer done → test_samples.parquet + instance_baselines.json per run. Now: make sweep-results."
+
 ## cost-model:         Deliverable A — k-NN build cost model T(m)=c·m^α over 2 distances × COST_SEEDS for one dataset  (DATA, NAME, COST_SEEDS, COST_CLF)
 cost-model:
 	@for dist in cosine euclidean; do \
@@ -247,11 +300,10 @@ cost-summary:
 	@PYTHONPATH=. $(PYTHON) pipelines/cost_sweep.py summary=$(EXPERIMENTS_DIR)
 	@echo ""; echo "cost-summary done -> $(EXPERIMENTS_DIR)/cost_model_summary.json."
 
-## cost-aggregate:     Deliverable B — cross-run cost↔quality table + figure (ρ vs cluster count vs build time) from finished runs  (EXPERIMENTS_DIR, FIGURES_DIR)
+## cost-aggregate:     Deliverable B — cross-run cost↔quality table (ρ vs cluster count vs build time) from finished runs  (EXPERIMENTS_DIR). The cost_quality figure is now part of `make sweep-results`.
 cost-aggregate:
 	@PYTHONPATH=. $(PYTHON) pipelines/cost_sweep.py aggregate=$(EXPERIMENTS_DIR)
-	PYTHONPATH=. $(PYTHON) pipelines/render_plots.py cost_quality=$(EXPERIMENTS_DIR) out=$(FIGURES_DIR)
-	@echo ""; echo "cost-aggregate done -> $(EXPERIMENTS_DIR)/cost_quality_table.json + $(FIGURES_DIR)/cost_quality.pdf"
+	@echo ""; echo "cost-aggregate done -> $(EXPERIMENTS_DIR)/cost_quality_table.json"
 
 ## generate:           Generate synthetic test dataset                        (ROWS)
 generate:
