@@ -295,6 +295,7 @@ _INSTANCE_METHODS = [
     ("region", "Predictor (region)"),
     ("combo_rankavg", "Region+MCP (rank-avg)"),
     ("combo_within", "Region+MCP (within)"),
+    ("combo_atc_rankavg", "Region+ATC (rank-avg)"),
 ]
 
 
@@ -321,7 +322,7 @@ def _fig_instance_gain(runs: list[dict]) -> Plot | None:
                 acc[key].append(100.0 * v)
     if not any(acc.values()):
         return None
-    palette = [PALETTE[i % len(PALETTE)] for i in (3, 4, 5, 0, 1, 2)]
+    palette = [PALETTE[i % len(PALETTE)] for i in (3, 4, 5, 0, 1, 2, 6)]
     labels, values, colors = [], [], []
     for (key, label), color in zip(_INSTANCE_METHODS, palette):
         labels.append(label)
@@ -619,7 +620,10 @@ def _table_instance(runs: list[dict]) -> dict:
             key: inst["scores"].get(key, {}).get("oracle_benefit_recovered")
             for key, _ in _INSTANCE_METHODS
         }
-        if any(v is None or np.isnan(v) for v in vals.values()):
+        # A run qualifies on the core variants; newer additions (e.g. combo_atc_rankavg)
+        # may be absent in older runs and are aggregated per-key over whoever carries them.
+        core = ("mcp_sample", "region", "combo_within")
+        if any(vals[k] is None or np.isnan(vals[k]) for k in core):
             continue
         spear = {
             key: inst["scores"].get(key, {}).get("spearman")
@@ -638,7 +642,11 @@ def _table_instance(runs: list[dict]) -> dict:
     if not rows:
         return {"n_runs": 0}
 
-    median = {key: float(np.median([row[key] for row in rows])) for key, _ in _INSTANCE_METHODS}
+    median = {
+        key: float(np.median([row[key] for row in rows if row.get(key) is not None]))
+        for key, _ in _INSTANCE_METHODS
+        if any(row.get(key) is not None for row in rows)
+    }
     median_spearman = {
         key: float(np.nanmedian([row["spearman"][key] for row in rows if row["spearman"].get(key) is not None]))
         for key, _ in _INSTANCE_METHODS

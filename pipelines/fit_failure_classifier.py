@@ -576,6 +576,13 @@ def _instance_baselines(
     # cluster adaptation joins the ranking comparison; ATC's per-sample accuracy estimate
     # goes to the calibration block below.
     scores["atc_cluster"] = atc_cluster_risk(confidence, correct, cluster)
+    # Region fused with ATC instead of raw MCP: the rank-average counterpart of
+    # `combo_rankavg` (region + MCP), pairing geometry with ATC's cluster-level accuracy
+    # estimate — expected to help where the classifier is well calibrated and ATC is strong.
+    n = failure.size
+    scores["combo_atc_rankavg"] = (
+        rankdata(scores["region"]) / (n + 1) + rankdata(scores["atc_cluster"]) / (n + 1)
+    )
 
     support = np.ones(failure.size)
     point = {
