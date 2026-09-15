@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from src.core.factory import Factory, discover_and_import_modules
+
 from .base import BaseModel
 
 DLClassifierFactory = Factory[BaseModel](component_type_name="dl_classifier")

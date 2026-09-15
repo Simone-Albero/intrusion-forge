@@ -1,4 +1,4 @@
-from torch import nn, Tensor
+from torch import Tensor, nn
 
 
 class BaseLoss(nn.Module):
@@ -11,6 +11,7 @@ class BaseLoss(nn.Module):
         self.reduction = reduction
 
     def _reduce(self, loss: Tensor) -> Tensor:
+        """Apply the configured reduction."""
         if self.reduction == "mean":
             return loss.mean()
         if self.reduction == "sum":
@@ -18,4 +19,5 @@ class BaseLoss(nn.Module):
         return loss
 
     def forward(self, out: Tensor, **extras) -> Tensor:
+        """Compute the loss; implemented by subclasses."""
         raise NotImplementedError

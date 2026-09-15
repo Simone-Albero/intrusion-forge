@@ -1,6 +1,5 @@
 from collections.abc import Callable, Sequence
 
-
 from torch import Tensor, nn
 
 
@@ -33,6 +32,7 @@ class MLPModule(nn.Module):
         self._init_weights()
 
     def _init_weights(self) -> None:
+        """Xavier-initialise the linear layers."""
         for m in self.modules():
             if isinstance(m, nn.Linear):
                 nn.init.xavier_uniform_(m.weight)
@@ -40,4 +40,5 @@ class MLPModule(nn.Module):
                     nn.init.zeros_(m.bias)
 
     def forward(self, x: Tensor) -> Tensor:
+        """Run the feedforward stack."""
         return self.net(x)

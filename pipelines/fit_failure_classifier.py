@@ -11,15 +11,15 @@ from sklearn.metrics import mean_absolute_error, r2_score
 from sklearn.model_selection import GridSearchCV, KFold, StratifiedKFold
 from tqdm import tqdm
 
+from pipelines import paths_from_cfg
 from src.core.config import load_config, save_config, to_container
+from src.core.io import load_df
 from src.core.log import (
     JSONSubscriber,
     LogBundle,
     LogDispatcher,
     setup_logger,
 )
-from pipelines import paths_from_cfg
-from src.core.io import load_df
 from src.core.utils import flush_timing, load_from_json, timed
 from src.domain.analysis.selective_prediction import (
     atc_cluster_risk,
@@ -71,7 +71,9 @@ def _run_outer_fold(
     return {
         "r2": float(r2_score(y_test, y_pred)) if len(y_test) > 1 else float("nan"),
         "mae": float(mean_absolute_error(y_test, y_pred)),
-        "spearman": float(spearmanr(y_pred, y_test).statistic) if has_variance else float("nan"),
+        "spearman": (
+            float(spearmanr(y_pred, y_test).statistic) if has_variance else float("nan")
+        ),
         "importances": best.feature_importances_,
         "y_pred": y_pred.tolist(),
         "indices": X_test.index.tolist(),
@@ -79,14 +81,7 @@ def _run_outer_fold(
 
 
 def _rank_normalize_within_fold(values: np.ndarray, fold_ids: np.ndarray) -> np.ndarray:
-    """Percentile-rank `values` within each fold, onto a common [0, 1] range.
-
-    Each outer fold fits an independent model, so raw OOF values pooled across
-    folds can carry a fold-specific scale/offset that scrambles the global
-    ranking even when each fold's own order is fine. Rank-normalizing within a
-    fold keeps that fold's relative order intact while removing the cross-fold
-    scale mismatch before pooling.
-    """
+    """Percentile-rank `values` within each fold, removing cross-fold scale mismatch."""
     out = np.empty_like(values, dtype=float)
     for f in np.unique(fold_ids):
         mask = fold_ids == f
@@ -100,8 +95,7 @@ def _rank_normalize_within_fold(values: np.ndarray, fold_ids: np.ndarray) -> np.
 
 
 def _quantile_strata(y: pd.Series, q: int) -> pd.Series | None:
-    """Integer quantile-bin codes of the continuous target for stratified folding
-    (None if the target can't be binned into at least two groups)."""
+    """Quantile-bin codes of the continuous target, or None if it yields fewer than two bins."""
     try:
         bins = pd.qcut(y, q=min(q, len(y)), duplicates="drop")
     except (ValueError, IndexError):
@@ -116,7 +110,7 @@ def build_cluster_summary(
     class_complexity: dict,
     predictions: dict,
 ) -> dict:
-    """Merge per-cluster and class-level complexity (joined on the cluster's class) with per-classifier failure rates."""
+    """Merge per-cluster and class-level complexity with the observed failure rates."""
     cluster_errors = predictions.get("clusters", {}).get("global", {}) or {}
     summary: dict[str, dict] = {}
     for cid, cluster_measures in complexity.items():
@@ -203,23 +197,12 @@ def _run_nested_cv(
 
 
 def _aggregate_oof_results(oof: dict, feature_cols: list[str]) -> dict:
-    """Aggregate out-of-fold predictions into the published regression-metrics block.
-
-    `spearman` (pooled) ranks all OOF predictions together across folds; each fold's
-    own model is fit independently, so a pooled rho notably below the per-fold mean
-    signals a cross-fold scale mismatch (fold A's regressor systematically over/under-
-    predicting relative to fold B) rather than a genuinely weaker model.
-    """
+    """Aggregate out-of-fold predictions into the published regression-metrics block."""
     y_true, y_pred = oof["y_true"], oof["y_pred"]
     mean_importances = np.mean(oof["fold_importances"], axis=0)
-    # headline metric: rank correlation between predicted and observed failure rate
     rho = spearmanr(y_pred, y_true)
     fold_spearmans = np.array(oof["fold_spearmans"], dtype=float)
 
-    # Alternative pooling: rank-normalize each fold's OOF predictions onto a common
-    # [0, 1] scale before pooling, removing any cross-fold scale mismatch while
-    # keeping each fold's own ordering intact. Compared against the raw pooled
-    # spearman above — not used as the default score, see fit_failure_classifier.
     rank_normalized_pred = _rank_normalize_within_fold(y_pred, oof["fold_ids"])
     rho_rank_norm = spearmanr(rank_normalized_pred, y_true)
 
@@ -229,10 +212,13 @@ def _aggregate_oof_results(oof: dict, feature_cols: list[str]) -> dict:
         "spearman_per_fold_mean": float(np.nanmean(fold_spearmans)),
         "spearman_per_fold_std": float(np.nanstd(fold_spearmans)),
         "spearman_per_fold": fold_spearmans.tolist(),
-        "spearman_pooled_vs_perfold_gap": float(rho.statistic - np.nanmean(fold_spearmans)),
+        "spearman_pooled_vs_perfold_gap": float(
+            rho.statistic - np.nanmean(fold_spearmans)
+        ),
         "spearman_rank_normalized": float(rho_rank_norm.statistic),
         "oof_predicted_rate_rank_normalized": {
-            str(cid): float(pred) for cid, pred in zip(oof["indices"], rank_normalized_pred)
+            str(cid): float(pred)
+            for cid, pred in zip(oof["indices"], rank_normalized_pred)
         },
         "r2": float(r2_score(y_true, y_pred)),
         "r2_std": float(np.nanstd(oof["fold_r2s"])),
@@ -248,11 +234,7 @@ def _aggregate_oof_results(oof: dict, feature_cols: list[str]) -> dict:
 
 
 def _failure_rate_distribution(rates: pd.Series) -> dict:
-    """Summary stats of the failure-rate distribution over the used clusters.
-
-    `pct_zero` flags zero-inflation: a target this skewed leaves the RF regressor
-    a needle-in-haystack problem regardless of clustering granularity.
-    """
+    """Summary stats of the failure-rate distribution over the used clusters."""
     if rates.empty:
         return {}
     quantiles = rates.quantile([0.25, 0.5, 0.75, 0.9])
@@ -281,16 +263,10 @@ def fit_failure_classifier(
     n_bootstrap: int = 2000,
     analysis_bus: LogDispatcher | None = None,
 ) -> dict:
-    """Nested-CV Random Forest predicting each cluster's failure rate from its separability features.
-
-    Clusters with no test samples or fewer than `min_test_support` are excluded
-    (unreliable rate); the outer CV loop yields unbiased out-of-fold predictions.
-    """
+    """Fit a nested-CV Random Forest predicting each cluster's failure rate from its features."""
     logger.info("Running failure classifier ...")
     df = pd.DataFrame.from_dict(cluster_stats, orient="index")
 
-    # Noise pseudo-clusters have no genuine geometry, so they are excluded from the
-    # meta-model; their test-support share is the coverage cost.
     is_noise = (
         df["is_noise_cluster"].fillna(0).astype(bool)
         if "is_noise_cluster" in df
@@ -377,9 +353,6 @@ def fit_failure_classifier(
             )
         return results
 
-    # Stratify the outer folds on quantile bins of the rate so each fold stays
-    # representative on small datasets; fall back to plain KFold when the rate
-    # can't be binned into >=2 groups.
     strata = _quantile_strata(y, n_outer_splits)
     if strata is not None:
         outer_k = _max_safe_splits(int(strata.value_counts().min()), n_outer_splits)
@@ -438,35 +411,23 @@ def fit_failure_classifier(
             rank_norm_recovers,
         )
 
-    # Selective prediction: reject high predicted-risk clusters → accuracy on the
-    # retained set, from support-weighted OOF predictions.
     support = df.loc[oof["indices"], "n_test"].astype(float).to_numpy()
     cluster_class = df.loc[oof["indices"], "cluster_class"].to_numpy()
     results["risk_coverage"] = selective_prediction_metrics(
         oof["y_pred"], oof["y_true"], support
     )
-    # Class-balanced view (macro-recall): exposes whether rejection sacrifices
-    # minority classes, the blind spot of pooled accuracy.
     results["selective_macro_recall"] = selective_recall_metrics(
         oof["y_pred"], oof["y_true"], support, cluster_class
     )
-    # Rank-normalized variant (see _rank_normalize_within_fold): same Oracle/Random
-    # denominators, ranking by within-fold percentile instead of the raw pooled
-    # prediction. Reported alongside risk_coverage, not in place of it.
     rank_normalized_pred = _rank_normalize_within_fold(oof["y_pred"], oof["fold_ids"])
     results["risk_coverage_rank_normalized"] = selective_prediction_metrics(
         rank_normalized_pred, oof["y_true"], support
     )
-    # Native-classifier-confidence baselines: same Oracle/Random denominators as the
-    # RF predictor above, ranking clusters by mean per-sample MCP/margin/entropy instead.
     baseline_scores = {
         name: df.loc[oof["indices"], name].astype(float).to_numpy()
         for name in ("mcp_risk", "margin_risk", "entropy_risk")
         if name in df.columns and df[name].notna().all()
     }
-    # `spearman` mirrors the RF predictor's pooled Spearman: how well ranking clusters by
-    # mean confidence recovers the observed failure-rate ranking, directly comparable to
-    # results["spearman"].
     results["confidence_baselines"] = {}
     for name, risk in baseline_scores.items():
         rho = spearmanr(risk, oof["y_true"])
@@ -478,9 +439,6 @@ def fit_failure_classifier(
                 risk, oof["y_true"], support, cluster_class
             ),
         }
-    # Bootstrap significance: resamples the existing OOF clusters (no re-training, no
-    # extra seeds) to get CIs and paired-difference tests of each confidence baseline
-    # against the RF predictor.
     results["significance"] = bootstrap_compare(
         {"predictor": oof["y_pred"], **baseline_scores},
         oof["y_true"],
@@ -505,7 +463,9 @@ def fit_failure_classifier(
         rc.get("oracle_benefit_recovered", float("nan")),
     )
     significant_vs = [
-        name for name, v in results["significance"]["vs_reference"].items() if v["lift_significant"]
+        name
+        for name, v in results["significance"]["vs_reference"].items()
+        if v["lift_significant"]
     ]
     if significant_vs:
         logger.info(
@@ -527,11 +487,7 @@ _INSTANCE_METRIC_KEYS = (
 def _cluster_stratified_subsample(
     cluster: np.ndarray, cap: int, rng: np.random.Generator
 ) -> np.ndarray:
-    """Indices of a per-cluster proportional subsample of size ~cap (all clusters kept).
-
-    Every cluster keeps at least one sample so the cluster-block bootstrap still resamples
-    the full set of clusters; only the per-cluster depth shrinks.
-    """
+    """Indices of a proportional subsample of size ~cap keeping at least one sample per cluster."""
     n = cluster.size
     if cap <= 0 or n <= cap:
         return np.arange(n)
@@ -553,36 +509,25 @@ def _instance_baselines(
     random_state: int,
     run_significance: bool = True,
 ) -> dict:
-    """Instance-level (per test sample) selective-prediction comparison, label-free.
-
-    Each method produces a per-sample risk; the geometric `region` risk broadcasts the
-    predictor's cluster rate (`predicted_rate`) to its samples, falling back to the mean
-    rate for clusters the meta-model dropped. `y_true`/`y_pred` enter only the accuracy
-    scoring, never the risk scores. When `run_significance`, a paired cluster-block bootstrap
-    over a per-cluster subsample capped at `max_bootstrap_samples` runs (point estimates
-    always use full data); otherwise the significance block is omitted.
-    """
+    """Compare per-sample selective-prediction risks: label-free scores against the region rate."""
     cluster = samples["cluster"].to_numpy()
-    failure = (samples["y_true"].to_numpy() != samples["y_pred"].to_numpy()).astype(float)
+    failure = (samples["y_true"].to_numpy() != samples["y_pred"].to_numpy()).astype(
+        float
+    )
     correct = 1.0 - failure
     mcp = samples["mcp_risk"].to_numpy(dtype=float)
     confidence = 1.0 - mcp
     fallback = float(np.mean(list(predicted_rate.values()))) if predicted_rate else 0.0
-    region = np.array([predicted_rate.get(str(c), fallback) for c in cluster], dtype=float)
+    region = np.array(
+        [predicted_rate.get(str(c), fallback) for c in cluster], dtype=float
+    )
 
     scores = instance_risk_scores(mcp, region, cluster)
-    # ATC adapted to the cluster level (Garg 2022): fraction of a cluster below the global
-    # confidence threshold. Per-sample ATC would rank identically to mcp_sample, so only the
-    # cluster adaptation joins the ranking comparison; ATC's per-sample accuracy estimate
-    # goes to the calibration block below.
     scores["atc_cluster"] = atc_cluster_risk(confidence, correct, cluster)
-    # Region fused with ATC instead of raw MCP: the rank-average counterpart of
-    # `combo_rankavg` (region + MCP), pairing geometry with ATC's cluster-level accuracy
-    # estimate — expected to help where the classifier is well calibrated and ATC is strong.
     n = failure.size
-    scores["combo_atc_rankavg"] = (
-        rankdata(scores["region"]) / (n + 1) + rankdata(scores["atc_cluster"]) / (n + 1)
-    )
+    scores["combo_atc_rankavg"] = rankdata(scores["region"]) / (n + 1) + rankdata(
+        scores["atc_cluster"]
+    ) / (n + 1)
 
     support = np.ones(failure.size)
     point = {
@@ -593,8 +538,6 @@ def _instance_baselines(
         }
         for name, sc in scores.items()
     }
-    # Cluster-level Spearman per variant: rank clusters by the variant's per-cluster score
-    # against the observed failure rate — the same rho the paper reports for the predictor.
     clusters = np.unique(cluster)
     observed = np.array([failure[cluster == c].mean() for c in clusters], dtype=float)
     for name, sc in scores.items():
@@ -609,9 +552,9 @@ def _instance_baselines(
         sub = _cluster_stratified_subsample(
             cluster, max_bootstrap_samples, np.random.default_rng(random_state)
         )
-        # combo_within tracks region almost exactly (redundant), so it keeps its point
-        # estimate but stays out of the bootstrap — one fewer curve per resample.
-        boot_scores = {name: sc[sub] for name, sc in scores.items() if name != "combo_within"}
+        boot_scores = {
+            name: sc[sub] for name, sc in scores.items() if name != "combo_within"
+        }
         significance = block_bootstrap_instance(
             boot_scores,
             failure[sub],
@@ -628,7 +571,9 @@ def _instance_baselines(
         "n_clusters": int(np.unique(cluster).size),
         "scores": point,
         "significance": significance,
-        "calibration": _instance_calibration(confidence, correct, failure, cluster, scores),
+        "calibration": _instance_calibration(
+            confidence, correct, failure, cluster, scores
+        ),
     }
 
 
@@ -639,12 +584,7 @@ def _instance_calibration(
     cluster: np.ndarray,
     scores: dict,
 ) -> dict:
-    """ATC on its own axis (rate estimation), at both granularities.
-
-    Per-sample: ATC's predicted accuracy vs the actual accuracy. Per-cluster: the squared
-    error of each method's predicted rate against the observed cluster failure rate — where
-    `region`, `mcp_cluster` and `atc_cluster` are all per-cluster rate estimates.
-    """
+    """Score ATC as a rate estimator: per-sample accuracy error and per-cluster rate MSE."""
     t = atc_threshold(confidence, correct)
     atc_accuracy = float((confidence >= t).mean())
     actual_accuracy = float(correct.mean())
@@ -668,8 +608,8 @@ def _instance_calibration(
     }
 
 
-def main():
-    """Main entry point for failure-classifier training (per-classifier stage)."""
+def main() -> None:
+    """Entry point for the failure-classifier stage."""
     cfg = load_config(
         config_path=Path(__file__).parent.parent / "configs",
         config_name="config",
@@ -681,9 +621,6 @@ def main():
     bus = LogDispatcher()
     bus.subscribe(JSONSubscriber(paths.outputs))
 
-    # Fast path: reuse the already-fitted predictor. The instance-level baselines only
-    # need `oof_predicted_rate`, which classifier_results.json already carries — so we
-    # skip the expensive nested-CV re-fit + bootstrap entirely on inference-only re-runs.
     results_path = paths.outputs / "analysis/classifier_results.json"
     if cfg.failure_classifier.reuse and results_path.exists():
         results = load_from_json(results_path)
@@ -706,7 +643,9 @@ def main():
             class_complexity,
             predictions,
         )
-        bus.publish(LogBundle.from_dict({"json/analysis/cluster_summary": cluster_summary}))
+        bus.publish(
+            LogBundle.from_dict({"json/analysis/cluster_summary": cluster_summary})
+        )
         logger.info("Cluster summary published.")
 
         results = fit_failure_classifier(
@@ -720,10 +659,12 @@ def main():
             analysis_bus=bus,
         )
 
-    # Instance-level baselines: only when the per-sample dump exists (produced by the
-    # classify testing stage) and the predictor actually ran.
     dump_path = paths.outputs / "analysis/predictions/test_samples.parquet"
-    if not results.get("skipped") and results.get("oof_predicted_rate") and dump_path.exists():
+    if (
+        not results.get("skipped")
+        and results.get("oof_predicted_rate")
+        and dump_path.exists()
+    ):
         instance = _instance_baselines(
             load_df(dump_path),
             results["oof_predicted_rate"],
@@ -739,7 +680,9 @@ def main():
             instance["n_clusters"],
         )
     else:
-        logger.info("Instance-level baselines skipped (no per-sample dump at %s).", dump_path)
+        logger.info(
+            "Instance-level baselines skipped (no per-sample dump at %s).", dump_path
+        )
 
     flush_timing(paths.outputs / "timing.json")
 

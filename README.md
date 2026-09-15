@@ -1,70 +1,20 @@
 # Intrusion Forge
 
-Tabular classification framework for network traffic — supports both classical ML (sklearn, XGBoost) and deep learning (PyTorch + Ignite) classifiers on cybersecurity datasets (UNSW-NB15, BoT-IoT, CIC-IDS-2018, ToN-IoT) and a handful of generic tabular benchmarks (Bank Marketing, Covertype, Letter Recognition, Statlog Landsat Satellite, Thyroid Disease).
+A framework for finding out **where** a trained classifier fails, and **why**, without needing labelled test data for the regions in question.
 
-The pipeline covers data preparation, classifier training, per-cluster complexity analysis, failure prediction, and plot rendering — all driven by a declarative Hydra configuration system.
+It divides a dataset into regions, describes each region by how it sits relative to the classes competing with it, and learns how those descriptions relate to the mistakes a classifier actually made. The result is an error-rate estimate for any region, including regions the framework has never seen, together with a ranking of the data properties that drive the risk.
 
----
+The estimate belongs to the model you point it at. It is fitted on that model's own errors, so it describes how *that* classifier copes with the shape of your data rather than how difficult the data is in the abstract. This makes it useful for identifying unreliable regions before you have the labels to prove they are unreliable, for deciding where to gather more data or review labels, and for monitoring a model after deployment.
 
-## Approach
+Everything is tabular and everything is driven by configuration: a dozen classifiers (scikit-learn, XGBoost, PyTorch), five ways of dividing the data into regions, configurations for the public network-security datasets, and a synthetic dataset that exercises the whole pipeline in about nine minutes.
 
-The framework tests a single hypothesis: **the geometric structure of the data space predicts classification failure before any classifier is trained** — regions where classes overlap in feature space are hard to separate regardless of the learning algorithm. The procedure is classifier-agnostic and runs in four sequential stages:
+## Quickstart — the synthetic demo
 
-1. **Intra-class clustering** — partition each class (train split only) into compact sub-regions via HDBSCAN; noise points collapse into a per-class pseudo-cluster.
-2. **Complexity measurement** — quantify each sub-region's separability against its top-K nearest adversarial partitions, at both cluster and class granularity.
-3. **Classifier training** — train an independent downstream classifier on the full dataset (the complexity vector carries no information from it).
-4. **Failure–complexity correlation** — a Random Forest regresses each cluster's failure rate on its complexity vector; the headline **Spearman ρ** measures whether geometry ranks clusters by risk correctly.
+`resources/` is not tracked by git, so a fresh clone carries no data. The synthetic generator is the only dataset that works out of the box, and the quickest way to see every stage run.
 
-Clustering is fit on train only; held-out samples are assigned a posteriori to the nearest training centroid within their own class, so the correlation measures how well train-derived geometry predicts failure on unseen points. Analysis runs primarily at the cluster level because classes are often multimodal (one class can occupy several geometrically distinct sub-regions); the class level is kept as a coarse-grained reference.
+### 1. Install
 
----
-
-## Project Structure
-
-```
-intrusion-forge/
-├── pipelines/                       # Pipeline entry points (Hydra-driven)
-│   ├── prepare_data.py              # Step 1 — preprocess raw CSV → parquet splits + per-class clustering
-│   ├── classify.py                  # Step 2 — train & evaluate one ML or DL classifier
-│   ├── compute_complexity.py        # Step 3a — per-cluster + per-class complexity (shared)
-│   ├── fit_failure_classifier.py    # Step 3b — Random Forest predicting cluster failure
-│   └── render_plots.py              # Step 4 — render figures from analysis artifacts
-├── generate_synthetic.py            # Generate the synthetic test dataset
-├── dashboard.py                     # Streamlit dashboard for browsing experiment outputs
-├── Makefile                         # Experiment runner (prepare / classify / complexity / …)
-│
-├── configs/                         # Hydra configuration hierarchy
-│   ├── config.yaml                  # Root config + global parameters
-│   ├── data/                        # Dataset definitions (columns, splits, filtering)
-│   ├── classifier/                  # ML and DL classifier configs
-│   ├── loops/                       # DL training/validation loop settings
-│   ├── loss/                        # DL loss functions (cross-entropy, focal)
-│   ├── optimizer/                   # DL optimizer configs
-│   ├── scheduler/                   # DL LR scheduler configs
-│   └── path/                        # Output path templates
-│
-├── src/                             # Pure library code (no cfg, no logger, no I/O)
-│   ├── core/                        # Config loading, factory, logging, I/O, paths, utilities
-│   ├── domain/                      # Domain logic
-│   │   ├── analysis/                # Complexity measures, separability, metadata
-│   │   ├── clustering/              # HDBSCAN clustering with grid search
-│   │   ├── data/                    # Preprocessing (cleaning, scaling, encoding, sampling)
-│   │   ├── plot/                    # Matplotlib helpers (charts, metrics, style)
-│   │   ├── training/                # ML and DL training loops
-│   │   └── projection.py            # t-SNE / UMAP projection
-│   ├── engine/                      # Classifier engines
-│   │   ├── dl/                      # PyTorch models, losses, datasets, Ignite engine
-│   │   └── ml/                      # sklearn / XGBoost models and preprocessing
-│   └── registries.py                # Factory registries (auto-imported)
-│
-└── resources/
-    ├── raw_data/                    # Input CSV files (one subdir per dataset family)
-    └── experiments/                 # Experiment outputs (per name/dataset/seed)
-```
-
----
-
-## Setup
+Python 3.12 recommended.
 
 ```bash
 python -m venv venv
@@ -72,275 +22,255 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-The pinned dependencies are in [requirements.txt](requirements.txt); the unpinned source list is in [requirements.in](requirements.in). All commands below assume the venv is active.
+Run everything from the repository root — Hydra resolves paths relative to it.
 
----
-
-## Input Data
-
-Place raw CSV files under `resources/raw_data/`. Each dataset config in [configs/data/](configs/data/) declares its label column, numerical/categorical feature columns, split fractions, and filtering rules. The raw CSV path is resolved automatically via:
-
-```
-resources/raw_data/${data.dir}/${data.file_name}.csv
-```
-
-### Synthetic Dataset
-
-A synthetic dataset is included for local testing without real data:
+### 2. Generate the dataset
 
 ```bash
-make generate              # default: ~69,500 rows
-make generate ROWS=50000
+make generate
 ```
 
-This writes `resources/raw_data/synthetic/synthetic_test.csv` and can be used immediately with `data=synthetic_test`. The dataset has 10 classes (~69 500 rows) designed to demonstrate the core hypothesis end-to-end: each attack class has canonical / medium / evasive sub-groups positioned at increasing distances toward the nearest adversarial class along the discriminating features — canonical at the class center (α=0.0), medium (α=0.5), evasive (α=0.8). HDBSCAN recovers the density peaks, complexity scores rank them correctly, and the classifier fails progressively more on the evasive sub-clusters (high Spearman ρ in Step 4). A `true_subgroup` column records the intended difficulty for post-hoc validation; it is not used by the pipeline.
+Writes `resources/raw_data/synthetic/synthetic_test.csv`: 69,500 rows, 10 classes, 20 numerical and 2 categorical features. `ROWS=30000` produces a smaller one.
 
----
+The dataset has a *known* difficulty gradient built into it ([described below](#inside-the-synthetic-dataset)), so you can tell whether the pipeline has recovered something real.
 
-## Configuration
+### 3. Run the pipeline
 
-The project uses [Hydra](https://hydra.cc/) (Compose API) for configuration management. The root config is [configs/config.yaml](configs/config.yaml) with these defaults:
-
-```yaml
-defaults:
-  - data: cic_2018_v2
-  - classifier: tabular
-  - loss: focal             # consumed only by DL classifiers
-  - optimizer: adamw        # consumed only by DL classifiers
-  - scheduler: one_cycle    # consumed only by DL classifiers
-  - loops: default          # consumed only by DL classifiers
-  - _self_
-  - path: default
+```bash
+make run DATA=synthetic_test NAME=demo CLASSIFIER=random_forest CLUSTERING=kmeans
 ```
 
-### Config Groups
+One command, five stages:
 
-| Group | Options | Description |
+| Stage | What it does | Time |
 |---|---|---|
-| `data` | `nb15_v2`, `bot_iot_v2`, `cic_2018_v2`, `cic_2018_f`, `ton_iot_v2`, `bank_marketing`, `covertype`, `letter_recognition`, `statlog_landsat_satellite`, `thyroid_disease`, `synthetic_test` | Dataset definition: columns, split ratios, filtering |
-| `classifier` | DL: `tabular`, `numerical`, `categorical` &nbsp;·&nbsp; ML: `decision_tree`, `random_forest`, `hist_gradient_boosting`, `xgboost`, `knn`, `lda`, `logistic_regression`, `naive_bayes`, `svm_rbf` | Classifier kind (`ml` / `dl`), name, hyperparameters, optional grid-search grid |
-| `clustering` | `hdbscan`, `kmeans`, `spectral`, `birch`, `kprototypes`, `ensemble` | Per-class clustering strategy and hyperparameter grids (`kprototypes` includes categorical features; GMM was evaluated and excluded for pathological fragmentation) |
-| `loss` | `cross_entropy`, `focal` | DL loss functions |
-| `optimizer` | `adamw` | DL optimizer settings |
-| `scheduler` | `one_cycle` | DL learning-rate scheduler |
-| `loops` | `default` | DL training loop (epochs, batch size, early stopping) |
-| `path` | `default` | Output directory template |
+| prepare | preprocess, split, divide each class into regions (1021 of them) | 20 s |
+| complexity | describe every region | 2 min |
+| classify | train and evaluate the Random Forest | 21 s |
+| failure-classify | fit the region → error-rate estimator | 5.5 min |
+| render | 28 figures | 5 s |
 
-### Key Global Parameters
-
-| Parameter | Default | Description |
-|---|---|---|
-| `seed` | `42` | Random seed for reproducibility (splits, clustering, CV, weight init) |
-| `name` | `exp` | Experiment name (component of the output path) |
-| `device` | `cpu` | Device for DL training (`cpu`, `cuda`) |
-| `stage` | `all` | DL only — which stages to run: `training`, `testing`, or `all` |
-| `n_samples` | `null` | Optional training set subsampling cap |
-| `balance` | `undersample` | Training-set class balancing at training time (`undersample` / `none`); persisted splits keep the original distribution |
-| `distance` | `cosine` | Single metric (`euclidean` / `cosine`) interpolated by both `clustering.distance` and `complexity.distance` — coherence is structural |
-| `kfold` | `true` | Classifier evaluation protocol: `true` = k-fold out-of-fold over train+test (one model per fold, saved under `models/fold_*`; metrics + per-cluster failure rates both come from the OOF predictions, `eval_mode: oof_kfold`); `false` = single held-out test split. Override to `false` on the largest datasets to skip the K× training cost |
-| `kfold_splits` | `5` | Number of OOF folds when `kfold=true` (capped to the rarest class count) |
-| `grid_search.enabled` | `false` | Enable sklearn `GridSearchCV` over `classifier.grid` (ML only) |
-| `prepare.force` | `false` | Re-run preprocessing + clustering even if shared outputs exist |
-| `complexity.k` | `30` | k for the shared k-NN graph |
-| `complexity.top_k_clusters` | `10` | Top-K nearest adversarial clusters per cluster |
-| `complexity.force` | `false` | Re-run complexity computation even if shared output exists |
-| `clustering.min_cluster_floor` | `5` | Clusters below this size are absorbed into the class pseudo-cluster; kept very low so the pseudo-cluster contains only genuine density outliers (statistical validity enforced downstream by `failure_classifier.min_test_support`) |
-| `clustering.target_cluster_size` | `25000` | Absolute cap on the split target: clusters above the effective target are split post-hoc with MiniBatchKMeans on the full cluster points |
-| `clustering.target_size_frac` | `0.05` | Makes the split target relative to dataset size: effective target = clamp(2·`min_cluster_floor`, `total_n`·frac, `target_cluster_size`). Small datasets get a lower ceiling (more, finer clusters); large datasets stay at the absolute cap |
-| `failure_classifier.min_test_support` | `5` | Clusters with fewer test samples are excluded from the failure dataset (their rate is too noisy to regress) |
-
-The full set of nested parameters (clustering grid, failure-classifier nested CV grid, plot caps) lives in [configs/config.yaml](configs/config.yaml).
-
-Any parameter can be overridden from the command line:
-
-```bash
-make classify DATA=bot_iot_v2 NAME=my_experiment SEED=123 CLASSIFIER=random_forest
-# or via Hydra directly:
-PYTHONPATH=. python pipelines/classify.py data=bot_iot_v2 name=my_experiment seed=123 classifier=random_forest
-```
-
----
-
-## Pipeline
-
-The pipeline has four steps, driven by [pipelines/](pipelines/) entry points or the [Makefile](Makefile). Outputs are organised under:
+The result appears at the end of `failure-classify`:
 
 ```
-resources/experiments/${name}/${data.file_name}_${seed}/
-├── processed_data/                  # train.parquet, val.parquet, test.parquet (shared)
-├── shared/                          # df_meta, clusters_meta, complexity & class_complexity metrics
-└── ${classifier.name}/              # per-classifier subtree
-    ├── configs/                     # resolved Hydra config snapshot
-    ├── models/                      # checkpoints / serialized estimators
-    ├── outputs/                     # JSON outputs (training, testing, analysis)
-    ├── pickle/                      # binary side artifacts (confusion matrices, …)
-    └── figures/                     # rendered PNGs
+Classifier results — Spearman: 0.9335, R²: 0.9196, MAE: 0.0342;
+selective acc@80%: 0.9425 (random 0.8507, oracle benefit recovered 0.99)
 ```
 
-### Step 1 — Data Preparation
+**Spearman ρ ≈ 0.93.** Across 1019 regions the estimated and observed error rates rank almost identically, measured on regions held back from the fitting. Expect a little drift in the third decimal between runs.
 
-```bash
-make prepare DATA=cic_2018_v2 NAME=my_exp
-```
+The second line is a check on that signal rather than the purpose of the framework. Abstaining on the riskiest 20 % of samples raises accuracy from 0.851 to 0.943, which is 99 % of what a perfect oracle would manage, whereas a random abstention of the same size gains nothing. Were the estimate merely tracking some general notion of difficult data rather than this model's own errors, that would not hold.
 
-Loads the raw CSV, applies preprocessing (NaN removal, rare category filtering, log-scaling, robust scaling, optional top-N hash encoding), runs a stratified train/val/test split, encodes labels, and runs per-class clustering (HDBSCAN by default, selectable via `clustering=`) to assign every sample a globally unique cluster id. HDBSCAN noise points are merged into a per-class pseudo-cluster; clusters above the effective size target are split post-hoc with MiniBatchKMeans. The persisted splits keep the original class distribution — balancing happens at training time (Step 2, `balance`).
+### 4. Read the results
 
-**Shared outputs (dataset-level):**
+Everything is written to `resources/experiments/demo/synthetic_test_42/`:
 
 ```
-processed_data/                      # train.parquet, val.parquet, test.parquet
-shared/
-├── df_info.json                     # basic DataFrame stats
-├── df_meta.json                     # label mapping, class weights, split sizes
-└── clusters_meta.json               # cluster ids per split, centroids, noise ids
+processed_data/                       # train / val / test parquet
+shared/                               # dataset-level, the same for every classifier
+├── complexity.json                   #   descriptors per region
+├── class_complexity.json             #   descriptors per class
+└── metadata/                         #   label map, split sizes, region centroids
+random_forest/
+├── outputs/testing/summary.json      # accuracy, macro F1, per-class metrics
+├── outputs/analysis/
+│   ├── cluster_summary.json          #   descriptors + observed error rate, per region
+│   ├── classifier_results.json       #   ρ, R², MAE, importances, selective metrics
+│   ├── instance_baselines.json       #   the same, for the classifier's own confidence
+│   └── predictions/                  #   per-sample predictions
+├── models/fold_0 … fold_4/           # one model per fold (~500 MB)
+└── figures/                          # 28 PDFs
 ```
 
-This step is idempotent: existing outputs are reused unless `prepare.force=true` (or `make ... FORCE=1`).
+The fold models account for ~500 MB of the ~540 MB the run occupies; delete `models/` once you have the metrics.
 
-### Step 2 — Classifier Training
-
-```bash
-make classify DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=random_forest
-make ml-all   DATA=cic_2018_v2 NAME=my_exp     # every ML classifier in turn
-make dl-all   DATA=cic_2018_v2 NAME=my_exp     # every DL classifier in turn
-```
-
-Trains and evaluates a single classifier (ML or DL, selected via the `classifier` config group), then writes per-class metrics and per-sample predictions used downstream by the failure classifier. The training split is balanced via random undersampling at load time (`balance=undersample`, the default); pass `balance=none` to train on the original distribution. By default (`kfold=true`) evaluation is **k-fold out-of-fold over train+test**: one model is trained per fold and saved under `models/fold_*`, and the reported metrics and per-cluster failure rates both come from the leakage-free OOF predictions (`eval_mode: oof_kfold`). Pass `kfold=false` for single held-out test-split evaluation (e.g. to skip the K× cost on the largest datasets). With `extend.generate=true` (or `make ... EXTEND=1`) the classifier is instead trained on the complexity-extended splits (`*_extended.parquet`, produced by Step 3a) and explained with SHAP — every artifact of this variant is written next to the base one with an `_extended` leaf-name suffix (`summary_extended.json`, `model_extended.joblib`, …). Its F1 is reported as "F1 extended (transductive)" and is **not comparable** with the base F1 as a measure of generalisation: because the cluster assignment is label-aware, the attached complexity vector acts as a per-cluster fingerprint (`fingerprint → cluster → class`, each cluster class-pure) that leaks the label. The score measures how completely the cluster structure encodes the label space — an upper bound, never a model improvement.
-
-**Per-classifier outputs:**
-
-```
-${classifier.name}/
-├── models/                          # checkpoint (DL) or serialized estimator (ML)
-├── outputs/
-│   ├── training/                    # training-set metrics (and predictions where applicable)
-│   ├── testing/                     # test-set metrics
-│   └── analysis/predictions/        # per-sample predictions + per-cluster failure rates
-└── configs/config_composed.json     # resolved Hydra config
-```
-
-For DL classifiers, the `stage` parameter controls execution: `training` (train only), `testing` (test only, requires existing checkpoint), or `all` (train + test). For ML classifiers, `grid_search.enabled=true` switches to `GridSearchCV` over `classifier.grid`.
-
-### Step 3a — Complexity Computation
-
-```bash
-make complexity DATA=cic_2018_v2 NAME=my_exp
-```
-
-Computes complexity measures at **two parallel partition levels** under a single neutral schema:
-
-- **Cluster-level** (`complexity.json`): each cluster aggregated against its top-K nearest adversarial clusters.
-- **Class-level** (`class_complexity.json`): each class aggregated against its top-K nearest adversarial classes.
-
-Both levels share the same Gower-style mixed-distance k-NN backbone (governed by the top-level `distance` key, the same metric used by the clustering) and the same five families. Each pairwise measure is reported as min (worst-case adversary) / mean / max over the top-K adversarial partitions:
-
-- **F — feature-based**: how well individual numerical features separate the partition (Fisher discriminant ratio, bounding-box and joint-feature overlap fractions).
-- **N — neighbourhood-based**: local class intermingling in the k-NN graph (MST boundary fraction, intra/inter distance ratio, 1-NN and k-NN majority-vote error rates).
-- **ND — network density**: fraction of k-NN edges crossing to an adversarial partition, plus clustering-coefficient and hubness proxies.
-- **T — dimensionality**: feature-to-sample and PCA-based intrinsic-dimensionality ratios (curse-of-dimensionality proxy).
-- **G — geometry**: dispersion, distance to nearest centroid, and silhouette-based risk fractions under `complexity.distance`.
-
-The two outputs are independent and can be compared row-wise.
-
-**Shared outputs:**
-
-```
-shared/
-├── complexity.json                  # per-cluster complexity vector
-└── class_complexity.json            # per-class complexity vector (same schema)
-```
-
-This step is dataset-level (classifier-independent) and idempotent: existing outputs are reused unless `complexity.force=true`.
-
-### Step 3b — Failure Classification
-
-```bash
-make failure-classify DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=random_forest
-```
-
-Builds a per-cluster summary by joining (a) the cluster-level complexity vector, (b) the class-level complexity vector of the cluster's class (`cluster_*` / `class_*` feature prefixes), and (c) the classifier's per-cluster failure rate (Step 2). A **Random Forest regressor** is then trained — with nested cross-validation (5 outer × 5 inner folds; outer folds stratified on quantile bins of the rate) — to predict each cluster's continuous failure rate from its complexity vector. Reports out-of-fold **Spearman ρ** (headline), **R²**, **MAE**, and feature importances.
-
-**Per-classifier outputs:**
-
-```
-${classifier.name}/outputs/analysis/
-├── cluster_summary.json             # complexity + failure rate per cluster
-└── failure_classifier_results.json  # nested-CV regression scores, feature importances, OOF predicted rates
-```
-
-### Step 4 — Plot Rendering
-
-```bash
-make render DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=random_forest
-```
-
-Renders figures from the JSON / pickle artifacts produced by the previous steps (confusion matrices, per-class F1, complexity distributions, the failure-regressor predicted-vs-observed scatter, failure–complexity scatters). All figures land under `${classifier.name}/figures/`.
-
-### Sweep Aggregation (Paper Results)
-
-```bash
-make sweep-results SWEEP_DIR=paper/exp FIGURES_DIR=paper/figures
-```
-
-`pipelines/sweep_results.py` aggregates an entire experiment sweep (many `data` × `classifier` × `clustering`/`distance` cells under `SWEEP_DIR`, as produced by `make run`) into the cross-run artifacts reported in the paper's Results section: the four figures (`rho_by_config`, `rho_vs_clusters`, `family_importance`, `selective_sweep`, written to `FIGURES_DIR`) and four JSON tables — Spearman ρ by clustering configuration, cluster count by configuration, Spearman ρ by classifier and by dataset, and selective-prediction lift by configuration at τ=0.8 — written back under `SWEEP_DIR` next to the raw per-run trees they were computed from.
-
-### Full Pipeline Shortcuts
-
-```bash
-make run DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=tabular       # prepare → classify → failure-classify → render
-make all NAME=my_exp                                            # every dataset, default classifier per dataset
-```
-
-The `all` target iterates over the `DATASET_CLASSIFIERS` list in the [Makefile](Makefile); override `SEED`, `DISTANCE` (`euclidean` / `cosine`), or add `FORCE=1` to recompute cached shared stages.
-
----
-
-## Dashboard
+### 5. Optional — browse in the dashboard
 
 ```bash
 make dashboard
 ```
 
-Launches a Streamlit dashboard ([dashboard.py](dashboard.py)) for browsing experiment outputs across datasets, classifiers, and seeds. The Overview heatmap includes the optional "F1 extended (transductive)" metric, and the drill-down shows the explain panel (extended metrics + SHAP beeswarm figures) for runs produced with `EXTEND=1`.
+A Streamlit application over `resources/experiments/`: choose a dataset, classifier and seed, compare runs in a heatmap, then examine one in detail.
 
----
+### Variations worth trying
 
-## Library Packages (`src/`)
+```bash
+# a deep-learning classifier (much slower: 12-15 min in the classify stage alone)
+make run DATA=synthetic_test NAME=demo_dl CLASSIFIER=tabular CLUSTERING=kmeans
 
-`src/` is a pure library — no `cfg`, no `logger`, no I/O. All side effects live in [pipelines/](pipelines/).
+# cosine instead of euclidean
+make run DATA=synthetic_test NAME=demo_cos CLASSIFIER=random_forest CLUSTERING=kmeans DISTANCE=cosine
 
-### `src/core`
+# a different clustering algorithm
+make run DATA=synthetic_test NAME=demo_birch CLASSIFIER=random_forest CLUSTERING=birch
 
-- **config.py** — `load_config`, `save_config`, `to_container` (Hydra Compose API)
-- **factory.py** — Generic `Factory[T]` with `@register` decorator; `discover_and_import_modules` for auto-registration
-- **log.py** — `setup_logger`, `LogBundle`, `LogDispatcher`, and subscribers (`JSONSubscriber`, `PickleSubscriber`, `FilesystemFigureSubscriber`)
-- **io.py** — Format-agnostic DataFrame I/O (`load_df`, `save_df`, `load_listed_dfs`) for CSV / Parquet / Pickle
-- **paths.py** — `OutputPaths` dataclass holding the resolved output layout
-- **utils.py** — JSON / pickle / joblib helpers, `timed` decorator, `flush_timing`, `skip_if_exists`
+# skip the bootstrap (fastest failure-classify)
+make failure-classify DATA=synthetic_test NAME=demo CLASSIFIER=random_forest NOSIG=1
+```
 
-### `src/domain`
+`prepare` and `complexity` are cached per `(NAME, dataset, seed)`, so changing classifier reuses them. `FORCE=1` recomputes them.
 
-- **data/preprocessing.py** — Cleaning (`drop_nans`, `rare_category_filter`, `query_filter`), splitting / sampling (`ml_split`, `random_undersample_df`, `subsample_df`), transformers (`LogTransformer`, `TopNHashEncoder`), `build_preprocessor`, `encode_labels`
-- **clustering/** — HDBSCAN clustering with grid search (`fit_hdbscan`, `grid_search`)
-- **analysis/metadata.py** — `compute_df_metadata`, `compute_clusters_metadata`, `get_df_info`
-- **analysis/separability.py** — Pairwise cluster separability scores
-- **analysis/complexity/** — F / N / ND / T / G complexity families (`feature`, `neighborhood`, `network`, `dimensionality`, `clusters`)
-- **projection.py** — t-SNE projection, stratified subsampling
-- **plot/** — `Plot` dataclass, charts (`bar_plot`, `line_plot`, `scatter_plot`, `heatmap_plot`, `ridgeline_plot`, `strip_plot`, `violin_plot`), metric plots (`confusion_matrix_plot`, `roc_plot`), shared palette and `style.py`
-- **training/ml.py** — `fit_classifier`, `grid_search_classifier`, `predict_with_proba`, `save_model`, `load_model` for ML pipelines
-- **training/dl.py** — DL training loop built on PyTorch Ignite (`fit_classifier`, `predict_with_proba`, `save_model`, `load_model`)
+How the data is divided into regions matters more than which classifier you use. `kmeans` and `birch` both find about a thousand regions here; `hdbscan` finds thirty and consigns a quarter of the points to leftover buckets, because this dataset's difficulty gradient is continuous rather than broken by real gaps. Count-based algorithms suit data of this kind, density-based ones suit data with genuine separation.
 
-### `src/engine`
+### Inside the synthetic dataset
 
-- **dl/model/** — `NumericalClassifier`, `CategoricalClassifier`, `TabularClassifier` (registered via `DLClassifierFactory`)
-- **dl/module/** — Encoder, decoder, MLP, embedding building blocks; checkpoint utilities
-- **dl/loss/** — `CrossEntropyLoss`, `FocalLoss` (registered via `LossFactory`)
-- **dl/data/** — `TabularDataset` (numerical + categorical), custom collate
-- **dl/ignite_builder.py** — `EngineBuilder` fluent builder for Ignite engines (metrics, early stopping, checkpointing)
-- **dl/ignite_metrics.py** — Per-class F1 / Precision / Recall wrappers for Ignite
-- **ml/model/** — sklearn / XGBoost classifiers (`ensemble`, `linear`, `naive_bayes`, `neighbors`, `svm`, `tree`, `xgboost`), all registered via `MLClassifierFactory`
-- **ml/preprocessing.py** — ML-specific column preprocessing helpers
+Each class consists of a clean core together with a *difficulty ladder* running towards every class it is meant to overlap with (`_OVERLAPS` in [generate_synthetic.py](generate_synthetic.py)). Every rung sits a fixed distance from the boundary between the two classes, and both sides face one another symmetrically, so the best error rate any classifier could reach on a rung is known in advance:
 
-### `src/registries.py`
+| Sub-group | Distance from boundary | Best possible error | Rows |
+|---|---|---|---|
+| `canonical` | — | ≈ 0 % | 23,966 |
+| `clear` | 1.80 σ | ≈ 4 % | 19,316 |
+| `evasive` | 0.90 σ | ≈ 18 % | 16,560 |
+| `mimicry` | 0.25 σ | ≈ 40 % | 9,658 |
 
-Central re-export of `DLClassifierFactory`, `MLClassifierFactory`, and `LossFactory`. Import factories from here so the owning packages stay free to move.
+The two categorical features fade out along the same ladder, so they cease to help exactly where the numbers begin to overlap. No class sits at the origin either: the benign class has features of its own, just as every attack does, which is what allows `DISTANCE=cosine` to see the same structure as `DISTANCE=euclidean`.
+
+Recovering that ladder is the task. Clustering divides the overlap corridors into regions, the descriptors rank them, and the classifier fails progressively more often on the harder ones. Each row's intended difficulty is recorded in a `true_subgroup` column so that you can check afterwards; the pipeline never reads it.
+
+Accuracy settles at about 0.85 by design. The hard rungs are genuinely hard, and that spread is what makes a per-region correlation meaningful.
+
+## Running on your own data
+
+The configurations in [configs/data/](configs/data/) cover UNSW-NB15, BoT-IoT, CIC-IDS-2018, ToN-IoT and seven general benchmarks, but the CSV files are not in the repository: supply them under `resources/raw_data/<dir>/`, matching each configuration's `dir` and `file_name`.
+
+To add a dataset of your own:
+
+1. Place the CSV at `resources/raw_data/<dir>/<file_name>.csv`.
+2. Copy a configuration from [configs/data/](configs/data/) and edit it: `label_col`, `num_cols`, `cat_cols`, `benign_tag`, split fractions, filtering.
+3. Add it to `DATASET_FORMATS` in the [Makefile](Makefile) as `<name>:mixed` or `<name>:numerical`.
+4. Run `make run DATA=<name> NAME=my_exp CLASSIFIER=random_forest CLUSTERING=kmeans`.
+
+On datasets of millions of rows, out-of-fold evaluation is disabled automatically (`LARGE_DATASETS` in the Makefile), since one model per fold would otherwise take hours.
+
+## How it works
+
+Three steps, together with the classifier whose errors they are fitted on. The method assumes nothing about the classifier, the clustering algorithm or the number of classes; it requires only tabular features.
+
+1. **Identify regions.** Divide each class into compact sub-regions, using the training data alone. The number per class is chosen by grid search, biased towards finer partitions so that the final estimator has enough to learn from. Points the algorithm treats as noise are gathered into a per-class leftover bucket and discarded downstream.
+2. **Describe each region.** Score how separable it is from the rival regions nearest to it, and do the same at class level. These descriptors are drawn from the data alone; nothing about the classifier enters here.
+3. **Learn the mapping.** A Random Forest regresses each region's observed error rate on its descriptors under nested cross-validation, reporting the correlation together with the descriptors that mattered. The choice of a tree-based estimator is deliberate: every risk estimate arrives with the properties that produced it.
+
+The classifier is trained separately and contributes exactly one thing to step 3, namely the error rate it achieved in each region. That is what ties the mapping to the model rather than to the dataset.
+
+Two points worth knowing:
+
+- Regions are built from the training split alone. Held-out samples are then routed to the nearest region **without reference to their label**, exactly as a sample would be routed at inference time. This is what keeps the correlation a genuine prediction rather than a restatement of labels already known.
+- The analysis works chiefly per region rather than per class, since one class usually occupies several separate areas of the space. Class-level figures are kept as a coarse reference.
+
+### What the descriptors measure
+
+Five families, all built on a single shared nearest-neighbour graph over mixed numerical and categorical features. Each compares a region with the ten rival regions nearest to it, reported as min / mean / max across them.
+
+| Family | Keys | What it captures |
+|---|---|---|
+| **F** — feature | `f1`–`f4` | how well individual features separate the region from its rivals |
+| **N** — neighbourhood | `n1`–`n4` | how many of a region's neighbours belong to another class |
+| **ND** — network | `network_density`, `cls_coef`, `hub` | how many neighbour links cross into a rival region |
+| **T** — dimensionality | `t2`–`t4` | how many features there are relative to samples, and how many of them matter |
+| **G** — geometry | `max_dispersion`, `p95_dispersion`, `dist_to_nearest_centroid`, `p5_silhouette`, `frac_at_risk` | how widely the region is spread, and how close the nearest rival lies |
+
+In the demo the estimator relies most on `cluster_p5_silhouette`, `cluster_f3_max` and `cluster_network_density_mean`.
+
+## Pipeline reference
+
+Each stage is a script under [pipelines/](pipelines/), wrapped by the [Makefile](Makefile). Every target takes `DATA`, `NAME`, `SEED`, `CLASSIFIER`, `CLUSTERING`, `DISTANCE`.
+
+| Target | Script | Scope |
+|---|---|---|
+| `make prepare` | `prepare_data.py` | per dataset, cached |
+| `make complexity` | `compute_complexity.py` | per dataset, cached |
+| `make classify` | `classify.py` | per classifier |
+| `make failure-classify` | `fit_failure_classifier.py` | per classifier (`NOSIG=1` skips the bootstrap, `REUSE=1` reuses a fitted estimator) |
+| `make render` | `render_plots.py` | per classifier |
+| `make run` | all of the above | omitted variables iterate, those passed stay fixed |
+| `make sweep-results` | `sweep_results.py` | reduces a whole sweep to cross-run figures and tables |
+| `make help` | — | every target, with defaults |
+
+**prepare** produces the splits and the regions. It removes NaNs, filters rare categories, log-scales and robust-scales the numerical columns, hashes high-cardinality categorical ones, splits the data stratified, then clusters each class and gives every sample a region id. The saved splits retain the original class balance; balancing takes place at training time.
+
+**classify** trains one classifier and records its per-class metrics and per-sample predictions. Evaluation is by default out-of-fold across train and test together: one model per fold, with both the metrics and the per-region error rates taken from predictions no model saw while training.
+
+**failure-classify** assembles the table — a region's descriptors, its class's descriptors and its observed error rate — and fits the estimator over five outer and five inner folds. It also compares the estimate with the classifier's own confidence scores, using a bootstrap to establish whether the difference is real.
+
+**render** turns the saved JSON and pickle artefacts into figures. `plots.format` selects `pdf`, the default, or `png`.
+
+### Sweeps
+
+```bash
+make run NAME=x                             # every dataset × classifier × clustering algorithm
+make run NAME=x DATA=covertype              # one dataset, every compatible classifier
+make run NAME=x CLASSIFIER=random_forest    # every dataset, one classifier
+make sweep-results SWEEP_DIR=paper/exp FIGURES_DIR=paper/figures
+```
+
+Omit `CLUSTERING` and the sweep runs every algorithm into a separate `NAME_<algo>` tree. `sweep-results` then reduces such a tree to the cross-run figures (ρ per configuration, ρ against region count, family importance, selective-prediction curves) and the matching JSON tables.
+
+## Configuration
+
+The root configuration is [configs/config.yaml](configs/config.yaml), where every parameter is documented inline. Any key may be overridden on the command line:
+
+```bash
+make classify DATA=bot_iot_v2 NAME=my_exp SEED=123 CLASSIFIER=random_forest
+PYTHONPATH=. python pipelines/classify.py data=bot_iot_v2 name=my_exp seed=123 classifier=random_forest
+```
+
+| Group | Options |
+|---|---|
+| `data` | network traffic: `nb15_v2`, `bot_iot_v2`, `cic_2018_v2`, `cic_2018_f`, `ton_iot_v2` · benchmarks: `bank_marketing`, `covertype`, `letter_recognition`, `statlog_landsat_satellite`, `thyroid_disease`, `parkinsons`, `seeds` · `synthetic_test`, the only one needing no external CSV |
+| `classifier` | deep: `tabular`, `numerical`, `categorical` · classical: `decision_tree`, `random_forest`, `hist_gradient_boosting`, `xgboost`, `knn`, `lda`, `logistic_regression`, `naive_bayes`, `linear_svc`, `svm_rbf` |
+| `clustering` | `kmeans`, `hdbscan`, `birch`, `spectral`, `kprototypes` — the last being the only one that uses categorical features |
+| `loss` / `optimizer` / `scheduler` / `loops` | deep learning only: `cross_entropy` \| `focal` / `adamw` / `one_cycle` / `default` |
+| `path` | `default` |
+
+Results are written to:
+
+```
+resources/experiments/${name}/${data.file_name}_${seed}/
+├── processed_data/         # train / val / test parquet, shared
+├── shared/                 # descriptors and metadata, shared
+└── ${classifier.name}/
+    ├── configs/            # resolved configuration snapshot
+    ├── models/             # checkpoints or serialised estimators
+    ├── outputs/            # training, testing and analysis JSON
+    ├── pickle/             # binary side artefacts
+    └── figures/            # rendered figures
+```
+
+## Repository layout
+
+```
+intrusion-forge/
+├── pipelines/                    # entry points — own the config, I/O, logging and paths
+│   ├── prepare_data.py           #   preprocess + divide into regions
+│   ├── classify.py               #   train + evaluate one classifier
+│   ├── compute_complexity.py     #   region and class descriptors
+│   ├── fit_failure_classifier.py #   descriptors → error rate
+│   ├── render_plots.py           #   figures
+│   ├── sweep_results.py          #   cross-run aggregation
+│   └── cost_sweep.py             #   neighbour-graph cost model
+├── generate_synthetic.py         # synthetic dataset generator
+├── dashboard.py                  # Streamlit experiment browser
+├── Makefile                      # experiment runner
+├── configs/                      # Hydra hierarchy
+├── src/                          # pure library — no config, no I/O, no path building
+│   ├── core/                     # config, Factory, LogDispatcher, DataFrame I/O, OutputPaths
+│   ├── domain/
+│   │   ├── data/                 # cleaning, splitting, scaling, encoding
+│   │   ├── clustering/           # the five algorithms + grid search
+│   │   ├── analysis/complexity/  # the F / N / ND / T / G families
+│   │   ├── analysis/             # metadata, selective prediction, SHAP
+│   │   ├── training/             # ml.py (sklearn / XGBoost), dl.py (Ignite loop)
+│   │   ├── plot/                 # Plot payload, charts, metrics, palette
+│   │   └── projection.py         # t-SNE
+│   ├── engine/
+│   │   ├── dl/                   # models, modules, losses, dataset, EngineBuilder
+│   │   └── ml/                   # sklearn / XGBoost wrappers, column preprocessing
+│   └── registries.py             # the three factories
+└── resources/                    # not tracked by git: raw_data/ in, experiments/ out
+```
+
+Three conventions to know before editing:
+
+- `src/` is input to output. Configuration loading, file I/O and path building belong to `pipelines/` and `src/core` alone.
+- Every write, whether JSON, pickle or figure, goes through `LogDispatcher.publish(LogBundle)` and a subscriber, never a direct `save_to_*`.
+- Classifiers and losses register themselves with a factory (`@DLClassifierFactory.register()`, `@LossFactory.register()`, or `MLClassifierFactory.register("name")(SklearnClass)`) and are discovered automatically at import.

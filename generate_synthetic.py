@@ -1,4 +1,5 @@
 import argparse
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -19,249 +20,225 @@ _DEFAULT_CLASS_SIZES: dict[str, int] = {
     "class_10": 500,
 }
 
-_DEFAULT_TOTAL = sum(_DEFAULT_CLASS_SIZES.values())  # 69_500
+_DEFAULT_TOTAL = sum(_DEFAULT_CLASS_SIZES.values())
 _RARE_CLASS_SIZE = 500
 
 _CAT1_VALUES = ["A", "B", "C"]
 _CAT2_VALUES = ["X", "Y", "Z", "W"]
 
+_N_FEATURES = 20
+_BASE_MU = 5.0
+_BASE_SIGMA = 1.0
+_MIX_SIGMA = 1.5
+
 RNG = np.random.default_rng(42)
 
 
+@dataclass(frozen=True)
+class ClassSpec:
+    """Core feature means, core spread and categorical profiles of one class."""
+
+    mu: dict[str, float] = field(default_factory=dict)
+    sigma: float = _BASE_SIGMA
+    cat_1: tuple[float, ...] = (1 / 3, 1 / 3, 1 / 3)
+    cat_2: tuple[float, ...] = (0.25, 0.25, 0.25, 0.25)
+
+
+@dataclass(frozen=True)
+class Rung:
+    """One step of the difficulty ladder: mass share, margin in sigmas, categorical blend."""
+
+    name: str
+    share: float
+    margin: float
+    blend: float
+
+
+_CANONICAL_SHARE = 0.34
+
+_LADDER = (
+    Rung("clear", 0.28, 1.80, 0.25),
+    Rung("evasive", 0.24, 0.90, 0.65),
+    Rung("mimicry", 0.14, 0.25, 1.00),
+)
+
+_CLASSES: dict[str, ClassSpec] = {
+    "class_1": ClassSpec(
+        mu={"num_18": 24.0, "num_19": 20.0, "num_20": 18.0},
+        cat_1=(0.60, 0.30, 0.10),
+        cat_2=(0.40, 0.35, 0.15, 0.10),
+    ),
+    "class_2": ClassSpec(
+        mu={"num_1": 25.0, "num_2": 22.0, "num_3": 20.0},
+        cat_1=(0.80, 0.15, 0.05),
+        cat_2=(0.05, 0.10, 0.10, 0.75),
+    ),
+    "class_3": ClassSpec(
+        mu={"num_1": 24.0, "num_2": 20.0, "num_4": 22.0},
+        cat_1=(0.75, 0.20, 0.05),
+        cat_2=(0.05, 0.10, 0.35, 0.50),
+    ),
+    "class_4": ClassSpec(
+        mu={"num_5": 30.0, "num_6": 28.0, "num_7": 25.0},
+        cat_1=(0.50, 0.40, 0.10),
+        cat_2=(0.50, 0.35, 0.10, 0.05),
+    ),
+    "class_5": ClassSpec(
+        mu={"num_8": 20.0, "num_9": 18.0, "num_10": 22.0},
+        cat_1=(0.40, 0.50, 0.10),
+        cat_2=(0.30, 0.50, 0.10, 0.10),
+    ),
+    "class_6": ClassSpec(
+        mu={"num_8": 22.0, "num_9": 14.0, "num_11": 20.0},
+        sigma=2.0,
+        cat_1=(0.35, 0.50, 0.15),
+        cat_2=(0.30, 0.50, 0.10, 0.10),
+    ),
+    "class_7": ClassSpec(
+        mu={"num_12": 28.0, "num_13": 25.0, "num_14": 22.0},
+        cat_1=(0.55, 0.35, 0.10),
+        cat_2=(0.35, 0.30, 0.20, 0.15),
+    ),
+    "class_8": ClassSpec(
+        mu={"num_16": 11.0, "num_17": 10.0},
+        cat_1=(0.70, 0.20, 0.10),
+        cat_2=(0.02, 0.03, 0.05, 0.90),
+    ),
+    "class_9": ClassSpec(
+        mu={"num_1": 18.0, "num_2": 16.0, "num_15": 15.0},
+        cat_1=(0.60, 0.30, 0.10),
+        cat_2=(0.70, 0.10, 0.10, 0.10),
+    ),
+    "class_10": ClassSpec(),
+}
+
+_OVERLAPS = (
+    ("class_1", "class_2"),
+    ("class_1", "class_3"),
+    ("class_1", "class_4"),
+    ("class_1", "class_7"),
+    ("class_1", "class_8"),
+    ("class_1", "class_9"),
+    ("class_2", "class_3"),
+    ("class_5", "class_6"),
+)
+
+
 def _n(mu: float, sigma: float, n: int) -> np.ndarray:
+    """Draw n normal samples."""
     return RNG.normal(loc=mu, scale=sigma, size=n)
 
 
-def _cat(values: list, weights: list, n: int) -> np.ndarray:
+def _cat(values: list, weights: tuple[float, ...], n: int) -> np.ndarray:
+    """Draw n categorical samples with the given weights."""
     return RNG.choice(values, size=n, p=weights)
 
 
 def _base(n: int) -> dict:
-    """All 20 features at the benign baseline N(5, 1)."""
-    return {f"num_{i}": _n(5.0, 1.0, n) for i in range(1, 21)}
+    """All numerical features at the shared baseline N(5, 1)."""
+    return {f"num_{i}": _n(_BASE_MU, _BASE_SIGMA, n) for i in range(1, _N_FEATURES + 1)}
 
 
-def _interp(
-    class_mu: dict[str, float], adv_mu: dict[str, float], alpha: float
+def _adversaries(label: str) -> list[str]:
+    """Classes sharing a difficulty corridor with `label`, in declaration order."""
+    return [b if a == label else a for a, b in _OVERLAPS if label in (a, b)]
+
+
+def _rung_center(
+    mu: dict[str, float], adv_mu: dict[str, float], margin: float
 ) -> dict[str, float]:
-    """Interpolate feature means: (1 - alpha) * class + alpha * adversary.
+    """Means placed `margin` mixing sigmas from the pair midpoint, on the own-class side."""
+    keys = sorted(set(mu) | set(adv_mu))
+    own = np.array([mu.get(k, _BASE_MU) for k in keys])
+    adv = np.array([adv_mu.get(k, _BASE_MU) for k in keys])
+    direction = own - adv
+    norm = float(np.linalg.norm(direction))
+    offset = margin * _MIX_SIGMA * direction / norm if norm > 0 else 0.0
+    return dict(zip(keys, (own + adv) / 2 + offset))
 
-    Features not listed in class_mu default to 5.0 (benign baseline).
-    alpha=0 → canonical (at class center); alpha=1 → at adversary center.
-    """
-    keys = set(class_mu) | set(adv_mu)
-    return {
-        k: (1 - alpha) * class_mu.get(k, 5.0) + alpha * adv_mu.get(k, 5.0) for k in keys
-    }
+
+def _blend_weights(
+    weights: tuple[float, ...], adv_weights: tuple[float, ...], blend: float
+) -> tuple[float, ...]:
+    """Categorical profile moved `blend` of the way to the pair's shared 50/50 mixture."""
+    mixed = [
+        (1 - blend / 2) * w + (blend / 2) * a for w, a in zip(weights, adv_weights)
+    ]
+    total = sum(mixed)
+    return tuple(w / total for w in mixed)
 
 
-def _subgroup(
+def _split_counts(n: int, shares: list[float]) -> list[int]:
+    """Split n rows across shares, giving the rounding remainder to the first group."""
+    total = sum(shares)
+    counts = [int(n * share / total) for share in shares]
+    counts[0] += n - sum(counts)
+    return counts
+
+
+def _subgroup_frame(
+    label: str,
+    subgroup: str,
     n: int,
-    class_mu: dict[str, float],
-    adv_mu: dict[str, float],
-    alpha: float,
+    center: dict[str, float],
     sigma: float,
-) -> dict:
-    """Generate features for one sub-group.
-
-    Non-discriminating features stay at baseline N(5, 1); discriminating features
-    are drawn at the interpolated center with the given sigma.
-    """
-    f = _base(n)
-    for col, mu in _interp(class_mu, adv_mu, alpha).items():
-        f[col] = _n(mu, sigma, n)
-    return f
-
-
-def _assemble(
-    label: str, parts: list[tuple[dict, str]], cat1_w: list, cat2_w: list
+    cat_1: tuple[float, ...],
+    cat_2: tuple[float, ...],
 ) -> pd.DataFrame:
-    """Concatenate sub-group feature dicts, attach categoricals and label."""
-    dfs = []
-    for features, sg in parts:
-        df = pd.DataFrame(features)
-        df["true_subgroup"] = sg
-        dfs.append(df)
-    df = pd.concat(dfs, ignore_index=True)
-    n = len(df)
-    df["cat_1"] = _cat(_CAT1_VALUES, cat1_w, n)
-    df["cat_2"] = _cat(_CAT2_VALUES, cat2_w, n)
+    """One sub-group: baseline features with `center` overridden, plus categoricals and label."""
+    features = _base(n)
+    for col, mu in center.items():
+        features[col] = _n(mu, sigma, n)
+    df = pd.DataFrame(features)
+    df["cat_1"] = _cat(_CAT1_VALUES, cat_1, n)
+    df["cat_2"] = _cat(_CAT2_VALUES, cat_2, n)
     df["label"] = label
+    df["true_subgroup"] = subgroup
     return df
 
 
-# ── Canonical class centers (discriminating features only; baseline = 5.0) ──────────
+def generate_class(label: str, n: int) -> pd.DataFrame:
+    """Canonical core plus one margin-graded ladder toward every overlapping class."""
+    spec = _CLASSES[label]
+    adversaries = _adversaries(label)
+    if not adversaries:
+        return _subgroup_frame(
+            label, "canonical", n, spec.mu, spec.sigma, spec.cat_1, spec.cat_2
+        )
 
-# class_2: attack A — num_1, num_2, num_3
-_MU2 = {"num_1": 25.0, "num_2": 22.0, "num_3": 20.0}
-# class_3: attack B, variant — shares num_1, num_2 with class_2; uses num_4 not num_3
-_MU3 = {"num_1": 24.0, "num_2": 20.0, "num_4": 22.0}
-# class_4: attack C — distinct feature block
-_MU4 = {"num_5": 30.0, "num_6": 28.0, "num_7": 25.0}
-# class_5 / class_6: overlap pair — adjacent clusters in num_8/num_9 space
-_MU5 = {"num_8": 20.0, "num_9": 18.0, "num_10": 22.0}
-_MU6 = {"num_8": 22.0, "num_9": 14.0, "num_11": 20.0}
-# class_7: attack D — another separate block
-_MU7 = {"num_12": 28.0, "num_13": 25.0, "num_14": 22.0}
-# class_9: stealth — uses num_1/num_2 (partial overlap with class_2/3) + num_15
-_MU9 = {"num_1": 18.0, "num_2": 16.0, "num_15": 15.0}
-# Benign baseline center (all at 5.0)
-_MU1: dict[str, float] = {}
+    plan = [
+        (
+            "canonical",
+            _CANONICAL_SHARE,
+            spec.mu,
+            spec.sigma,
+            spec.cat_1,
+            spec.cat_2,
+        )
+    ]
+    for adversary in adversaries:
+        adv = _CLASSES[adversary]
+        for rung in _LADDER:
+            plan.append(
+                (
+                    rung.name,
+                    rung.share / len(adversaries),
+                    _rung_center(spec.mu, adv.mu, rung.margin),
+                    _MIX_SIGMA,
+                    _blend_weights(spec.cat_1, adv.cat_1, rung.blend),
+                    _blend_weights(spec.cat_2, adv.cat_2, rung.blend),
+                )
+            )
 
-
-def generate_class_1(n: int) -> pd.DataFrame:
-    """Majority benign: canonical at baseline + near-attack sub-group toward class_2."""
-    n_a, n_b = int(n * 0.80), n - int(n * 0.80)
-    f_a = _base(n_a)
-    f_b = _subgroup(n_b, _MU1, _MU2, alpha=0.30, sigma=1.2)
-    return _assemble(
-        "class_1",
-        [(f_a, "canonical"), (f_b, "evasive")],
-        [0.6, 0.3, 0.1],
-        [0.4, 0.35, 0.15, 0.10],
-    )
-
-
-def generate_class_2(n: int) -> pd.DataFrame:
-    """Attack A (clear): full difficulty gradient toward class_1."""
-    n_a, n_b = int(n * 0.50), int(n * 0.30)
-    n_c = n - n_a - n_b
-    return _assemble(
-        "class_2",
+    counts = _split_counts(n, [share for _, share, *_ in plan])
+    return pd.concat(
         [
-            (_subgroup(n_a, _MU2, _MU1, alpha=0.00, sigma=1.5), "canonical"),
-            (_subgroup(n_b, _MU2, _MU1, alpha=0.50, sigma=1.5), "medium"),
-            (_subgroup(n_c, _MU2, _MU1, alpha=0.80, sigma=1.5), "evasive"),
+            _subgroup_frame(label, name, count, center, sigma, cat_1, cat_2)
+            for (name, _, center, sigma, cat_1, cat_2), count in zip(plan, counts)
+            if count > 0
         ],
-        [0.8, 0.15, 0.05],
-        [0.05, 0.10, 0.10, 0.75],
+        ignore_index=True,
     )
-
-
-def generate_class_3(n: int) -> pd.DataFrame:
-    """Attack B (variant of A): shares num_1/num_2 with class_2; evasive toward class_1."""
-    n_a, n_b = int(n * 0.50), int(n * 0.30)
-    n_c = n - n_a - n_b
-    return _assemble(
-        "class_3",
-        [
-            (_subgroup(n_a, _MU3, _MU1, alpha=0.00, sigma=1.5), "canonical"),
-            (_subgroup(n_b, _MU3, _MU1, alpha=0.50, sigma=1.5), "medium"),
-            (_subgroup(n_c, _MU3, _MU1, alpha=0.80, sigma=1.5), "evasive"),
-        ],
-        [0.75, 0.20, 0.05],
-        [0.05, 0.10, 0.35, 0.50],
-    )
-
-
-def generate_class_4(n: int) -> pd.DataFrame:
-    """Attack C (well separated): distinct feature block; evasive toward class_1."""
-    n_a, n_b = int(n * 0.50), int(n * 0.30)
-    n_c = n - n_a - n_b
-    return _assemble(
-        "class_4",
-        [
-            (_subgroup(n_a, _MU4, _MU1, alpha=0.00, sigma=1.5), "canonical"),
-            (_subgroup(n_b, _MU4, _MU1, alpha=0.50, sigma=1.5), "medium"),
-            (_subgroup(n_c, _MU4, _MU1, alpha=0.80, sigma=1.5), "evasive"),
-        ],
-        [0.5, 0.4, 0.1],
-        [0.5, 0.35, 0.10, 0.05],
-    )
-
-
-def generate_class_5(n: int) -> pd.DataFrame:
-    """Overlap-pair A: evasive sub-group falls deep into class_6 territory."""
-    n_a, n_b = int(n * 0.50), int(n * 0.30)
-    n_c = n - n_a - n_b
-    return _assemble(
-        "class_5",
-        [
-            (_subgroup(n_a, _MU5, _MU6, alpha=0.00, sigma=1.5), "canonical"),
-            (_subgroup(n_b, _MU5, _MU6, alpha=0.50, sigma=1.5), "medium"),
-            (_subgroup(n_c, _MU5, _MU6, alpha=0.80, sigma=1.5), "evasive"),
-        ],
-        [0.4, 0.5, 0.1],
-        [0.3, 0.5, 0.1, 0.1],
-    )
-
-
-def generate_class_6(n: int) -> pd.DataFrame:
-    """Overlap-pair B: wider variance; evasive sub-group overlaps class_5 deeply."""
-    n_a, n_b = int(n * 0.50), int(n * 0.30)
-    n_c = n - n_a - n_b
-    return _assemble(
-        "class_6",
-        [
-            (_subgroup(n_a, _MU6, _MU5, alpha=0.00, sigma=2.0), "canonical"),
-            (_subgroup(n_b, _MU6, _MU5, alpha=0.50, sigma=2.0), "medium"),
-            (_subgroup(n_c, _MU6, _MU5, alpha=0.80, sigma=2.0), "evasive"),
-        ],
-        [0.35, 0.50, 0.15],
-        [0.3, 0.5, 0.1, 0.1],
-    )
-
-
-def generate_class_7(n: int) -> pd.DataFrame:
-    """Attack D (well separated 2): different feature block from class_4; evasive toward class_1."""
-    n_a, n_b = int(n * 0.50), int(n * 0.30)
-    n_c = n - n_a - n_b
-    return _assemble(
-        "class_7",
-        [
-            (_subgroup(n_a, _MU7, _MU1, alpha=0.00, sigma=1.5), "canonical"),
-            (_subgroup(n_b, _MU7, _MU1, alpha=0.50, sigma=1.5), "medium"),
-            (_subgroup(n_c, _MU7, _MU1, alpha=0.80, sigma=1.5), "evasive"),
-        ],
-        [0.55, 0.35, 0.10],
-        [0.35, 0.30, 0.20, 0.15],
-    )
-
-
-def generate_class_8(n: int) -> pd.DataFrame:
-    """Categorical: numerically near class_1; cat_2=W exclusively is the separator.
-
-    Two sub-groups via num_15 drift: canonical at baseline, medium shifted to N(10, 1.5).
-    This gives HDBSCAN two distinguishable density peaks within the class.
-    Evasive sub-group omitted: moving numerically toward class_1 is impossible here
-    (the class IS numerically at class_1); the challenge is purely categorical.
-    """
-    n_a, n_b = int(n * 0.60), n - int(n * 0.60)
-    f_a = _base(n_a)
-    f_b = _base(n_b)
-    f_b["num_15"] = _n(10.0, 1.5, n_b)
-    return _assemble(
-        "class_8",
-        [(f_a, "canonical"), (f_b, "medium")],
-        [0.7, 0.2, 0.1],
-        [0.0, 0.0, 0.0, 1.0],
-    )
-
-
-def generate_class_9(n: int) -> pd.DataFrame:
-    """Stealth: majority evasive — most samples are near-benign; canonical is exceptional."""
-    n_a, n_b = int(n * 0.20), int(n * 0.40)
-    n_c = n - n_a - n_b
-    return _assemble(
-        "class_9",
-        [
-            (_subgroup(n_a, _MU9, _MU1, alpha=0.00, sigma=1.5), "canonical"),
-            (_subgroup(n_b, _MU9, _MU1, alpha=0.50, sigma=1.2), "medium"),
-            (_subgroup(n_c, _MU9, _MU1, alpha=0.80, sigma=1.0), "evasive"),
-        ],
-        [0.6, 0.3, 0.1],
-        [0.7, 0.1, 0.1, 0.1],
-    )
-
-
-def generate_class_10(n: int) -> pd.DataFrame:
-    """Rare class: always 500 rows → removed by rare_category_filter (< min_cat_count=3000)."""
-    df = pd.DataFrame(_base(n))
-    df["cat_1"] = _cat(_CAT1_VALUES, [0.33, 0.34, 0.33], n)
-    df["cat_2"] = _cat(_CAT2_VALUES, [0.25, 0.25, 0.25, 0.25], n)
-    df["label"] = "class_10"
-    df["true_subgroup"] = "canonical"
-    return df
 
 
 def inject_edge_cases(df: pd.DataFrame) -> pd.DataFrame:
@@ -292,21 +269,19 @@ def _compute_sizes(total_rows: int) -> dict[str, int]:
     }
 
 
-_GENERATORS = [
-    generate_class_1,
-    generate_class_2,
-    generate_class_3,
-    generate_class_4,
-    generate_class_5,
-    generate_class_6,
-    generate_class_7,
-    generate_class_8,
-    generate_class_9,
-    generate_class_10,
-]
+def build_dataset(total_rows: int) -> pd.DataFrame:
+    """Build the full shuffled dataset with edge cases injected."""
+    sizes = _compute_sizes(total_rows)
+    df = pd.concat(
+        [generate_class(label, sizes[label]) for label in _CLASSES],
+        ignore_index=True,
+    )
+    df = inject_edge_cases(df)
+    return df.sample(frac=1, random_state=42).reset_index(drop=True)
 
 
 def main() -> None:
+    """Entry point: build the synthetic dataset and write it to `OUTPUT_PATH`."""
     parser = argparse.ArgumentParser(description="Generate synthetic test dataset.")
     parser.add_argument(
         "--rows",
@@ -317,13 +292,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    sizes = _compute_sizes(args.rows)
-    print(f"Generating synthetic dataset ({sum(sizes.values()):,} rows)...")
-
-    dfs = [gen(sizes[f"class_{i + 1}"]) for i, gen in enumerate(_GENERATORS)]
-    df = pd.concat(dfs, ignore_index=True)
-    df = inject_edge_cases(df)
-    df = df.sample(frac=1, random_state=42).reset_index(drop=True)
+    print(f"Generating synthetic dataset ({args.rows:,} rows)...")
+    df = build_dataset(args.rows)
 
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(OUTPUT_PATH, index=False)

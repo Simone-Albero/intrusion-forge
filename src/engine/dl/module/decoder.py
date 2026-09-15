@@ -13,6 +13,7 @@ def _build_trunk(
     norm_layer: Callable[[int], nn.Module] | None,
     dropout: float,
 ) -> tuple[nn.Module, int]:
+    """Shared MLP trunk and its output width, identity when there are no hidden dims."""
     if hidden_dims:
         return (
             MLPModule(
@@ -29,7 +30,7 @@ def _build_trunk(
 
 
 def _pad_cat_logits(logits: list[Tensor], cardinalities: list[int]) -> Tensor:
-    """Pad each logit tensor to max_cardinality and stack -> [B, F, max_card]."""
+    """Pad each logit tensor to the max cardinality and stack them into [B, F, max_card]."""
     max_card = max(cardinalities)
     padded = []
     for logit, card in zip(logits, cardinalities):
@@ -64,6 +65,7 @@ class NumericalDecoderModule(nn.Module):
         )
 
     def forward(self, x: Tensor) -> Tensor:
+        """Decode the numerical block."""
         return self.mlp(x)
 
 
@@ -90,6 +92,7 @@ class CategoricalDecoderModule(nn.Module):
         self.heads = nn.ModuleList(nn.Linear(trunk_out, c) for c in self.cardinalities)
 
     def forward(self, x: Tensor) -> Tensor:
+        """Decode one logit tensor per categorical feature."""
         features = self.trunk(x)
         return _pad_cat_logits(
             [head(features) for head in self.heads], self.cardinalities
@@ -125,6 +128,7 @@ class TabularDecoderModule(nn.Module):
         )
 
     def forward(self, x: Tensor) -> tuple[Tensor, Tensor]:
+        """Decode the numerical block and the per-feature categorical logits."""
         features = self.trunk(x)
         return (
             self.numerical_head(features),

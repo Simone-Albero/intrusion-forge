@@ -4,17 +4,16 @@ from dataclasses import dataclass
 import numpy as np
 from tqdm import tqdm
 
+from src.core.utils import timed
+from src.domain.analysis.complexity.clusters import compute_cluster_geometry
+from src.domain.analysis.complexity.dimensionality import compute_t_measures
+from src.domain.analysis.complexity.feature import compute_f_measures
+from src.domain.analysis.complexity.neighborhood import compute_n_measures
+from src.domain.analysis.complexity.network import compute_network_measures
 from src.domain.analysis.complexity.shared import (
     build_knn_graph,
     topk_adversarial_clusters,
 )
-from src.domain.analysis.complexity.clusters import compute_cluster_geometry
-from src.domain.analysis.complexity.feature import compute_f_measures
-from src.domain.analysis.complexity.neighborhood import compute_n_measures
-from src.domain.analysis.complexity.network import compute_network_measures
-from src.domain.analysis.complexity.dimensionality import compute_t_measures
-
-from src.core.utils import timed
 
 __all__ = [
     "ComplexityGraph",
@@ -26,13 +25,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class ComplexityGraph:
-    """Subsampled point cloud + shared Gower-hybrid k-NN graph.
-
-    Built once by `prepare_complexity_graph` and consumed by
-    `compute_complexity_from_graph` for both the cluster-level and class-level
-    passes, so the expensive k-NN graph is built a single time. The graph
-    depends only on the feature space (X, k, metric), not on the partition.
-    """
+    """Subsampled point cloud and its partition-independent Gower-hybrid k-NN graph."""
 
     X_num: np.ndarray
     X_cat: np.ndarray | None
@@ -51,24 +44,16 @@ def _stratified_subsample(
     min_per_cluster: int = 50,
     random_state: int = 42,
 ) -> tuple[np.ndarray, np.ndarray | None, np.ndarray, np.ndarray]:
-    """Stratified subsample by cluster, allocating proportionally to cluster size.
-
-    Each cluster gets at least `min_per_cluster` samples (or all of its members
-    if smaller). The remaining budget is allocated proportionally to cluster
-    population. The combined size is capped at `max_samples` by trimming the
-    largest contributions if needed.
-    """
+    """Subsample proportionally to cluster size, with a floor of `min_per_cluster` each."""
     rng = np.random.default_rng(random_state)
     unique_clusters, counts = np.unique(y_cluster, return_counts=True)
     n_total = int(counts.sum())
 
-    # initial allocation: proportional with floor at min_per_cluster (capped by cluster size)
     raw_alloc = np.maximum(
         min_per_cluster, np.round(max_samples * counts / n_total).astype(int)
     )
     alloc = np.minimum(raw_alloc, counts)
 
-    # if over budget, trim from the largest allocations until we fit
     overflow = int(alloc.sum()) - max_samples
     if overflow > 0:
         for i in np.argsort(-alloc):
@@ -97,7 +82,7 @@ def _stratified_subsample(
 def _build_population_masks(
     y_class: np.ndarray, y_cluster: np.ndarray
 ) -> tuple[dict[str, np.ndarray], dict[str, int]]:
-    """Cluster boolean masks (non-noise) + cluster→class map, reused by all pairwise families."""
+    """Boolean mask and class of every non-noise cluster."""
     mask_valid = y_cluster != -1
     yc_v = y_class[mask_valid]
     yk_v = y_cluster[mask_valid]
@@ -117,12 +102,7 @@ def _build_topk_map(
     top_k_clusters: int,
     metric: str = "cosine",
 ) -> dict[str, list[str]]:
-    """Build the top-K adversarial cluster map keyed by str(cluster_id).
-
-    Selects the K nearest adversarial clusters by centroid distance under
-    `metric`. Only clusters present in both `cluster_to_class` and `centroids`
-    are eligible.
-    """
+    """Map each cluster to its K nearest adversarial clusters by centroid distance."""
     present_ids = [cid for cid in cluster_to_class if cid in centroids]
     if not present_ids:
         return {}
@@ -141,11 +121,7 @@ def _compute_analysis_centroids(
     metric: str,
     eps: float = 1e-8,
 ) -> dict[str, list[float]]:
-    """Compute centroids appropriate for the configured metric.
-
-    metric="cosine": spherical centroid (mean of L2-normalised samples, re-normalised).
-    metric="euclidean": arithmetic mean.
-    """
+    """Per-cluster centroids: spherical mean for cosine, arithmetic mean otherwise."""
     result: dict[str, list[float]] = {}
     for cid in np.unique(y_cluster):
         if int(cid) == -1:
@@ -177,17 +153,16 @@ def prepare_complexity_graph(
     metric: str = "cosine",
     random_state: int = 42,
 ) -> ComplexityGraph:
-    """Cluster-stratified subsample + shared k-NN graph.
-
-    The graph depends only on the feature space, not the partition, so one
-    cluster-stratified subsample serves both the cluster-level and class-level
-    passes (every class is a union of its clusters). Built once, reused for both.
-    `max_samples=None` uses all samples; metric is "cosine" or "euclidean".
-    """
+    """Build the cluster-stratified subsample and the k-NN graph shared by both passes."""
     if max_samples is not None and len(y_cluster) > max_samples:
         n_orig = len(y_cluster)
         X_num, X_cat, y_class, y_cluster = _stratified_subsample(
-            X_num, X_cat, y_class, y_cluster, max_samples, min_per_cluster,
+            X_num,
+            X_cat,
+            y_class,
+            y_cluster,
+            max_samples,
+            min_per_cluster,
             random_state=random_state,
         )
         logger.info(
@@ -212,20 +187,11 @@ def compute_complexity_from_graph(
     noise_cluster_ids: set[int] | None = None,
     random_state: int = 42,
 ) -> dict[str, dict[str, float | None]]:
-    """All complexity-measure families for one partition of `graph`.
-
-    `y_partition` selects the partition: cluster labels for cluster-level
-    measures, class labels for class-level. All aggregations are vs the top-K
-    nearest adversarial partitions (different class). Output keys are neutral.
-    `noise_cluster_ids` (excluded from the graph upstream) get a flag-only row
-    (is_noise_cluster=True, measures null) to preserve the downstream contract.
-    """
+    """Compute every complexity-measure family for one partition of `graph`."""
     X_num, X_cat, y_class = graph.X_num, graph.X_cat, graph.y_class
     knn_idx, knn_dist = graph.knn_idx, graph.knn_dist
 
     cluster_mask, cluster_to_class = _build_population_masks(y_class, y_partition)
-
-    # metric-appropriate centroids, reused for both the top-K map and the G-family
     analysis_centroids = _compute_analysis_centroids(X_num, y_partition, metric=metric)
 
     top_k_map = _build_topk_map(
@@ -234,9 +200,7 @@ def compute_complexity_from_graph(
 
     with tqdm(total=5, desc="complexity families", unit="family") as pbar:
         pbar.set_description("F measures")
-        f_out = compute_f_measures(
-            X_num, y_partition, top_k_map, metric=metric
-        )
+        f_out = compute_f_measures(X_num, y_partition, top_k_map, metric=metric)
         pbar.update(1)
 
         pbar.set_description("N measures")
@@ -261,8 +225,11 @@ def compute_complexity_from_graph(
 
         pbar.set_description("G measures")
         g_out = compute_cluster_geometry(
-            X_num, y_partition, analysis_centroids,
-            metric=metric, random_state=random_state,
+            X_num,
+            y_partition,
+            analysis_centroids,
+            metric=metric,
+            random_state=random_state,
         )
         pbar.update(1)
 
@@ -279,8 +246,6 @@ def compute_complexity_from_graph(
         row["is_noise_cluster"] = False
         result[cid] = row
 
-    # Noise pseudo-clusters have no geometry but still need a row so the failure
-    # meta-model can exclude them and report their test-support share.
     for nid in noise_cluster_ids or set():
         result[str(nid)] = {"is_noise_cluster": True}
 

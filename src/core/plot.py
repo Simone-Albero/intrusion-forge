@@ -3,11 +3,7 @@ from dataclasses import dataclass
 
 @dataclass
 class Plot:
-    """Immutable, self-contained figure payload.
-
-    Carries the rendered bytes and their format; produced by the plotting
-    helpers in `src.domain.plot` and routed to subscribers via `LogBundle`.
-    """
+    """Self-contained figure payload: the rendered bytes and their format."""
 
     data: bytes
     format: str = "png"

@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 def _make_class_weight(
     class_weight: Tensor | list[float] | None, device: torch.device
 ) -> Tensor | None:
+    """Coerce the class weights into a tensor on `device`."""
     if class_weight is None:
         return None
     if not isinstance(class_weight, torch.Tensor):
@@ -45,6 +46,7 @@ class CrossEntropyLoss(BaseLoss):
             self.class_weight = None
 
     def forward(self, x: Tensor, target: Tensor) -> Tensor:
+        """Weighted cross-entropy over the non-ignored targets."""
         loss = F.cross_entropy(
             x,
             target,
@@ -85,6 +87,7 @@ class FocalLoss(BaseLoss):
             self.class_weight = None
 
     def forward(self, x: Tensor, target: Tensor) -> Tensor:
+        """Focal loss over the non-ignored targets."""
         valid = target != self.ignore_index
         ce_loss = F.cross_entropy(
             x,
@@ -100,8 +103,6 @@ class FocalLoss(BaseLoss):
                 int((~valid).sum()),
                 self.ignore_index,
             )
-        # Ignored positions get a valid dummy index so gather stays in range;
-        # they are dropped by the mask below.
         safe_target = target.clamp_min(0)
         p_t = torch.softmax(x, dim=1).gather(1, safe_target.unsqueeze(1)).squeeze(1)
         loss = (1 - p_t) ** self.gamma * ce_loss

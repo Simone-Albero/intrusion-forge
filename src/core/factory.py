@@ -3,7 +3,7 @@ import pkgutil
 import re
 from collections.abc import Callable
 from pathlib import Path
-from typing import Generic, TypeVar, Type
+from typing import Generic, Type, TypeVar
 
 T = TypeVar("T")
 
@@ -68,17 +68,14 @@ class Factory(Generic[T]):
 
 
 def _to_snake_case(name: str) -> str:
+    """Convert a PascalCase class name to snake_case."""
     return re.sub(
         r"([a-z0-9])([A-Z])", r"\1_\2", re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", name)
     ).lower()
 
 
 def discover_and_import_modules(package_path: Path, package_name: str) -> list[str]:
-    """Recursively import all modules in a package, triggering decorator registration.
-
-    Import failures raise: a module that fails to import would silently drop
-    its registrations from the factory, surfacing only as a late KeyError.
-    """
+    """Recursively import every module in a package, triggering decorator registration."""
     imported: list[str] = []
     for _, modname, _ in pkgutil.walk_packages(
         path=[str(package_path)], prefix=f"{package_name}."

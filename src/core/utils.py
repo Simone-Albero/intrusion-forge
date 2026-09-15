@@ -3,10 +3,11 @@ import json
 import logging
 import math
 import pickle
-import joblib
 import time
+from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Iterable
+
+import joblib
 
 
 def _nan_to_none(obj: object) -> object:
@@ -69,8 +70,8 @@ def load_from_joblib(file_path: str | Path) -> object:
 _TIMING_RECORDS: list[dict] = []
 
 
-def timed(fn):
-    """Measure wall-clock execution time of fn, log elapsed time, and record it."""
+def timed(fn: Callable) -> Callable:
+    """Measure the wall-clock time of `fn`, log it and record it for `flush_timing`."""
 
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):

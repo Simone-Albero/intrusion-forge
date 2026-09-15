@@ -2,16 +2,11 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
-
 Sample = tuple[list[torch.Tensor], list[torch.Tensor]]
 
 
 class TabularDataset(Dataset):
-    """Dataset for tabular data with mixed numerical and categorical features.
-
-    Yields ``(features, labels)`` as lists of tensors; with no label column,
-    ``labels`` aliases ``features``.
-    """
+    """Tabular dataset yielding `(features, labels)` as lists of tensors."""
 
     def __init__(
         self,

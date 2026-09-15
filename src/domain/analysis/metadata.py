@@ -31,7 +31,7 @@ def compute_df_metadata(
     *,
     label_mapping: dict | None = None,
 ) -> dict:
-    """Metadata dict for named DataFrame splits; class weights come from the "train" split (or the first if absent)."""
+    """Metadata for the named splits, with class weights taken from the train split."""
     if not splits:
         raise ValueError("splits must contain at least one DataFrame.")
 

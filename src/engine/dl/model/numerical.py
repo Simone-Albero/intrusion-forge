@@ -3,6 +3,7 @@ from collections.abc import Callable, Sequence
 from torch import nn
 
 from src.engine.dl.module.encoder import NumericalEncoderModule
+
 from . import DLClassifierFactory
 from .base import ComposableClassifier
 

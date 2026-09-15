@@ -1,4 +1,4 @@
-from typing import Callable
+from collections.abc import Callable
 
 import numpy as np
 import pandas as pd
@@ -6,7 +6,7 @@ import shap
 
 
 def summarize_background(background: pd.DataFrame, k: int) -> object:
-    """Compress the background to k weighted k-means centroids; pass through if it has at most k rows."""
+    """Compress the background to k weighted k-means centroids, or pass it through."""
     if len(background) <= k:
         return background
     return shap.kmeans(background, k)
@@ -19,7 +19,7 @@ def kernel_shap_values(
     *,
     nsamples: int | str = "auto",
 ) -> np.ndarray:
-    """Model-agnostic SHAP values via KernelExplainer, shaped (n_samples, n_features, n_outputs)."""
+    """Model-agnostic SHAP values, shaped (n_samples, n_features, n_outputs)."""
     explainer = shap.KernelExplainer(predict_fn, background)
     values = explainer.shap_values(samples, nsamples=nsamples, silent=True)
     if isinstance(values, list):

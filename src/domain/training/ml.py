@@ -1,6 +1,5 @@
-from pathlib import Path
-
 import tempfile
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -12,6 +11,7 @@ from src.engine.ml.preprocessing import build_pipeline
 
 
 def _check_context(context: dict | None) -> tuple[list[str], list[str]]:
+    """Return (num_cols, cat_cols) from the context, raising when it is missing."""
     if context is None:
         raise ValueError(
             "ML training requires `context` with `num_cols` and `cat_cols`."
@@ -20,6 +20,7 @@ def _check_context(context: dict | None) -> tuple[list[str], list[str]]:
 
 
 def _strip_clf_prefix(params: dict) -> dict:
+    """Drop the pipeline step prefix from grid-search parameter names."""
     return {k.replace("clf__", "", 1): v for k, v in params.items()}
 
 
@@ -33,10 +34,7 @@ def fit_classifier(
     y_val: np.ndarray | None = None,
     context: dict | None = None,
 ) -> tuple[Pipeline, dict]:
-    """Build an sklearn pipeline (preprocess + classifier), fit it on (X, y).
-
-    `X_val`/`y_val` are accepted for interface parity with DL but ignored.
-    """
+    """Build an sklearn pipeline of preprocessing plus classifier and fit it on (X, y)."""
     num_cols, cat_cols = _check_context(context)
     pipeline = build_pipeline(name, params, num_cols, cat_cols)
     pipeline.fit(X, y)
@@ -57,12 +55,7 @@ def grid_search_classifier(
     context: dict | None = None,
     random_state: int = 42,
 ) -> tuple[Pipeline, dict]:
-    """Cross-validated grid search over the classifier step of the pipeline.
-
-    Transform steps are cached so each fold preprocesses once; when `max_samples`
-    is exceeded the search runs on a stratified subsample and the winner is refit
-    on the full data.
-    """
+    """Cross-validated grid search over the classifier step, refitting the winner on all data."""
     num_cols, cat_cols = _check_context(context)
     clf_grid = {f"clf__{k}": v for k, v in grid.items()}
 
@@ -125,11 +118,7 @@ def predict_with_proba(
     context: dict | None = None,
     return_embedding: bool = False,
 ) -> tuple:
-    """Return (y_pred, y_proba) for the pipeline.
-
-    ML pipelines have no embedding, so `return_embedding=True` returns z=None as
-    a third element, symmetric with the DL path.
-    """
+    """Predict a DataFrame → (y_pred, y_proba); ML pipelines have no embedding, so z is None."""
     y_pred, y_proba = pipeline.predict(X), pipeline.predict_proba(X)
     if return_embedding:
         return y_pred, y_proba, None
@@ -144,12 +133,12 @@ def save_model(
     params: dict | None = None,
     suffix: str = "",
 ) -> None:
-    """Save the full sklearn Pipeline to ``path / f'model{suffix}.joblib'``."""
+    """Save the full sklearn Pipeline to `path / model{suffix}.joblib`."""
     save_to_joblib(pipeline, Path(path) / f"model{suffix}.joblib")
 
 
 def load_model(
     path: Path, *, context: dict | None = None, suffix: str = ""
 ) -> Pipeline:
-    """Load the sklearn Pipeline from ``path / f'model{suffix}.joblib'``."""
+    """Load the sklearn Pipeline from `path / model{suffix}.joblib`."""
     return load_from_joblib(Path(path) / f"model{suffix}.joblib")

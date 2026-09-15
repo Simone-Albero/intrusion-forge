@@ -19,11 +19,7 @@ def setup_logger(
     log_file: str | None = None,
     file_level: int | None = None,
 ) -> logging.Logger:
-    """Configure the root logger with optional console and append-mode file handlers.
-
-    The file handler appends to a single log file (no rotation). Handlers are
-    only added once, even if you call this multiple times.
-    """
+    """Configure the root logger with optional console and append-mode file handlers."""
     root = logging.getLogger()
     root.setLevel(level)
 
@@ -39,7 +35,6 @@ def setup_logger(
 
     if log_file:
         file_level = file_level or level
-        # match FileHandler's own normalization (abspath, symlinks untouched)
         resolved_path = os.path.abspath(log_file)
         Path(log_file).parent.mkdir(parents=True, exist_ok=True)
         existing = [
@@ -59,12 +54,7 @@ def setup_logger(
 
 @dataclass
 class LogBundle:
-    """Structured payload routed to subscribers.
-
-    Each field is a dict keyed by relative path (without extension), resolved
-    against the corresponding subscriber's base directory.
-    Build from a prefixed-key dict via `LogBundle.from_dict`.
-    """
+    """Structured payload routed to subscribers, keyed by extension-less relative path."""
 
     figures: dict[str, Plot] = field(default_factory=dict)
     json: dict[str, Any] = field(default_factory=dict)
@@ -72,11 +62,7 @@ class LogBundle:
 
     @classmethod
     def from_dict(cls, d: dict) -> "LogBundle":
-        """Build a LogBundle from a flat dict with type-prefixed keys.
-
-        Recognised prefixes: 'figure/', 'json/', 'pickle/'. Keys without a
-        recognised prefix are silently ignored.
-        """
+        """Build a LogBundle from a flat dict keyed by 'figure/', 'json/' or 'pickle/' paths."""
         figures: dict[str, Plot] = {}
         json_: dict[str, Any] = {}
         pickle_: dict[str, Any] = {}
@@ -117,6 +103,7 @@ class FilesystemFigureSubscriber:
         self._base_path = Path(base_path)
 
     def on_log(self, bundle: LogBundle) -> None:
+        """Write every figure in the bundle."""
         for name, plot in bundle.figures.items():
             out = self._base_path / f"{name}.{plot.format}"
             out.parent.mkdir(parents=True, exist_ok=True)
@@ -130,6 +117,7 @@ class JSONSubscriber:
         self._base_path = Path(base_path)
 
     def on_log(self, bundle: LogBundle) -> None:
+        """Write every JSON artifact in the bundle."""
         for name, value in bundle.json.items():
             save_to_json(value, self._base_path / f"{name}.json")
 
@@ -141,5 +129,6 @@ class PickleSubscriber:
         self._base_path = Path(base_path)
 
     def on_log(self, bundle: LogBundle) -> None:
+        """Write every pickle artifact in the bundle."""
         for name, value in bundle.pickle.items():
             save_to_pickle(value, self._base_path / f"{name}.pkl")

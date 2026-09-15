@@ -5,9 +5,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from omegaconf import OmegaConf
+from sklearn.preprocessing import RobustScaler
 from tqdm import tqdm
 
 from src.core.config import load_config, save_config
+from src.core.io import load_df, save_df
 from src.core.log import (
     JSONSubscriber,
     LogBundle,
@@ -15,15 +17,18 @@ from src.core.log import (
     setup_logger,
 )
 from src.core.utils import flush_timing, skip_if_exists, timed
-
+from src.domain.analysis.complexity.shared import l2_normalize
 from src.domain.analysis.metadata import (
     compute_clusters_metadata,
     compute_df_metadata,
     get_df_info,
 )
-from src.core.io import load_df, save_df
-from sklearn.preprocessing import RobustScaler
-
+from src.domain.clustering import build_cluster_fn, resolution_aware_floor
+from src.domain.clustering.base import (
+    assign_clusters_within_class,
+    assign_nearest_centroid,
+    cluster_size_balance,
+)
 from src.domain.data.preprocessing import (
     LogTransformer,
     TopNHashEncoder,
@@ -34,13 +39,6 @@ from src.domain.data.preprocessing import (
     query_filter,
     rare_category_filter,
 )
-from src.domain.analysis.complexity.shared import _l2_normalize
-from src.domain.clustering import build_cluster_fn, resolution_aware_floor
-from src.domain.clustering.base import (
-    assign_clusters_within_class,
-    assign_nearest_centroid,
-    cluster_size_balance,
-)
 
 setup_logger(log_file="resources/logs.txt")
 logger = logging.getLogger(__name__)
@@ -49,6 +47,7 @@ logger = logging.getLogger(__name__)
 def _absorb_small_clusters(
     labels: np.ndarray, floor: int
 ) -> tuple[np.ndarray, int, int]:
+    """Turn clusters smaller than `floor` back into noise."""
     ids, counts = np.unique(labels[labels != -1], return_counts=True)
     small = ids[counts < floor]
     if small.size == 0:
@@ -73,19 +72,7 @@ def _cluster_per_class(
     grid_target_cluster_size: int | None = None,
     resolution_weight: float = 0.1,
 ) -> tuple[np.ndarray, dict[int, np.ndarray], set[int], dict[str, dict]]:
-    """Per-class clustering. Returns (labels, centroids, noise_cluster_ids, report).
-
-    Cluster IDs are globally unique via offset. Residual -1 noise points (and
-    clusters absorbed by the resolution-aware floor, capped at `min_cluster_floor`
-    — see `resolution_aware_floor`) are reassigned to per-class pseudo-clusters;
-    their IDs are collected in noise_cluster_ids.
-
-    `max_clusters_total` caps the total number of genuine clusters so the complexity
-    subsample floor never exceeds the cap (= max_complexity_samples // floor). It is
-    split equally across classes; None leaves the count driven by the data-relative grid.
-    `min_clusters` is the symmetric per-class floor passed to `grid_search`, guarding
-    against the selected partition collapsing to too few clusters regardless of size.
-    """
+    """Cluster each class separately, folding noise into per-class pseudo-clusters."""
     n = X_num.shape[0]
     max_clusters_per_class = (
         max(2, max_clusters_total // len(classes))
@@ -102,7 +89,7 @@ def _cluster_per_class(
         if not mask.any():
             continue
         X_num_cls = X_num[mask]
-        X_num_cls = _l2_normalize(X_num_cls) if metric == "cosine" else X_num_cls
+        X_num_cls = l2_normalize(X_num_cls) if metric == "cosine" else X_num_cls
         X_cat_cls = X_cat[mask] if X_cat is not None else None
 
         algo_reports: dict[str, dict] = {}
@@ -147,7 +134,6 @@ def _cluster_per_class(
 
         cluster_ids = np.unique(raw_labels[raw_labels != -1])
         labels[mask] = np.where(raw_labels == -1, -1, raw_labels + offset)
-        # centroids on the raw (un-normalized) features; materialize once per class
         X_raw_cls = X_num[mask]
         for cid in cluster_ids:
             centroids[int(cid + offset)] = X_raw_cls[raw_labels == cid].mean(axis=0)
@@ -172,19 +158,19 @@ def _cluster_per_class(
 
 @timed
 def preprocess_df(
-    df,
-    num_cols,
-    cat_cols,
-    label_col,
-    filter_query,
-    min_cat_count,
-    train_frac,
-    val_frac,
-    test_frac,
-    random_state,
-    top_n,
-    hash_buckets,
-):
+    df: pd.DataFrame,
+    num_cols: list[str],
+    cat_cols: list[str],
+    label_col: str,
+    filter_query: str | None,
+    min_cat_count: int,
+    train_frac: float,
+    val_frac: float,
+    test_frac: float,
+    random_state: int,
+    top_n: int,
+    hash_buckets: int,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Preprocess dataframe: filter, encode, scale, and split."""
     logger.info(
         "Preprocessing: %d rows, %d num_cols, %d cat_cols",
@@ -241,12 +227,7 @@ def _cluster_splits(
     label_col: str,
     dispatcher: LogDispatcher,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict, set[int]]:
-    """Cluster train per class, then attach the `cluster` column to all splits.
-
-    Train is labelled by the per-class clusterer; val/test points are assigned
-    inductively to the nearest train centroid within their own class. Returns the
-    splits, centroids and pseudo-cluster ids; publishes the clustering report.
-    """
+    """Cluster train per class, then attach the `cluster` column to every split."""
     X_num = train_df[num_cols].to_numpy(dtype=np.float64)
     X_cat = train_df[cat_cols].to_numpy() if cat_cols else None
     y_class = train_df[label_col].to_numpy()
@@ -254,11 +235,9 @@ def _cluster_splits(
 
     logger.info("Running per-class clustering on train (n=%d)...", len(train_df))
     algorithms = OmegaConf.to_container(cfg.clustering.algorithms, resolve=True)
-    # Cap genuine clusters so the complexity subsample floor never exceeds the cap
-    # (floor·n_clusters ≤ max_complexity_samples). Ties cluster count to the complexity
-    # budget; split equally across classes inside _cluster_per_class.
     max_clusters_total = (
-        cfg.complexity.max_complexity_samples // cfg.complexity.min_subsample_per_cluster
+        cfg.complexity.max_complexity_samples
+        // cfg.complexity.min_subsample_per_cluster
     )
     labels, centroids, noise_cluster_ids, clustering_report = _cluster_per_class(
         X_num,
@@ -279,7 +258,6 @@ def _cluster_splits(
         LogBundle.from_dict({"json/clustering_report": clustering_report})
     )
 
-    # cluster → class map from train (each cluster is single-class by construction)
     cluster_to_class = {
         int(cid): y_class[labels == cid][0] for cid in np.unique(labels)
     }
@@ -363,8 +341,8 @@ def _publish_metadata(
 
 
 @timed
-def prepare(cfg):
-    """Prepare data given a configuration object."""
+def prepare(cfg) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict]:
+    """Preprocess, cluster and persist the train/val/test splits."""
     num_cols = list(cfg.data.num_cols) if cfg.data.num_cols else []
     cat_cols = list(cfg.data.cat_cols) if cfg.data.cat_cols else []
     label_col = cfg.data.label_col
@@ -433,8 +411,8 @@ def prepare(cfg):
     return train_df, val_df, test_df, metadata
 
 
-def main():
-    """Main entry point for data preparation."""
+def main() -> None:
+    """Entry point for the data preparation stage."""
     cfg = load_config(
         config_path=Path(__file__).parent.parent / "configs",
         config_name="config",

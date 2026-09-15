@@ -42,8 +42,8 @@ METRIC_COLORSCALE_BOUNDS: dict[str, tuple[float | None, float | None]] = {
     "recall_macro": (0.0, 1.0),
     "fc_spearman": (-1.0, 1.0),
     "fc_r2": (-1.0, 1.0),
-    "fc_mae": (None, None),  # auto-range; lower-is-better
-    "fc_sel_lift": (None, None),  # auto-range; higher-is-better
+    "fc_mae": (None, None),
+    "fc_sel_lift": (None, None),
     "fc_sel_recall_lift": (None, None),
     "fc_oracle_recovered": (0.0, 1.0),
 }
@@ -90,10 +90,12 @@ class ExperimentRecord:
 
     @property
     def key(self) -> str:
+        """Stable identifier of the experiment."""
         return f"{self.variant}|{self.dataset_dir}|{self.classifier}"
 
     @property
     def label(self) -> str:
+        """Human-readable name shown in selectors."""
         return f"{self.variant} · {self.file_name} · {self.classifier}"
 
 
@@ -114,6 +116,7 @@ class ExperimentDetail:
 
 
 def _read_json(path: Path) -> dict | list | None:
+    """Parsed JSON file, or None when missing or malformed."""
     try:
         with path.open() as f:
             return json.load(f)
@@ -122,6 +125,7 @@ def _read_json(path: Path) -> dict | list | None:
 
 
 def _read_pickle(path: Path) -> Any:
+    """Unpickled file, or None when missing or malformed."""
     try:
         with path.open("rb") as f:
             return pickle.load(f)
@@ -130,6 +134,7 @@ def _read_pickle(path: Path) -> Any:
 
 
 def _safe_float(value: Any) -> float | None:
+    """Value as a finite float, or None."""
     if value is None:
         return None
     try:
@@ -162,6 +167,7 @@ def _classifier_family(classifier_dir: Path) -> Literal["ml", "dl"]:
 
 
 def _extract_headline_metrics(classifier_dir: Path) -> dict[str, float | bool | None]:
+    """Headline test and failure-regressor metrics of one classifier run."""
     summary = _read_json(classifier_dir / "outputs" / "testing" / "summary.json") or {}
     fc = (
         _read_json(classifier_dir / "outputs" / "analysis" / "classifier_results.json")
@@ -198,10 +204,7 @@ def _is_classifier_dir(path: Path) -> bool:
 
 @st.cache_data(show_spinner="Scanning experiments…")
 def discover_experiments(root: str) -> tuple[list[ExperimentRecord], int]:
-    """Walk `root/<variant>/<dataset_dir>/` and emit one record per classifier.
-
-    Returns `(records, n_skipped_legacy)`.
-    """
+    """Walk `root/<variant>/<dataset_dir>/` and emit one record per classifier."""
     root_path = Path(root)
     records: list[ExperimentRecord] = []
     skipped = 0
@@ -244,6 +247,7 @@ def discover_experiments(root: str) -> tuple[list[ExperimentRecord], int]:
 
 
 def _cluster_summary_df(data: dict | None) -> pd.DataFrame | None:
+    """Cluster summary as a DataFrame sorted by failure rate."""
     if not data:
         return None
     df = pd.DataFrame([{"cluster_id": cid, **row} for cid, row in data.items()])
@@ -367,6 +371,7 @@ def filter_records(
     datasets: list[str] | None = None,
     classifiers: list[str] | None = None,
 ) -> list[ExperimentRecord]:
+    """Records matching every given filter."""
     out = records
     if variants is not None:
         out = [r for r in out if r.variant in variants]
@@ -380,6 +385,7 @@ def filter_records(
 
 
 def find_record(records: list[ExperimentRecord], key: str) -> ExperimentRecord | None:
+    """Record with the given key, or None."""
     for r in records:
         if r.key == key:
             return r
@@ -414,6 +420,7 @@ def find_figure(record: ExperimentRecord, relative: str) -> Path | None:
 def render_figure_if_present(
     record: ExperimentRecord, relative: str, caption: str
 ) -> bool:
+    """Display a figure when it exists; report whether it did."""
     path = find_figure(record, relative)
     if path is None:
         return False
@@ -429,6 +436,7 @@ def _apply_matrix_layout(
     xaxis_title: str,
     yaxis_title: str = "Dataset",
 ) -> None:
+    """Apply the shared matrix-figure layout."""
     fig.update_layout(
         title=title,
         xaxis_title=xaxis_title,
@@ -444,20 +452,13 @@ def _apply_matrix_layout(
     )
 
 
-# Margins assumed by the diagonal-split matrices, so figure width/height can be
-# derived to make each plotted cell exactly square (l + r and t + b).
 _SPLIT_MARGIN_LR = 120 + 150
 _SPLIT_MARGIN_TB = 60 + 80
 _SPLIT_CELL_PX = 72
 
 
 def _size_square_cells(fig: go.Figure, *, n_cols: int, n_rows: int) -> None:
-    """Fix figure width/height so each plotted cell is `_SPLIT_CELL_PX` square.
-
-    The diagonal-split matrices draw triangles in data coordinates; only square
-    cells render the split as a clean 45° corner-to-corner. Pair with
-    `width="content"` in `st.plotly_chart` so Streamlit does not stretch it back.
-    """
+    """Fix figure width and height so each plotted cell is `_SPLIT_CELL_PX` square."""
     fig.update_layout(
         margin=dict(l=120, r=150, t=60, b=80),
         width=_SPLIT_MARGIN_LR + max(n_cols, 1) * _SPLIT_CELL_PX,
@@ -473,6 +474,7 @@ def heatmap_fig(
     zmin: float | None = None,
     zmax: float | None = None,
 ) -> go.Figure:
+    """Dataset × classifier heatmap of one metric."""
     z = pivot.values.astype(float)
     text = np.where(np.isnan(z), "", np.vectorize(lambda v: f"{v:.3f}")(z))
     fig = go.Figure(
@@ -501,15 +503,7 @@ def split_count_heatmap_fig(
     *,
     title: str,
 ) -> go.Figure:
-    """Diagonal-split cluster matrix: upper-left = total clusters, lower-right = clusters with failure>0.
-
-    Upper-left colour (Blues) normalises the total count by the grid-wide
-    maximum, so dataset cluster-richness is comparable across rows. Lower-right
-    colour (Reds) is the per-cell failing share (failing / total) on 0..1,
-    directly readable as the fraction of clusters the classifiers stumble on
-    (averaged across classifiers). Cell text shows the raw counts; two colorbars
-    decode the halves. An invisible marker layer carries the hover tooltip.
-    """
+    """Diagonal-split matrix: total clusters upper-left, failing share lower-right."""
     columns = list(total_pivot.columns)
     rows = list(total_pivot.index)
     tot = total_pivot.values.astype(float)
@@ -520,6 +514,7 @@ def split_count_heatmap_fig(
     neutral = "#f0f0f0"
 
     def _col(scale: str, t: float) -> str:
+        """Colour of a normalised value on a scale, neutral when undefined."""
         if not np.isfinite(t):
             return neutral
         return px.colors.sample_colorscale(scale, [min(max(t, 0.0), 1.0)])[0]
@@ -539,7 +534,6 @@ def split_count_heatmap_fig(
                 if (np.isfinite(fv) and np.isfinite(tv) and tv > 0)
                 else float("nan")
             )
-            # upper-left triangle (total clusters): bottom-left → top-left → top-right
             fig.add_shape(
                 type="path",
                 path=f"M {i - 0.5},{j - 0.5} L {i - 0.5},{j + 0.5} L {i + 0.5},{j + 0.5} Z",
@@ -547,7 +541,6 @@ def split_count_heatmap_fig(
                 line=dict(color="white", width=1),
                 layer="below",
             )
-            # lower-right triangle (failing share): bottom-left → bottom-right → top-right
             fig.add_shape(
                 type="path",
                 path=f"M {i - 0.5},{j - 0.5} L {i + 0.5},{j - 0.5} L {i + 0.5},{j + 0.5} Z",
@@ -562,9 +555,7 @@ def split_count_heatmap_fig(
                         y=j + 0.22,
                         text=f"{int(round(tv))}",
                         showarrow=False,
-                        font=dict(
-                            size=10, color="white" if t_top > 0.55 else "black"
-                        ),
+                        font=dict(size=10, color="white" if t_top > 0.55 else "black"),
                     )
                 )
             if np.isfinite(fv):
@@ -576,9 +567,11 @@ def split_count_heatmap_fig(
                         showarrow=False,
                         font=dict(
                             size=10,
-                            color="white"
-                            if (np.isfinite(frac) and frac > 0.55)
-                            else "black",
+                            color=(
+                                "white"
+                                if (np.isfinite(frac) and frac > 0.55)
+                                else "black"
+                            ),
                         ),
                     )
                 )
@@ -602,7 +595,6 @@ def split_count_heatmap_fig(
             showlegend=False,
         )
     )
-    # Two invisible markers exist only to render the paired colorbars.
     fig.add_trace(
         go.Scatter(
             x=[None],
@@ -660,6 +652,7 @@ def split_count_heatmap_fig(
 def confusion_matrix_fig(
     cm: np.ndarray, labels: list[str], *, title: str = ""
 ) -> go.Figure:
+    """Confusion-matrix heatmap."""
     is_normalized = cm.dtype.kind == "f" and cm.max() <= 1.0 + 1e-6
     fig = go.Figure(
         go.Heatmap(
@@ -689,6 +682,7 @@ def per_class_bar_fig(
     precision: list[float],
     recall: list[float],
 ) -> go.Figure:
+    """Grouped per-class F1, precision and recall bars."""
     fig = go.Figure()
     fig.add_trace(go.Bar(name="F1", x=classes, y=f1, marker_color="#1f77b4"))
     fig.add_trace(
@@ -707,6 +701,7 @@ def per_class_bar_fig(
 
 
 def feature_importance_bar(importances: dict, *, top_k: int = 20) -> go.Figure:
+    """Horizontal bar chart of the top-K feature importances."""
     pairs = sorted(importances.items(), key=lambda kv: kv[1], reverse=True)[:top_k]
     names = [p[0] for p in pairs][::-1]
     values = [p[1] for p in pairs][::-1]
@@ -721,6 +716,7 @@ def feature_importance_bar(importances: dict, *, top_k: int = 20) -> go.Figure:
 
 
 def pred_vs_actual_fig(fc: dict, cluster_df: pd.DataFrame) -> go.Figure:
+    """Scatter of predicted against observed per-cluster failure rate."""
     predicted = fc.get("oof_predicted_rate", {})
     df = cluster_df[["cluster_id", "cluster_class", "failure_rate"]].copy()
     df["predicted"] = df["cluster_id"].astype(str).map(predicted)
@@ -756,9 +752,7 @@ def pred_vs_actual_fig(fc: dict, cluster_df: pd.DataFrame) -> go.Figure:
 def selective_curve_fig(
     fc: dict, cluster_df: pd.DataFrame, *, metric: str = "accuracy"
 ) -> go.Figure | None:
-    """Selective-prediction curve: reject the riskiest clusters first (x = fraction
-    rejected), retained-set accuracy or macro-recall on y. Reconstructed from the
-    persisted OOF predictions via the same pure functions as the pipeline."""
+    """Selective-prediction curve rebuilt from the persisted OOF predictions."""
     needed = ["cluster_id", "failure_rate", "n_test"]
     if metric == "macro_recall":
         needed.append("cluster_class")
@@ -789,9 +783,13 @@ def selective_curve_fig(
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=1.0 - cov_p, y=val_p, mode="lines", name="Predictor"))
     fig.add_trace(
-        go.Scatter(x=1.0 - cov_o, y=val_o, mode="lines", name="Oracle", line=dict(dash="dot"))
+        go.Scatter(
+            x=1.0 - cov_o, y=val_o, mode="lines", name="Oracle", line=dict(dash="dot")
+        )
     )
-    fig.add_hline(y=baseline, line_dash="dash", line_color="grey", annotation_text="Random")
+    fig.add_hline(
+        y=baseline, line_dash="dash", line_color="grey", annotation_text="Random"
+    )
     fig.update_layout(
         height=380,
         xaxis=dict(title="Fraction rejected (riskiest first)", range=[0, 1]),
@@ -802,6 +800,7 @@ def selective_curve_fig(
 
 
 def failure_rate_strip(cluster_df: pd.DataFrame, label_map: dict) -> go.Figure:
+    """Strip plot of per-cluster failure rate, grouped by class."""
     plot_df = cluster_df[["cluster_id", "cluster_class", "failure_rate"]].copy()
     plot_df["class_name"] = plot_df["cluster_class"].map(
         lambda c: label_map.get(str(int(c)), str(int(c)))
@@ -838,6 +837,7 @@ def _cluster_feature_candidates(cdf: pd.DataFrame) -> tuple[list[str], str]:
 def _filter_figures_by_category(
     figures: dict[str, str], category: str
 ) -> dict[str, str]:
+    """Figures whose relative path belongs to a category."""
     if category == "all":
         return figures
     return {
@@ -850,6 +850,7 @@ def _filter_figures_by_category(
 def panel_test_performance(
     record: ExperimentRecord, detail: ExperimentDetail, key_prefix: str = "drill"
 ) -> None:
+    """Panel: headline test metrics and the per-class F1 figure."""
     st.markdown("**Test performance**")
     if detail.testing is None:
         st.caption("No `outputs/testing/summary.json` for this run.")
@@ -870,6 +871,7 @@ def panel_test_performance(
 def panel_confusion_matrix(
     record: ExperimentRecord, detail: ExperimentDetail, key_prefix: str = "drill"
 ) -> None:
+    """Panel: confusion matrix, from the pickled array or the rendered figure."""
     st.markdown("**Confusion matrix**")
     labels = list((detail.df_meta.get("label_mapping") or {}).values())
     if detail.confusion_matrix is not None:
@@ -890,6 +892,7 @@ def panel_confusion_matrix(
 def panel_failure_classifier(
     record: ExperimentRecord, detail: ExperimentDetail, key_prefix: str = "drill"
 ) -> None:
+    """Panel: failure-regressor scores and its selective-prediction curves."""
     st.markdown("**Failure regressor (RF on cluster complexity)**")
     fc = detail.classifier_results
     if fc is None:
@@ -956,6 +959,7 @@ def panel_failure_classifier(
 def panel_feature_importances(
     record: ExperimentRecord, detail: ExperimentDetail, key_prefix: str = "drill"
 ) -> None:
+    """Panel: top-K feature importances of the failure regressor."""
     st.markdown("**Feature importances (failure classifier)**")
     fc = detail.classifier_results
     if fc is None:
@@ -980,6 +984,7 @@ def panel_feature_importances(
 def panel_feature_distribution(
     record: ExperimentRecord, detail: ExperimentDetail, key_prefix: str = "drill"
 ) -> None:
+    """Panel: distribution of one complexity feature across clusters."""
     st.markdown("**Feature distribution across clusters**")
     cdf = detail.cluster_summary
     if cdf is None or cdf.empty:
@@ -1008,6 +1013,7 @@ def panel_feature_distribution(
 def panel_failure_rate_distribution(
     record: ExperimentRecord, detail: ExperimentDetail, key_prefix: str = "drill"
 ) -> None:
+    """Panel: per-cluster failure rate by class."""
     st.markdown("**Failure rate distribution**")
     cdf = detail.cluster_summary
     if cdf is None or cdf.empty or "failure_rate" not in cdf.columns:
@@ -1024,6 +1030,7 @@ def panel_failure_rate_distribution(
 def panel_per_class_breakdown(
     record: ExperimentRecord, detail: ExperimentDetail, key_prefix: str = "drill"
 ) -> None:
+    """Panel: per-class F1, precision and recall."""
     st.markdown("**Per-class breakdown**")
     if detail.testing is None:
         st.caption("No `summary.json` for per-class metrics.")
@@ -1043,6 +1050,7 @@ def panel_per_class_breakdown(
 def panel_cluster_table(
     record: ExperimentRecord, detail: ExperimentDetail, key_prefix: str = "drill"
 ) -> None:
+    """Panel: cluster table sorted by failure rate."""
     st.markdown("**Cluster table** (sorted by failure rate desc)")
     cdf = detail.cluster_summary
     if cdf is None or cdf.empty:
@@ -1078,6 +1086,7 @@ def panel_sibling_classifiers(
     all_records: list[ExperimentRecord],
     key_prefix: str = "drill",
 ) -> None:
+    """Panel: metrics of every other classifier on the same dataset and seed."""
     st.markdown(f"**Other classifiers on {record.file_name} (seed {record.seed})**")
     siblings = [
         r
@@ -1122,6 +1131,7 @@ def panel_sibling_classifiers(
 
 
 def panel_training_curve(record: ExperimentRecord) -> None:
+    """Panel: DL training loss curve."""
     st.markdown("**Training curve (DL)**")
     if not render_figure_if_present(
         record, "training/loss_curve.png", "training/loss_curve"
@@ -1130,6 +1140,7 @@ def panel_training_curve(record: ExperimentRecord) -> None:
 
 
 def panel_grid_search(record: ExperimentRecord, detail: ExperimentDetail) -> None:
+    """Panel: raw ML grid-search results."""
     st.markdown("**Grid search (ML)**")
     if not detail.grid_search:
         st.caption("Grid search not run for this classifier.")
@@ -1174,7 +1185,9 @@ def _render_hypothesis_scoreboard(
     rec_lift = [r.fc_sel_recall_lift for r in rs if r.fc_sel_recall_lift is not None]
     orc = [r.fc_oracle_recovered for r in rs if r.fc_oracle_recovered is not None]
     if sel_lift or orc:
-        st.markdown("**Selective prediction** — operational value of the predicted risk")
+        st.markdown(
+            "**Selective prediction** — operational value of the predicted risk"
+        )
         s1, s2, s3 = st.columns(3)
         s1.metric(
             "Mean acc. lift vs random",
@@ -1197,6 +1210,7 @@ def render_overview(
     seed: int,
     metric: str,
 ) -> None:
+    """Overview tab: hypothesis scoreboard, cluster counts and per-variant heatmaps."""
     if not selected_variants:
         st.info("Pick at least one variant in the sidebar.")
         return
@@ -1222,8 +1236,6 @@ def render_overview(
     if cluster_rows:
         cdf = pd.DataFrame(cluster_rows)
         present = [ds for ds in ordered_datasets if ds in cdf["dataset"].values]
-        # Total clusters is dataset+variant level (same across classifiers);
-        # failing clusters is classifier-specific, so average over classifiers.
         total_pivot = (
             cdf.drop_duplicates(subset=["dataset", "variant"])
             .pivot_table(
@@ -1289,7 +1301,8 @@ def render_overview(
         if clicked is not None:
             st.session_state["drill_target"] = clicked
             st.toast(
-                f"Drill-down armed → {clicked['variant']} · {clicked['dataset']} · {clicked['classifier']}"
+                "Drill-down armed → "
+                f"{clicked['variant']} · {clicked['dataset']} · {clicked['classifier']}"
             )
 
 
@@ -1339,6 +1352,7 @@ def _heatmap_click_target(
 
 
 def render_drilldown(records: list[ExperimentRecord], seed: int) -> None:
+    """Drill-down tab: every panel for one selected experiment."""
     if not records:
         st.info("No records to drill into.")
         return
@@ -1422,6 +1436,7 @@ def render_drilldown(records: list[ExperimentRecord], seed: int) -> None:
 
 
 def render_side_by_side(records: list[ExperimentRecord], seed: int) -> None:
+    """Side-by-side tab: the core panels for two to four experiments."""
     rs = [r for r in records if r.seed == seed]
     if not rs:
         st.info("No records at the selected seed.")
@@ -1458,6 +1473,7 @@ def render_side_by_side(records: list[ExperimentRecord], seed: int) -> None:
 
 
 def render_gallery(records: list[ExperimentRecord], seed: int) -> None:
+    """Gallery tab: browse rendered figures for one or across experiments."""
     rs = [r for r in records if r.seed == seed]
     if not rs:
         st.info("No records at the selected seed.")
@@ -1481,6 +1497,7 @@ def render_gallery(records: list[ExperimentRecord], seed: int) -> None:
 
 
 def _render_gallery_single(rs_v: list[ExperimentRecord]) -> None:
+    """Gallery grid of every figure of one experiment."""
     col_d, col_c, col_cat = st.columns([1, 1, 1])
     datasets = sorted({r.file_name for r in rs_v})
     dataset = col_d.selectbox("Dataset", datasets, key="gal_dataset")
@@ -1514,6 +1531,7 @@ def _render_gallery_single(rs_v: list[ExperimentRecord]) -> None:
 
 
 def _render_gallery_cross(rs_v: list[ExperimentRecord]) -> None:
+    """Gallery matrix of one figure across datasets and classifiers."""
     all_datasets = sorted({r.file_name for r in rs_v})
     all_classifiers = sorted({r.classifier for r in rs_v})
 
@@ -1586,6 +1604,7 @@ def _render_gallery_cross(rs_v: list[ExperimentRecord]) -> None:
 def render_sidebar(
     records: list[ExperimentRecord], n_skipped: int
 ) -> tuple[str, list[str], int, str]:
+    """Sidebar filters, returning (root, variants, seed, metric)."""
     st.sidebar.title("Filters")
 
     root = st.sidebar.text_input("Experiments root", value=EXPERIMENTS_ROOT_DEFAULT)
@@ -1629,6 +1648,7 @@ def render_sidebar(
 
 
 def main() -> None:
+    """Entry point for the Streamlit dashboard."""
     st.set_page_config(page_title="Intrusion Forge — Experiments", layout="wide")
     st.title("Experiment Dashboard")
 

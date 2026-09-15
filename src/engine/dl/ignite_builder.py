@@ -1,6 +1,6 @@
+import shutil
 from collections.abc import Callable
 from pathlib import Path
-import shutil
 
 from ignite.engine import Engine, Events
 from ignite.handlers import EarlyStopping, ModelCheckpoint
@@ -87,9 +87,9 @@ class EngineBuilder:
         *,
         event: Events = Events.ITERATION_COMPLETED,
     ) -> "EngineBuilder":
-        """Collect scalars per `event` into `self.history`; `output_transform` must return a flat `{name: float}` dict."""
+        """Collect the flat `{name: float}` dict of `output_transform` into `self.history`."""
 
-        def _collect(engine):
+        def _collect(engine: Engine) -> None:
             for name, value in output_transform(engine.state.output).items():
                 self._history.setdefault(name, []).append(float(value))
 

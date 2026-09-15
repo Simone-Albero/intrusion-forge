@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from pipelines import paths_from_cfg
 from src.core.config import load_config
 from src.core.io import load_df, save_df
 from src.core.log import (
@@ -13,9 +14,7 @@ from src.core.log import (
     LogDispatcher,
     setup_logger,
 )
-from pipelines import paths_from_cfg
 from src.core.utils import flush_timing, load_from_json, skip_if_exists, timed
-
 from src.domain.analysis.complexity import (
     ComplexityGraph,
     compute_complexity_from_graph,
@@ -35,9 +34,7 @@ logger = logging.getLogger(__name__)
 def cluster_class_map(y_cluster: np.ndarray, y_class: np.ndarray) -> dict[str, int]:
     """Full cluster_id → class_id map from unfiltered train labels (noise included)."""
     return {
-        str(c): int(y_class[y_cluster == c][0])
-        for c in np.unique(y_cluster)
-        if c != -1
+        str(c): int(y_class[y_cluster == c][0]) for c in np.unique(y_cluster) if c != -1
     }
 
 
@@ -51,11 +48,7 @@ def compute_cluster_complexity(
     metric: str,
     random_state: int,
 ) -> dict:
-    """Compute per-cluster complexity measures + cluster→class mapping.
-
-    `cluster_to_class` must cover the full (unfiltered) clustering: noise
-    pseudo-clusters are absent from the graph but still need a class.
-    """
+    """Compute per-cluster complexity measures and attach the class of each cluster."""
     logger.info("Computing cluster-level complexity measures ...")
     complexity = compute_complexity_from_graph(
         graph,
@@ -92,8 +85,8 @@ def compute_class_complexity(
     )
 
 
-def main():
-    """Main entry point for complexity computation (dataset-level, shared)."""
+def main() -> None:
+    """Entry point for the dataset-level complexity stage."""
     cfg = load_config(
         config_path=Path(__file__).parent.parent / "configs",
         config_name="config",
@@ -105,9 +98,9 @@ def main():
     class_marker = paths.shared / "class_complexity.json"
     meta_marker = paths.shared / "complexity_meta.json"
     run_cluster = not skip_if_exists(cluster_marker, cfg.complexity.force, "complexity")
-    run_class = not skip_if_exists(class_marker, cfg.complexity.force, "class_complexity")
-    # Extended splits are opt-in (extend.generate). Label-free forces a rewrite so a
-    # fresh assignment is produced even when the marker already exists.
+    run_class = not skip_if_exists(
+        class_marker, cfg.complexity.force, "class_complexity"
+    )
     run_extend = cfg.extend.generate and (
         cfg.extend.labelfree
         or not skip_if_exists(meta_marker, cfg.complexity.force, "complexity_extend")
@@ -123,7 +116,6 @@ def main():
     val_df = load_df(str(paths.processed_data / f"val.{ext}"))
     test_df = load_df(str(paths.processed_data / f"test.{ext}"))
 
-    # Complexity is measured on train only; the failure rate (classify.py) on test.
     X_num = (
         train_df[num_cols].to_numpy(dtype=np.float64)
         if num_cols
@@ -135,9 +127,6 @@ def main():
     bus = LogDispatcher()
     bus.subscribe(JSONSubscriber(paths.shared))
 
-    # The k-NN graph is partition-independent: build once, reuse for the cluster-
-    # and class-level passes. Noise pseudo-clusters are excluded from the graph
-    # (they re-enter downstream only as flag-only rows).
     graph = None
     noise_cluster_ids: list[int] = []
     if run_cluster or run_class:
@@ -167,8 +156,6 @@ def main():
         )
 
     if run_cluster:
-        # Full map (noise included): genuine clusters leave the graph, but their
-        # noise siblings still need a class for the flag-only rows downstream.
         cluster_to_class = cluster_class_map(y_cluster, y_class)
         cluster_complexity = compute_cluster_complexity(
             graph,
@@ -197,18 +184,22 @@ def main():
         )
         complexity_cols = cluster_feature_columns(cluster_features)
         if not complexity_cols:
-            logger.warning("No complexity columns to attach; skipping dataset extension.")
+            logger.warning(
+                "No complexity columns to attach; skipping dataset extension."
+            )
         else:
             splits = {"train": train_df, "val": val_df, "test": test_df}
             if cfg.extend.labelfree:
-                _cm = load_from_json(paths.shared / "metadata/clusters_meta.json")
-                _centroids = _cm.get("centroids", {})
-                _noise_ids = set(_cm.get("noise_cluster_ids", []))
-                _genuine_ids = [int(k) for k in _centroids if int(k) not in _noise_ids]
+                labelfree_meta = load_from_json(
+                    paths.shared / "metadata/clusters_meta.json"
+                )
+                centroids = labelfree_meta.get("centroids", {})
+                noise_ids = set(labelfree_meta.get("noise_cluster_ids", []))
+                genuine_ids = [int(k) for k in centroids if int(k) not in noise_ids]
                 logger.info(
                     "Label-free assignment: %d centroids, %d noise excluded",
-                    len(_genuine_ids),
-                    len(_noise_ids),
+                    len(genuine_ids),
+                    len(noise_ids),
                 )
             extended: dict[str, pd.DataFrame] = {}
             for name, split_df in splits.items():
@@ -217,11 +208,13 @@ def main():
                     split_df = split_df.copy()
                     split_df["cluster"] = assign_nearest_centroid(
                         X_num_split,
-                        _centroids,
+                        centroids,
                         metric=cfg.complexity.distance,
-                        candidate_ids=_genuine_ids,
+                        candidate_ids=genuine_ids,
                     )
-                    logger.info("Label-free cluster assignment done for split '%s'", name)
+                    logger.info(
+                        "Label-free cluster assignment done for split '%s'", name
+                    )
                 merged = attach_cluster_features(split_df, cluster_features)
                 before = len(merged)
                 merged = merged.dropna(subset=complexity_cols, how="all")

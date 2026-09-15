@@ -12,10 +12,7 @@ def _approx_silhouette(
     min_per_cluster: int = 50,
     random_state: int = 42,
 ) -> np.ndarray | None:
-    """Approximate silhouette scores with stratified subsampling.
-
-    Non-sampled points receive NaN. Returns None if < 2 unique labels.
-    """
+    """Silhouette scores on a stratified subsample, NaN elsewhere, None below two labels."""
     unique_labels = np.unique(labels)
     if len(unique_labels) < 2:
         return None
@@ -52,6 +49,7 @@ def _approx_silhouette(
 def _dispersion(
     samples: np.ndarray, centroid: np.ndarray, metric: str
 ) -> tuple[float | None, float | None]:
+    """Max and 95th-percentile distance of a cluster's samples from its centroid."""
     if len(samples) == 0:
         return None, None
     dists = pairwise_distances(samples, centroid.reshape(1, -1), metric=metric).ravel()
@@ -59,6 +57,7 @@ def _dispersion(
 
 
 def _nearest_other(pw_row: np.ndarray) -> float | None:
+    """Distance to the closest other centroid."""
     finite = pw_row[np.isfinite(pw_row)]
     if finite.size == 0:
         return None
@@ -83,11 +82,7 @@ def compute_cluster_geometry(
     metric: str = "cosine",
     random_state: int = 42,
 ) -> dict[str, dict[str, float | None]]:
-    """Geometry measures per cluster under a single metric ("cosine"/"euclidean").
-
-    Noise (-1) is excluded; metric controls centroid type, pairwise distances and
-    silhouette.
-    """
+    """Per-cluster geometry: dispersion, centroid separation and silhouette tail."""
     mask_valid = y_cluster != -1
     X_v = X_num[mask_valid]
     yk_v = y_cluster[mask_valid]

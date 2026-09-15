@@ -1,7 +1,6 @@
 import torch
-from torch.nn.utils import clip_grad_norm_
-
 from ignite.engine import Engine
+from torch.nn.utils import clip_grad_norm_
 
 from .data.batch import Batch, ensure_batch
 from .loss.base import BaseLoss
@@ -13,6 +12,7 @@ def _forward_and_loss(
     batch: Batch,
     loss_fn: BaseLoss | None = None,
 ) -> tuple[ModelOutput, torch.Tensor | None]:
+    """Forward pass and, when a loss is given, its value."""
     output = model(*batch.features)
     if loss_fn is None:
         return output, None
@@ -20,6 +20,7 @@ def _forward_and_loss(
 
 
 def train_step(engine: Engine, batch: Batch) -> dict[str, float]:
+    """Single training step: forward, loss, backward, optimizer."""
     s = engine.state
     model, optimizer, scheduler, loss_fn, device = (
         s.model,
@@ -44,6 +45,7 @@ def train_step(engine: Engine, batch: Batch) -> dict[str, float]:
 
 
 def eval_step(engine: Engine, batch: Batch) -> dict[str, float]:
+    """Single evaluation step returning the batch loss."""
     s = engine.state
     model, loss_fn, device = s.model, s.loss_fn, s.device
 
@@ -59,6 +61,7 @@ def eval_step(engine: Engine, batch: Batch) -> dict[str, float]:
 
 
 def test_step(engine: Engine, batch: Batch) -> dict:
+    """Single test step returning the model output, loss and ground truth."""
     s = engine.state
     model, device = s.model, s.device
     loss_fn = getattr(s, "loss_fn", None)

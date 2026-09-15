@@ -18,11 +18,7 @@ def confusion_matrix_plot(
     max_annotated_classes: int = 20,
     max_label_chars: int = 18,
 ) -> Plot | None:
-    """Plot a confusion matrix with optional row/column normalization and a metrics row.
-
-    Layout adapts to class count: figsize grows with it, and in-cell annotations
-    shrink and are dropped above `max_annotated_classes` (the colorbar remains).
-    """
+    """Plot a confusion matrix with optional normalization and a metrics row."""
     if cm.ndim != 2 or cm.shape[0] != cm.shape[1]:
         raise ValueError("`cm` must be a square 2D array (n_classes x n_classes).")
     if normalize not in ("row", "col", None):

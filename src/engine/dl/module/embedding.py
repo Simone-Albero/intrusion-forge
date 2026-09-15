@@ -26,6 +26,7 @@ class EmbeddingModule(nn.Module):
         )
 
     def forward(self, x: Tensor) -> Tensor:
+        """Embed every categorical column and concatenate the results."""
         return torch.cat(
             [layer(x[:, i]) for i, layer in enumerate(self.embedding_layers)], dim=1
         )

@@ -1,8 +1,8 @@
 from collections.abc import Sequence
 
-import torch
-from torch import nn, Tensor
 import numpy as np
+import torch
+from torch import Tensor, nn
 
 
 class ModelOutput(dict):
@@ -20,7 +20,7 @@ class ModelOutput(dict):
                 )
         super().__init__(data)
 
-    def __setitem__(self, key: str, value: Tensor):
+    def __setitem__(self, key: str, value: Tensor) -> None:
         if not isinstance(value, Tensor):
             raise TypeError(
                 f"ModelOutput['{key}'] must be a Tensor, got {type(value)}."
@@ -28,14 +28,17 @@ class ModelOutput(dict):
         super().__setitem__(key, value)
 
     def detach(self) -> "ModelOutput":
+        """Detach every tensor from the autograd graph."""
         return ModelOutput(data={k: v.detach() for k, v in self.items()})
 
     def to(self, device: torch.device, *, non_blocking: bool = True) -> "ModelOutput":
+        """Move every tensor to `device`."""
         return ModelOutput(
             data={k: v.to(device, non_blocking=non_blocking) for k, v in self.items()}
         )
 
     def numpy(self) -> dict[str, np.ndarray]:
+        """Numpy view of every tensor."""
         return {k: v.cpu().numpy() for k, v in self.items()}
 
 
@@ -52,10 +55,11 @@ class BaseModel(nn.Module):
     """Base class for models."""
 
     def forward(self, x: Tensor) -> ModelOutput:
+        """Run the model; implemented by subclasses."""
         raise NotImplementedError
 
     def for_loss(self, output: ModelOutput, target: Tensor) -> tuple[Tensor, Tensor]:
-        """Prepare (prediction, target) for the loss function. Override as needed."""
+        """Prepare (prediction, target) for the loss function."""
         return output["logits"], target
 
 
@@ -68,12 +72,14 @@ class ComposableClassifier(BaseModel):
         self.head_module = head_module
 
     def forward(self, x: Tensor) -> ModelOutput:
+        """Encode the input and return logits with the latent embedding."""
         z = self.encoder_module(x)
         return ModelOutput(logits=self.head_module(z), z=z)
 
     def for_loss(
         self, output: ModelOutput, target: Tensor, *args
     ) -> tuple[Tensor, ...]:
+        """Prepare (logits, target, *extras) for the loss function."""
         return (output["logits"], target, *args)
 
 
@@ -81,5 +87,6 @@ class ComposableTabularClassifier(ComposableClassifier):
     """Classifier for tabular (numerical + categorical) input."""
 
     def forward(self, x_numerical: Tensor, x_categorical: Tensor) -> ModelOutput:
+        """Encode both feature blocks and return logits with the latent embedding."""
         z = self.encoder_module(x_numerical, x_categorical)
         return ModelOutput(logits=self.head_module(z), z=z)

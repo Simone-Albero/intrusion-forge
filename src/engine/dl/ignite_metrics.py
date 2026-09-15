@@ -32,10 +32,12 @@ class _ClassificationMetric(Metric):
 
     @reinit__is_reduced
     def reset(self) -> None:
+        """Drop the accumulated counters."""
         self._tp = self._fp = self._fn = self._support = None
         super().reset()
 
     def _to_preds(self, y_pred: torch.Tensor) -> torch.Tensor:
+        """Reduce raw model outputs to hard class predictions."""
         if self._pred_transform is not None:
             return self._pred_transform(y_pred)
         if y_pred.dim() > 1 and y_pred.size(1) > 1:
@@ -43,13 +45,16 @@ class _ClassificationMetric(Metric):
         return (y_pred > 0.5).long().squeeze()
 
     def _init_buffers(self) -> None:
-        zeros = lambda: torch.zeros(
-            self._num_classes, dtype=torch.long, device=self._device
-        )
+        """Allocate the per-class confusion counters."""
+
+        def zeros() -> torch.Tensor:
+            return torch.zeros(self._num_classes, dtype=torch.long, device=self._device)
+
         self._tp, self._fp, self._fn, self._support = zeros(), zeros(), zeros(), zeros()
 
     @reinit__is_reduced
     def update(self, output: tuple) -> None:
+        """Accumulate the confusion counters of one batch."""
         y_pred, y_true = output[0].detach(), output[1].detach()
         if y_pred.numel() == 0 or y_true.numel() == 0:
             return
@@ -73,6 +78,7 @@ class _ClassificationMetric(Metric):
             self._support[c] += true_c.sum()
 
     def _aggregate(self, per_class: torch.Tensor) -> torch.Tensor | float:
+        """Average per-class values according to the configured averaging mode."""
         if self._average == "macro":
             valid = self._support > 0
             return per_class[valid].mean().item() if valid.any() else 0.0
@@ -82,6 +88,7 @@ class _ClassificationMetric(Metric):
         return per_class
 
     def _check_initialized(self, name: str) -> None:
+        """Raise when compute is called before any update."""
         if self._tp is None:
             raise RuntimeError(f"{name} must have at least one update before compute.")
 
@@ -91,6 +98,7 @@ class Precision(_ClassificationMetric):
 
     @sync_all_reduce("_tp", "_fp", "_support")
     def compute(self) -> torch.Tensor | float:
+        """Precision, averaged as configured."""
         self._check_initialized("Precision")
         tp, fp = self._tp.float(), self._fp.float()
         if self._average == "micro":
@@ -103,6 +111,7 @@ class Recall(_ClassificationMetric):
 
     @sync_all_reduce("_tp", "_fn", "_support")
     def compute(self) -> torch.Tensor | float:
+        """Recall, averaged as configured."""
         self._check_initialized("Recall")
         tp, fn = self._tp.float(), self._fn.float()
         if self._average == "micro":
@@ -115,6 +124,7 @@ class F1(_ClassificationMetric):
 
     @sync_all_reduce("_tp", "_fp", "_fn", "_support")
     def compute(self) -> torch.Tensor | float:
+        """F1 score, averaged as configured."""
         self._check_initialized("F1")
         tp, fp, fn = self._tp.float(), self._fp.float(), self._fn.float()
         if self._average == "micro":

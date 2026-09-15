@@ -7,7 +7,6 @@ from sklearn.preprocessing import OneHotEncoder
 
 from .model import MLClassifierFactory
 
-# HistGradientBoosting raises above this native-categorical cardinality
 _HISTGB_MAX_CARDINALITY = 255
 
 CLASSIFIER_PREPROCESS: dict[str, str] = {
@@ -25,21 +24,27 @@ CLASSIFIER_PREPROCESS: dict[str, str] = {
 
 
 class CappedCategoryEncoder(BaseEstimator, TransformerMixin):
-    """Cast columns to pandas Categorical, keeping only the top-`max_cardinality` training-fold values (rest become NaN) so HistGB's 255-category limit is never exceeded."""
+    """Cast columns to pandas Categorical, keeping only the top-`max_cardinality` values."""
 
     def __init__(self, max_cardinality: int | None = 255):
         self.max_cardinality = max_cardinality
 
-    def fit(self, X: pd.DataFrame, y=None):
+    def fit(self, X: pd.DataFrame, y=None) -> "CappedCategoryEncoder":
+        """Learn the retained categories of every column."""
         self.categories_: dict[str, pd.Index] = {}
         for col in X.columns:
             counts = X[col].value_counts()
-            keep = len(counts) if self.max_cardinality is None else min(self.max_cardinality, len(counts))
+            keep = (
+                len(counts)
+                if self.max_cardinality is None
+                else min(self.max_cardinality, len(counts))
+            )
             self.categories_[col] = counts.nlargest(keep).index
         self.feature_names_in_ = np.array(X.columns)
         return self
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        """Cast every column to its learned category set, mapping the rest to NaN."""
         result = X.copy()
         for col in result.columns:
             cats = self.categories_[col]
@@ -48,16 +53,17 @@ class CappedCategoryEncoder(BaseEstimator, TransformerMixin):
             )
         return result
 
-    def get_feature_names_out(self, input_features=None):
+    def get_feature_names_out(self, input_features=None) -> np.ndarray:
+        """Output feature names, unchanged from the input."""
         return self.feature_names_in_.copy()
-
 
 
 def _build_preprocess(
     strategy: str,
     num_cols: list[str],
     cat_cols: list[str],
-):
+) -> ColumnTransformer | str:
+    """Build the preprocessor a strategy calls for."""
     if strategy == "passthrough":
         return "passthrough"
     if strategy == "drop_cat":
@@ -78,14 +84,16 @@ def _build_preprocess(
         return ColumnTransformer(
             [
                 ("num", "passthrough", num_cols),
-                ("cat", CappedCategoryEncoder(max_cardinality=_HISTGB_MAX_CARDINALITY), cat_cols),
+                (
+                    "cat",
+                    CappedCategoryEncoder(max_cardinality=_HISTGB_MAX_CARDINALITY),
+                    cat_cols,
+                ),
             ],
             remainder="drop",
             verbose_feature_names_out=False,
         ).set_output(transform="pandas")
     if strategy == "native_xgb":
-        # max_cardinality=None maps unseen test values to NaN; XGBoost raises on
-        # out-of-set categories otherwise.
         return ColumnTransformer(
             [
                 ("num", "passthrough", num_cols),
@@ -98,6 +106,7 @@ def _build_preprocess(
 
 
 def _augment_params_for_strategy(strategy: str, params: dict) -> dict:
+    """Add the classifier params a native-categorical strategy requires."""
     params = dict(params)
     if strategy == "native_sklearn":
         params.setdefault("categorical_features", "from_dtype")
@@ -113,7 +122,7 @@ def build_pipeline(
     num_cols: list[str],
     cat_cols: list[str],
 ) -> Pipeline:
-    """Build a `Pipeline([("pre", ...), ("clf", ...)])`, choosing the preprocessor via the `CLASSIFIER_PREPROCESS` table."""
+    """Build a preprocess-plus-classifier Pipeline, per the `CLASSIFIER_PREPROCESS` table."""
     strategy = CLASSIFIER_PREPROCESS.get(name, "passthrough")
     pre = _build_preprocess(strategy, num_cols, cat_cols)
     full_params = _augment_params_for_strategy(strategy, params)

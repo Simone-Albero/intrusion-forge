@@ -9,20 +9,16 @@ from tqdm import tqdm
 
 from src.core.utils import timed
 from src.domain.analysis.complexity.shared import (
-    _hybrid_row_batch,
-    _hybrid_row_batch_euclidean,
-    _l2_normalize,
+    hybrid_row_batch,
+    hybrid_row_batch_euclidean,
+    l2_normalize,
 )
 
 logger = logging.getLogger(__name__)
 
-FitFn = Callable[..., np.ndarray]  # (X_num, X_cat=None, **params) -> labels
-ClusterFn = Callable[
-    [np.ndarray, np.ndarray | None], np.ndarray
-]  # (X_num, X_cat) -> labels
-SilhouetteFn = Callable[
-    [np.ndarray, np.ndarray | None, np.ndarray], float
-]  # (X_num, X_cat, labels) -> sil
+FitFn = Callable[..., np.ndarray]
+ClusterFn = Callable[[np.ndarray, np.ndarray | None], np.ndarray]
+SilhouetteFn = Callable[[np.ndarray, np.ndarray | None, np.ndarray], float]
 
 
 def cluster_size_balance(labels: np.ndarray) -> float:
@@ -40,6 +36,7 @@ def cluster_size_balance(labels: np.ndarray) -> float:
 
 
 def _measure(labels: np.ndarray, score: float, combo: dict, duration_s: float) -> dict:
+    """Sweep entry describing one fitted partition."""
     n = int(labels.shape[0])
     n_noise = int((labels == -1).sum())
     n_clusters = int(np.unique(labels[labels != -1]).size) if n - n_noise > 0 else 0
@@ -54,12 +51,13 @@ def _measure(labels: np.ndarray, score: float, combo: dict, duration_s: float) -
     }
 
 
-def _subsample(
+def subsample_features(
     X_num: np.ndarray,
     X_cat: np.ndarray | None,
     max_samples: int,
     random_state: int = 0,
 ) -> tuple[np.ndarray, np.ndarray | None]:
+    """Random subsample of the feature blocks, unchanged when already small enough."""
     n = X_num.shape[0]
     if n <= max_samples:
         return X_num, X_cat
@@ -91,19 +89,14 @@ def pairwise_hybrid_distance(
     X_cat: np.ndarray | None,
     metric: str = "cosine",
 ) -> np.ndarray:
-    """Full pairwise Gower-hybrid distance matrix in [0, 1].
-
-    Same formula as the complexity k-NN graph (cosine or range-normalised
-    Manhattan on numerics + Hamming on categorics), materialised densely —
-    only suitable for scoring subsamples (O(n^2) memory).
-    """
+    """Dense pairwise Gower-hybrid distance matrix in [0, 1]; subsamples only, O(n²) memory."""
     d_num = X_num.shape[1]
     d_cat = X_cat.shape[1] if X_cat is not None else 0
     if metric == "cosine":
-        X_norm = _l2_normalize(X_num)
-        return _hybrid_row_batch(X_norm, X_cat, X_norm, X_cat, d_num, d_cat)
+        X_norm = l2_normalize(X_num)
+        return hybrid_row_batch(X_norm, X_cat, X_norm, X_cat, d_num, d_cat)
     feat_ranges = X_num.max(axis=0) - X_num.min(axis=0)
-    return _hybrid_row_batch_euclidean(
+    return hybrid_row_batch_euclidean(
         X_num, X_cat, X_num, X_cat, d_num, d_cat, feat_ranges
     )
 
@@ -116,13 +109,7 @@ def assign_nearest_centroid(
     candidate_ids: Sequence[int] | None = None,
     batch_size: int = 50_000,
 ) -> np.ndarray:
-    """Assign each row to the nearest centroid id (batched).
-
-    Inductive counterpart of fitting a clusterer: maps new points onto an
-    existing set of centroids. If `candidate_ids` is given, only those centroids
-    are eligible. Centroid keys (str or int) are coerced to int64 so the output
-    matches the `cluster` column dtype.
-    """
+    """Assign each row to the nearest centroid id, restricted to `candidate_ids` if given."""
     items = [(int(k), v) for k, v in centroids.items()]
     if candidate_ids is not None:
         cand = {int(c) for c in candidate_ids}
@@ -146,13 +133,7 @@ def assign_clusters_within_class(
     metric: str,
     batch_size: int = 50_000,
 ) -> np.ndarray:
-    """Assign each row to the nearest centroid among clusters of its own class.
-
-    Label-aware, inductive assignment: a row is matched only against centroids of
-    clusters belonging to its class. Rows whose class has no train cluster get -1
-    (noise sentinel) — guarded so an empty candidate set never reaches
-    `pairwise_distances`.
-    """
+    """Assign each row to the nearest centroid of its own class, or -1 when it has none."""
     result = np.full(len(X_num), -1, dtype=np.int64)
     for cls in np.unique(y_class):
         candidate_ids = [cid for cid, c in cluster_to_class.items() if c == cls]
@@ -174,11 +155,7 @@ def make_hybrid_silhouette_fn(
     max_scoring_samples: int = 5_000,
     random_state: int = 0,
 ) -> SilhouetteFn:
-    """Build a silhouette scorer on the Gower-hybrid distance (mixed features).
-
-    Operates on a random subsample of at most `max_scoring_samples` non-noise
-    points to bound the dense pairwise matrix. Returns -inf on degenerate input.
-    """
+    """Build a Gower-hybrid silhouette scorer over a bounded subsample of non-noise points."""
 
     def _fn(X_num: np.ndarray, X_cat: np.ndarray | None, labels: np.ndarray) -> float:
         idx = np.where(labels != -1)[0]
@@ -217,27 +194,14 @@ def grid_search(
     silhouette_fn: SilhouetteFn | None = None,
     **fixed_params,
 ) -> dict:
-    """Grid search scored by silhouette − noise_penalty·noise_ratio + resolution tilt.
-
-    The resolution tilt (scaled by `resolution_weight`, growing with the cluster
-    count, self-normalised by the finest partition in the sweep) breaks the
-    silhouette's monotone preference for coarse partitions without overriding a
-    genuine silhouette peak. `silhouette_fn` overrides the silhouette term (e.g.
-    Gower-hybrid for mixed-feature algorithms); default is Euclidean on `X_num`.
-
-    `min_clusters`, when set, restricts the winner to candidates with at least
-    that many clusters whenever one exists in the sweep — a hard floor against
-    silhouette collapsing to a pathologically coarse partition regardless of the
-    resolution tilt. Falls back to the unrestricted sweep if none clears it.
-    """
-    sub_num, sub_cat = _subsample(X_num, X_cat, max_fit_samples, random_state)
+    """Grid search scored by silhouette − noise_penalty·noise_ratio + resolution tilt."""
+    sub_num, sub_cat = subsample_features(X_num, X_cat, max_fit_samples, random_state)
 
     keys = list(param_grid.keys())
     values = list(param_grid.values())
 
     sweep: list[dict] = []
 
-    # Pass 1: fit each combo, record its silhouette (provisional score = silhouette).
     for combo_values in tqdm(
         itertools.product(*values),
         total=int(np.prod([len(v) for v in values])),
@@ -272,10 +236,6 @@ def grid_search(
         entry["silhouette"] = sil
         sweep.append(entry)
 
-    # Pass 2: final score = silhouette − noise_penalty·noise_ratio + resolution
-    # tilt, where the tilt grows with the cluster count, self-normalised by the
-    # finest partition in the sweep. Done after the loop so HDBSCAN (whose k is
-    # only known post-fit) shares the same normalisation as the n_clusters grids.
     valid = [e for e in sweep if not e.get("error")]
     max_k = max((e["n_clusters"] for e in valid), default=0)
     for e in valid:

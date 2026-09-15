@@ -7,19 +7,20 @@ from time import perf_counter
 import numpy as np
 from omegaconf import OmegaConf
 
+from pipelines import paths_from_cfg
+from src.core.log import setup_logger
 from src.core.config import load_config
 from src.core.io import load_df
+from src.core.paths import OutputPaths
 from src.core.utils import load_from_json, save_to_json
 from src.domain.analysis.complexity.shared import build_knn_graph
-from pipelines import paths_from_cfg
 
+setup_logger(log_file="resources/logs.txt")
 logger = logging.getLogger(__name__)
 
-# Controlled m grid for the cost model; truncated to the cell's train size.
 DEFAULT_M_GRID = [5000, 10000, 20000, 40000, 80000]
 _N_REPEATS = 3
 
-# Complexity-stage function names in a timing.json (graph build + measures).
 _COMPLEXITY_FNS = {
     "build_knn_graph",
     "prepare_complexity_graph",
@@ -62,6 +63,7 @@ def _cost_units(m: int, k: int, d: int) -> dict:
 
 
 def _timing_rows(timing_path: Path) -> list[dict]:
+    """Timing records of a stage, empty when the file is missing."""
     try:
         return load_from_json(timing_path)
     except (FileNotFoundError, OSError):
@@ -69,6 +71,7 @@ def _timing_rows(timing_path: Path) -> list[dict]:
 
 
 def _stage_seconds(timing_path: Path, exclude: set[str] | None = None) -> float:
+    """Total seconds recorded in a stage timing file, minus the excluded functions."""
     exclude = exclude or set()
     return float(
         sum(
@@ -80,6 +83,7 @@ def _stage_seconds(timing_path: Path, exclude: set[str] | None = None) -> float:
 
 
 def _complexity_seconds(timing_path: Path) -> float:
+    """Seconds spent in the complexity stage functions of a timing file."""
     return float(
         sum(
             r.get("duration_s", 0.0)
@@ -89,7 +93,6 @@ def _complexity_seconds(timing_path: Path) -> float:
     )
 
 
-# Mode 1: per-cell cost model harness
 def _time_build(
     X_num: np.ndarray,
     X_cat: np.ndarray | None,
@@ -111,12 +114,8 @@ def _time_build(
     return float(median(times))
 
 
-def _pipeline_cost(paths, cost_model: dict, m_prod: int) -> dict:
-    """Complexity build share of end-to-end wall time, at the production cap m_prod.
-
-    The build time is the cost model's prediction c·m_prod^alpha; prep+classify come
-    from the cell's own timing.json files.
-    """
+def _pipeline_cost(paths: OutputPaths, cost_model: dict, m_prod: int) -> dict:
+    """Predicted complexity-build share of end-to-end wall time at the production cap."""
     prep_clustering_s = _stage_seconds(
         paths.shared / "timing.json", exclude=_COMPLEXITY_FNS
     )
@@ -135,7 +134,7 @@ def _pipeline_cost(paths, cost_model: dict, m_prod: int) -> dict:
     }
 
 
-def _run_cost_model(cfg, paths) -> None:
+def _run_cost_model(cfg, paths: OutputPaths) -> None:
     """Fit and persist the per-cell k-NN build cost model."""
     num_cols = list(cfg.data.num_cols) if cfg.data.num_cols else []
     cat_cols = list(cfg.data.cat_cols) if cfg.data.cat_cols else []
@@ -190,14 +189,8 @@ def _run_cost_model(cfg, paths) -> None:
     )
 
 
-# Mode 2: cross-run aggregator
 def _aggregate_runs(root: Path) -> None:
-    """Assemble a tidy cost↔quality table from finished runs under `root`.
-
-    A run is any directory holding `shared/metadata/clusters_meta.json`. Per classifier
-    sub-run it emits one row joining genuine cluster count, complexity build time and the
-    failure-classifier rho. Incomplete runs are skipped.
-    """
+    """Assemble a tidy cost↔quality table from the finished runs under `root`."""
     rows: list[dict] = []
     for meta_path in sorted(root.glob("**/shared/metadata/clusters_meta.json")):
         run = meta_path.parents[2]
@@ -243,12 +236,7 @@ def _aggregate_runs(root: Path) -> None:
 
 
 def _summarize_cost_models(root: Path) -> None:
-    """Roll up per-cell `cost_model.json` files under `root` into a robustness summary.
-
-    Groups fits by (dataset, distance): reports alpha mean±std across seeds (the Θ(m²)
-    check) and c mean±std, then the euclidean/cosine c ratio per dataset. Degenerate fits
-    (alpha=None) are skipped. Writes `<root>/cost_model_summary.json`.
-    """
+    """Roll up the per-cell cost-model fits under `root` by dataset and distance."""
     groups: dict[tuple[str, str], list[dict]] = {}
     for cm_path in sorted(root.glob("**/shared/cost_model.json")):
         try:
@@ -297,8 +285,8 @@ def _summarize_cost_models(root: Path) -> None:
     logger.info("Summarised %d cost models -> %s", n_models, out_path)
 
 
-def main():
-    """Dispatch: `aggregate=<root>` → cross-run table; `summary=<root>` → cost-model roll-up; else per-cell cost model."""
+def main() -> None:
+    """Entry point: `aggregate=<root>`, `summary=<root>`, or the per-cell cost model."""
     argv = sys.argv[1:]
     agg = [a for a in argv if a.startswith("aggregate=")]
     if agg:

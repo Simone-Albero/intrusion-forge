@@ -3,24 +3,27 @@ import inspect
 import logging
 import random
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Callable
+from types import ModuleType
 
 import numpy as np
 import pandas as pd
 import torch
 from omegaconf import OmegaConf
 from sklearn.metrics import (
+    accuracy_score,
     confusion_matrix,
     f1_score,
     precision_score,
     recall_score,
-    accuracy_score,
 )
 from sklearn.model_selection import StratifiedKFold
 
+from pipelines import paths_from_cfg
 from src.core.config import load_config, save_config
+from src.core.io import load_listed_dfs, save_df
 from src.core.log import (
     FilesystemFigureSubscriber,
     JSONSubscriber,
@@ -30,17 +33,15 @@ from src.core.log import (
     setup_logger,
 )
 from src.core.paths import OutputPaths
-from pipelines import paths_from_cfg
 from src.core.utils import flush_timing, load_from_json, skip_if_exists, timed
-from src.core.io import load_listed_dfs, save_df
 from src.domain.analysis.explain import kernel_shap_values, summarize_background
 from src.domain.analysis.selective_prediction import entropy_risk, margin_risk, mcp_risk
 from src.domain.data.preprocessing import random_undersample_df, subsample_df
-from src.domain.projection import stratified_subsample, tsne_projection
 from src.domain.plot.base import Plot, set_figure_format
 from src.domain.plot.charts import bar_plot, line_plot, scatter_plot
 from src.domain.plot.metrics import confusion_matrix_plot
 from src.domain.plot.style import apply_plot_style, extended_palette
+from src.domain.projection import stratified_subsample, tsne_projection
 from src.registries import MLClassifierFactory
 
 setup_logger(log_file="resources/logs.txt")
@@ -49,6 +50,7 @@ logger = logging.getLogger(__name__)
 
 
 def _seed_everything(seed: int) -> None:
+    """Seed the random, numpy and torch generators."""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -65,6 +67,7 @@ def _supports_random_state(clf_cls: type) -> bool:
 
 
 def _variant_suffix(cfg) -> str:
+    """Leaf-name suffix marking the artifacts of the extended run."""
     return "_extended" if cfg.extend.generate else ""
 
 
@@ -92,11 +95,7 @@ class DataConfig:
 def _load_data(
     data: DataConfig, random_state: int
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Load train/val/test splits; balance and/or subsample the training set.
-
-    Balancing is a training-time choice: the persisted splits keep the
-    original class distribution (the data-space diagnosis depends on it).
-    """
+    """Load train/val/test splits, balancing and subsampling the training set only."""
     train_df, val_df, test_df = load_listed_dfs(
         data.processed_data_path,
         [
@@ -149,7 +148,7 @@ def _cluster_error_rates(
     error_mask: np.ndarray,
     extra_scores: dict[str, np.ndarray] | None = None,
 ) -> dict[str, dict]:
-    """Return {cluster_id: {n_error, n_total, error_rate, **mean(extra_scores)}} sorted by error_rate desc."""
+    """Per-cluster error counts, rate and mean extra scores, sorted by rate descending."""
     failed = clusters[error_mask]
     extra_scores = extra_scores or {}
     stats: dict[str, dict] = {}
@@ -177,14 +176,13 @@ def _evaluate_predictions(
     y_proba: np.ndarray,
     clusters: np.ndarray | None = None,
 ) -> dict:
-    """Per-class prediction quality and cluster-level error rates.
-
-    `y_proba` is the full (n_samples, n_classes) probability matrix; MCP/margin/entropy
-    risk scores are aggregated per cluster for the failure-classifier's confidence
-    baselines (`pipelines/fit_failure_classifier.py`).
-    """
+    """Per-class prediction quality plus per-cluster error rates and mean risk scores."""
     y_proba = np.asarray(y_proba)
-    mcp, margin, entropy = mcp_risk(y_proba), margin_risk(y_proba), entropy_risk(y_proba)
+    mcp, margin, entropy = (
+        mcp_risk(y_proba),
+        margin_risk(y_proba),
+        entropy_risk(y_proba),
+    )
     confidences = 1.0 - mcp
 
     has_cluster = clusters is not None
@@ -194,7 +192,11 @@ def _evaluate_predictions(
         _cluster_error_rates(
             clusters,
             global_error_mask,
-            extra_scores={"mcp_risk": mcp, "margin_risk": margin, "entropy_risk": entropy},
+            extra_scores={
+                "mcp_risk": mcp,
+                "margin_risk": margin,
+                "entropy_risk": entropy,
+            },
         )
         if has_cluster
         else None
@@ -259,12 +261,7 @@ def _per_sample_scores(
     y_proba: np.ndarray,
     clusters: np.ndarray,
 ) -> pd.DataFrame:
-    """Per-sample risk readouts for the instance-level baseline comparison.
-
-    The risk columns (MCP/margin/entropy) are label-free confidence signals; `y_true`
-    and `y_pred` are stored only so downstream analysis can score accuracy--coverage,
-    never consumed by the methods themselves. `cluster` maps each sample to its region.
-    """
+    """Per-sample risk table (label-free scores plus labels) for the instance baselines."""
     yp = np.asarray(y_proba)
     return pd.DataFrame(
         {
@@ -275,7 +272,9 @@ def _per_sample_scores(
             "margin_risk": margin_risk(yp),
             "entropy_risk": entropy_risk(yp),
         }
-    ).astype({"mcp_risk": "float32", "margin_risk": "float32", "entropy_risk": "float32"})
+    ).astype(
+        {"mcp_risk": "float32", "margin_risk": "float32", "entropy_risk": "float32"}
+    )
 
 
 def _build_test_figures(
@@ -286,8 +285,7 @@ def _build_test_figures(
     n_samples: int = 2000,
     embedding: np.ndarray | None = None,
 ) -> dict[str, Plot]:
-    """Confusion matrix, per-class F1 bar, and t-SNE scatter of the raw features
-    (plus the DL embedding when present), all flat under `testing/`."""
+    """Confusion matrix, per-class F1 bar and t-SNE scatter of raw features and embedding."""
     figures: dict[str, Plot] = {}
 
     classes = np.unique(y_true)
@@ -313,11 +311,6 @@ def _build_test_figures(
 
     correct = y_pred == y_true
 
-    # Keep the "problematic" classes: the smallest set of classes whose
-    # misclassified points together cover >=90% of all errors (top error-mass
-    # contributors). This focuses the t-SNE on where the model actually fails.
-    # Always keep at least two classes so the scatter is a comparison, not a single
-    # blob — when one dominant class (e.g. Benign) alone clears the 90% threshold.
     mis = ~correct
     total_mis = int(mis.sum())
     mis_per_class = {int(c): int((mis & (y_true == c)).sum()) for c in classes}
@@ -328,11 +321,10 @@ def _build_test_figures(
             break
         keep_classes.append(c)
         cumulative += mis_per_class[c]
-    if not keep_classes:  # perfect classifier: fall back to all classes
+    if not keep_classes:
         keep_classes = [int(c) for c in classes]
 
     names = {c: label_mapping.get(str(c), str(c)) for c in keep_classes}
-    # shared subsample (over the kept classes) so raw and latent show the same points
     prob_pos = np.flatnonzero(np.isin(y_true, keep_classes))
     sub = stratified_subsample(y_true[prob_pos], n_samples=n_samples, stratify=False)
     vis_idx = prob_pos[sub]
@@ -373,7 +365,7 @@ _TRAINING_MODULES = {
 }
 
 
-def _resolve_training_module(kind: str):
+def _resolve_training_module(kind: str) -> ModuleType:
     """Return the training module matching the classifier kind."""
     if kind not in _TRAINING_MODULES:
         raise ValueError(
@@ -391,6 +383,7 @@ def _build_dl_context(
     cat_cols: list[str],
     label_col: str,
 ) -> dict:
+    """DL training context; the extended variant checkpoints to its own model dir."""
     return {
         "device": torch.device(cfg.device),
         "df_meta": df_meta,
@@ -401,11 +394,9 @@ def _build_dl_context(
         "optimizer_cfg": cfg.optimizer,
         "scheduler_cfg": cfg.scheduler,
         "loops_cfg": cfg.loops,
-        # the extended variant checkpoints to its own dir (checkpointing wipes the
-        # dir, so sharing it would destroy the base run's checkpoints)
-        "models_path": paths.models / "extended"
-        if cfg.extend.generate
-        else paths.models,
+        "models_path": (
+            paths.models / "extended" if cfg.extend.generate else paths.models
+        ),
     }
 
 
@@ -415,18 +406,14 @@ def _prepare_train_payload(
     feat_cols: list[str],
     label_col: str,
 ) -> tuple[object, object]:
-    """Shape (X, y) for the training module.
-
-    ML: ``X`` is a DataFrame slice (named columns are needed by ColumnTransformer);
-    ``y`` is a numpy array.
-    DL: ``X`` is the full DataFrame (label_col still inside it); ``y`` unused.
-    """
+    """Shape (X, y) for the training module: a feature slice for ML, the full frame for DL."""
     if kind == "ml":
         return df[feat_cols], df[label_col].to_numpy()
     return df, None
 
 
 def _build_ml_context(num_cols: list[str], cat_cols: list[str]) -> dict:
+    """ML training context."""
     return {"num_cols": num_cols, "cat_cols": cat_cols}
 
 
@@ -438,6 +425,7 @@ def _build_context(
     cat_cols: list[str],
     label_col: str,
 ) -> dict:
+    """Build the training context matching the classifier kind."""
     if cfg.classifier.kind == "dl":
         return _build_dl_context(cfg, paths, df_meta, num_cols, cat_cols, label_col)
     return _build_ml_context(num_cols, cat_cols)
@@ -450,10 +438,7 @@ def _resolve_dl_params(
     cat_cols: list[str],
     num_classes: int,
 ) -> dict:
-    """Inject data-shape params (num_classes, in/num features) into a DL
-    classifier's `params` at fit time, keeping the YAML free of `${data.num_*}`
-    interpolation. Persisted in the checkpoint, so `load_model` works unchanged.
-    """
+    """Inject the data-shape params a DL classifier needs, keeping them out of the YAML."""
     out = dict(params)
     out["num_classes"] = num_classes
     if name == "numerical":
@@ -466,7 +451,9 @@ def _resolve_dl_params(
     return out
 
 
-def _resolve_fit_params(cfg, kind: str, num_cols, cat_cols, df_meta: dict) -> dict:
+def _resolve_fit_params(
+    cfg, kind: str, num_cols: list[str], cat_cols: list[str], df_meta: dict
+) -> dict:
     """Resolve the classifier `params` (DL shape injection / ML random_state)."""
     params = (
         OmegaConf.to_container(cfg.classifier.params, resolve=True)
@@ -483,7 +470,7 @@ def _resolve_fit_params(cfg, kind: str, num_cols, cat_cols, df_meta: dict) -> di
 
 
 def _fit_model(
-    training_mod,
+    training_mod: ModuleType,
     name: str,
     params: dict,
     X,
@@ -494,10 +481,7 @@ def _fit_model(
     save_dir: Path,
     suffix: str = "",
 ) -> tuple[object, dict]:
-    """Fit one classifier on (X, y), save under `save_dir`, return (model, summary).
-
-    Shared by the single-model and per-fold (k-fold OOF) training paths.
-    """
+    """Fit one classifier on (X, y) and save it under `save_dir`."""
     save_dir.mkdir(parents=True, exist_ok=True)
     model, summary = training_mod.fit_classifier(
         name=name, params=params, X=X, y=y, X_val=X_val, y_val=y_val, context=context
@@ -507,7 +491,7 @@ def _fit_model(
 
 
 def _predict_model(
-    training_mod,
+    training_mod: ModuleType,
     model_dir: Path,
     df: pd.DataFrame,
     feat_cols: list[str],
@@ -516,11 +500,7 @@ def _predict_model(
     suffix: str = "",
     return_embedding: bool = False,
 ) -> tuple:
-    """Load one model from `model_dir` and predict `df` → (y_pred, y_proba).
-
-    With `return_embedding=True` also returns the latent embedding (`None` for ML).
-    Shared by the single-split and per-fold (k-fold OOF) evaluation paths.
-    """
+    """Load the model in `model_dir` and predict `df` → (y_pred, y_proba[, embedding])."""
     model = training_mod.load_model(model_dir, context=context, suffix=suffix)
     X = df[feat_cols] if kind == "ml" else df
     return training_mod.predict_with_proba(
@@ -543,20 +523,20 @@ def _publish_evaluation(
     predictions_dir: Path | None = None,
     build_figures: bool = True,
 ) -> None:
-    """Build metrics, confusion matrix and figures from predictions, then publish.
-
-    Shared by the single-split and k-fold OOF paths; `eval_mode` marks the artifacts
-    (`single_split` / `oof_kfold`). `embedding` (single-split only) drives the
-    optional latent projection — fold embeddings are not comparable. When
-    `predictions_dir` is given and clusters exist, a per-sample risk table is dumped
-    for the instance-level baseline comparison. `build_figures=False` skips the
-    testing figures (t-SNE is the costly part) for inference-only dump runs.
-    """
-    full_metrics = {**_compute_classification_metrics(y_true, y_pred), "eval_mode": eval_mode}
-    pred_infos = {**_evaluate_predictions(y_true, y_pred, y_proba, clusters), "eval_mode": eval_mode}
+    """Build metrics, confusion matrix, figures and per-sample dumps, then publish them."""
+    full_metrics = {
+        **_compute_classification_metrics(y_true, y_pred),
+        "eval_mode": eval_mode,
+    }
+    pred_infos = {
+        **_evaluate_predictions(y_true, y_pred, y_proba, clusters),
+        "eval_mode": eval_mode,
+    }
     cm = confusion_matrix(y_true, y_pred, labels=np.unique(y_true), normalize="true")
     figures = (
-        _build_test_figures(X_np, y_true, y_pred, df_meta["label_mapping"], embedding=embedding)
+        _build_test_figures(
+            X_np, y_true, y_pred, df_meta["label_mapping"], embedding=embedding
+        )
         if build_figures
         else {}
     )
@@ -639,8 +619,16 @@ def _train_stage(
     else:
         logger.info("Training %s ...", cfg.classifier.name)
         _, fit_summary = _fit_model(
-            training_mod, cfg.classifier.name, params, X, y, X_val, y_val,
-            context, paths.models, suffix,
+            training_mod,
+            cfg.classifier.name,
+            params,
+            X,
+            y,
+            X_val,
+            y_val,
+            context,
+            paths.models,
+            suffix,
         )
         history = fit_summary.get("history", {})
         if history:
@@ -672,15 +660,29 @@ def _evaluate_stage(
 
     logger.info("Loading model from %s ...", paths.models)
     y_pred, y_proba, embedding = _predict_model(
-        training_mod, paths.models, test_df, feat_cols, kind, context, suffix,
+        training_mod,
+        paths.models,
+        test_df,
+        feat_cols,
+        kind,
+        context,
+        suffix,
         return_embedding=True,
     )
     y_true = test_df[label_col].to_numpy()
     clusters = test_df["cluster"].to_numpy() if "cluster" in test_df.columns else None
 
     _publish_evaluation(
-        bus, df_meta, test_df[feat_cols].to_numpy(), y_true, y_pred, y_proba, clusters,
-        eval_mode="single_split", suffix=suffix, embedding=embedding,
+        bus,
+        df_meta,
+        test_df[feat_cols].to_numpy(),
+        y_true,
+        y_pred,
+        y_proba,
+        clusters,
+        eval_mode="single_split",
+        suffix=suffix,
+        embedding=embedding,
         predictions_dir=paths.outputs / "analysis/predictions",
         build_figures=cfg.testing.figures,
     )
@@ -692,7 +694,9 @@ def _oof_splits(base: pd.DataFrame, label_col: str, k: int, seed: int) -> list:
     k = min(k, int(np.unique(y, return_counts=True)[1].min()))
     if k < 2:
         raise ValueError(f"k-fold OOF needs >=2 samples per class, got k={k}.")
-    return list(StratifiedKFold(n_splits=k, shuffle=True, random_state=seed).split(base, y))
+    return list(
+        StratifiedKFold(n_splits=k, shuffle=True, random_state=seed).split(base, y)
+    )
 
 
 @timed
@@ -708,11 +712,7 @@ def _train_kfold_stage(
     num_cols: list[str],
     cat_cols: list[str],
 ) -> None:
-    """Train one classifier per OOF fold over train+test, saved under `fold_{f}/`.
-
-    `val_df` is the shared early-stopping holdout (DL), never trained on. Each fold
-    applies the real balance recipe.
-    """
+    """Train one classifier per OOF fold over train+test, each saved under `fold_{f}/`."""
     kind = cfg.classifier.kind
     training_mod = _resolve_training_module(kind)
     context = _build_context(cfg, paths, df_meta, num_cols, cat_cols, label_col)
@@ -720,17 +720,27 @@ def _train_kfold_stage(
     X_val, y_val = _prepare_train_payload(kind, val_df, feat_cols, label_col)
 
     base = pd.concat([train_df, test_df], ignore_index=True)
-    for f, (tr_idx, _) in enumerate(_oof_splits(base, label_col, cfg.kfold_splits, cfg.seed)):
+    for f, (tr_idx, _) in enumerate(
+        _oof_splits(base, label_col, cfg.kfold_splits, cfg.seed)
+    ):
         fold_dir = paths.models / f"fold_{f}"
         fold_train = base.iloc[tr_idx]
         if cfg.balance == "undersample":
-            fold_train = random_undersample_df(fold_train, label_col, random_state=cfg.seed)
+            fold_train = random_undersample_df(
+                fold_train, label_col, random_state=cfg.seed
+            )
         X, y = _prepare_train_payload(kind, fold_train, feat_cols, label_col)
-        # DL checkpoints during fit go to the fold's own dir, never clobbering siblings
         fold_ctx = {**context, "models_path": fold_dir} if kind == "dl" else context
         _fit_model(
-            training_mod, cfg.classifier.name, params, X, y, X_val, y_val,
-            fold_ctx, fold_dir,
+            training_mod,
+            cfg.classifier.name,
+            params,
+            X,
+            y,
+            X_val,
+            y_val,
+            fold_ctx,
+            fold_dir,
         )
     logger.info("k-fold OOF: trained %d fold models under %s", f + 1, paths.models)
 
@@ -748,11 +758,7 @@ def _evaluate_kfold_stage(
     cat_cols: list[str],
     bus: LogDispatcher,
 ) -> None:
-    """Assemble OOF predictions from the saved fold models; publish metrics + failure rates.
-
-    Each `model_f` predicts only its held-out fold → leakage-free predictions over
-    train+test, feeding both the classifier metrics and the per-cluster failure rates.
-    """
+    """Assemble leakage-free OOF predictions from the fold models and publish them."""
     kind = cfg.classifier.kind
     training_mod = _resolve_training_module(kind)
     context = _build_context(cfg, paths, df_meta, num_cols, cat_cols, label_col)
@@ -763,14 +769,26 @@ def _evaluate_kfold_stage(
     y_pred = np.empty(len(base), dtype=y_true.dtype)
     y_proba = np.zeros((len(base), df_meta["num_classes"]))
 
-    for f, (_, te_idx) in enumerate(_oof_splits(base, label_col, cfg.kfold_splits, cfg.seed)):
+    for f, (_, te_idx) in enumerate(
+        _oof_splits(base, label_col, cfg.kfold_splits, cfg.seed)
+    ):
         y_pred[te_idx], y_proba[te_idx] = _predict_model(
-            training_mod, paths.models / f"fold_{f}", base.iloc[te_idx],
-            feat_cols, kind, context,
+            training_mod,
+            paths.models / f"fold_{f}",
+            base.iloc[te_idx],
+            feat_cols,
+            kind,
+            context,
         )
 
     _publish_evaluation(
-        bus, df_meta, base[feat_cols].to_numpy(), y_true, y_pred, y_proba, clusters,
+        bus,
+        df_meta,
+        base[feat_cols].to_numpy(),
+        y_true,
+        y_pred,
+        y_proba,
+        clusters,
         eval_mode="oof_kfold",
         predictions_dir=paths.outputs / "analysis/predictions",
         build_figures=cfg.testing.figures,
@@ -813,7 +831,11 @@ def _explain_stage(
     def predict_fn(x: np.ndarray) -> np.ndarray:
         batch = pd.DataFrame(x, columns=feature_names).astype(feature_dtypes)
         _, proba = training_mod.predict_with_proba(model, batch, context=context)
-        return proba.detach().cpu().numpy() if hasattr(proba, "detach") else np.asarray(proba)
+        return (
+            proba.detach().cpu().numpy()
+            if hasattr(proba, "detach")
+            else np.asarray(proba)
+        )
 
     background = summarize_background(
         X_ref.sample(
@@ -904,14 +926,11 @@ def classify(cfg) -> None:
         cat_cols=cat_cols,
         label_col=label_col,
         n_samples=cfg.n_samples,
-        # the extended splits live in separate files; base runs read the originals
         file_suffix=suffix,
         balance=cfg.balance,
     )
 
     stage = cfg.stage
-    # k-fold OOF runs over train+test (balance per fold); the extended variant
-    # stays single-split.
     use_kfold = cfg.kfold and not cfg.extend.generate
     load_cfg = replace(data, balance="none", n_samples=None) if use_kfold else data
     train_df, val_df, test_df = _load_data(load_cfg, cfg.seed)
@@ -931,25 +950,56 @@ def classify(cfg) -> None:
     if stage in ("training", "all"):
         if use_kfold:
             _train_kfold_stage(
-                cfg, paths, train_df, val_df, test_df,
-                feat_cols, label_col, df_meta, num_cols, cat_cols,
+                cfg,
+                paths,
+                train_df,
+                val_df,
+                test_df,
+                feat_cols,
+                label_col,
+                df_meta,
+                num_cols,
+                cat_cols,
             )
         else:
             _train_stage(
-                cfg, paths, train_df, val_df,
-                feat_cols, label_col, df_meta, num_cols, cat_cols, bus,
+                cfg,
+                paths,
+                train_df,
+                val_df,
+                feat_cols,
+                label_col,
+                df_meta,
+                num_cols,
+                cat_cols,
+                bus,
             )
 
     if stage in ("testing", "all"):
         if use_kfold:
             _evaluate_kfold_stage(
-                cfg, paths, train_df, test_df,
-                feat_cols, label_col, df_meta, num_cols, cat_cols, bus,
+                cfg,
+                paths,
+                train_df,
+                test_df,
+                feat_cols,
+                label_col,
+                df_meta,
+                num_cols,
+                cat_cols,
+                bus,
             )
         else:
             _evaluate_stage(
-                cfg, paths, test_df,
-                feat_cols, label_col, df_meta, num_cols, cat_cols, bus,
+                cfg,
+                paths,
+                test_df,
+                feat_cols,
+                label_col,
+                df_meta,
+                num_cols,
+                cat_cols,
+                bus,
             )
 
     if cfg.extend.generate:
@@ -969,8 +1019,8 @@ def classify(cfg) -> None:
     logger.info("All stages completed.")
 
 
-def main():
-    """Main entry point for supervised classification."""
+def main() -> None:
+    """Entry point for the supervised classification stage."""
     cfg = load_config(
         config_path=Path(__file__).parent.parent / "configs",
         config_name="config",

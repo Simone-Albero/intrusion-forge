@@ -48,12 +48,7 @@ def bar_plot(
     hide_yticks: bool = False,
     hide_left_spine: bool = False,
 ) -> Plot | None:
-    """Bar chart with optional sorting, top-k filtering, and value annotations.
-
-    `color_gradient=True` is ignored when `color` is a per-bar list. Pass
-    `bar_positions` to place bars explicitly when the y-axis is shared with
-    another panel (e.g. `sharey=True`).
-    """
+    """Bar chart with optional sorting, top-k filtering and value annotations."""
     if orientation not in ("h", "v"):
         raise ValueError("`orientation` must be 'h' or 'v'.")
     if sort not in ("asc", "desc", None):
@@ -96,7 +91,14 @@ def bar_plot(
 
     positions = bar_positions if bar_positions is not None else plot_labels
     draw = ax.barh if orientation == "h" else ax.bar
-    draw(positions, plot_values, color=bar_color, alpha=bar_alpha, edgecolor="white", linewidth=0.5)
+    draw(
+        positions,
+        plot_values,
+        color=bar_color,
+        alpha=bar_alpha,
+        edgecolor="white",
+        linewidth=0.5,
+    )
 
     if orientation == "h":
         ax.set_xlabel(x_label or "Value")
@@ -284,11 +286,7 @@ def strip_plot(
     figsize: tuple[float, float] | None = None,
     ax: Axes | None = None,
 ) -> Plot | None:
-    """Strip plot with categorical fill and optional per-point marker encoding.
-
-    `fill_cmap`: when set, `fill_values` is treated as continuous floats mapped
-    through this colormap instead of used as categorical indices.
-    """
+    """Strip plot with categorical or colormapped fill and optional marker encoding."""
     if orientation not in ("v", "h"):
         raise ValueError("`orientation` must be 'v' or 'h'.")
 
@@ -415,12 +413,7 @@ def strip_count_panel_plot(
     marker_shapes: tuple[str, ...] = ("o", "X"),
     failed_counts_by_class: dict[str, int] | None = None,
 ) -> Plot:
-    """Strip plot (left) + horizontal count bar (right) sharing the y-axis.
-
-    When `failed_counts_by_class` is provided, a red overlay bar per class
-    shows how many clusters have failure_rate > 0, and a vertical reference
-    line is drawn at x=0.
-    """
+    """Strip plot and horizontal count bar side by side, sharing the y-axis."""
     n_cats = len(category_order)
     height = max(3.0, 0.35 * n_cats + 1.5)
     fig, (ax_left, ax_right) = plt.subplots(
@@ -481,7 +474,9 @@ def strip_count_panel_plot(
     )
 
     if failed_counts_by_class is not None:
-        failed_counts = [int(failed_counts_by_class.get(cat, 0)) for cat in category_order]
+        failed_counts = [
+            int(failed_counts_by_class.get(cat, 0)) for cat in category_order
+        ]
         if any(failed_counts):
             bar_plot(
                 labels=list(category_order),
@@ -521,11 +516,7 @@ def scatter_plot(
     figsize: tuple[float, float] = (5.6, 4.3),
     ax: Axes | None = None,
 ) -> Plot | None:
-    """Scatter 2D with label-coloring and optional highlight mask.
-
-    `legend_on_top` renders an opaque legend above the points (high z-order),
-    trading the occluded points for a cleaner figure.
-    """
+    """2D scatter coloured by label, with an optional highlight mask."""
     X = np.asarray(X)
     labels = np.asarray(labels)
     if X.ndim != 2 or X.shape[1] != 2:
@@ -692,7 +683,7 @@ def numeric_scatter_plot(
     figsize: tuple[float, float] = (5.6, 4.2),
     ax: Axes | None = None,
 ) -> Plot | None:
-    """Generic numeric x–y scatter with optional continuous coloring, y=x reference line, trend line, and metrics box."""
+    """Numeric scatter with optional colouring, reference line, trend line and metrics box."""
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
     ax, fig = _ensure_ax(ax, figsize)
@@ -722,7 +713,14 @@ def numeric_scatter_plot(
         if int(finite.sum()) >= 2:
             m, b = np.polyfit(x[finite], y[finite], 1)
             x_range = np.array([float(x[finite].min()), float(x[finite].max())])
-            ax.plot(x_range, m * x_range + b, color=NEUTRAL_COLOR, linewidth=1.0, linestyle="--", zorder=2)
+            ax.plot(
+                x_range,
+                m * x_range + b,
+                color=NEUTRAL_COLOR,
+                linewidth=1.0,
+                linestyle="--",
+                zorder=2,
+            )
 
     if annotations:
         text = "\n".join(
@@ -765,7 +763,9 @@ def line_plot(
         arr = np.asarray(values, dtype=float)
         if arr.size == 0:
             continue
-        ax.plot(np.arange(arr.size), arr, color=palette[i], linewidth=linewidth, label=name)
+        ax.plot(
+            np.arange(arr.size), arr, color=palette[i], linewidth=linewidth, label=name
+        )
 
     _apply_labels(ax, x_label=x_label, y_label=y_label, title=title)
     ax.grid(True, axis="both", alpha=0.15, linewidth=0.5)
@@ -786,12 +786,7 @@ def selective_accuracy_plot(
     figsize: tuple[float, float] = (5.6, 4.2),
     ax: Axes | None = None,
 ) -> Plot | None:
-    """Selective-prediction curves with an explicit per-series x axis.
-
-    Each strategy rejects in a different order, so the x grids differ (unlike
-    `line_plot`'s shared index x). The y axis is cropped to the data span
-    (curves + baseline) so the empty low-accuracy band is not drawn.
-    """
+    """Selective-prediction curves, each series carrying its own x grid."""
     ax, fig = _ensure_ax(ax, figsize)
     palette = extended_palette(max(len(curves), 1))
 
@@ -811,8 +806,6 @@ def selective_accuracy_plot(
         label="Random",
     )
     ax.set_xlim(0.0, 1.0)
-    # Crop the empty bottom band: clip y to the data span with a small margin
-    # instead of forcing [0, 1]. Accuracy is capped at 1, so headroom stays below 1.
     lo, hi = min(y_values), max(y_values)
     pad = max(0.02, 0.05 * (hi - lo))
     ax.set_ylim(max(0.0, lo - pad), min(1.0, hi + pad))
@@ -822,8 +815,6 @@ def selective_accuracy_plot(
             f"{name} = {_format_value(value, kind='score')}"
             for name, value in annotations.items()
         )
-        # Lifted off the bottom axis so the flat Random baseline line stays clear of
-        # it, and kept compact so its left edge clears the rising Predictor curve.
         ax.text(
             0.97,
             0.14,
@@ -836,13 +827,12 @@ def selective_accuracy_plot(
         )
 
     ax.grid(True, alpha=0.15, linewidth=0.5)
-    # The curves fill the whole upper region and the annotation box sits lower-right,
-    # so no in-axes spot is clear; run the legend horizontally above the axes instead.
-    # Capped so a wide legend (5+ series, once the confidence baselines are added)
-    # wraps onto multiple rows instead of forcing the axes to shrink to fit one.
     ax.legend(
-        loc="lower center", bbox_to_anchor=(0.5, 1.0),
-        ncol=min(len(curves) + 1, 4), columnspacing=1.2, frameon=False,
+        loc="lower center",
+        bbox_to_anchor=(0.5, 1.0),
+        ncol=min(len(curves) + 1, 4),
+        columnspacing=1.2,
+        frameon=False,
     )
     _apply_labels(ax, x_label, y_label, title)
     return _finalize(fig)
@@ -856,7 +846,7 @@ def beeswarm_plot(
     max_display: int = 20,
     title: str = "",
     figsize: tuple[float, float] | None = None,
-    ax: Axes | None = None,  # noqa: ARG001 — ignored: SHAP creates its own figure
+    ax: Axes | None = None,  # noqa: ARG001
 ) -> Plot | None:
     """Beeswarm of per-sample SHAP values rendered via the native SHAP library."""
     import shap as shap_lib
@@ -881,6 +871,7 @@ def beeswarm_plot(
 
 
 def _fit_label(d: str, fit: dict) -> str:
+    """Legend label for a fitted cost model."""
     parts = [f"{d}: α = {fit['alpha_mean']:.3f}"]
     if fit.get("alpha_std"):
         parts.append(f" ± {fit['alpha_std']:.3f}")
@@ -890,6 +881,7 @@ def _fit_label(d: str, fit: dict) -> str:
 
 
 def _m_label(m: float) -> str:
+    """Compact tick label for a subsample size."""
     return f"{m / 1000:.0f}k" if m >= 1000 else f"{m:.0f}"
 
 
@@ -901,21 +893,14 @@ def cost_scaling_plot(
     reference_slope: float = 2.0,
     figsize: tuple[float, float] = (5.6, 4.2),
 ) -> Plot:
-    """Log-log k-NN build-cost scaling (left cost-model figure).
-
-    Per distance, the measured medians (min–max whiskers) and the fitted power law
-    T = c·m^alpha, plus a bold slope-`reference_slope` Θ(m²) guide anchored to the
-    lowest series. The y-axis top is cropped to the decade just above the slowest
-    measurement (not mirroring the x decade span) so the empty band is not drawn.
-    `m_prod` draws a dotted vertical line at the production subsample cap.
-    """
+    """Log-log k-NN build-cost scaling: measured medians, fitted power law and Θ(m²) guide."""
     distances = sorted(points_by_distance)
     colors = {d: PALETTE[i % len(PALETTE)] for i, d in enumerate(distances)}
     ax, fig = _ensure_ax(None, figsize)
 
-    anchor: tuple[float, float] | None = None  # lowest first point, for the guide
+    anchor: tuple[float, float] | None = None
     all_m: list[float] = []
-    all_t: list[float] = []  # build times, to share one tick range across both axes
+    all_t: list[float] = []
     for d in distances:
         pts = points_by_distance[d]
         m = np.asarray(pts["m"], dtype=float)
@@ -927,9 +912,17 @@ def cost_scaling_plot(
         all_t.extend(hi.tolist())
         all_t.extend(lo.tolist())
         ax.errorbar(
-            m, mean, yerr=[mean - lo, hi - mean],
-            fmt="o", ms=5, color=color, ecolor=color, elinewidth=0.8,
-            capsize=2, zorder=3, label=d,
+            m,
+            mean,
+            yerr=[mean - lo, hi - mean],
+            fmt="o",
+            ms=5,
+            color=color,
+            ecolor=color,
+            elinewidth=0.8,
+            capsize=2,
+            zorder=3,
+            label=d,
         )
         fit = fits_by_distance.get(d, {})
         c, alpha = fit.get("c_mean"), fit.get("alpha_mean")
@@ -943,16 +936,17 @@ def cost_scaling_plot(
         xx = np.geomspace(min(all_m), max(all_m), 32)
         m0, t0 = anchor
         ax.plot(
-            xx, t0 * (xx / m0) ** reference_slope,
-            color="black", linewidth=1.8, linestyle="--", zorder=1,
+            xx,
+            t0 * (xx / m0) ** reference_slope,
+            color="black",
+            linewidth=1.8,
+            linestyle="--",
+            zorder=1,
             label=f"slope {reference_slope:g} (Θ(m²))",
         )
 
     ax.set_xscale("log")
     ax.set_yscale("log")
-    # x spans 10^0 up to the power of ten covering the m-grid; y is cropped to the
-    # build-time decades only (floor..ceil of its log10 range) so the empty band
-    # above the slowest run is not drawn and the figure stays compact.
     x_span = [v for v in all_m if v and v > 0]
     if x_span:
         ax.set_xlim(1.0, 10.0 ** float(np.ceil(np.log10(max(x_span)))))
@@ -964,21 +958,29 @@ def cost_scaling_plot(
 
     if m_prod:
         ax.axvline(
-            m_prod, color=MUTED_COLOR, linewidth=1.1, linestyle=":", zorder=1,
+            m_prod,
+            color=MUTED_COLOR,
+            linewidth=1.1,
+            linestyle=":",
+            zorder=1,
             label=f"full experiments cap (m ≈ {_m_label(m_prod)})",
         )
 
-    text = "\n".join(_fit_label(d, fits_by_distance[d]) for d in distances if d in fits_by_distance)
+    text = "\n".join(
+        _fit_label(d, fits_by_distance[d]) for d in distances if d in fits_by_distance
+    )
     if text:
         ax.text(
-            0.05, 0.95, text, transform=ax.transAxes, va="top", ha="left",
+            0.05,
+            0.95,
+            text,
+            transform=ax.transAxes,
+            va="top",
+            ha="left",
             bbox=dict(facecolor="white", edgecolor="#cccccc", boxstyle="round,pad=0.3"),
         )
     _apply_labels(ax, "sample size", "k-NN build time (seconds)")
     ax.grid(True, which="both", alpha=0.15, linewidth=0.5)
-    # Data only exists past m≈5k (right ~30% of the log x-axis); keep the legend
-    # compact enough to sit entirely inside the empty left column, just under the
-    # fit box, so it never reaches the points or the Θ(m²) guide.
     ax.legend(loc="upper left", bbox_to_anchor=(0.02, 0.72), fontsize=13)
     return _finalize(fig)
 
@@ -988,12 +990,7 @@ def cost_impact_plot(
     *,
     figsize: tuple[float, float] = (7.4, 2.4),
 ) -> Plot:
-    """End-to-end runtime split at the production cap (right cost-model figure).
-
-    One 100%-stacked bar per distance, broken out by high-level stage. The two thin
-    bars sit close together and the stage legend runs horizontally above them so it
-    covers no bar.
-    """
+    """End-to-end runtime split at the production cap, one stacked bar per distance."""
     distances = sorted(share_by_distance)
     ax, fig = _ensure_ax(None, figsize)
 
@@ -1002,7 +999,7 @@ def cost_impact_plot(
         ("prep_clustering_s", "prep + clustering", PALETTE[2]),
         ("classify_s", "classification", PALETTE[1]),
     )
-    positions = np.arange(len(distances)) * 0.6  # bring the two bars close together
+    positions = np.arange(len(distances)) * 0.6
     legended: set[str] = set()
     for pos, d in zip(positions, distances):
         sh = share_by_distance.get(d, {})
@@ -1014,19 +1011,27 @@ def cost_impact_plot(
         for label, color, value in vals:
             frac = value / total
             ax.barh(
-                pos, frac, left=left, height=0.5, color=color, zorder=3,
+                pos,
+                frac,
+                left=left,
+                height=0.5,
+                color=color,
+                zorder=3,
                 label=label if label not in legended else None,
             )
             if frac > 0.04:
                 ax.text(
-                    left + frac / 2, pos, f"{frac * 100:.0f}%",
-                    va="center", ha="center", fontsize=16,
+                    left + frac / 2,
+                    pos,
+                    f"{frac * 100:.0f}%",
+                    va="center",
+                    ha="center",
+                    fontsize=16,
                 )
             left += frac
             legended.add(label)
 
     ax.set_yticks(positions)
-    # Extra pad keeps the distance labels clear of a narrow first segment's % label.
     ax.set_yticklabels(distances)
     ax.tick_params(axis="y", pad=8)
     ax.set_xlim(0, 1)
@@ -1034,10 +1039,12 @@ def cost_impact_plot(
     ax.grid(True, axis="x", alpha=0.15, linewidth=0.5)
     _apply_labels(ax, "share of end-to-end runtime", "")
     if distances:
-        # Run the legend horizontally above the bars so it covers none of them.
         ax.legend(
-            loc="lower center", bbox_to_anchor=(0.5, 1.0),
-            ncol=len(stages), columnspacing=1.2, frameon=False,
+            loc="lower center",
+            bbox_to_anchor=(0.5, 1.0),
+            ncol=len(stages),
+            columnspacing=1.2,
+            frameon=False,
         )
     return _finalize(fig)
 
@@ -1056,19 +1063,21 @@ def box_strip_plot(
     figsize: tuple[float, float] = (5.4, 3.0),
     ax: Axes | None = None,
 ) -> Plot | None:
-    """Horizontal box plots with an optional jittered strip overlay, one row per group.
-
-    Rows read top-to-bottom in the given order; rows flagged in `faded` are dimmed
-    (e.g. provisional series).
-    """
+    """Horizontal box plots with an optional jittered strip overlay, one row per group."""
     faded = faded or [False] * len(labels)
     pos = list(range(len(labels), 0, -1))
     ax, fig = _ensure_ax(ax, figsize)
     bp = ax.boxplot(
-        values, positions=pos, vert=False, widths=0.6, patch_artist=True,
-        showfliers=False, zorder=2,
+        values,
+        positions=pos,
+        vert=False,
+        widths=0.6,
+        patch_artist=True,
+        showfliers=False,
+        zorder=2,
         medianprops=dict(color="black", linewidth=1.3),
-        whiskerprops=dict(color=MUTED_COLOR), capprops=dict(color=MUTED_COLOR),
+        whiskerprops=dict(color=MUTED_COLOR),
+        capprops=dict(color=MUTED_COLOR),
     )
     for patch, color, fade in zip(bp["boxes"], colors, faded):
         patch.set_facecolor(color)
@@ -1079,7 +1088,9 @@ def box_strip_plot(
         for vals, p, color in zip(values, pos, colors):
             vals = np.asarray(vals, dtype=float)
             y = p + (rng.random(vals.size) - 0.5) * 0.32
-            ax.scatter(vals, y, s=7, color=color, alpha=0.55, edgecolor="none", zorder=3)
+            ax.scatter(
+                vals, y, s=7, color=color, alpha=0.55, edgecolor="none", zorder=3
+            )
     if axvline is not None:
         ax.axvline(axvline, color=MUTED_COLOR, linewidth=0.8, linestyle="--", zorder=1)
     ax.set_yticks(pos, labels)
@@ -1106,20 +1117,18 @@ def box_strip_facets(
     legend: dict[str, str] | None = None,
     figsize: tuple[float, float] = (9.5, 5.5),
 ) -> Plot | None:
-    """Row of horizontal box-strip panels sharing the row (y) axis.
-
-    Each panel is `(title, labels, values, colors)` and is drawn with `box_strip_plot`;
-    panels share x and y, so row labels need be set on the first panel only (pass blanks for
-    the rest). A single x-label and legend are drawn at the figure level.
-    """
-    # sharey is intentionally off: box_strip_plot sets per-axis y-tick labels, and a shared
-    # y-axis would let the last (blank) panel overwrite the first panel's row labels.
+    """Row of horizontal box-strip panels sharing the row axis, one per `(title, ...)` tuple."""
     fig, axes = plt.subplots(1, len(panels), figsize=figsize, sharex=True)
     axes = np.atleast_1d(axes)
     for ax, (title, labels, values, colors) in zip(axes, panels):
         box_strip_plot(
-            labels, values, colors=colors, show_points=False,
-            x_lim=x_lim, axvline=axvline, ax=ax,
+            labels,
+            values,
+            colors=colors,
+            show_points=False,
+            x_lim=x_lim,
+            axvline=axvline,
+            ax=ax,
         )
         ax.set_title(title, fontweight="normal")
     if x_label:
@@ -1130,8 +1139,12 @@ def box_strip_facets(
             for lab, c in legend.items()
         ]
         fig.legend(
-            handles=handles, loc="lower center", bbox_to_anchor=(0.5, 1.0),
-            ncol=len(legend), frameon=False, columnspacing=1.6,
+            handles=handles,
+            loc="lower center",
+            bbox_to_anchor=(0.5, 1.0),
+            ncol=len(legend),
+            frameon=False,
+            columnspacing=1.6,
         )
     fig.tight_layout()
     return _finalize(fig)
@@ -1151,12 +1164,7 @@ def line_whisker_plot(
     figsize: tuple[float, float] = (5.4, 3.2),
     ax: Axes | None = None,
 ) -> Plot | None:
-    """Binned trend line with ±1 std whiskers, one connected line per series.
-
-    Each series is `(x, y, colour)`; x is split into `n_bins` bins (log-spaced when
-    `log_x`), and per bin the mean y is drawn with a ±1 std error bar. Empty bins
-    are skipped.
-    """
+    """Binned trend line with ±1 std whiskers, one connected line per `(x, y, colour)`."""
     ax, fig = _ensure_ax(ax, figsize)
     if log_x:
         ax.set_xscale("log")
@@ -1181,15 +1189,29 @@ def line_whisker_plot(
             sel = idx == b
             if not sel.any():
                 continue
-            centers.append(float(np.sqrt(edges[b] * edges[b + 1]) if log_x
-                                  else 0.5 * (edges[b] + edges[b + 1])))
+            centers.append(
+                float(
+                    np.sqrt(edges[b] * edges[b + 1])
+                    if log_x
+                    else 0.5 * (edges[b] + edges[b + 1])
+                )
+            )
             means.append(float(y[sel].mean()))
             stds.append(float(y[sel].std()))
         if not centers:
             continue
         ax.errorbar(
-            centers, means, yerr=stds, color=color, marker="o", ms=5,
-            linewidth=1.6, elinewidth=1.0, capsize=3, label=name, zorder=3,
+            centers,
+            means,
+            yerr=stds,
+            color=color,
+            marker="o",
+            ms=5,
+            linewidth=1.6,
+            elinewidth=1.0,
+            capsize=3,
+            label=name,
+            zorder=3,
         )
 
     if y_lim:
@@ -1198,8 +1220,12 @@ def line_whisker_plot(
         ax.axvline(vline, color=MUTED_COLOR, linewidth=0.9, linestyle="--", zorder=1)
         if vline_label:
             ax.text(
-                vline, ax.get_ylim()[0], f" {vline_label}",
-                color=MUTED_COLOR, ha="left", va="bottom",
+                vline,
+                ax.get_ylim()[0],
+                f" {vline_label}",
+                color=MUTED_COLOR,
+                ha="left",
+                va="bottom",
             )
     if hline is not None:
         ax.axhline(hline, color=MUTED_COLOR, linewidth=0.8, linestyle=":", zorder=1)
@@ -1219,7 +1245,7 @@ def stacked_bar_plot(
     figsize: tuple[float, float] = (5.4, 2.9),
     ax: Axes | None = None,
 ) -> Plot | None:
-    """Horizontal stacked bars with the bar total annotated at the end, rows optionally sorted by total."""
+    """Horizontal stacked bars with the total annotated at the end of each row."""
     totals = [sum(seg[1][i] for seg in segments) for i in range(len(labels))]
     if sort == "asc":
         order = list(np.argsort(totals))
@@ -1229,14 +1255,25 @@ def stacked_bar_plot(
         order = list(range(len(labels)))
     labels = [labels[i] for i in order]
     totals = [totals[i] for i in order]
-    segments = [(name, [vals[i] for i in order], color) for name, vals, color in segments]
+    segments = [
+        (name, [vals[i] for i in order], color) for name, vals, color in segments
+    ]
 
     y = np.arange(len(labels))
     ax, fig = _ensure_ax(ax, figsize)
     left = np.zeros(len(labels))
     for name, vals, color in segments:
         vals = np.asarray(vals, dtype=float)
-        ax.barh(y, vals, left=left, height=0.55, color=color, alpha=0.85, edgecolor="0.3", label=name)
+        ax.barh(
+            y,
+            vals,
+            left=left,
+            height=0.55,
+            color=color,
+            alpha=0.85,
+            edgecolor="0.3",
+            label=name,
+        )
         left = left + vals
     span = max(totals) if totals else 1.0
     for yi, total in zip(y, totals):
@@ -1245,11 +1282,12 @@ def stacked_bar_plot(
     ax.set_xlim(0, span * 1.15)
     ax.grid(True, axis="x")
     ax.grid(False, axis="y")
-    # Every row carries an end-of-bar total, so the only spot clear of all of them is
-    # above the bars: run the legend horizontally there, outside the axes.
     ax.legend(
-        loc="lower center", bbox_to_anchor=(0.5, 1.0),
-        ncol=len(segments), columnspacing=1.2, frameon=False,
+        loc="lower center",
+        bbox_to_anchor=(0.5, 1.0),
+        ncol=len(segments),
+        columnspacing=1.2,
+        frameon=False,
     )
     _apply_labels(ax, x_label=x_label)
     return _finalize(fig)
@@ -1265,16 +1303,7 @@ def cost_quality_plot(
     time_label: str = r"$k$-NN graph build time (s)",
     figsize: tuple[float, float] = (10.0, 11.5),
 ) -> Plot | None:
-    """Grid of dual-axis bar panels: build cost vs correlation across dataset scale.
-
-    Each panel is `(title, dataset_labels, rho_mean, rho_std, build_s)`, drawn as one
-    group per dataset (datasets pre-sorted by size on the x-axis): a Spearman-rho bar on
-    the left axis (with a grey std whisker) and a k-NN graph build-time bar on the right
-    axis. The rho axis is fixed to [0, 1] for cross-panel comparison; the time axis
-    auto-scales per panel. Each axis is tinted with its bar colour so the two scales stay
-    unambiguous without repeating labels on every panel. Bars of height NaN (a dataset
-    missing for that configuration) simply draw nothing, keeping x-positions aligned.
-    """
+    """Grid of dual-axis bar panels: Spearman rho on the left axis, build time on the right."""
     if not panels:
         return None
     n = len(panels)
@@ -1292,9 +1321,14 @@ def cost_quality_plot(
         x = np.arange(len(labels))
         ax2 = ax.twinx()
         ax.bar(
-            x - w / 2, rho_mean, w, yerr=rho_std, capsize=2,
+            x - w / 2,
+            rho_mean,
+            w,
+            yerr=rho_std,
+            capsize=2,
             error_kw={"elinewidth": 0.9, "capthick": 0.9, "ecolor": MUTED_COLOR},
-            color=rho_color, zorder=2,
+            color=rho_color,
+            zorder=2,
         )
         ax2.bar(x + w / 2, build_s, w, color=time_color, zorder=2)
 
@@ -1302,14 +1336,13 @@ def cost_quality_plot(
         ax.set_xlim(-0.6, len(labels) - 0.4)
         ax.set_xticks(x)
         bottom_row = idx >= n - n_cols
-        ax.set_xticklabels(labels if bottom_row else [""] * len(labels),
-                           rotation=45, ha="right")
+        ax.set_xticklabels(
+            labels if bottom_row else [""] * len(labels), rotation=45, ha="right"
+        )
         ax.set_title(title, fontweight="normal")
         ax.grid(True, axis="y")
         ax.set_axisbelow(True)
 
-        # Tint each axis with its bar colour so left=rho / right=time reads at a glance;
-        # the figure legend names both measures, so no per-panel axis titles are needed.
         ax.tick_params(axis="y", colors=rho_color)
         ax.spines["left"].set_color(rho_color)
         ax2.tick_params(axis="y", colors=time_color)
@@ -1321,7 +1354,11 @@ def cost_quality_plot(
         Patch(facecolor=time_color, edgecolor="0.3", label=time_label),
     ]
     fig.legend(
-        handles=handles, loc="lower center", bbox_to_anchor=(0.5, 1.0),
-        ncol=2, frameon=False, columnspacing=1.6,
+        handles=handles,
+        loc="lower center",
+        bbox_to_anchor=(0.5, 1.0),
+        ncol=2,
+        frameon=False,
+        columnspacing=1.6,
     )
     return _finalize(fig)

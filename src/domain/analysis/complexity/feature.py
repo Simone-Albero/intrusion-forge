@@ -1,8 +1,12 @@
 import numpy as np
 from tqdm import tqdm
 
-from src.domain.analysis.complexity.shared import aggregate_min_mean_max, make_null_row, _l2_normalize
 from src.core.utils import timed
+from src.domain.analysis.complexity.shared import (
+    aggregate_min_mean_max,
+    l2_normalize,
+    make_null_row,
+)
 
 
 def _f1_pair(X_c: np.ndarray, X_j: np.ndarray, eps: float = 1e-8) -> float:
@@ -25,7 +29,7 @@ def _f2_pair(X_c: np.ndarray, X_j: np.ndarray, eps: float = 1e-8) -> float:
 
 
 def _f3_pair(X_c: np.ndarray, X_j: np.ndarray) -> float:
-    """F3: min over features of the fraction of cluster-c samples in the overlap region (higher = harder)."""
+    """F3: min over features of the cluster-c fraction inside the overlap. Higher = harder."""
     min_c, max_c = X_c.min(axis=0), X_c.max(axis=0)
     min_j, max_j = X_j.min(axis=0), X_j.max(axis=0)
     lo = np.maximum(min_c, min_j)
@@ -41,7 +45,7 @@ def _f3_pair(X_c: np.ndarray, X_j: np.ndarray) -> float:
 
 
 def _f4_pair(X_c: np.ndarray, X_j: np.ndarray) -> float:
-    """F4: fraction of cluster-c samples in the overlap region on ALL features simultaneously (higher = harder)."""
+    """F4: fraction of cluster-c samples inside the overlap on every feature. Higher = harder."""
     min_c, max_c = X_c.min(axis=0), X_c.max(axis=0)
     min_j, max_j = X_j.min(axis=0), X_j.max(axis=0)
     lo = np.maximum(min_c, min_j)
@@ -58,6 +62,7 @@ _F_KEYS = ("f1", "f2", "f3", "f4")
 
 
 def _pair_block(X_c: np.ndarray, X_others: list[np.ndarray]) -> dict[str, list[float]]:
+    """F1-F4 of cluster c against each adversarial cluster."""
     out: dict[str, list[float]] = {k: [] for k in _F_KEYS}
     for X_o in X_others:
         if len(X_o) < 2:
@@ -77,14 +82,10 @@ def compute_f_measures(
     *,
     metric: str = "cosine",
 ) -> dict[str, dict[str, float | None]]:
-    """F1-F4 per cluster vs the top-K adversarial clusters, as min/mean/max.
-
-    Noise (-1) is excluded. metric="cosine" L2-normalises samples first (angular
-    space, matching the Gower-cosine k-NN); "euclidean" uses raw samples.
-    """
+    """F1-F4 per cluster against its top-K adversarial clusters, as min/mean/max."""
     mask_valid = y_cluster != -1
     X_raw = X_num[mask_valid]
-    X_v = _l2_normalize(X_raw) if metric == "cosine" else X_raw
+    X_v = l2_normalize(X_raw) if metric == "cosine" else X_raw
     yk_v = y_cluster[mask_valid]
 
     cluster_block: dict[str, np.ndarray] = {

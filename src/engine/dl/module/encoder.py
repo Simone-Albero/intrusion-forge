@@ -31,6 +31,7 @@ class NumericalEncoderModule(nn.Module):
         )
 
     def forward(self, x: Tensor) -> Tensor:
+        """Encode the numerical block."""
         return self.mlp(x)
 
 
@@ -65,6 +66,7 @@ class CategoricalEncoderModule(nn.Module):
         )
 
     def forward(self, x: Tensor) -> Tensor:
+        """Embed the categorical block, then encode it."""
         return self.mlp(self.embedding(x))
 
 
@@ -102,4 +104,5 @@ class TabularEncoderModule(nn.Module):
         )
 
     def forward(self, x_numerical: Tensor, x_categorical: Tensor) -> Tensor:
+        """Encode the concatenated numerical and embedded categorical blocks."""
         return self.mlp(torch.cat([x_numerical, self.embedding(x_categorical)], dim=1))

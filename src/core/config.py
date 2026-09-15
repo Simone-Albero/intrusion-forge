@@ -12,11 +12,7 @@ def load_config(
     config_name: str = "config",
     overrides: list[str] | None = None,
 ) -> DictConfig:
-    """Compose and return a DictConfig via Hydra.
-
-    `config_path` may be relative (resolved from CWD) or absolute; `overrides`
-    are Hydra dotlist strings like ["db.user=admin"].
-    """
+    """Compose a DictConfig via Hydra from `config_path` and dotlist `overrides`."""
     overrides = overrides or []
 
     config_dir = Path(config_path)

@@ -1,7 +1,7 @@
 import hashlib
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 from sklearn import set_config
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.compose import ColumnTransformer
@@ -40,6 +40,7 @@ def _stratified_sample(
     *,
     random_state: int | None = None,
 ) -> pd.DataFrame:
+    """Sample up to `per_group` rows from every label group."""
     return (
         df.groupby(df[label_col].values, group_keys=False)
         .apply(lambda g: g.sample(n=min(len(g), per_group), random_state=random_state))
@@ -78,7 +79,7 @@ def ml_split(
     random_state: int | None = None,
     label_col: str | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Split a DataFrame into train, validation, and test sets with optional stratification."""
+    """Split a DataFrame into train, validation and test sets, optionally stratified."""
     if not np.isclose(train_frac + val_frac + test_frac, 1.0):
         raise ValueError("train_frac, val_frac, and test_frac must sum to 1.0.")
 
@@ -103,24 +104,17 @@ class LogTransformer(BaseEstimator, TransformerMixin):
     def __init__(self, *, epsilon: float = 1e-10):
         self.epsilon = epsilon
 
-    def fit(self, X, *, y=None):
+    def fit(self, X, *, y=None) -> "LogTransformer":
+        """Stateless fit."""
         return self
 
     def transform(self, X):
+        """Apply log1p to the non-negative part of X."""
         return np.log1p(np.maximum(X, 0) + self.epsilon)
 
 
 class TopNHashEncoder(BaseEstimator, TransformerMixin):
-    """Hybrid categorical encoder: top-N categories + hash buckets for rare/OOV values.
-
-    Encoding scheme:
-      0              — missing / NaN
-      1 … top_n      — top-N most frequent categories
-      top_n+1 …      — hash buckets for rare/OOV categories
-
-    With hash_buckets=0 there are no OOV slots, so rare/OOV values fold into the
-    missing token (0).
-    """
+    """Categorical encoder: 0 for missing, 1…top_n for frequent categories, then hash buckets."""
 
     def __init__(
         self,
@@ -138,13 +132,15 @@ class TopNHashEncoder(BaseEstimator, TransformerMixin):
         self.dtype = dtype
 
     def _hash_bucket(self, col: str, value, n: int) -> int:
+        """Stable bucket index of a category value."""
         s = "NA" if pd.isna(value) else str(value)
         digest = hashlib.blake2b(
             f"{self.hash_key}|{col}|{s}".encode(), digest_size=8
         ).digest()
         return int.from_bytes(digest, byteorder="little") % n
 
-    def fit(self, X: pd.DataFrame, *, y=None):
+    def fit(self, X: pd.DataFrame, *, y=None) -> "TopNHashEncoder":
+        """Learn the top-N categories of every column."""
         if self.top_n < 0 or self.hash_buckets < 0:
             raise ValueError("top_n and hash_buckets must be non-negative.")
         X = pd.DataFrame(X)
@@ -161,16 +157,16 @@ class TopNHashEncoder(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        """Encode every column into category ids, hash buckets or the missing token."""
         X = pd.DataFrame(X)
         hashed_start = 1 + self.top_n
         out = {}
         for col in (c for c in self.columns_ if c in X.columns):
             cmap = self.category_maps_[col]
             s = X[col]
-            ids = s.map(cmap)  # top-N -> id, NaN for missing/OOV
+            ids = s.map(cmap)
             if self.hash_buckets > 0:
                 oov = ids.isna() & s.notna()
-                # hash only the distinct OOV values, then broadcast
                 hash_map = {
                     v: hashed_start + self._hash_bucket(col, v, self.hash_buckets)
                     for v in s[oov].unique()
@@ -243,11 +239,7 @@ def attach_cluster_features(
     cluster_col: str = "cluster",
     exclude: tuple[str, ...] = ("cluster_class",),
 ) -> pd.DataFrame:
-    """Left-join per-cluster complexity rows onto `df` by `cluster_col`.
-
-    Target columns already present are dropped first (idempotent), `exclude` keys
-    are never attached (leakage-prone), and unmatched rows get NaN.
-    """
+    """Left-join the per-cluster complexity rows onto `df` by `cluster_col`."""
     columns = cluster_feature_columns(cluster_features, exclude=exclude)
     feature_df = pd.DataFrame.from_dict(cluster_features, orient="index").reindex(
         columns=columns
@@ -263,11 +255,7 @@ def scale_columns_on_train(
     *,
     train_key: str = "train",
 ) -> dict[str, pd.DataFrame]:
-    """Median-impute then RobustScale `columns`, fitting both on the train split.
-
-    Residual NaN are median-filled first (RobustScaler cannot fit on NaN); stats
-    come only from train, so val/test are transformed without leakage.
-    """
+    """Median-impute then RobustScale `columns`, fitting both on the train split only."""
     if not columns:
         return splits
     train = splits[train_key][columns]

@@ -19,20 +19,16 @@ def aggregate_min_mean_max(
 
 def make_null_row(metric_keys: tuple[str, ...]) -> dict[str, float | None]:
     """Null pairwise-output row: `f"{metric}_{stat}": None` for stats min/mean/max."""
-    return {
-        f"{m}_{stat}": None
-        for m in metric_keys
-        for stat in ("min", "mean", "max")
-    }
+    return {f"{m}_{stat}": None for m in metric_keys for stat in ("min", "mean", "max")}
 
 
-def _l2_normalize(X_num: np.ndarray, eps: float = 1e-8) -> np.ndarray:
+def l2_normalize(X_num: np.ndarray, eps: float = 1e-8) -> np.ndarray:
     """Row-wise L2-normalize so that Euclidean on unit vectors maps to cosine."""
     norms = np.linalg.norm(X_num, axis=1, keepdims=True)
     return X_num / np.maximum(norms, eps)
 
 
-def _hybrid_row_batch(
+def hybrid_row_batch(
     X_num_norm: np.ndarray,
     X_cat: np.ndarray | None,
     query_num_norm: np.ndarray,
@@ -40,13 +36,7 @@ def _hybrid_row_batch(
     d_num: int,
     d_cat: int,
 ) -> np.ndarray:
-    """Gower-cosine hybrid distance (cosine for numerics, Hamming for categorics).
-
-    d = ( d_num * cos_dist(query_num, ref_num) + Σ_j [query_cat_j != ref_cat_j] ) / (d_num + d_cat)
-
-    cos_dist = clip(||q/||q|| - r/||r||||^2 / 2, 0, 1) ∈ [0, 1].
-    The numeric block is weighted by `d_num` to preserve Gower proportionality.
-    """
+    """Gower-cosine hybrid distance: cosine on the numerics, Hamming on the categoricals."""
     euclid = cdist(query_num_norm, X_num_norm, metric="euclidean")
     dist = np.clip(euclid**2 / 2, 0.0, 1.0) * d_num
 
@@ -57,7 +47,7 @@ def _hybrid_row_batch(
     return dist / (d_num + d_cat)
 
 
-def _hybrid_row_batch_euclidean(
+def hybrid_row_batch_euclidean(
     X_num: np.ndarray,
     X_cat: np.ndarray | None,
     query_num: np.ndarray,
@@ -66,12 +56,7 @@ def _hybrid_row_batch_euclidean(
     d_cat: int,
     feat_ranges: np.ndarray,
 ) -> np.ndarray:
-    """Gower-Euclidean hybrid distance (per-feature range-normalised Manhattan + Hamming).
-
-    d = ( Σ_f |x_f - y_f| / range_f + Σ_j [x_cat_j != y_cat_j] ) / (d_num + d_cat)
-
-    feat_ranges[f] = max(X_num[:, f]) - min(X_num[:, f]) for each numerical feature f.
-    """
+    """Gower-Euclidean hybrid distance: range-normalised Manhattan plus Hamming."""
     dist = np.zeros((query_num.shape[0], X_num.shape[0]), dtype=np.float64)
     for f in range(d_num):
         r = max(float(feat_ranges[f]), 1e-8)
@@ -93,29 +78,26 @@ def build_knn_graph(
     metric: str = "cosine",
     batch_size: int = 1024,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Build a k-NN graph via batched Gower-hybrid distance, never materialising the full n×n matrix.
-
-    metric="cosine": cosine on L2-normalised numerics + Hamming on categorics.
-    metric="euclidean": range-normalised Manhattan on numerics + Hamming.
-    """
+    """Build a k-NN graph with batched Gower-hybrid distances, never materialising n×n."""
     n, d_num = X_num.shape
     d_cat = X_cat.shape[1] if X_cat is not None else 0
     effective_k = min(k, n - 1)
 
     if metric == "cosine":
-        X_num_norm = _l2_normalize(X_num)
+        X_num_norm = l2_normalize(X_num)
 
         def batch_dists(start: int, end: int) -> np.ndarray:
             q_cat = X_cat[start:end] if X_cat is not None else None
-            return _hybrid_row_batch(
+            return hybrid_row_batch(
                 X_num_norm, X_cat, X_num_norm[start:end], q_cat, d_num, d_cat
             )
+
     else:
         feat_ranges = X_num.max(axis=0) - X_num.min(axis=0)
 
         def batch_dists(start: int, end: int) -> np.ndarray:
             q_cat = X_cat[start:end] if X_cat is not None else None
-            return _hybrid_row_batch_euclidean(
+            return hybrid_row_batch_euclidean(
                 X_num, X_cat, X_num[start:end], q_cat, d_num, d_cat, feat_ranges
             )
 
@@ -177,11 +159,7 @@ def _bridge_disconnected(
     metric: str = "cosine",
     feat_ranges: np.ndarray | None = None,
 ) -> scipy.sparse.csr_matrix:
-    """Add one cross-component bridge edge per disconnected component.
-
-    Categoricals can partition the space so the k neighbours of every node sit in
-    the same category, leaving the k-NN graph disconnected.
-    """
+    """Add one bridge edge per disconnected component, which categoricals can create."""
     n_comp, comp_labels = scipy.sparse.csgraph.connected_components(mat, directed=False)
     if n_comp == 1:
         return mat
@@ -190,10 +168,10 @@ def _bridge_disconnected(
     ref = int(np.where(comp_labels == 0)[0][0])
 
     if metric == "cosine":
-        X_num_norm = _l2_normalize(X_num)
+        X_num_norm = l2_normalize(X_num)
         q_num_prep = X_num_norm[ref : ref + 1]
         q_cat = X_cat[ref : ref + 1] if X_cat is not None else None
-        dists_row = _hybrid_row_batch(
+        dists_row = hybrid_row_batch(
             X_num_norm, X_cat, q_num_prep, q_cat, d_num, d_cat
         )[0]
     else:
@@ -201,7 +179,7 @@ def _bridge_disconnected(
             feat_ranges = X_num.max(axis=0) - X_num.min(axis=0)
         q_num = X_num[ref : ref + 1]
         q_cat = X_cat[ref : ref + 1] if X_cat is not None else None
-        dists_row = _hybrid_row_batch_euclidean(
+        dists_row = hybrid_row_batch_euclidean(
             X_num, X_cat, q_num, q_cat, d_num, d_cat, feat_ranges
         )[0]
 
@@ -223,10 +201,7 @@ def build_approx_mst(
     *,
     metric: str = "cosine",
 ) -> np.ndarray:
-    """Approximate MST on the sparse k-NN graph.
-
-    One bridge edge is added per disconnected component so the MST connects every cluster.
-    """
+    """Approximate MST on the sparse k-NN graph, bridging disconnected components first."""
     n, d_num = X_num.shape
     d_cat = X_cat.shape[1] if X_cat is not None else 0
 
@@ -252,10 +227,7 @@ def topk_adversarial_clusters(
     *,
     metric: str = "euclidean",
 ) -> dict[str, list[str]]:
-    """For each cluster, return the top-K nearest cluster IDs of a different class.
-
-    Sorted by ascending centroid distance, capped at `top_k` (or all available).
-    """
+    """Top-K nearest cluster ids of a different class, by ascending centroid distance."""
     if centroid_matrix.shape[0] == 0:
         return {}
     pw = cdist(centroid_matrix, centroid_matrix, metric=metric)

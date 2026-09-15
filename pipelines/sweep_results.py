@@ -27,19 +27,35 @@ apply_plot_style()
 logger = logging.getLogger(__name__)
 
 _ALGO_ORDER = ["kmeans", "spectral", "birch", "hdbscan"]
-# The DL classifier is trained on two feature views (numerical, tabular); they form one MLP family.
 _CLF_MERGE = {"numerical": "mlp", "tabular": "mlp"}
-_ALGO_LABEL = {"kmeans": "$k$-means", "spectral": "spectral", "birch": "BIRCH", "hdbscan": "HDBSCAN"}
+_ALGO_LABEL = {
+    "kmeans": "$k$-means",
+    "spectral": "spectral",
+    "birch": "BIRCH",
+    "hdbscan": "HDBSCAN",
+}
 _FEATURE_FAMILIES = [
     ("feature-overlap", ("f1", "f2", "f3", "f4")),
     ("neighbourhood", ("n1", "n2", "n3", "n4")),
     ("network", ("network_density", "cls_coef", "hub")),
-    ("cluster-geometry",
-     ("max_dispersion", "p95_dispersion", "dist_to_nearest_centroid", "p5_silhouette", "frac_at_risk")),
+    (
+        "cluster-geometry",
+        (
+            "max_dispersion",
+            "p95_dispersion",
+            "dist_to_nearest_centroid",
+            "p5_silhouette",
+            "frac_at_risk",
+        ),
+    ),
     ("dimensionality", ("t2", "t3", "t4")),
 ]
 _COS, _EUC = PALETTE[0], PALETTE[1]
-_BASELINE_COLOR = {"mcp_risk": PALETTE[3], "margin_risk": PALETTE[4], "entropy_risk": PALETTE[5]}
+_BASELINE_COLOR = {
+    "mcp_risk": PALETTE[3],
+    "margin_risk": PALETTE[4],
+    "entropy_risk": PALETTE[5],
+}
 _DATASET_LABEL = {
     "bank_marketing": "Bank",
     "bot_iot_v2": "Bot-IoT",
@@ -66,11 +82,7 @@ _CLF_LABEL = {
 
 
 def _load_sweep_runs(root: Path) -> list[dict]:
-    """Collect one record per `<config>/<dataset>/<classifier>` run under `root`.
-
-    `distance` and `algorithm` come from each run's composed config, not parsed
-    from directory names.
-    """
+    """Collect one record per `<config>/<dataset>/<classifier>` run under `root`."""
     runs: list[dict] = []
     for cfg_dir in sorted(p for p in root.iterdir() if p.is_dir()):
         for ds_dir in sorted(p for p in cfg_dir.iterdir() if p.is_dir()):
@@ -81,22 +93,26 @@ def _load_sweep_runs(root: Path) -> list[dict]:
             algorithm = next(iter(composed["clustering"]["algorithms"]), None)
             dataset_size = _dataset_size(ds_dir / "shared/metadata/df_info.json")
             build_s = _build_knn_seconds(ds_dir / "shared/timing.json")
-            for clf_dir in sorted(p for p in ds_dir.iterdir() if p.is_dir() and p.name != "shared"):
+            for clf_dir in sorted(
+                p for p in ds_dir.iterdir() if p.is_dir() and p.name != "shared"
+            ):
                 base = clf_dir / "outputs/analysis"
                 results_path = base / "classifier_results.json"
                 if not results_path.exists():
                     continue
-                runs.append({
-                    "config": cfg_dir.name,
-                    "dataset": ds_dir.name,
-                    "clf": clf_dir.name,
-                    "distance": composed.get("distance"),
-                    "algorithm": algorithm,
-                    "dataset_size": dataset_size,
-                    "build_knn_graph_s": build_s,
-                    "base": base,
-                    "results": load_from_json(results_path),
-                })
+                runs.append(
+                    {
+                        "config": cfg_dir.name,
+                        "dataset": ds_dir.name,
+                        "clf": clf_dir.name,
+                        "distance": composed.get("distance"),
+                        "algorithm": algorithm,
+                        "dataset_size": dataset_size,
+                        "build_knn_graph_s": build_s,
+                        "base": base,
+                        "results": load_from_json(results_path),
+                    }
+                )
     return runs
 
 
@@ -108,11 +124,13 @@ def _dataset_size(info_path: Path) -> int | None:
 
 
 def _build_knn_seconds(timing_path: Path) -> float | None:
-    """Wall time of the `build_knn_graph` stage (the k-NN complexity graph) from timing.json."""
+    """Wall time of the k-NN graph build, from a run's timing.json."""
     if not timing_path.exists():
         return None
     rows = load_from_json(timing_path)
-    vals = [r.get("duration_s", 0.0) for r in rows if r.get("function") == "build_knn_graph"]
+    vals = [
+        r.get("duration_s", 0.0) for r in rows if r.get("function") == "build_knn_graph"
+    ]
     return float(sum(vals)) if vals else None
 
 
@@ -123,21 +141,29 @@ def _dataset_base(name: str) -> str:
 
 
 def _dist_color(distance: str) -> str:
+    """Palette colour of a distance metric."""
     return _COS if distance == "cosine" else _EUC
 
 
 def _fig_rho_by_config(runs: list[dict]) -> Plot | None:
     """Figure A: Spearman rho distribution per clustering configuration."""
+
     def sort_key(cfg: str) -> tuple[int, int]:
         meta = next(r for r in runs if r["config"] == cfg)
         algo = meta["algorithm"]
-        return (0 if meta["distance"] == "cosine" else 1,
-                _ALGO_ORDER.index(algo) if algo in _ALGO_ORDER else 99)
+        return (
+            0 if meta["distance"] == "cosine" else 1,
+            _ALGO_ORDER.index(algo) if algo in _ALGO_ORDER else 99,
+        )
 
     labels, values, colors, faded = [], [], [], []
     for cfg in sorted({r["config"] for r in runs}, key=sort_key):
         crows = [r for r in runs if r["config"] == cfg]
-        vals = [r["results"]["spearman"] for r in crows if r["results"].get("spearman") is not None]
+        vals = [
+            r["results"]["spearman"]
+            for r in crows
+            if r["results"].get("spearman") is not None
+        ]
         if not vals:
             continue
         meta = crows[0]
@@ -147,8 +173,14 @@ def _fig_rho_by_config(runs: list[dict]) -> Plot | None:
         colors.append(_dist_color(meta["distance"]))
         faded.append(False)
     return box_strip_plot(
-        labels, values, colors=colors, faded=faded, show_points=False,
-        x_label=r"Spearman $\rho$", x_lim=(-1.05, 1.05), axvline=0.0,
+        labels,
+        values,
+        colors=colors,
+        faded=faded,
+        show_points=False,
+        x_label=r"Spearman $\rho$",
+        x_lim=(-1.05, 1.05),
+        axvline=0.0,
         legend={"cosine": _COS, "euclidean": _EUC},
     )
 
@@ -166,11 +198,20 @@ def _fig_rho_vs_clusters(runs: list[dict]) -> Plot | None:
             if n and rho is not None:
                 xs.append(n)
                 ys.append(rho)
-        series[distance] = (np.asarray(xs, float), np.asarray(ys, float), _dist_color(distance))
+        series[distance] = (
+            np.asarray(xs, float),
+            np.asarray(ys, float),
+            _dist_color(distance),
+        )
     return line_whisker_plot(
-        series, x_label="number of clusters per run",
-        y_label=r"Spearman $\rho$", log_x=True, y_lim=(-1.05, 1.05),
-        vline=10, vline_label="unstable regime", hline=0.0,
+        series,
+        x_label="number of clusters per run",
+        y_label=r"Spearman $\rho$",
+        log_x=True,
+        y_lim=(-1.05, 1.05),
+        vline=10,
+        vline_label="unstable regime",
+        hline=0.0,
     )
 
 
@@ -186,8 +227,10 @@ def _fig_family_importance(runs: list[dict]) -> Plot | None:
 
     def part(prefix: str, members: tuple[str, ...]) -> float:
         return 100.0 * sum(
-            v for k, v in mean_imp.items()
-            if k.startswith(prefix) and any(k[len(prefix):].startswith(m) for m in members)
+            v
+            for k, v in mean_imp.items()
+            if k.startswith(prefix)
+            and any(k[len(prefix) :].startswith(m) for m in members)
         )
 
     names = [name for name, _ in _FEATURE_FAMILIES]
@@ -196,20 +239,13 @@ def _fig_family_importance(runs: list[dict]) -> Plot | None:
     return stacked_bar_plot(
         names,
         [("cluster-level", cluster, _COS), ("class-level", klass, _EUC)],
-        x_label="mean importance (% of total)", total_format="{:.1f}%",
+        x_label="mean importance (% of total)",
+        total_format="{:.1f}%",
     )
 
 
 def _fig_selective_stability(runs: list[dict]) -> Plot | None:
-    """Figure G: oracle-benefit recovered per classifier, predictor vs MCP, one panel per algorithm.
-
-    `oracle_benefit_recovered` is the fraction of the oracle's attainable selective-prediction
-    gain that a method captures; unlike raw lift it is normalized by each run's headroom and
-    is therefore comparable across models. Four panels, one per clustering algorithm; in each,
-    the predictor and MCP box-strips for every classifier. Classifiers share a common order
-    (their calibration net) across panels. Needs `confidence_baselines` and the paired-
-    bootstrap `significance` block, so earlier runs are skipped.
-    """
+    """Figure: oracle benefit per classifier, predictor vs MCP, one panel per algorithm."""
     algos = ["kmeans", "spectral", "birch", "hdbscan"]
     cell: dict[tuple[str, str], dict[str, list[float]]] = {}
     net: dict[str, list[float]] = {}
@@ -247,18 +283,17 @@ def _fig_selective_stability(runs: list[dict]) -> Plot | None:
             colors.append(mcp_c)
         panels.append((_ALGO_LABEL[algo], labels, values, colors))
     return box_strip_facets(
-        panels, x_label="oracle benefit recovered (%)", x_lim=(-25.0, 105.0), axvline=0.0,
-        legend={"predictor": pred_c, "MCP": mcp_c}, figsize=(10.0, 5.5),
+        panels,
+        x_label="oracle benefit recovered (%)",
+        x_lim=(-25.0, 105.0),
+        axvline=0.0,
+        legend={"predictor": pred_c, "MCP": mcp_c},
+        figsize=(10.0, 5.5),
     )
 
 
 def _fig_gain_by_algo(runs: list[dict]) -> Plot | None:
-    """RQ5 figure: oracle-benefit recovered by clustering algorithm, predictor vs MCP.
-
-    Cluster-level (support-weighted cluster admission), aggregated over all datasets and
-    classifiers per algorithm — the headline view behind the per-classifier appendix
-    breakdown (`_fig_selective_stability`). Needs `confidence_baselines`.
-    """
+    """Figure: oracle benefit recovered by clustering algorithm, predictor vs MCP."""
     cell: dict[str, dict[str, list[float]]] = {}
     for r in runs:
         res = r["results"]
@@ -282,8 +317,13 @@ def _fig_gain_by_algo(runs: list[dict]) -> Plot | None:
         values.append(np.asarray(c["mcp"], dtype=float))
         colors.append(_EUC)
     return box_strip_plot(
-        labels, values, colors=colors, show_points=False,
-        x_label="oracle benefit recovered (%)", x_lim=(-25.0, 105.0), axvline=0.0,
+        labels,
+        values,
+        colors=colors,
+        show_points=False,
+        x_label="oracle benefit recovered (%)",
+        x_lim=(-25.0, 105.0),
+        axvline=0.0,
         legend={"predictor": _COS, "MCP": _EUC},
     )
 
@@ -300,17 +340,13 @@ _INSTANCE_METHODS = [
 
 
 def _load_instance(base: Path) -> dict | None:
-    """Per-run instance-level baselines JSON (written by fit_failure_classifier), if present."""
+    """Per-run instance-level baselines JSON, if the run produced one."""
     path = base / "instance_baselines.json"
     return load_from_json(path) if path.exists() else None
 
 
 def _fig_instance_gain(runs: list[dict]) -> Plot | None:
-    """Instance-level oracle-benefit recovered per score, aggregated over runs with a dump.
-
-    Only runs whose classify testing stage produced the per-sample dump contribute; when
-    none do, the figure is skipped (older sweeps without `test_samples.parquet`).
-    """
+    """Figure: instance-level oracle benefit recovered per score, over runs with a dump."""
     acc: dict[str, list[float]] = {k: [] for k, _ in _INSTANCE_METHODS}
     for r in runs:
         inst = _load_instance(r["base"])
@@ -329,15 +365,18 @@ def _fig_instance_gain(runs: list[dict]) -> Plot | None:
         values.append(np.asarray(acc[key], dtype=float))
         colors.append(color)
     return box_strip_plot(
-        labels, values, colors=colors, show_points=False,
-        x_label="oracle benefit recovered (%)", x_lim=(-25.0, 105.0), axvline=0.0,
+        labels,
+        values,
+        colors=colors,
+        show_points=False,
+        x_label="oracle benefit recovered (%)",
+        x_lim=(-25.0, 105.0),
+        axvline=0.0,
     )
 
 
 def _cost_quality_cells(runs: list[dict]) -> tuple[list[str], list[str], dict]:
-    """Shared cost_quality aggregation: datasets ordered by full training size, their short
-    labels, and per (algorithm, distance, dataset) the rho samples and k-NN graph build time.
-    """
+    """Datasets ordered by training size, their labels, and the rho/build-time cells."""
     size: dict[str, int] = {}
     cell: dict[tuple[str, str, str], dict] = {}
     for r in runs:
@@ -356,7 +395,12 @@ def _cost_quality_cells(runs: list[dict]) -> tuple[list[str], list[str], dict]:
 
 
 def _cost_quality_panel(
-    cell: dict, datasets: list[str], labels: list[str], algo: str, distance: str, title: str,
+    cell: dict,
+    datasets: list[str],
+    labels: list[str],
+    algo: str,
+    distance: str,
+    title: str,
 ) -> tuple[str, list[str], np.ndarray, np.ndarray, np.ndarray]:
     """One (algorithm, distance) panel: rho mean/std across classifiers + build time per dataset."""
     rho_mean, rho_std, build_s = [], [], []
@@ -370,16 +414,7 @@ def _cost_quality_panel(
 
 
 def _fig_cost_quality(runs: list[dict], distance: str) -> Plot | None:
-    """Figure: build cost vs correlation across dataset scale for one distance, one panel per
-    clustering algorithm in a single row.
-
-    Within each panel the nine datasets sit on the x-axis ordered by full training size. Per
-    dataset: the Spearman rho (mean +/- std across the ten classifiers, left axis) and the k-NN
-    graph build time (right axis, one deterministic measurement so no error bar). The graph is
-    capped at `max_complexity_samples`, so build time plateaus as datasets grow from thousands
-    to tens of millions of rows while rho stays high -- the method scales without a correlation
-    cliff.
-    """
+    """Figure: build cost vs correlation across dataset scale, one panel per algorithm."""
     datasets, labels, cell = _cost_quality_cells(runs)
     if not datasets:
         return None
@@ -387,7 +422,9 @@ def _fig_cost_quality(runs: list[dict], distance: str) -> Plot | None:
         _cost_quality_panel(cell, datasets, labels, algo, distance, _ALGO_LABEL[algo])
         for algo in _ALGO_ORDER
     ]
-    return cost_quality_plot(panels, rho_color=_COS, time_color=_EUC, n_cols=2, figsize=(9.5, 7.0))
+    return cost_quality_plot(
+        panels, rho_color=_COS, time_color=_EUC, n_cols=2, figsize=(9.5, 7.0)
+    )
 
 
 def _fig_cost_quality_detail(runs: list[dict], algo: str, distance: str) -> Plot | None:
@@ -397,10 +434,13 @@ def _fig_cost_quality_detail(runs: list[dict], algo: str, distance: str) -> Plot
         return None
     title = f"{_ALGO_LABEL[algo]} · {distance}"
     panel = _cost_quality_panel(cell, datasets, labels, algo, distance, title)
-    return cost_quality_plot([panel], rho_color=_COS, time_color=_EUC, n_cols=1, figsize=(5.2, 3.4))
+    return cost_quality_plot(
+        [panel], rho_color=_COS, time_color=_EUC, n_cols=1, figsize=(5.2, 3.4)
+    )
 
 
 def _std(values: np.ndarray) -> float:
+    """Sample standard deviation, 0 for fewer than two values."""
     return float(values.std(ddof=1)) if len(values) > 1 else 0.0
 
 
@@ -416,16 +456,18 @@ def _table_perconfig(runs: list[dict]) -> dict:
     rows = []
     for (distance, algorithm), vals in sorted(groups.items()):
         arr = np.array(vals, dtype=float)
-        rows.append({
-            "distance": distance,
-            "algorithm": algorithm,
-            "mean": float(arr.mean()),
-            "median": float(np.median(arr)),
-            "std": _std(arr),
-            "pct_gt_0_7": 100.0 * float((arr > 0.7).mean()),
-            "pct_lt_0": 100.0 * float((arr < 0.0).mean()),
-            "n_runs": len(arr),
-        })
+        rows.append(
+            {
+                "distance": distance,
+                "algorithm": algorithm,
+                "mean": float(arr.mean()),
+                "median": float(np.median(arr)),
+                "std": _std(arr),
+                "pct_gt_0_7": 100.0 * float((arr > 0.7).mean()),
+                "pct_lt_0": 100.0 * float((arr < 0.0).mean()),
+                "n_runs": len(arr),
+            }
+        )
     return {"rows": rows}
 
 
@@ -443,19 +485,22 @@ def _table_nclusters(runs: list[dict]) -> dict:
     rows = []
     for (distance, algorithm), vals in sorted(groups.items()):
         arr = np.array(vals, dtype=float)
-        rows.append({
-            "distance": distance,
-            "algorithm": algorithm,
-            "median": float(np.median(arr)),
-            "min": int(arr.min()),
-            "max": int(arr.max()),
-            "n_runs": len(arr),
-        })
+        rows.append(
+            {
+                "distance": distance,
+                "algorithm": algorithm,
+                "median": float(np.median(arr)),
+                "min": int(arr.min()),
+                "max": int(arr.max()),
+                "n_runs": len(arr),
+            }
+        )
     return {"rows": rows}
 
 
 def _table_perclf_perdataset(runs: list[dict]) -> dict:
     """Table: Spearman rho by classifier and by dataset (tab:perclf_perdataset)."""
+
     def _group(key: str) -> list[dict]:
         groups: dict[str, list[float]] = {}
         for r in runs:
@@ -467,14 +512,16 @@ def _table_perclf_perdataset(runs: list[dict]) -> dict:
         rows = []
         for name, vals in sorted(groups.items()):
             arr = np.array(vals, dtype=float)
-            rows.append({
-                key: name,
-                "mean": float(arr.mean()),
-                "median": float(np.median(arr)),
-                "std": _std(arr),
-                "min": float(arr.min()),
-                "n_runs": len(arr),
-            })
+            rows.append(
+                {
+                    key: name,
+                    "mean": float(arr.mean()),
+                    "median": float(np.median(arr)),
+                    "std": _std(arr),
+                    "min": float(arr.min()),
+                    "n_runs": len(arr),
+                }
+            )
         return rows
 
     return {"by_classifier": _group("clf"), "by_dataset": _group("dataset")}
@@ -490,21 +537,7 @@ def _lift_stats(values: list[float]) -> dict:
 
 
 def _table_selective(runs: list[dict]) -> dict:
-    """Table: selective-prediction lift by configuration at tau=0.8 (tab:selective).
-
-    Reads the `risk_coverage` block already persisted by `fit_failure_classifier.py`
-    (`selective_prediction_metrics`, default `coverage_target=0.8`) — no recomputation.
-    Also reports the native-classifier-confidence baselines (`mcp_risk`/`margin_risk`/
-    `entropy_risk`, from `confidence_baselines`) alongside the predictor, when present —
-    absent (columns omitted) for runs that predate that field.
-
-    `{name}_sig_better_pct` / `{name}_sig_worse_pct` read the paired cluster-level
-    bootstrap in `significance` (no re-training, no extra seeds): the % of runs where
-    the predictor is significantly better / worse than that baseline (95% CI on
-    `lift_diff` excludes 0) — a numeric lift can be noise, this asks whether it's
-    provably real, in either direction. `bootstrap_compare`'s `lift_diff` is defined as
-    baseline − predictor (`reference="predictor"`), so "better" is `mean < 0`, not `> 0`.
-    """
+    """Table: selective-prediction lift by configuration, predictor vs confidence baselines."""
     groups: dict[tuple[str, str], list[dict]] = {}
     for r in runs:
         if r["results"].get("spearman") is None:
@@ -547,25 +580,28 @@ def _table_selective(runs: list[dict]) -> dict:
                 if res.get("significance", {}).get("vs_reference", {}).get(name)
             ]
             if sig_vs:
-                row[f"{name}_sig_better_pct"] = 100.0 * float(np.mean([
-                    s["lift_significant"] and s["lift_diff"]["mean"] < 0 for s in sig_vs
-                ]))
-                row[f"{name}_sig_worse_pct"] = 100.0 * float(np.mean([
-                    s["lift_significant"] and s["lift_diff"]["mean"] > 0 for s in sig_vs
-                ]))
+                row[f"{name}_sig_better_pct"] = 100.0 * float(
+                    np.mean(
+                        [
+                            s["lift_significant"] and s["lift_diff"]["mean"] < 0
+                            for s in sig_vs
+                        ]
+                    )
+                )
+                row[f"{name}_sig_worse_pct"] = 100.0 * float(
+                    np.mean(
+                        [
+                            s["lift_significant"] and s["lift_diff"]["mean"] > 0
+                            for s in sig_vs
+                        ]
+                    )
+                )
         rows.append(row)
     return {"rows": rows}
 
 
 def _table_selective_by_clf(runs: list[dict]) -> dict:
-    """Table: predictor-vs-MCP by classifier (RQ5 calibration table).
-
-    For each classifier: the median oracle-benefit recovered by the predictor and by MCP
-    (`risk_coverage.oracle_benefit_recovered`, headroom-normalized so it is comparable across
-    models), and the % of runs where the predictor is significantly better / worse than MCP
-    plus the net (better − worse), sorted by net. `numerical` and `tabular` are merged into a
-    single MLP family. `lift_diff` is baseline − predictor, so "better" is `mean < 0`.
-    """
+    """Table: predictor vs MCP per classifier, ranked by net significant wins."""
     groups: dict[str, list[dict]] = {}
     for r in runs:
         res = r["results"]
@@ -574,43 +610,46 @@ def _table_selective_by_clf(runs: list[dict]) -> dict:
         if not sig or not mcp or not res.get("risk_coverage"):
             continue
         clf = _CLF_MERGE.get(r["clf"], r["clf"])
-        groups.setdefault(clf, []).append({
-            "sig": sig,
-            "pred_orc": res["risk_coverage"]["oracle_benefit_recovered"],
-            "mcp_orc": mcp["risk_coverage"]["oracle_benefit_recovered"],
-        })
+        groups.setdefault(clf, []).append(
+            {
+                "sig": sig,
+                "pred_orc": res["risk_coverage"]["oracle_benefit_recovered"],
+                "mcp_orc": mcp["risk_coverage"]["oracle_benefit_recovered"],
+            }
+        )
 
     rows = []
     for clf, items in groups.items():
         sigs = [it["sig"] for it in items]
-        better = 100.0 * float(np.mean([
-            s["lift_significant"] and s["lift_diff"]["mean"] < 0 for s in sigs
-        ]))
-        worse = 100.0 * float(np.mean([
-            s["lift_significant"] and s["lift_diff"]["mean"] > 0 for s in sigs
-        ]))
-        rows.append({
-            "clf": clf,
-            "pred_oracle_pct": 100.0 * float(np.nanmedian([it["pred_orc"] for it in items])),
-            "mcp_oracle_pct": 100.0 * float(np.nanmedian([it["mcp_orc"] for it in items])),
-            "sig_better_pct": better,
-            "sig_worse_pct": worse,
-            "net": better - worse,
-            "n_runs": len(items),
-        })
+        better = 100.0 * float(
+            np.mean(
+                [s["lift_significant"] and s["lift_diff"]["mean"] < 0 for s in sigs]
+            )
+        )
+        worse = 100.0 * float(
+            np.mean(
+                [s["lift_significant"] and s["lift_diff"]["mean"] > 0 for s in sigs]
+            )
+        )
+        rows.append(
+            {
+                "clf": clf,
+                "pred_oracle_pct": 100.0
+                * float(np.nanmedian([it["pred_orc"] for it in items])),
+                "mcp_oracle_pct": 100.0
+                * float(np.nanmedian([it["mcp_orc"] for it in items])),
+                "sig_better_pct": better,
+                "sig_worse_pct": worse,
+                "net": better - worse,
+                "n_runs": len(items),
+            }
+        )
     rows.sort(key=lambda row: row["net"], reverse=True)
     return {"rows": rows}
 
 
 def _table_instance(runs: list[dict]) -> dict:
-    """Table: instance-level oracle-benefit recovered per score, plus the cross-run test.
-
-    Median over runs for each per-sample method, the per-run rate at which `combo_rankavg`
-    beats `mcp_sample` (within-run block-bootstrap significance), and a cross-run headline:
-    the mean `combo_rankavg - mcp_sample` delta with a dataset-level bootstrap CI (the
-    exchangeable unit is the dataset, not the correlated 720 runs). Empty when no run
-    carries a per-sample dump.
-    """
+    """Table: instance-level oracle benefit per score, with a dataset-level bootstrap test."""
     rows = []
     for r in runs:
         inst = _load_instance(r["base"])
@@ -620,8 +659,6 @@ def _table_instance(runs: list[dict]) -> dict:
             key: inst["scores"].get(key, {}).get("oracle_benefit_recovered")
             for key, _ in _INSTANCE_METHODS
         }
-        # A run qualifies on the core variants; newer additions (e.g. combo_atc_rankavg)
-        # may be absent in older runs and are aggregated per-key over whoever carries them.
         core = ("mcp_sample", "region", "combo_rankavg")
         if any(vals[k] is None or np.isnan(vals[k]) for k in core):
             continue
@@ -629,16 +666,23 @@ def _table_instance(runs: list[dict]) -> dict:
             key: inst["scores"].get(key, {}).get("spearman")
             for key, _ in _INSTANCE_METHODS
         }
-        sig = inst.get("significance", {}).get("vs_reference", {}).get("combo_rankavg", {})
+        sig = (
+            inst.get("significance", {})
+            .get("vs_reference", {})
+            .get("combo_rankavg", {})
+        )
         cal = inst.get("calibration", {})
-        rows.append({
-            "dataset": _dataset_base(r["dataset"]),
-            "sig_combo": bool(sig.get("significant")) and sig.get("oracle_diff", {}).get("mean", 0.0) > 0,
-            "cluster_rate_mse": cal.get("cluster_rate_mse", {}),
-            "atc_accuracy_abs_error": cal.get("atc_accuracy_abs_error"),
-            "spearman": spear,
-            **vals,
-        })
+        rows.append(
+            {
+                "dataset": _dataset_base(r["dataset"]),
+                "sig_combo": bool(sig.get("significant"))
+                and sig.get("oracle_diff", {}).get("mean", 0.0) > 0,
+                "cluster_rate_mse": cal.get("cluster_rate_mse", {}),
+                "atc_accuracy_abs_error": cal.get("atc_accuracy_abs_error"),
+                "spearman": spear,
+                **vals,
+            }
+        )
     if not rows:
         return {"n_runs": 0}
 
@@ -648,36 +692,65 @@ def _table_instance(runs: list[dict]) -> dict:
         if any(row.get(key) is not None for row in rows)
     }
     median_spearman = {
-        key: float(np.nanmedian([row["spearman"][key] for row in rows if row["spearman"].get(key) is not None]))
+        key: float(
+            np.nanmedian(
+                [
+                    row["spearman"][key]
+                    for row in rows
+                    if row["spearman"].get(key) is not None
+                ]
+            )
+        )
         for key, _ in _INSTANCE_METHODS
         if any(row["spearman"].get(key) is not None for row in rows)
     }
     mse_keys = ("region", "mcp_cluster", "atc_cluster")
     median_rate_mse = {
-        k: float(np.median([row["cluster_rate_mse"][k] for row in rows if k in row["cluster_rate_mse"]]))
+        k: float(
+            np.median(
+                [
+                    row["cluster_rate_mse"][k]
+                    for row in rows
+                    if k in row["cluster_rate_mse"]
+                ]
+            )
+        )
         for k in mse_keys
         if any(k in row["cluster_rate_mse"] for row in rows)
     }
-    atc_errs = [row["atc_accuracy_abs_error"] for row in rows if row["atc_accuracy_abs_error"] is not None]
+    atc_errs = [
+        row["atc_accuracy_abs_error"]
+        for row in rows
+        if row["atc_accuracy_abs_error"] is not None
+    ]
     per_ds = {}
     for d in sorted({row["dataset"] for row in rows}):
-        deltas = [row["combo_rankavg"] - row["mcp_sample"] for row in rows if row["dataset"] == d]
+        deltas = [
+            row["combo_rankavg"] - row["mcp_sample"]
+            for row in rows
+            if row["dataset"] == d
+        ]
         per_ds[d] = float(np.mean(deltas))
     ds_vals = np.array(list(per_ds.values()), dtype=float)
     rng = np.random.default_rng(0)
-    boot = np.array([
-        float(np.mean(rng.choice(ds_vals, size=ds_vals.size, replace=True)))
-        for _ in range(2000)
-    ])
+    boot = np.array(
+        [
+            float(np.mean(rng.choice(ds_vals, size=ds_vals.size, replace=True)))
+            for _ in range(2000)
+        ]
+    )
     ci_low, ci_high = float(np.quantile(boot, 0.025)), float(np.quantile(boot, 0.975))
     return {
         "n_runs": len(rows),
         "median_oracle_benefit_recovered": median,
         "median_spearman": median_spearman,
         "median_cluster_rate_mse": median_rate_mse,
-        "median_atc_accuracy_abs_error": float(np.median(atc_errs)) if atc_errs else None,
+        "median_atc_accuracy_abs_error": (
+            float(np.median(atc_errs)) if atc_errs else None
+        ),
         "combo_rankavg_vs_mcp_sample": {
-            "per_run_sig_better_pct": 100.0 * float(np.mean([row["sig_combo"] for row in rows])),
+            "per_run_sig_better_pct": 100.0
+            * float(np.mean([row["sig_combo"] for row in rows])),
             "mean_delta_over_datasets": float(np.mean(ds_vals)),
             "dataset_bootstrap_ci": [ci_low, ci_high],
             "significant": bool(not (ci_low <= 0 <= ci_high)),
@@ -685,15 +758,10 @@ def _table_instance(runs: list[dict]) -> dict:
     }
 
 
-def _render_sweep_results(root: Path, fmt: str = "pdf", out: Path | None = None) -> None:
-    """Aggregate the sweep under `root` into the five cross-run paper figures (written to
-    `out`) and the four Results-section JSON tables (written to `root`, next to the raw
-    per-run trees they were aggregated from): tab:perconfig, tab:nclusters,
-    tab:perclf_perdataset, tab:selective.
-
-    All clustering configurations, including HDBSCAN, contribute to every output;
-    HDBSCAN's higher variability is reported rather than hidden.
-    """
+def _render_sweep_results(
+    root: Path, fmt: str = "pdf", out: Path | None = None
+) -> None:
+    """Aggregate the sweep under `root` into the cross-run figures and result tables."""
     set_figure_format(fmt)
     runs = _load_sweep_runs(root)
     if not runs:
@@ -702,7 +770,10 @@ def _render_sweep_results(root: Path, fmt: str = "pdf", out: Path | None = None)
     n_hdb = sum(1 for r in runs if r["algorithm"] == "hdbscan")
     logger.info(
         "Sweep results from %d runs (%d main, %d hdbscan) under %s",
-        len(runs), len(runs) - n_hdb, n_hdb, root,
+        len(runs),
+        len(runs) - n_hdb,
+        n_hdb,
+        root,
     )
 
     figures = {
@@ -714,7 +785,9 @@ def _render_sweep_results(root: Path, fmt: str = "pdf", out: Path | None = None)
         "figure/instance_gain": _fig_instance_gain(runs),
         "figure/cost_quality_cosine": _fig_cost_quality(runs, "cosine"),
         "figure/cost_quality_euclidean": _fig_cost_quality(runs, "euclidean"),
-        "figure/cost_quality_kmeans_cosine": _fig_cost_quality_detail(runs, "kmeans", "cosine"),
+        "figure/cost_quality_kmeans_cosine": _fig_cost_quality_detail(
+            runs, "kmeans", "cosine"
+        ),
     }
     figures = {k: v for k, v in figures.items() if v is not None}
 
@@ -734,11 +807,13 @@ def _render_sweep_results(root: Path, fmt: str = "pdf", out: Path | None = None)
     bus.publish(LogBundle.from_dict({**figures, **tables}))
     logger.info(
         "Sweep figures (%s) -> %s",
-        ", ".join(sorted(k.split("/")[-1] for k in figures)), figures_base,
+        ", ".join(sorted(k.split("/")[-1] for k in figures)),
+        figures_base,
     )
     logger.info(
         "Sweep tables (%s) -> %s",
-        ", ".join(sorted(k.split("/")[-1] for k in tables)), root,
+        ", ".join(sorted(k.split("/")[-1] for k in tables)),
+        root,
     )
 
 
@@ -747,11 +822,15 @@ def _parse_args(argv: list[str]) -> tuple[Path, str, Path | None]:
     kv = dict(a.split("=", 1) for a in argv if "=" in a)
     if "sweep" not in kv:
         raise ValueError("sweep_results requires sweep=<path>.")
-    return Path(kv["sweep"]), kv.get("format", "pdf"), Path(kv["out"]) if kv.get("out") else None
+    return (
+        Path(kv["sweep"]),
+        kv.get("format", "pdf"),
+        Path(kv["out"]) if kv.get("out") else None,
+    )
 
 
-def main():
-    """Main entry point: aggregate a sweep tree into cross-run paper figures + result tables."""
+def main() -> None:
+    """Entry point for the sweep aggregation stage."""
     root, fmt, out = _parse_args(sys.argv[1:])
     _render_sweep_results(root, fmt=fmt, out=out)
 

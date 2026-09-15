@@ -1,12 +1,14 @@
 import logging
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
 
+from pipelines import paths_from_cfg
 from src.core.config import load_config, save_config
 from src.core.log import (
     FilesystemFigureSubscriber,
@@ -15,8 +17,14 @@ from src.core.log import (
     LogDispatcher,
     setup_logger,
 )
-from pipelines import paths_from_cfg
 from src.core.utils import flush_timing, load_from_json, load_from_pickle, timed
+from src.domain.analysis.selective_prediction import (
+    macro_recall_curve,
+    risk_coverage_curve,
+    selective_prediction_metrics,
+    selective_recall_metrics,
+)
+from src.domain.plot.base import Plot, set_figure_format
 from src.domain.plot.charts import (
     bar_plot,
     beeswarm_plot,
@@ -27,14 +35,13 @@ from src.domain.plot.charts import (
     strip_count_panel_plot,
     violin_plot,
 )
-from src.domain.analysis.selective_prediction import (
-    macro_recall_curve,
-    risk_coverage_curve,
-    selective_prediction_metrics,
-    selective_recall_metrics,
+from src.domain.plot.style import (
+    CORRECT_COLOR,
+    FAILED_COLOR,
+    MUTED_COLOR,
+    PALETTE,
+    apply_plot_style,
 )
-from src.domain.plot.base import Plot, set_figure_format
-from src.domain.plot.style import CORRECT_COLOR, FAILED_COLOR, MUTED_COLOR, PALETTE, apply_plot_style
 
 setup_logger(log_file="resources/logs.txt")
 apply_plot_style()
@@ -88,13 +95,17 @@ def _plot_failure_strips(
 def _plot_feature_vs_failure(
     summary_df: pd.DataFrame, features: list[str]
 ) -> dict[str, Plot]:
-    """Per-feature scatter of complexity feature vs failure rate, with trend line and Spearman ρ."""
+    """Per-feature scatter of complexity vs failure rate, with trend line and Spearman ρ."""
     rate = summary_df["failure_rate"].to_numpy(dtype=float)
     out: dict[str, Plot] = {}
     for feature in features:
         x = summary_df[feature].to_numpy(dtype=float)
         finite = np.isfinite(x) & np.isfinite(rate)
-        rho = float(spearmanr(x[finite], rate[finite]).statistic) if int(finite.sum()) >= 3 else float("nan")
+        rho = (
+            float(spearmanr(x[finite], rate[finite]).statistic)
+            if int(finite.sum()) >= 3
+            else float("nan")
+        )
         out[f"summary/global/{feature}"] = numeric_scatter_plot(
             x,
             rate,
@@ -108,9 +119,6 @@ def _plot_feature_vs_failure(
     return out
 
 
-# Display names for the geometric measures, matching the paper's measure table
-# (Table "measures": feature overlap F1–F4, neighbourhood N1–N4, network,
-# dimensionality T2–T4, cluster geometry).
 _MEASURE_LABEL = {
     "f1": "F1",
     "f2": "F2",
@@ -135,7 +143,7 @@ _MEASURE_LABEL = {
 
 
 def _feature_label(feature: str) -> str:
-    """Map a raw `{cluster|class}_{measure}[_agg]` feature name to the paper's measure notation."""
+    """Map a raw `{cluster|class}_{measure}[_agg]` feature name to its display notation."""
     if feature == "cluster_class":
         return "class label"
     level, _, measure = feature.partition("_")
@@ -161,9 +169,6 @@ def _plot_feature_violin_by_rate_bin(
     if bins.nunique() < 2:
         return {}
 
-    # Iterate over observed bins only: qcut(duplicates="drop") on few distinct
-    # rates (small datasets) can leave empty interval categories that the
-    # observed=True groupby drops — indexing them below would KeyError.
     bin_means = rate.groupby(bins, observed=True).mean()
     categories = list(bin_means.index)
     bin_labels = [
@@ -203,9 +208,6 @@ def _plot_rf_evaluation(
     y_true = summary_df.loc[cids, "failure_rate"].to_numpy(dtype=float)
     importances = classifier_results["feature_importances"]
 
-    # Squared error is heavily right-skewed; cap the colour scale at the 95th
-    # percentile so the bulk of the points spread across the full gradient
-    # instead of collapsing to one end dominated by a few outliers.
     squared_error = (y_pred - y_true) ** 2
     mse_vmax = float(np.quantile(squared_error, 0.95)) if squared_error.size else None
 
@@ -240,11 +242,17 @@ def _plot_rf_evaluation(
     }
 
 
-_BASELINE_LABEL = {"mcp_risk": "MCP", "margin_risk": "Margin", "entropy_risk": "Entropy"}
+_BASELINE_LABEL = {
+    "mcp_risk": "MCP",
+    "margin_risk": "Margin",
+    "entropy_risk": "Entropy",
+}
 
 
 def _baseline_curves(
-    summary_df: pd.DataFrame, cids: list, rejection_curve
+    summary_df: pd.DataFrame,
+    cids: list,
+    rejection_curve: Callable[[np.ndarray], tuple[np.ndarray, np.ndarray]],
 ) -> dict[str, tuple[np.ndarray, np.ndarray]]:
     """Native-classifier-confidence baseline curves (MCP/margin/entropy), where present."""
     return {
@@ -257,7 +265,7 @@ def _baseline_curves(
 def _plot_selective_accuracy(
     summary_df: pd.DataFrame, classifier_results: dict
 ) -> dict[str, Plot]:
-    """Selective-accuracy curves: accuracy on the retained set as high predicted-risk clusters are rejected first."""
+    """Selective-accuracy curves: retained accuracy as high-risk clusters are rejected first."""
     predicted = classifier_results["oof_predicted_rate"]
     cids = [c for c in predicted if c in summary_df.index]
     if not cids:
@@ -272,7 +280,7 @@ def _plot_selective_accuracy(
 
     def _rejection_curve(score: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         coverage, accuracy = risk_coverage_curve(score, y_true, support)
-        return 1.0 - coverage, accuracy  # x = fraction rejected
+        return 1.0 - coverage, accuracy
 
     curves = {
         "Predictor": _rejection_curve(y_pred),
@@ -297,11 +305,7 @@ def _plot_selective_accuracy(
 def _plot_selective_macro_recall(
     summary_df: pd.DataFrame, classifier_results: dict
 ) -> dict[str, Plot]:
-    """Class-balanced counterpart to `_plot_selective_accuracy`: macro-recall on the retained set.
-
-    The Oracle ranks by true error, so it need not dominate here — a dip below
-    Random means error-greedy rejection costs class balance.
-    """
+    """Class-balanced counterpart of `_plot_selective_accuracy`: macro-recall when rejecting."""
     predicted = classifier_results["oof_predicted_rate"]
     cids = [c for c in predicted if c in summary_df.index]
     if not cids:
@@ -317,7 +321,7 @@ def _plot_selective_macro_recall(
 
     def _rejection_curve(score: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         coverage, recall = macro_recall_curve(score, y_true, support, cluster_class)
-        return 1.0 - coverage, recall  # x = fraction rejected
+        return 1.0 - coverage, recall
 
     curves = {
         "Predictor": _rejection_curve(y_pred),
@@ -332,7 +336,9 @@ def _plot_selective_macro_recall(
             y_label="Macro-recall on retained set",
             title="",
             annotations={
-                f"Retained macro-recall ({keep:.0%})": metrics["recall_at_target_predictor"],
+                f"Retained macro-recall ({keep:.0%})": metrics[
+                    "recall_at_target_predictor"
+                ],
                 "Random baseline": metrics["global_macro_recall"],
                 "Oracle benefit recovered": metrics["oracle_benefit_recovered"],
             },
@@ -348,7 +354,7 @@ def assemble_analysis_figures(
     *,
     analysis_bus: LogDispatcher | None = None,
 ) -> dict[str, Plot]:
-    """Build all analysis figures and publish to log bus."""
+    """Build every analysis figure and publish it on the log bus."""
     logger.info("Building summary visualizations ...")
     summary_df = pd.DataFrame.from_dict(cluster_summary, orient="index")
     label_mapping = {str(k): v for k, v in df_meta["label_mapping"].items()}
@@ -375,7 +381,9 @@ def assemble_analysis_figures(
     scatter_features = [f for f in top10 if f in summary_df.columns]
 
     figures: dict[str, Plot] = {}
-    figures.update(_plot_failure_strips(summary_df, classifier_results.get("oof_predicted_rate")))
+    figures.update(
+        _plot_failure_strips(summary_df, classifier_results.get("oof_predicted_rate"))
+    )
     figures.update(_plot_feature_vs_failure(summary_df, scatter_features))
     figures.update(_plot_feature_violin_by_rate_bin(summary_df, scatter_features))
     figures.update(_plot_rf_evaluation(summary_df, classifier_results))
@@ -395,9 +403,10 @@ def _plot_base_vs_extended_f1(
     label_mapping = {str(k): v for k, v in df_meta["label_mapping"].items()}
     n = len(base_summary["f1_per_class"])
     names = [label_mapping.get(str(i), str(i)) for i in range(n)]
-    delta = np.array(ext_summary["f1_per_class"]) - np.array(base_summary["f1_per_class"])
+    delta = np.array(ext_summary["f1_per_class"]) - np.array(
+        base_summary["f1_per_class"]
+    )
 
-    # Pre-sort here so the colour list stays aligned with the bars (sort=None below).
     order = np.argsort(delta)
     names_sorted = [names[i] for i in order]
     delta_sorted = delta[order]
@@ -426,9 +435,9 @@ def assemble_explain_figures(
     max_display: int = 20,
     explain_bus: LogDispatcher | None = None,
 ) -> dict[str, Plot]:
-    """Build one SHAP beeswarm per class plus a global importance bar from persisted SHAP values."""
-    values = np.asarray(shap_payload["values"])  # (n, f, c)
-    data = np.asarray(shap_payload["data"])  # (n, f)
+    """Build one SHAP beeswarm per class plus a global importance bar."""
+    values = np.asarray(shap_payload["values"])
+    data = np.asarray(shap_payload["data"])
     feature_names = explain_meta["feature_names"]
     class_names = explain_meta["class_names"]
 
@@ -443,9 +452,9 @@ def assemble_explain_figures(
             title=f"SHAP — class '{name}'",
         )
 
-    mean_abs = np.abs(values).mean(axis=(0, 2))  # (n_features,)
+    mean_abs = np.abs(values).mean(axis=(0, 2))
     top_k = min(max_display, len(mean_abs))
-    idx = np.argsort(mean_abs)[-top_k:]  # ascending: least→most important (top of barh)
+    idx = np.argsort(mean_abs)[-top_k:]
     figures["figure/explain/global_importance"] = bar_plot(
         [feature_names[i] for i in idx],
         [float(mean_abs[i]) for i in idx],
@@ -462,7 +471,7 @@ def assemble_explain_figures(
 
 
 def _aggregate_cost_models(root: Path) -> tuple[dict, dict, dict, float | None]:
-    """Scan `<root>/**/shared/cost_model.json`, group by distance, and aggregate per-seed fits (points, fits, share, m_prod)."""
+    """Aggregate the per-seed cost-model fits under `root`, grouped by distance."""
     groups: dict[str, list[dict]] = {}
     for cm_path in sorted(root.glob("**/shared/cost_model.json")):
         cm = load_from_json(cm_path)
@@ -486,18 +495,30 @@ def _aggregate_cost_models(root: Path) -> tuple[dict, dict, dict, float | None]:
         }
         alphas = np.array([cm["cost_model"]["alpha"] for cm in cms], dtype=float)
         cs = np.array([cm["cost_model"]["c"] for cm in cms], dtype=float)
-        r2s = [cm["cost_model"]["r2"] for cm in cms if cm["cost_model"].get("r2") is not None]
+        r2s = [
+            cm["cost_model"]["r2"]
+            for cm in cms
+            if cm["cost_model"].get("r2") is not None
+        ]
         fits[dist] = {
             "alpha_mean": float(alphas.mean()),
             "alpha_std": float(alphas.std(ddof=1)) if len(cms) > 1 else 0.0,
             "c_mean": float(cs.mean()),
             "r2_min": min(r2s) if r2s else None,
         }
-        comp = np.array([cm["pipeline_cost"]["complexity_build_s_pred"] for cm in cms], dtype=float)
-        rest = np.array([cm["pipeline_cost"]["non_complexity_s"] for cm in cms], dtype=float)
-        prep = np.array([cm["pipeline_cost"]["prep_clustering_s"] for cm in cms], dtype=float)
+        comp = np.array(
+            [cm["pipeline_cost"]["complexity_build_s_pred"] for cm in cms], dtype=float
+        )
+        rest = np.array(
+            [cm["pipeline_cost"]["non_complexity_s"] for cm in cms], dtype=float
+        )
+        prep = np.array(
+            [cm["pipeline_cost"]["prep_clustering_s"] for cm in cms], dtype=float
+        )
         clf = np.array([cm["pipeline_cost"]["classify_s"] for cm in cms], dtype=float)
-        shr = np.array([cm["pipeline_cost"]["complexity_share_pred"] for cm in cms], dtype=float)
+        shr = np.array(
+            [cm["pipeline_cost"]["complexity_share_pred"] for cm in cms], dtype=float
+        )
         share[dist] = {
             "complexity_s": float(comp.mean()),
             "prep_clustering_s": float(prep.mean()),
@@ -517,11 +538,13 @@ def _aggregate_cost_models(root: Path) -> tuple[dict, dict, dict, float | None]:
 
 
 def _render_cost_model(root: Path, fmt: str = "pdf", out: Path | None = None) -> None:
-    """Aggregate the cost-model JSONs under `root` and write the two cost-model paper figures to `out`."""
+    """Render the scaling and impact cost-model figures from the JSONs under `root`."""
     set_figure_format(fmt)
     points, fits, share, m_prod = _aggregate_cost_models(root)
     if not points:
-        logger.warning("No usable cost_model.json found under %s; nothing to render.", root)
+        logger.warning(
+            "No usable cost_model.json found under %s; nothing to render.", root
+        )
         return
     figures = {
         "figure/cost_model_scaling": cost_scaling_plot(points, fits, m_prod=m_prod),
@@ -533,16 +556,21 @@ def _render_cost_model(root: Path, fmt: str = "pdf", out: Path | None = None) ->
     bus.publish(LogBundle.from_dict(figures))
     logger.info(
         "Cost-model figures (%s) -> %s/{cost_model_scaling,cost_model_impact}.%s",
-        ", ".join(sorted(points)), base, fmt,
+        ", ".join(sorted(points)),
+        base,
+        fmt,
     )
 
 
-def _parse_render_args(argv: list[str], key: str) -> tuple[Path, str, Path | None] | None:
+def _parse_render_args(
+    argv: list[str], key: str
+) -> tuple[Path, str, Path | None] | None:
     """Parse `key=<path> [format=..] [out=..]` from argv; None if `key` is absent."""
     if not any(a.startswith(f"{key}=") for a in argv):
         return None
     kv = dict(
-        a.split("=", 1) for a in argv
+        a.split("=", 1)
+        for a in argv
         if "=" in a and a.split("=", 1)[0] in (key, "format", "out")
     )
     return (
@@ -552,12 +580,10 @@ def _parse_render_args(argv: list[str], key: str) -> tuple[Path, str, Path | Non
     )
 
 
-def main():
-    """Main entry point for plot rendering."""
+def main() -> None:
+    """Entry point for the plot rendering stage."""
     argv = sys.argv[1:]
-    special = (
-        ("cost_model", _render_cost_model),
-    )
+    special = (("cost_model", _render_cost_model),)
     for key, render_fn in special:
         parsed = _parse_render_args(argv, key)
         if parsed is not None:
@@ -589,7 +615,8 @@ def main():
         )
     else:
         logger.warning(
-            "[STAGE-SKIP] Missing failure-analysis artifacts in %s; run `make failure-classify` first. Skipping summary figures.",
+            "[STAGE-SKIP] Missing failure-analysis artifacts in %s; "
+            "run `make failure-classify` first. Skipping summary figures.",
             paths.outputs / "analysis",
         )
 
@@ -604,7 +631,8 @@ def main():
         analysis_bus.publish(LogBundle.from_dict(delta_figures))
     else:
         logger.warning(
-            "[STAGE-SKIP] Missing base or extended summary in %s; run both `make classify` and `make classify-extended` first. Skipping F1 delta figure.",
+            "[STAGE-SKIP] Missing base or extended summary in %s; run both "
+            "`make classify` and `make classify-extended` first. Skipping F1 delta figure.",
             paths.outputs / "testing",
         )
 
@@ -621,7 +649,8 @@ def main():
         )
     else:
         logger.warning(
-            "[STAGE-SKIP] Missing SHAP artifacts under %s; run `make classify-extended` first. Skipping beeswarm figures.",
+            "[STAGE-SKIP] Missing SHAP artifacts under %s; "
+            "run `make classify-extended` first. Skipping beeswarm figures.",
             paths.pickle / "explain",
         )
 

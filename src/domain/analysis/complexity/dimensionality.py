@@ -11,17 +11,11 @@ def t2(n: int, d_num: int, d_cat: int) -> float:
 
 
 def _t3_t4(X_num: np.ndarray) -> tuple[float | None, float | None]:
-    """T3, T4 (Lorena et al. 2019) from a single PCA fit: (n_pca_95/n, n_pca_95/d_num).
-
-    Returns (None, None) for degenerate clusters (< 2 samples or no numeric
-    features): intrinsic dimensionality is undefined there, and emitting 1.0
-    would misreport a trivial cluster at the hard end of the scale.
-    """
+    """T3 and T4 from one PCA fit: (n_pca_95/n, n_pca_95/d_num), None when degenerate."""
     n, d_num = X_num.shape
     if n < 2 or d_num < 1:
         return None, None
     if d_num == 1:
-        # A single numeric feature trivially needs its one component for 95% variance.
         return 1.0 / n, 1.0
     max_components = min(n, d_num)
     cumvar = np.cumsum(
@@ -37,11 +31,7 @@ def compute_t_measures(
     X_cat: np.ndarray | None,
     y_cluster: np.ndarray,
 ) -> dict[str, dict[str, float | None]]:
-    """Per-cluster dimensionality measures (Lorena et al. 2019 canon).
-
-    T2 = (d_num + d_cat) / n, T3 = n_pca_95 / n, T4 = n_pca_95 / d_num;
-    t3/t4 are None for degenerate clusters.
-    """
+    """Per-cluster dimensionality measures T2, T3 and T4."""
     result: dict[str, dict[str, float | None]] = {}
     cluster_ids = [int(cid) for cid in np.unique(y_cluster) if int(cid) != -1]
     d_cat = X_cat.shape[1] if X_cat is not None else 0

@@ -1,9 +1,9 @@
 import numpy as np
 from sklearn.manifold import TSNE
 
+_TSNE_MIN_PERPLEXITY = 5
+_TSNE_MAX_PERPLEXITY = 30
 
-_TSNE_MIN_PERPLEXITY = 5       # below this t-SNE degenerates to noise
-_TSNE_MAX_PERPLEXITY = 30      # library default upper bound
 
 def stratified_subsample(
     labels: np.ndarray,
@@ -13,12 +13,7 @@ def stratified_subsample(
     noise_mask: np.ndarray | None = None,
     random_state: int | np.random.Generator | None = None,
 ) -> np.ndarray:
-    """Sample up to n_samples indices from labels, stratified by group.
-
-    stratify=True samples proportionally to group size (at least one per group);
-    stratify=False samples equally per group, capped at the smallest. Any
-    noise_mask points fill the remaining budget after stratified sampling.
-    """
+    """Sample up to `n_samples` indices, proportionally per group or equally per group."""
     n = len(labels)
     if n_samples is None or n_samples >= n:
         return np.arange(n)

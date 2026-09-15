@@ -1,15 +1,13 @@
-import numpy as np
 import hdbscan
+import numpy as np
 from kmodes.kprototypes import KPrototypes
 from sklearn.cluster import Birch, KMeans, SpectralClustering
 from sklearn.mixture import GaussianMixture
 from sklearn.neighbors import NearestNeighbors
 
 from src.domain.clustering import ClusteringFactory
-from src.domain.clustering.base import _subsample
+from src.domain.clustering.base import subsample_features
 
-# out-of-sample prediction batch: bounds transient memory (hdbscan's
-# approximate_predict allocates n × 2·min_samples distance/index arrays)
 _PREDICT_CHUNK = 200_000
 
 
@@ -26,12 +24,7 @@ def fit_hdbscan(
     random_state: int = 0,
     **fixed_params,
 ) -> np.ndarray:
-    """Fit HDBSCAN (Euclidean) and return labels (n,).
-
-    Noise (-1) is returned as-is: residual noise points are reassigned to
-    per-class pseudo-clusters downstream. Combo quality is judged by the
-    noise-penalised silhouette in `grid_search`.
-    """
+    """Fit HDBSCAN (Euclidean) and return labels (n,), keeping noise as -1."""
     n = X_num.shape[0]
 
     clf = hdbscan.HDBSCAN(
@@ -44,11 +37,13 @@ def fit_hdbscan(
     )
 
     if n > max_fit_samples:
-        sub_num, _ = _subsample(X_num, None, max_fit_samples, random_state)
+        sub_num, _ = subsample_features(X_num, None, max_fit_samples, random_state)
         clf.fit(sub_num)
         labels = np.concatenate(
             [
-                hdbscan.approximate_predict(clf, X_num[start : start + _PREDICT_CHUNK])[0]
+                hdbscan.approximate_predict(clf, X_num[start : start + _PREDICT_CHUNK])[
+                    0
+                ]
                 for start in range(0, n, _PREDICT_CHUNK)
             ]
         )
@@ -70,12 +65,7 @@ def fit_kprototypes(
     random_state: int = 0,
     **_,
 ) -> np.ndarray:
-    """Fit k-prototypes on mixed numeric + categorical features and return labels (n,).
-
-    `gamma` weighs the categorical matching dissimilarity against the numeric
-    distance (None = kmodes default, half the mean std of the numerics).
-    Requires categorical columns; use kmeans for numeric-only data.
-    """
+    """Fit k-prototypes on mixed numeric and categorical features and return labels (n,)."""
     if X_cat is None or X_cat.shape[1] == 0:
         raise ValueError(
             "fit_kprototypes requires categorical features (X_cat is empty); "
@@ -97,7 +87,9 @@ def fit_kprototypes(
         random_state=random_state,
     )
     if n > max_fit_samples:
-        sub_num, sub_cat = _subsample(X_num, X_cat, max_fit_samples, random_state)
+        sub_num, sub_cat = subsample_features(
+            X_num, X_cat, max_fit_samples, random_state
+        )
         model.fit(_mixed(sub_num, sub_cat), categorical=cat_idx)
         labels = np.concatenate(
             [
@@ -177,7 +169,7 @@ def fit_birch(
         n_clusters=n_clusters,
     )
     if n > max_fit_samples:
-        sub_num, _sub = _subsample(X_num, None, max_fit_samples, random_state)
+        sub_num, _sub = subsample_features(X_num, None, max_fit_samples, random_state)
         clf.fit(sub_num)
         labels = clf.predict(X_num)
     else:
@@ -199,7 +191,7 @@ def fit_spectral(
     random_state: int = 0,
     **_,
 ) -> np.ndarray:
-    """Spectral clustering; subsample + 1-NN propagation in feature space for n > max_fit_samples."""
+    """Spectral clustering, with subsampling and 1-NN propagation above `max_fit_samples`."""
     n = X_num.shape[0]
     n_clusters = max(2, min(int(n_clusters), n - 1))
     X_num = np.ascontiguousarray(X_num, dtype=np.float64)
@@ -219,7 +211,7 @@ def fit_spectral(
     if n <= max_fit_samples:
         return SpectralClustering(**spec_kwargs).fit_predict(X_num)
 
-    sub_num, _ = _subsample(X_num, None, max_fit_samples, random_state)
+    sub_num, _ = subsample_features(X_num, None, max_fit_samples, random_state)
     sub_labels = SpectralClustering(**spec_kwargs).fit_predict(sub_num)
     nn = NearestNeighbors(n_neighbors=1, algorithm="auto").fit(sub_num)
     _, idx = nn.kneighbors(X_num, n_neighbors=1, return_distance=True)

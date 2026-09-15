@@ -8,6 +8,7 @@ logger = logging.getLogger(__name__)
 
 
 def _parse_loss(path: Path) -> float:
+    """Validation loss encoded in a checkpoint filename, inf when absent."""
     try:
         return float(path.stem.split("loss=")[1])
     except (IndexError, ValueError):
@@ -17,7 +18,8 @@ def _parse_loss(path: Path) -> float:
 def _load(
     path: Path, model: nn.Module, device: torch.device, weights_only: bool
 ) -> None:
-    logger.info(f"Loading checkpoint from {path}")
+    """Load a checkpoint's state dict into `model`."""
+    logger.info("Loading checkpoint from %s", path)
     checkpoint = torch.load(path, map_location=device, weights_only=weights_only)
     model.load_state_dict(checkpoint)
 
@@ -29,6 +31,7 @@ def load_best_checkpoint(
     *,
     weights_only: bool = True,
 ) -> None:
+    """Load the checkpoint with the lowest recorded loss, falling back to the newest."""
     files = list(checkpoint_dir.glob("*.pt"))
     if not files:
         raise FileNotFoundError(
@@ -53,6 +56,7 @@ def load_latest_checkpoint(
     *,
     weights_only: bool = True,
 ) -> None:
+    """Load the most recently written checkpoint."""
     files = list(checkpoint_dir.glob("*.pt"))
     if not files:
         raise FileNotFoundError(

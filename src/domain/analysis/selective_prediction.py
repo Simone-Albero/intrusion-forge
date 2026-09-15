@@ -24,12 +24,7 @@ def risk_coverage_curve(
     failure_rate: np.ndarray,
     support: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Coverage vs accuracy as clusters are admitted in ascending `score` order.
-
-    Both axes are support-weighted:
-        coverage = Σ support(admitted) / Σ support
-        accuracy = 1 − Σ(failure_rate·support, admitted) / Σ(support, admitted)
-    """
+    """Support-weighted coverage vs accuracy, admitting clusters in ascending `score`."""
     score = np.asarray(score, dtype=float)
     failure_rate = np.asarray(failure_rate, dtype=float)
     support = np.asarray(support, dtype=float)
@@ -51,12 +46,7 @@ def macro_recall_curve(
     support: np.ndarray,
     cluster_class: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Coverage vs macro-averaged recall on the retained set (ascending `score`).
-
-    Each cluster is intra-class, so its `1 − failure_rate` is its class's recall
-    contribution; recall is pooled per class over admitted clusters, then averaged
-    over the classes still present.
-    """
+    """Coverage vs macro-averaged recall on the retained set, in ascending `score`."""
     score = np.asarray(score, dtype=float)
     failure_rate = np.asarray(failure_rate, dtype=float)
     support = np.asarray(support, dtype=float)
@@ -92,22 +82,24 @@ def _curve_summary(
     val_oracle: np.ndarray,
     coverage_target: float,
 ) -> dict:
-    """AURC over coverage ∈ [0, 1] plus each curve's value at `coverage_target`.
-
-    np.interp clamps the low-coverage tail to the best-cluster value."""
+    """AURC over coverage ∈ [0, 1] plus each curve's value at `coverage_target`."""
     grid = np.linspace(0.0, 1.0, 101)
     return {
-        "aurc_predictor": float(np.trapezoid(np.interp(grid, cov_predictor, val_predictor), grid)),
-        "aurc_oracle": float(np.trapezoid(np.interp(grid, cov_oracle, val_oracle), grid)),
-        "at_target_predictor": float(np.interp(coverage_target, cov_predictor, val_predictor)),
+        "aurc_predictor": float(
+            np.trapezoid(np.interp(grid, cov_predictor, val_predictor), grid)
+        ),
+        "aurc_oracle": float(
+            np.trapezoid(np.interp(grid, cov_oracle, val_oracle), grid)
+        ),
+        "at_target_predictor": float(
+            np.interp(coverage_target, cov_predictor, val_predictor)
+        ),
         "at_target_oracle": float(np.interp(coverage_target, cov_oracle, val_oracle)),
     }
 
 
 def _recovered(value_predictor: float, value_oracle: float, baseline: float) -> float:
-    """Fraction of the oracle's gain over Random the predictor captures; NaN when the
-    oracle leaves no positive headroom (legitimate on the macro-recall axis, where the
-    error-ranked oracle need not dominate)."""
+    """Fraction of the oracle's gain over Random the predictor captures, NaN without headroom."""
     gain = value_oracle - baseline
     return float((value_predictor - baseline) / gain) if gain > 1e-9 else float("nan")
 
@@ -119,11 +111,7 @@ def selective_prediction_metrics(
     *,
     coverage_target: float = 0.8,
 ) -> dict:
-    """Scalar risk–coverage summary (pooled accuracy) for the failure regressor.
-
-    Three rankings of the same (actual rate, support): predictor (by predicted rate,
-    label-free), oracle (by true rate), random (flat at global accuracy).
-    """
+    """Scalar risk-coverage summary comparing the predictor against oracle and random."""
     predicted = np.asarray(predicted, dtype=float)
     actual = np.asarray(actual, dtype=float)
     support = np.asarray(support, dtype=float)
@@ -161,16 +149,7 @@ def bootstrap_compare(
     alpha: float = 0.05,
     random_state: int = 0,
 ) -> dict:
-    """Cluster-level bootstrap CIs for spearman/lift/oracle-recovery per score, plus
-    paired-difference significance of every non-reference score against the first
-    (reference) entry in `scores`.
-
-    Resamples clusters with replacement `n_resamples` times, reusing the same
-    resampled indices across all scores within an iteration (paired bootstrap) so
-    the difference distributions reflect paired variation, not independent noise.
-    This quantifies sampling variability of the existing OOF clusters, not the
-    variability of re-clustering/re-training with a different seed.
-    """
+    """Paired cluster bootstrap: CIs per score and differences against the first score."""
     names = list(scores.keys())
     reference = names[0]
     actual = np.asarray(actual, dtype=float)
@@ -199,12 +178,19 @@ def bootstrap_compare(
             summary = _curve_summary(cov_p, acc_p, cov_o, acc_o, coverage_target)
             lift_draws[name][b] = summary["at_target_predictor"] - global_accuracy
             oracle_draws[name][b] = _recovered(
-                summary["at_target_predictor"], summary["at_target_oracle"], global_accuracy
+                summary["at_target_predictor"],
+                summary["at_target_oracle"],
+                global_accuracy,
             )
 
     def _ci(draws: np.ndarray) -> dict:
+        """Mean and percentile CI of a draw distribution."""
         lo, hi = np.nanpercentile(draws, [100 * alpha / 2, 100 * (1 - alpha / 2)])
-        return {"mean": float(np.nanmean(draws)), "ci_low": float(lo), "ci_high": float(hi)}
+        return {
+            "mean": float(np.nanmean(draws)),
+            "ci_low": float(lo),
+            "ci_high": float(hi),
+        }
 
     per_score = {
         name: {
@@ -247,12 +233,7 @@ def selective_recall_metrics(
     *,
     coverage_target: float = 0.8,
 ) -> dict:
-    """Class-balanced counterpart of `selective_prediction_metrics`: macro-recall
-    on the retained set instead of pooled accuracy.
-
-    The oracle still ranks by true *error* rate, so on this axis it need not dominate —
-    a dip below Random signals that error-greedy rejection costs class balance.
-    """
+    """Class-balanced counterpart of `selective_prediction_metrics`, on macro-recall."""
     predicted = np.asarray(predicted, dtype=float)
     actual = np.asarray(actual, dtype=float)
     support = np.asarray(support, dtype=float)
@@ -285,13 +266,7 @@ def instance_risk_scores(
     region: np.ndarray,
     cluster: np.ndarray,
 ) -> dict[str, np.ndarray]:
-    """Per-sample risk scores for the instance-level baseline comparison (higher = riskier).
-
-    `region` is the geometric predictor's rate for each sample's cluster. `mcp_cluster`
-    averages MCP within each region (the cluster-level baseline). The two `combo_*`
-    fuse geometry and confidence: rank-average, and region-primary with per-sample MCP
-    as an intra-region tie-break (region sets the level, MCP orders within it).
-    """
+    """Per-sample risk scores (higher = riskier): MCP, region, and their two fusions."""
     mcp_sample = np.asarray(mcp_sample, dtype=float)
     region = np.asarray(region, dtype=float)
     cluster = np.asarray(cluster)
@@ -315,17 +290,12 @@ def instance_risk_scores(
 
 
 def atc_threshold(confidence: np.ndarray, correct: np.ndarray) -> float:
-    """Average Thresholded Confidence cut (Garg et al. 2022).
-
-    The confidence value where the number of samples below it equals the number of
-    misclassified samples in the calibration set (balancing wrong-above vs correct-below).
-    `confidence` is higher-is-more-confident (e.g. max softmax, or negative entropy).
-    """
+    """Average Thresholded Confidence cut: where samples below it match the misclassified count."""
     order = np.argsort(np.asarray(confidence, dtype=float), kind="stable")
     conf_sorted = np.asarray(confidence, dtype=float)[order]
     correct_sorted = np.asarray(correct).astype(bool)[order]
-    fp = float((~correct_sorted).sum())  # wrong still above the cut
-    fn = 0.0                             # correct already below the cut
+    fp = float((~correct_sorted).sum())
+    fn = 0.0
     best_gap, thr = abs(fp - fn), conf_sorted[0]
     for i in range(conf_sorted.size):
         if correct_sorted[i]:
@@ -342,12 +312,7 @@ def atc_cluster_risk(
     correct: np.ndarray,
     cluster: np.ndarray,
 ) -> np.ndarray:
-    """ATC adapted to the cluster level: each cluster's fraction of samples below the
-    global ATC threshold (its predicted failure rate), broadcast back to its samples.
-
-    A region-level risk distinct from the mean confidence, because a fraction-below-threshold
-    depends on the intra-cluster confidence distribution, not just its mean.
-    """
+    """Cluster-level ATC: the share of a cluster below the global threshold, per sample."""
     confidence = np.asarray(confidence, dtype=float)
     below = (confidence < atc_threshold(confidence, correct)).astype(float)
     cluster = np.asarray(cluster)
@@ -359,12 +324,7 @@ def atc_cluster_risk(
 
 
 def _decision_stable(diff: np.ndarray, alpha: float, margin: float) -> bool:
-    """Whether the significance verdict for a difference is safe from more resamples.
-
-    A verdict flips near the boundary where |mean| equals the CI half-width. It is stable
-    when the mean sits `margin` half-widths clear of that boundary — i.e. `|mean|/half_width`
-    lies outside `[1-margin, 1+margin]` (comfortably significant or comfortably not).
-    """
+    """Whether the significance verdict sits `margin` half-widths clear of flipping."""
     d = diff[~np.isnan(diff)]
     if d.size < 2:
         return False
@@ -390,20 +350,7 @@ def block_bootstrap_instance(
     alpha: float = 0.05,
     random_state: int = 0,
 ) -> dict:
-    """Paired cluster-block bootstrap of oracle-benefit-recovered for each per-sample score.
-
-    Resamples whole clusters with replacement (samples within a cluster move together,
-    respecting their correlation — a per-sample bootstrap would badly understate the
-    variance), reusing the same resample across scores so the differences against
-    `reference` reflect paired variation. Support is 1 per sample (instance level).
-
-    Adaptive: draws accumulate in batches of `batch_size` and stop as soon as the verdicts
-    that matter are stable (`_decision_stable`), or when `n_resamples` is reached. The batch
-    count is bounded by `ceil(n_resamples / batch_size)`. `decide_on` names the comparisons
-    that gate the stop (default: all of them); the reported comparisons should gate it, so a
-    borderline secondary diagnostic does not hold the whole run to the full budget — its CI
-    is simply reported at whatever depth the gating comparisons settled on.
-    """
+    """Paired cluster-block bootstrap of oracle benefit, stopping once `decide_on` is stable."""
     failure = np.asarray(failure, dtype=float)
     cluster = np.asarray(cluster)
     groups = {c: np.where(cluster == c)[0] for c in np.unique(cluster)}
@@ -430,11 +377,15 @@ def block_bootstrap_instance(
                 cov_p, acc_p = risk_coverage_curve(scores[name][idx], a, s)
                 summary = _curve_summary(cov_p, acc_p, cov_o, acc_o, coverage_target)
                 draws[name][b] = _recovered(
-                    summary["at_target_predictor"], summary["at_target_oracle"], global_accuracy
+                    summary["at_target_predictor"],
+                    summary["at_target_oracle"],
+                    global_accuracy,
                 )
         filled = upper
         if filled >= n_resamples or all(
-            _decision_stable(draws[name][:filled] - draws[reference][:filled], alpha, decide_margin)
+            _decision_stable(
+                draws[name][:filled] - draws[reference][:filled], alpha, decide_margin
+            )
             for name in gate
         ):
             break
@@ -442,9 +393,14 @@ def block_bootstrap_instance(
     draws = {name: draws[name][:filled] for name in names}
 
     def _ci(d: np.ndarray) -> dict:
+        """Mean and percentile CI of a draw distribution."""
         d = d[~np.isnan(d)]
         if d.size == 0:
-            return {"mean": float("nan"), "ci_low": float("nan"), "ci_high": float("nan")}
+            return {
+                "mean": float("nan"),
+                "ci_low": float("nan"),
+                "ci_high": float("nan"),
+            }
         return {
             "mean": float(np.mean(d)),
             "ci_low": float(np.quantile(d, alpha / 2)),
@@ -458,7 +414,8 @@ def block_bootstrap_instance(
         vs_reference[name] = {
             "oracle_diff": diff,
             "significant": bool(
-                not np.isnan(diff["ci_low"]) and not (diff["ci_low"] <= 0 <= diff["ci_high"])
+                not np.isnan(diff["ci_low"])
+                and not (diff["ci_low"] <= 0 <= diff["ci_high"])
             ),
         }
     return {

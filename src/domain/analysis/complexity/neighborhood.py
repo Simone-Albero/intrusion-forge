@@ -1,13 +1,12 @@
 import numpy as np
 from tqdm import tqdm
 
+from src.core.utils import timed
 from src.domain.analysis.complexity.shared import (
     aggregate_min_mean_max,
     build_approx_mst,
     make_null_row,
 )
-from src.core.utils import timed
-
 
 _N_KEYS = ("n1", "n2", "n3", "n4")
 
@@ -35,10 +34,6 @@ def _n2_vec(
     """N2: mean intra/(intra+inter) NN distance ratio over cluster-c samples."""
     valid = in_c.any(axis=1) & in_j.any(axis=1)
     if not valid.any():
-        # No sample has both an intra- and an inter-class neighbour: cluster c is
-        # cleanly separated from j, the easy end of the ratio. Returning 0.0 (not
-        # the 0.5 midpoint) keeps the degenerate case consistent with N3/N4, which
-        # already return 0.0 for the same "no c∪j neighbour" condition.
         return 0.0
     rows = np.arange(nbs.shape[0])
     intra_d = nb_dists[rows, in_c.argmax(axis=1)]
@@ -78,6 +73,7 @@ def _pair_metrics(
     j_mask: np.ndarray,
     edges_uv: np.ndarray,
 ) -> tuple[float, float, float, float]:
+    """N1-N4 of cluster c against one adversarial population."""
     in_c = c_mask[nbs]
     in_j = j_mask[nbs]
     n1 = _n1_vec(c_mask, j_mask, edges_uv)
@@ -94,6 +90,7 @@ def _aggregate_pairs(
     population_masks: list[np.ndarray],
     edges_uv: np.ndarray,
 ) -> dict[str, list[float]]:
+    """N1-N4 of cluster c against every adversarial population."""
     out: dict[str, list[float]] = {k: [] for k in _N_KEYS}
     for j_mask in population_masks:
         if not j_mask.any():
@@ -117,12 +114,7 @@ def compute_n_measures(
     *,
     metric: str = "cosine",
 ) -> dict[str, dict[str, float | None]]:
-    """N1-N4 per cluster vs the top-K adversarial clusters, as min/mean/max.
-
-    Builds a global approximate MST once (for N1), then derives N2-N4 from the
-    k-NN graph via vectorised boolean masks. `metric` is forwarded to the MST so
-    it stays consistent with the k-NN graph.
-    """
+    """N1-N4 per cluster against its top-K adversarial clusters, as min/mean/max."""
     edges_uv = build_approx_mst(knn_idx, knn_dist, X_num, X_cat, metric=metric)
 
     result: dict[str, dict[str, float | None]] = {}

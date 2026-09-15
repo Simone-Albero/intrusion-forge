@@ -7,8 +7,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from ignite.engine import Events
 from ignite.metrics import Average
+from torch.utils.data import DataLoader
 
-from src.engine.dl.ignite_builder import EngineBuilder
 from src.engine.dl.builders import (
     create_dataloader,
     create_dataset,
@@ -17,18 +17,27 @@ from src.engine.dl.builders import (
     create_scheduler,
 )
 from src.engine.dl.engine import eval_step, train_step
+from src.engine.dl.ignite_builder import EngineBuilder
 from src.engine.dl.infer import df_to_tensors, run_model
-from src.engine.dl.model.checkpoint import load_best_checkpoint
 from src.engine.dl.model import DLClassifierFactory
+from src.engine.dl.model.checkpoint import load_best_checkpoint
 
 logger = logging.getLogger(__name__)
 
 
 def _create_model(name: str, params: dict, device: torch.device) -> nn.Module:
+    """Instantiate a registered DL classifier on `device`."""
     return DLClassifierFactory.create(name, params).to(device)
 
 
-def _make_loader(df, num_cols, cat_cols, label_col, dataloader_cfg):
+def _make_loader(
+    df: pd.DataFrame,
+    num_cols: list[str],
+    cat_cols: list[str],
+    label_col: str,
+    dataloader_cfg,
+) -> DataLoader:
+    """Wrap a split in a DataLoader over the tabular dataset."""
     return create_dataloader(
         create_dataset(df, num_cols, cat_cols, label_col=[label_col]), dataloader_cfg
     )
@@ -81,13 +90,7 @@ def fit_classifier(
     y_val: object = None,
     context: dict | None = None,
 ) -> tuple[nn.Module, dict]:
-    """Fit a DL classifier and return (model, {"history": ...}).
-
-    The label column is read from the DataFrames via `context['label_col']`;
-    `y`/`y_val` are accepted for interface parity with ML but ignored. `context`
-    is required with keys: device, df_meta, num_cols, cat_cols, label_col,
-    loss_cfg, optimizer_cfg, scheduler_cfg, loops_cfg, models_path.
-    """
+    """Fit a DL classifier from the `context` blocks and return (model, {"history": ...})."""
     if context is None:
         raise ValueError("DL fit_classifier requires `context`.")
     if X_val is None:
@@ -143,7 +146,7 @@ def fit_classifier(
     )
 
     @trainer.on(Events.EPOCH_COMPLETED)
-    def _run_validation(engine):
+    def _run_validation(engine) -> None:
         logger.info(
             "Epoch [%d] Train Loss: %.6f",
             engine.state.epoch,
@@ -178,12 +181,7 @@ def predict_with_proba(
     context: dict | None = None,
     return_embedding: bool = False,
 ) -> tuple:
-    """Return (y_pred, y_proba) for a DL model on a DataFrame.
-
-    With `return_embedding=True` also returns the latent embedding `z` from the
-    same forward pass (None if the model exposes none). `context` must contain
-    device, num_cols, cat_cols.
-    """
+    """Predict a DataFrame → (y_pred, y_proba), plus the latent embedding on request."""
     if context is None:
         raise ValueError("DL predict_with_proba requires `context`.")
     device = context["device"]
@@ -213,7 +211,7 @@ def save_model(
     params: dict | None = None,
     suffix: str = "",
 ) -> None:
-    """Save state dict + metadata to ``path / f'model{suffix}.pt'``."""
+    """Save the state dict and its metadata to `path / model{suffix}.pt`."""
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
     torch.save(
@@ -225,7 +223,7 @@ def save_model(
 def load_model(
     path: Path, *, context: dict | None = None, suffix: str = ""
 ) -> nn.Module:
-    """Load model from ``path / f'model{suffix}.pt'``. `context` must provide ``device``."""
+    """Load the model from `path / model{suffix}.pt` onto the context's device."""
     if context is None:
         raise ValueError("DL load_model requires `context` with `device`.")
     device = context["device"]
