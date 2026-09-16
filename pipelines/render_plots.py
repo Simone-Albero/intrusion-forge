@@ -26,8 +26,6 @@ from src.domain.analysis.selective_prediction import (
 from src.domain.plot.base import Plot, set_figure_format
 from src.domain.plot.charts import (
     bar_plot,
-    cost_impact_plot,
-    cost_scaling_plot,
     numeric_scatter_plot,
     selective_accuracy_plot,
     strip_count_panel_plot,
@@ -386,127 +384,8 @@ def assemble_analysis_figures(
     return figures
 
 
-def _aggregate_cost_models(root: Path) -> tuple[dict, dict, dict, float | None]:
-    """Aggregate the per-seed cost-model fits under `root`, grouped by distance."""
-    groups: dict[str, list[dict]] = {}
-    for cm_path in sorted(root.glob("**/shared/cost_model.json")):
-        cm = load_from_json(cm_path)
-        if cm.get("cost_model", {}).get("alpha") is None:
-            logger.warning("skip %s (degenerate fit, alpha=None)", cm_path)
-            continue
-        groups.setdefault(cm.get("distance"), []).append(cm)
-
-    points, fits, share = {}, {}, {}
-    for dist, cms in groups.items():
-        per_m: dict[float, list[float]] = {}
-        for cm in cms:
-            for g in cm["m_grid"]:
-                per_m.setdefault(g["m"], []).append(g["build_s"])
-        ms = sorted(per_m)
-        points[dist] = {
-            "m": np.array(ms, dtype=float),
-            "build_mean": np.array([float(np.mean(per_m[m])) for m in ms]),
-            "build_min": np.array([float(np.min(per_m[m])) for m in ms]),
-            "build_max": np.array([float(np.max(per_m[m])) for m in ms]),
-        }
-        alphas = np.array([cm["cost_model"]["alpha"] for cm in cms], dtype=float)
-        cs = np.array([cm["cost_model"]["c"] for cm in cms], dtype=float)
-        r2s = [
-            cm["cost_model"]["r2"]
-            for cm in cms
-            if cm["cost_model"].get("r2") is not None
-        ]
-        fits[dist] = {
-            "alpha_mean": float(alphas.mean()),
-            "alpha_std": float(alphas.std(ddof=1)) if len(cms) > 1 else 0.0,
-            "c_mean": float(cs.mean()),
-            "r2_min": min(r2s) if r2s else None,
-        }
-        comp = np.array(
-            [cm["pipeline_cost"]["complexity_build_s_pred"] for cm in cms], dtype=float
-        )
-        rest = np.array(
-            [cm["pipeline_cost"]["non_complexity_s"] for cm in cms], dtype=float
-        )
-        prep = np.array(
-            [cm["pipeline_cost"]["prep_clustering_s"] for cm in cms], dtype=float
-        )
-        clf = np.array([cm["pipeline_cost"]["classify_s"] for cm in cms], dtype=float)
-        shr = np.array(
-            [cm["pipeline_cost"]["complexity_share_pred"] for cm in cms], dtype=float
-        )
-        share[dist] = {
-            "complexity_s": float(comp.mean()),
-            "prep_clustering_s": float(prep.mean()),
-            "classify_s": float(clf.mean()),
-            "non_complexity_s": float(rest.mean()),
-            "share": float(shr.mean()),
-        }
-
-    all_mprod = [
-        cm["pipeline_cost"]["m_prod"]
-        for cms in groups.values()
-        for cm in cms
-        if cm.get("pipeline_cost", {}).get("m_prod") is not None
-    ]
-    m_prod = float(np.mean(all_mprod)) if all_mprod else None
-    return points, fits, share, m_prod
-
-
-def _render_cost_model(root: Path, fmt: str = "pdf", out: Path | None = None) -> None:
-    """Render the scaling and impact cost-model figures from the JSONs under `root`."""
-    set_figure_format(fmt)
-    points, fits, share, m_prod = _aggregate_cost_models(root)
-    if not points:
-        logger.warning(
-            "No usable cost_model.json found under %s; nothing to render.", root
-        )
-        return
-    figures = {
-        "figure/cost_model_scaling": cost_scaling_plot(points, fits, m_prod=m_prod),
-        "figure/cost_model_impact": cost_impact_plot(share),
-    }
-    base = out or root
-    bus = LogDispatcher()
-    bus.subscribe(FilesystemFigureSubscriber(base))
-    bus.publish(LogBundle.from_dict(figures))
-    logger.info(
-        "Cost-model figures (%s) -> %s/{cost_model_scaling,cost_model_impact}.%s",
-        ", ".join(sorted(points)),
-        base,
-        fmt,
-    )
-
-
-def _parse_render_args(
-    argv: list[str], key: str
-) -> tuple[Path, str, Path | None] | None:
-    """Parse `key=<path> [format=..] [out=..]` from argv; None if `key` is absent."""
-    if not any(a.startswith(f"{key}=") for a in argv):
-        return None
-    kv = dict(
-        a.split("=", 1)
-        for a in argv
-        if "=" in a and a.split("=", 1)[0] in (key, "format", "out")
-    )
-    return (
-        Path(kv[key]),
-        kv.get("format", "pdf"),
-        Path(kv["out"]) if kv.get("out") else None,
-    )
-
-
 def main() -> None:
     """Entry point for the plot rendering stage."""
-    argv = sys.argv[1:]
-    special = (("cost_model", _render_cost_model),)
-    for key, render_fn in special:
-        parsed = _parse_render_args(argv, key)
-        if parsed is not None:
-            path, fmt, out = parsed
-            render_fn(path, fmt=fmt, out=out)
-            return
-
     cfg = load_config(
         config_path=Path(__file__).parent.parent / "configs",
         config_name="config",

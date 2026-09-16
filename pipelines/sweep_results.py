@@ -16,7 +16,6 @@ from src.domain.plot.base import Plot, set_figure_format
 from src.domain.plot.charts import (
     box_strip_facets,
     box_strip_plot,
-    cost_quality_plot,
     line_whisker_plot,
     stacked_bar_plot,
 )
@@ -92,7 +91,6 @@ def _load_sweep_runs(root: Path) -> list[dict]:
             composed = load_from_json(cfg_path)
             algorithm = next(iter(composed["clustering"]["algorithms"]), None)
             dataset_size = _dataset_size(ds_dir / "shared/metadata/df_info.json")
-            build_s = _build_knn_seconds(ds_dir / "shared/timing.json")
             for clf_dir in sorted(
                 p for p in ds_dir.iterdir() if p.is_dir() and p.name != "shared"
             ):
@@ -108,7 +106,6 @@ def _load_sweep_runs(root: Path) -> list[dict]:
                         "distance": composed.get("distance"),
                         "algorithm": algorithm,
                         "dataset_size": dataset_size,
-                        "build_knn_graph_s": build_s,
                         "base": base,
                         "results": load_from_json(results_path),
                     }
@@ -121,17 +118,6 @@ def _dataset_size(info_path: Path) -> int | None:
     if not info_path.exists():
         return None
     return int(load_from_json(info_path)["shape"][0])
-
-
-def _build_knn_seconds(timing_path: Path) -> float | None:
-    """Wall time of the k-NN graph build, from a run's timing.json."""
-    if not timing_path.exists():
-        return None
-    rows = load_from_json(timing_path)
-    vals = [
-        r.get("duration_s", 0.0) for r in rows if r.get("function") == "build_knn_graph"
-    ]
-    return float(sum(vals)) if vals else None
 
 
 def _dataset_base(name: str) -> str:
@@ -372,70 +358,6 @@ def _fig_instance_gain(runs: list[dict]) -> Plot | None:
         x_label="oracle benefit recovered (%)",
         x_lim=(-25.0, 105.0),
         axvline=0.0,
-    )
-
-
-def _cost_quality_cells(runs: list[dict]) -> tuple[list[str], list[str], dict]:
-    """Datasets ordered by training size, their labels, and the rho/build-time cells."""
-    size: dict[str, int] = {}
-    cell: dict[tuple[str, str, str], dict] = {}
-    for r in runs:
-        if r.get("dataset_size") is not None:
-            size[r["dataset"]] = max(size.get(r["dataset"], 0), r["dataset_size"])
-        c = cell.setdefault(
-            (r["algorithm"], r["distance"], r["dataset"]),
-            {"rho": [], "build_s": r.get("build_knn_graph_s")},
-        )
-        rho = r["results"].get("spearman")
-        if rho is not None:
-            c["rho"].append(rho)
-    datasets = sorted(size, key=lambda d: size[d])
-    labels = [_DATASET_LABEL.get(_dataset_base(d), _dataset_base(d)) for d in datasets]
-    return datasets, labels, cell
-
-
-def _cost_quality_panel(
-    cell: dict,
-    datasets: list[str],
-    labels: list[str],
-    algo: str,
-    distance: str,
-    title: str,
-) -> tuple[str, list[str], np.ndarray, np.ndarray, np.ndarray]:
-    """One (algorithm, distance) panel: rho mean/std across classifiers + build time per dataset."""
-    rho_mean, rho_std, build_s = [], [], []
-    for d in datasets:
-        c = cell.get((algo, distance, d))
-        arr = np.asarray(c["rho"], dtype=float) if c else np.array([])
-        rho_mean.append(float(arr.mean()) if arr.size else np.nan)
-        rho_std.append(_std(arr))
-        build_s.append(c["build_s"] if c and c["build_s"] is not None else np.nan)
-    return (title, labels, np.array(rho_mean), np.array(rho_std), np.array(build_s))
-
-
-def _fig_cost_quality(runs: list[dict], distance: str) -> Plot | None:
-    """Figure: build cost vs correlation across dataset scale, one panel per algorithm."""
-    datasets, labels, cell = _cost_quality_cells(runs)
-    if not datasets:
-        return None
-    panels = [
-        _cost_quality_panel(cell, datasets, labels, algo, distance, _ALGO_LABEL[algo])
-        for algo in _ALGO_ORDER
-    ]
-    return cost_quality_plot(
-        panels, rho_color=_COS, time_color=_EUC, n_cols=2, figsize=(9.5, 7.0)
-    )
-
-
-def _fig_cost_quality_detail(runs: list[dict], algo: str, distance: str) -> Plot | None:
-    """Figure: single-panel close-up of one (algorithm, distance) cost_quality panel."""
-    datasets, labels, cell = _cost_quality_cells(runs)
-    if not datasets:
-        return None
-    title = f"{_ALGO_LABEL[algo]} · {distance}"
-    panel = _cost_quality_panel(cell, datasets, labels, algo, distance, title)
-    return cost_quality_plot(
-        [panel], rho_color=_COS, time_color=_EUC, n_cols=1, figsize=(5.2, 3.4)
     )
 
 
@@ -783,11 +705,6 @@ def _render_sweep_results(
         "figure/gain_by_algo": _fig_gain_by_algo(runs),
         "figure/selective_stability": _fig_selective_stability(runs),
         "figure/instance_gain": _fig_instance_gain(runs),
-        "figure/cost_quality_cosine": _fig_cost_quality(runs, "cosine"),
-        "figure/cost_quality_euclidean": _fig_cost_quality(runs, "euclidean"),
-        "figure/cost_quality_kmeans_cosine": _fig_cost_quality_detail(
-            runs, "kmeans", "cosine"
-        ),
     }
     figures = {k: v for k, v in figures.items() if v is not None}
 

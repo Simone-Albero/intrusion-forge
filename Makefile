@@ -91,13 +91,6 @@ REUSE_FLAG  := $(if $(REUSE),failure_classifier.reuse=true,)
 NOSIG       ?=
 NOSIG_FLAG  := $(if $(NOSIG),failure_classifier.significance=false,)
 
-# Cost analysis. `cost-model` characterises the k-NN build cost for one dataset over both
-# distances × COST_SEEDS: α (≈2, Θ(m²)) gets a confidence interval across seeds, while c
-# contrasts cosine vs euclidean (~4×). The aggregator scans EXPERIMENTS_DIR.
-COST_CLF        ?= random_forest
-COST_SEEDS      ?= 42 0 1
-EXPERIMENTS_DIR ?= resources/experiments
-
 # Sweep-level paper results: aggregate the full experiment tree under SWEEP_DIR into the
 # four cross-run figures (rho by config / vs clusters, family importance, selective curves),
 # written to FIGURES_DIR, and the four Results-section JSON tables (perconfig, nclusters,
@@ -105,7 +98,7 @@ EXPERIMENTS_DIR ?= resources/experiments
 SWEEP_DIR       ?= paper/exp
 FIGURES_DIR     ?= paper/figures
 
-.PHONY: prepare classify complexity failure-classify render sweep-results run infer sweep-infer cost-model cost-summary cost-aggregate generate dashboard help
+.PHONY: prepare classify complexity failure-classify render sweep-results run infer sweep-infer generate dashboard help
 
 ## prepare:            Step 1 — preprocess raw CSV → parquet splits           (DATA, NAME, SEED, FORCE)
 prepare:
@@ -134,7 +127,7 @@ render:
 ## sweep-results:      Aggregate the experiment tree into cross-run paper figures + result tables  (SWEEP_DIR, FIGURES_DIR)
 sweep-results:
 	PYTHONPATH=. $(PYTHON) pipelines/sweep_results.py sweep=$(SWEEP_DIR) out=$(FIGURES_DIR)
-	@echo ""; echo "sweep-results done -> $(FIGURES_DIR)/{rho_by_config,rho_vs_clusters,family_importance,gain_by_algo,selective_stability,instance_gain,cost_quality_*}.pdf + $(SWEEP_DIR)/{perconfig,nclusters,perclf_perdataset,selective,selective_by_clf,instance}_table.json"
+	@echo ""; echo "sweep-results done -> $(FIGURES_DIR)/{rho_by_config,rho_vs_clusters,family_importance,gain_by_algo,selective_stability,instance_gain}.pdf + $(SWEEP_DIR)/{perconfig,nclusters,perclf_perdataset,selective,selective_by_clf,instance}_table.json"
 
 ## run:                Whole flow — fix passed vars, iterate the rest (DATA?, CLASSIFIER?, CLUSTERING?)  (NAME, SEED, DISTANCE, FORCE)
 run:
@@ -254,33 +247,6 @@ sweep-infer:
 		done; \
 	done
 	@echo ""; echo "sweep-infer done → test_samples.parquet + instance_baselines.json per run. Now: make sweep-results."
-
-## cost-model:         Deliverable A — k-NN build cost model T(m)=c·m^α over 2 distances × COST_SEEDS for one dataset  (DATA, NAME, COST_SEEDS, COST_CLF)
-cost-model:
-	@for dist in cosine euclidean; do \
-	  for seed in $(COST_SEEDS); do \
-	    nm=$(NAME)_$$dist; \
-	    echo ""; echo "== cost-model: $(DATA) [$$dist] seed=$$seed -> name=$$nm =="; \
-	    $(MAKE) --no-print-directory prepare \
-	      DATA=$(DATA) NAME=$$nm SEED=$$seed CLUSTERING=kmeans DISTANCE=$$dist || exit 1; \
-	    $(MAKE) --no-print-directory classify \
-	      DATA=$(DATA) NAME=$$nm SEED=$$seed CLASSIFIER=$(COST_CLF) CLUSTERING=kmeans DISTANCE=$$dist || exit 1; \
-	    PYTHONPATH=. $(PYTHON) pipelines/cost_sweep.py \
-	      data=$(DATA) name=$$nm seed=$$seed classifier=$(COST_CLF) \
-	      clustering=kmeans distance=$$dist || exit 1; \
-	  done; \
-	done
-	@echo ""; echo "cost-model done -> <NAME>_<distance>/$(DATA)_<seed>/shared/cost_model.json (α across COST_SEEDS; c cosine vs euclidean)."
-
-## cost-summary:       Roll up cost_model.json files: α mean±std per distance + c euclidean/cosine ratio  (EXPERIMENTS_DIR)
-cost-summary:
-	@PYTHONPATH=. $(PYTHON) pipelines/cost_sweep.py summary=$(EXPERIMENTS_DIR)
-	@echo ""; echo "cost-summary done -> $(EXPERIMENTS_DIR)/cost_model_summary.json."
-
-## cost-aggregate:     Deliverable B — cross-run cost↔quality table (ρ vs cluster count vs build time) from finished runs  (EXPERIMENTS_DIR). The cost_quality figure is now part of `make sweep-results`.
-cost-aggregate:
-	@PYTHONPATH=. $(PYTHON) pipelines/cost_sweep.py aggregate=$(EXPERIMENTS_DIR)
-	@echo ""; echo "cost-aggregate done -> $(EXPERIMENTS_DIR)/cost_quality_table.json"
 
 ## generate:           Generate synthetic test dataset                        (ROWS)
 generate:
