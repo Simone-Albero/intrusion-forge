@@ -1,13 +1,20 @@
 import io
+from dataclasses import dataclass
 
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 
-from src.core.plot import Plot
-
 _FIGURE_FORMAT = "pdf"
+
+
+@dataclass
+class Plot:
+    """Self-contained figure payload: the rendered bytes and their format."""
+
+    data: bytes
+    format: str = "png"
 
 
 def set_figure_format(fmt: str) -> None:
