@@ -267,7 +267,7 @@ def violin_plot(
     return _finalize(fig)
 
 
-def strip_plot(
+def _strip_plot(
     categories: np.ndarray,
     values: np.ndarray,
     fill_categorical_colors: tuple[str, ...] = (),
@@ -424,7 +424,7 @@ def strip_count_panel_plot(
         sharey=True,
     )
 
-    strip_plot(
+    _strip_plot(
         categories=categories,
         values=values,
         fill_values=fill_values,

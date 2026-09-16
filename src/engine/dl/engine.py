@@ -58,22 +58,3 @@ def eval_step(engine: Engine, batch: Batch) -> dict[str, float]:
     if loss is None:
         raise ValueError("eval_step requires a loss_fn in the engine state.")
     return {"loss": loss.item()}
-
-
-def test_step(engine: Engine, batch: Batch) -> dict:
-    """Single test step returning the model output, loss and ground truth."""
-    s = engine.state
-    model, device = s.model, s.device
-    loss_fn = getattr(s, "loss_fn", None)
-
-    model.eval()
-    batch = ensure_batch(batch).to(device, non_blocking=True)
-
-    with torch.no_grad():
-        output, loss = _forward_and_loss(model, batch, loss_fn)
-
-    return {
-        "output": output,
-        "loss": loss if loss is not None else torch.tensor(0.0),
-        "y_true": batch.labels[0] if len(batch.labels) == 1 else batch.labels,
-    }

@@ -2,7 +2,6 @@ import hdbscan
 import numpy as np
 from kmodes.kprototypes import KPrototypes
 from sklearn.cluster import Birch, KMeans, SpectralClustering
-from sklearn.mixture import GaussianMixture
 from sklearn.neighbors import NearestNeighbors
 
 from src.domain.clustering import ClusteringFactory
@@ -121,28 +120,6 @@ def fit_kmeans(
     n_clusters = max(2, min(n_clusters, X_num.shape[0] - 1))
     X_num = np.ascontiguousarray(X_num, dtype=np.float64)
     model = KMeans(n_clusters=n_clusters, random_state=random_state)
-    labels = model.fit_predict(X_num)
-    return labels
-
-
-@ClusteringFactory.register("gmm")
-def fit_gmm(
-    X_num: np.ndarray,
-    *,
-    X_cat: np.ndarray | None = None,
-    n_components: int = 4,
-    covariance_type: str = "full",
-    random_state: int = 0,
-    **_,
-) -> np.ndarray:
-    """Fit GMM on X and return predicted cluster labels (n,)."""
-    n_components = max(2, min(n_components, X_num.shape[0] - 1))
-    X_num = np.ascontiguousarray(X_num, dtype=np.float64)
-    model = GaussianMixture(
-        n_components=n_components,
-        covariance_type=covariance_type,
-        random_state=random_state,
-    )
     labels = model.fit_predict(X_num)
     return labels
 

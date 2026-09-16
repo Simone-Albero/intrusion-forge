@@ -167,13 +167,6 @@ def fit_classifier(
     return model, {"history": history}
 
 
-def grid_search_classifier(*args, **kwargs):
-    """DL grid search is not implemented; train a single configuration instead."""
-    raise NotImplementedError(
-        "DL grid search is not implemented. Train a single configuration instead."
-    )
-
-
 def predict_with_proba(
     model: nn.Module,
     X: pd.DataFrame,

@@ -42,7 +42,7 @@ from src.domain.plot.charts import bar_plot, line_plot, scatter_plot
 from src.domain.plot.metrics import confusion_matrix_plot
 from src.domain.plot.style import apply_plot_style, extended_palette
 from src.domain.projection import stratified_subsample, tsne_projection
-from src.registries import MLClassifierFactory
+from src.engine.ml.model import MLClassifierFactory
 
 setup_logger(log_file="resources/logs.txt")
 apply_plot_style()
@@ -584,6 +584,10 @@ def _train_stage(
 
     has_grid = "grid" in cfg.classifier and len(cfg.classifier.grid) > 0
     if cfg.grid_search.enabled and has_grid:
+        if kind != "ml":
+            raise NotImplementedError(
+                f"Grid search is only implemented for ML classifiers; got kind={kind!r}."
+            )
         logger.info(
             "Grid search for %s — scoring=%s, cv=%d",
             cfg.classifier.name,

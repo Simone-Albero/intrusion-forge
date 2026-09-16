@@ -84,7 +84,7 @@ def _score_silhouette(
         return float("-inf")
 
 
-def pairwise_hybrid_distance(
+def _pairwise_hybrid_distance(
     X_num: np.ndarray,
     X_cat: np.ndarray | None,
     metric: str = "cosine",
@@ -167,7 +167,7 @@ def make_hybrid_silhouette_fn(
         sub_labels = labels[idx]
         if np.unique(sub_labels).size < 2:
             return float("-inf")
-        dm = pairwise_hybrid_distance(
+        dm = _pairwise_hybrid_distance(
             X_num[idx], X_cat[idx] if X_cat is not None else None, metric=metric
         )
         np.fill_diagonal(dm, 0.0)

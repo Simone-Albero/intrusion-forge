@@ -47,20 +47,3 @@ def load_best_checkpoint(
         )
         best = max(files, key=lambda p: p.stat().st_mtime)
     _load(best, model, device, weights_only)
-
-
-def load_latest_checkpoint(
-    checkpoint_dir: Path,
-    model: nn.Module,
-    device: torch.device,
-    *,
-    weights_only: bool = True,
-) -> None:
-    """Load the most recently written checkpoint."""
-    files = list(checkpoint_dir.glob("*.pt"))
-    if not files:
-        raise FileNotFoundError(
-            f"No checkpoint found in {checkpoint_dir}; refusing to continue "
-            "with randomly initialized weights."
-        )
-    _load(max(files, key=lambda p: p.stat().st_mtime), model, device, weights_only)

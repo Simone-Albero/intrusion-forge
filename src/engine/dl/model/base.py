@@ -1,5 +1,3 @@
-from collections.abc import Sequence
-
 import numpy as np
 import torch
 from torch import Tensor, nn
@@ -40,15 +38,6 @@ class ModelOutput(dict):
     def numpy(self) -> dict[str, np.ndarray]:
         """Numpy view of every tensor."""
         return {k: v.cpu().numpy() for k, v in self.items()}
-
-
-def cat_model_outputs(outputs: Sequence[ModelOutput], *, dim: int = 0) -> ModelOutput:
-    """Concatenate a sequence of ModelOutputs along a dimension."""
-    if not outputs:
-        raise ValueError("The outputs sequence is empty.")
-    return ModelOutput(
-        data={k: torch.cat([o[k] for o in outputs], dim=dim) for k in outputs[0]}
-    )
 
 
 class BaseModel(nn.Module):
