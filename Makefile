@@ -23,7 +23,7 @@
 #   EXTEND=1              in `run`, adds classify-extended (SHAP) to the flow for every (ds, clf)
 #   LABELFREE=1           build the extended splits with label-free nearest-centroid assignment
 #                         (injection honesty control; pair with EXTEND=1 for the full flow)
-#   CLUSTERING=<name>     fix the clustering strategy (ensemble/kmeans/hdbscan/birch/spectral/kprototypes);
+#   CLUSTERING=<name>     fix the clustering strategy (kmeans/hdbscan/birch/spectral);
 #                         omit it in `run` to sweep all of CLUSTERING_ALGOS into NAME_<algo>
 #
 # k-fold note: k-fold evaluation (kfold=true) is disabled automatically for LARGE_DATASETS
@@ -332,10 +332,10 @@ help:
 	@echo "ML classifiers:         $(ML_CLASSIFIERS)"
 	@echo "DL classifiers (mixed): $(DL_CLASSIFIERS_MIXED)"
 	@echo "DL classifiers (num):   $(DL_CLASSIFIERS_NUMERICAL)"
-	@echo "Clustering strategies:  ensemble kmeans hdbscan birch spectral kprototypes"
+	@echo "Clustering strategies:  kmeans hdbscan birch spectral"
 	@echo ""
 	@echo "Datasets (smallest → largest, kfold auto-disabled for large):"
-	@echo "  small (kfold=true):   seeds  parkinsons  statlog_landsat_satellite  thyroid_disease  letter_recognition  bank_marketing  covertype"
+	@echo "  small (kfold=true):   statlog_landsat_satellite  thyroid_disease  letter_recognition  bank_marketing  covertype"
 	@echo "  large (kfold=false):  nb15_v2  ton_iot_v2  cic_2018_v2  bot_iot_v2"
 	@echo ""
 	@echo "Run examples (omitted vars iterate; passed vars are fixed):"

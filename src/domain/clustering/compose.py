@@ -3,7 +3,7 @@ from collections.abc import Callable
 import numpy as np
 
 from src.domain.clustering import ClusteringFactory
-from src.domain.clustering.base import ClusterFn, grid_search, make_hybrid_silhouette_fn
+from src.domain.clustering.base import ClusterFn, grid_search
 
 Reporter = Callable[[str, dict], None]
 
@@ -15,8 +15,7 @@ def _split_grid_fixed(params: dict) -> tuple[dict, dict]:
     return grid, fixed
 
 
-_HYBRID_SCORED_ALGOS = ("kprototypes",)
-_N_CLUSTERS_ALGOS = ("kmeans", "spectral", "birch", "kprototypes")
+_N_CLUSTERS_ALGOS = ("kmeans", "spectral", "birch")
 
 
 def _n_clusters_grid(
@@ -41,7 +40,6 @@ def _make_single_cluster_fn(
     max_fit_samples: int,
     random_state: int,
     reporter: Reporter | None = None,
-    metric: str = "cosine",
     max_clusters: int | None = None,
     min_clusters: int | None = None,
     grid_target_cluster_size: int | None = None,
@@ -50,11 +48,6 @@ def _make_single_cluster_fn(
     """Build a ClusterFn for a single registered algorithm."""
     fit_fn = ClusteringFactory.get(name)
     grid, fixed = _split_grid_fixed(params or {})
-    silhouette_fn = (
-        make_hybrid_silhouette_fn(metric=metric, random_state=random_state)
-        if name in _HYBRID_SCORED_ALGOS
-        else None
-    )
 
     def _fn(X_num: np.ndarray, X_cat: np.ndarray | None = None) -> np.ndarray:
         common = {
@@ -79,7 +72,6 @@ def _make_single_cluster_fn(
                 algo_grid,
                 resolution_weight=resolution_weight,
                 min_clusters=effective_min_clusters,
-                silhouette_fn=silhouette_fn,
                 **common,
             )
             if reporter is not None:
@@ -95,7 +87,6 @@ def build_cluster_fn(
     max_fit_samples: int,
     random_state: int,
     reporter: Reporter | None = None,
-    metric: str = "cosine",
     max_clusters: int | None = None,
     min_clusters: int | None = None,
     grid_target_cluster_size: int | None = None,
@@ -114,7 +105,6 @@ def build_cluster_fn(
         max_fit_samples,
         random_state,
         reporter=reporter,
-        metric=metric,
         max_clusters=max_clusters,
         min_clusters=min_clusters,
         grid_target_cluster_size=grid_target_cluster_size,

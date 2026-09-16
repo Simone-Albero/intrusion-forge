@@ -17,4 +17,3 @@ umap-learn
 streamlit
 plotly
 shap>=0.44
-kmodes

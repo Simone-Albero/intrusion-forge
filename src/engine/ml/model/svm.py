@@ -1,7 +1,7 @@
 import numpy as np
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.calibration import CalibratedClassifierCV
-from sklearn.svm import SVC, LinearSVC
+from sklearn.svm import LinearSVC
 
 from . import MLClassifierFactory
 
@@ -38,5 +38,4 @@ class CalibratedLinearSVC(BaseEstimator, ClassifierMixin):
         return self._calibrated.predict_proba(X)
 
 
-MLClassifierFactory.register("svm_rbf")(SVC)
 MLClassifierFactory.register("linear_svc")(CalibratedLinearSVC)

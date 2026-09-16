@@ -98,7 +98,6 @@ def _cluster_per_class(
             max_fit_samples=max_fit_samples,
             random_state=random_state,
             reporter=algo_reports.__setitem__,
-            metric=metric,
             max_clusters=max_clusters_per_class,
             min_clusters=min_clusters,
             grid_target_cluster_size=grid_target_cluster_size,

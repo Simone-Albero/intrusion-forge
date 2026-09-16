@@ -1,9 +1,0 @@
-# @package classifier
-kind: ml
-name: svm_rbf
-params:
-  kernel: rbf
-  probability: true
-grid:
-  C: [0.1, 1.0, 10.0]
-  gamma: [scale, 0.01, 0.1]

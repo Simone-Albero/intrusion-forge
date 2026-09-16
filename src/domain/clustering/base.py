@@ -8,17 +8,11 @@ from sklearn.metrics import pairwise_distances, silhouette_score
 from tqdm import tqdm
 
 from src.core.utils import timed
-from src.domain.analysis.complexity.shared import (
-    hybrid_row_batch,
-    hybrid_row_batch_euclidean,
-    l2_normalize,
-)
 
 logger = logging.getLogger(__name__)
 
 FitFn = Callable[..., np.ndarray]
 ClusterFn = Callable[[np.ndarray, np.ndarray | None], np.ndarray]
-SilhouetteFn = Callable[[np.ndarray, np.ndarray | None, np.ndarray], float]
 
 
 def cluster_size_balance(labels: np.ndarray) -> float:
@@ -84,23 +78,6 @@ def _score_silhouette(
         return float("-inf")
 
 
-def _pairwise_hybrid_distance(
-    X_num: np.ndarray,
-    X_cat: np.ndarray | None,
-    metric: str = "cosine",
-) -> np.ndarray:
-    """Dense pairwise Gower-hybrid distance matrix in [0, 1]; subsamples only, O(n²) memory."""
-    d_num = X_num.shape[1]
-    d_cat = X_cat.shape[1] if X_cat is not None else 0
-    if metric == "cosine":
-        X_norm = l2_normalize(X_num)
-        return hybrid_row_batch(X_norm, X_cat, X_norm, X_cat, d_num, d_cat)
-    feat_ranges = X_num.max(axis=0) - X_num.min(axis=0)
-    return hybrid_row_batch_euclidean(
-        X_num, X_cat, X_num, X_cat, d_num, d_cat, feat_ranges
-    )
-
-
 def assign_nearest_centroid(
     X_num: np.ndarray,
     centroids: dict,
@@ -150,35 +127,6 @@ def assign_clusters_within_class(
     return result
 
 
-def make_hybrid_silhouette_fn(
-    metric: str = "cosine",
-    max_scoring_samples: int = 5_000,
-    random_state: int = 0,
-) -> SilhouetteFn:
-    """Build a Gower-hybrid silhouette scorer over a bounded subsample of non-noise points."""
-
-    def _fn(X_num: np.ndarray, X_cat: np.ndarray | None, labels: np.ndarray) -> float:
-        idx = np.where(labels != -1)[0]
-        if idx.size < 2:
-            return float("-inf")
-        if idx.size > max_scoring_samples:
-            rng = np.random.default_rng(random_state)
-            idx = rng.choice(idx, size=max_scoring_samples, replace=False)
-        sub_labels = labels[idx]
-        if np.unique(sub_labels).size < 2:
-            return float("-inf")
-        dm = _pairwise_hybrid_distance(
-            X_num[idx], X_cat[idx] if X_cat is not None else None, metric=metric
-        )
-        np.fill_diagonal(dm, 0.0)
-        try:
-            return float(silhouette_score(dm, sub_labels, metric="precomputed"))
-        except Exception:
-            return float("-inf")
-
-    return _fn
-
-
 @timed
 def grid_search(
     X_num: np.ndarray,
@@ -191,7 +139,6 @@ def grid_search(
     noise_penalty: float = 3.0,
     resolution_weight: float = 0.1,
     min_clusters: int | None = None,
-    silhouette_fn: SilhouetteFn | None = None,
     **fixed_params,
 ) -> dict:
     """Grid search scored by silhouette − noise_penalty·noise_ratio + resolution tilt."""
@@ -227,11 +174,7 @@ def grid_search(
             continue
 
         duration = time.perf_counter() - t0
-        sil = (
-            silhouette_fn(sub_num, sub_cat, labels)
-            if silhouette_fn is not None
-            else _score_silhouette(sub_num, labels)
-        )
+        sil = _score_silhouette(sub_num, labels)
         entry = _measure(labels, sil, combo, duration)
         entry["silhouette"] = sil
         sweep.append(entry)

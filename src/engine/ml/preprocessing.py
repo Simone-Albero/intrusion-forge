@@ -12,7 +12,6 @@ _HISTGB_MAX_CARDINALITY = 255
 CLASSIFIER_PREPROCESS: dict[str, str] = {
     "logistic_regression": "onehot",
     "lda": "onehot",
-    "svm_rbf": "onehot",
     "linear_svc": "onehot",
     "knn": "onehot",
     "decision_tree": "passthrough",

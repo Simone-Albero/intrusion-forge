@@ -56,9 +56,6 @@ failure_classifier:
 
 plots:
   format: pdf                        # figure file format: pdf (vector, lighter) | png
-  max_class_pairs: 10
-  projection_max_samples: 5000
-  pair_projection_max_samples: 5000
 
 extend:
   generate: false                    # opt-in: train an extra complexity-extended classifier + SHAP
