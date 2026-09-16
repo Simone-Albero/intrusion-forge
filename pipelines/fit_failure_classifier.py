@@ -80,20 +80,6 @@ def _run_outer_fold(
     }
 
 
-def _rank_normalize_within_fold(values: np.ndarray, fold_ids: np.ndarray) -> np.ndarray:
-    """Percentile-rank `values` within each fold, removing cross-fold scale mismatch."""
-    out = np.empty_like(values, dtype=float)
-    for f in np.unique(fold_ids):
-        mask = fold_ids == f
-        n = int(mask.sum())
-        if n <= 1:
-            out[mask] = 0.5
-            continue
-        ranks = rankdata(values[mask], method="average")
-        out[mask] = (ranks - 1) / (n - 1)
-    return out
-
-
 def _quantile_strata(y: pd.Series, q: int) -> pd.Series | None:
     """Quantile-bin codes of the continuous target, or None if it yields fewer than two bins."""
     try:
@@ -203,23 +189,10 @@ def _aggregate_oof_results(oof: dict, feature_cols: list[str]) -> dict:
     rho = spearmanr(y_pred, y_true)
     fold_spearmans = np.array(oof["fold_spearmans"], dtype=float)
 
-    rank_normalized_pred = _rank_normalize_within_fold(y_pred, oof["fold_ids"])
-    rho_rank_norm = spearmanr(rank_normalized_pred, y_true)
-
     return {
         "spearman": float(rho.statistic),
         "spearman_pvalue": float(rho.pvalue),
-        "spearman_per_fold_mean": float(np.nanmean(fold_spearmans)),
-        "spearman_per_fold_std": float(np.nanstd(fold_spearmans)),
         "spearman_per_fold": fold_spearmans.tolist(),
-        "spearman_pooled_vs_perfold_gap": float(
-            rho.statistic - np.nanmean(fold_spearmans)
-        ),
-        "spearman_rank_normalized": float(rho_rank_norm.statistic),
-        "oof_predicted_rate_rank_normalized": {
-            str(cid): float(pred)
-            for cid, pred in zip(oof["indices"], rank_normalized_pred)
-        },
         "r2": float(r2_score(y_true, y_pred)),
         "r2_std": float(np.nanstd(oof["fold_r2s"])),
         "r2_per_fold": oof["fold_r2s"],
@@ -396,20 +369,6 @@ def fit_failure_classifier(
         **context_metrics,
         **_aggregate_oof_results(oof, feature_cols),
     }
-    gap = results["spearman_pooled_vs_perfold_gap"]
-    if gap < -0.05:
-        rank_norm_recovers = results["spearman_rank_normalized"] - results["spearman"]
-        logger.warning(
-            "Pooled Spearman (%.3f) is notably lower than the per-fold mean (%.3f, "
-            "gap=%.3f) — possible cross-fold OOF scale mismatch when pooling "
-            "predictions from independently-fit fold models into one global ranking. "
-            "Rank-normalized pooling gives %.3f (%+.3f vs raw pooling).",
-            results["spearman"],
-            results["spearman_per_fold_mean"],
-            gap,
-            results["spearman_rank_normalized"],
-            rank_norm_recovers,
-        )
 
     support = df.loc[oof["indices"], "n_test"].astype(float).to_numpy()
     cluster_class = df.loc[oof["indices"], "cluster_class"].to_numpy()
@@ -418,10 +377,6 @@ def fit_failure_classifier(
     )
     results["selective_macro_recall"] = selective_recall_metrics(
         oof["y_pred"], oof["y_true"], support, cluster_class
-    )
-    rank_normalized_pred = _rank_normalize_within_fold(oof["y_pred"], oof["fold_ids"])
-    results["risk_coverage_rank_normalized"] = selective_prediction_metrics(
-        rank_normalized_pred, oof["y_true"], support
     )
     baseline_scores = {
         name: df.loc[oof["indices"], name].astype(float).to_numpy()
