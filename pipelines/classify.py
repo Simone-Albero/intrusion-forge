@@ -521,122 +521,13 @@ def _publish_evaluation(
     )
 
 
-@timed
-def _train_stage(
-    cfg,
-    paths: OutputPaths,
-    train_df: pd.DataFrame,
-    val_df: pd.DataFrame,
-    feat_cols: list[str],
-    label_col: str,
-    df_meta: dict,
-    num_cols: list[str],
-    cat_cols: list[str],
-    bus: LogDispatcher,
-) -> None:
-    """Train one model on the train split (optionally grid search) and save it."""
-    kind = cfg.classifier.kind
-    training_mod = _resolve_training_module(kind)
-    context = _build_context(cfg, paths, df_meta, num_cols, cat_cols, label_col)
-    params = _resolve_fit_params(cfg, kind, num_cols, cat_cols, df_meta)
-    X, y = _prepare_train_payload(kind, train_df, feat_cols, label_col)
-    X_val, y_val = _prepare_train_payload(kind, val_df, feat_cols, label_col)
+@dataclass
+class _Split:
+    """One split: the training rows and the universe positions it evaluates."""
 
-    has_grid = "grid" in cfg.classifier and len(cfg.classifier.grid) > 0
-    if has_grid:
-        if kind != "ml":
-            raise NotImplementedError(
-                f"Grid search is only implemented for ML classifiers; got kind={kind!r}."
-            )
-        logger.info(
-            "Grid search for %s — scoring=%s, cv=%d",
-            cfg.classifier.name,
-            cfg.grid_search.scoring,
-            cfg.grid_search.cv,
-        )
-        model, summary = training_mod.grid_search_classifier(
-            name=cfg.classifier.name,
-            params=params,
-            grid=dict(cfg.classifier.grid),
-            X=X,
-            y=y,
-            scoring=cfg.grid_search.scoring,
-            cv=cfg.grid_search.cv,
-            context=context,
-            max_samples=cfg.grid_search.max_samples,
-            random_state=cfg.seed,
-        )
-        logger.info(
-            "Best params: %s | Best score (%s): %.4f",
-            summary["best_params"],
-            summary["scoring"],
-            summary["best_score"],
-        )
-        bus.publish(LogBundle.from_dict({"json/training/grid_search": summary}))
-        training_mod.save_model(
-            model, paths.models, name=cfg.classifier.name, params=params
-        )
-    else:
-        logger.info("Training %s ...", cfg.classifier.name)
-        _, fit_summary = _fit_model(
-            training_mod,
-            cfg.classifier.name,
-            params,
-            X,
-            y,
-            X_val,
-            y_val,
-            context,
-            paths.models,
-        )
-        history = fit_summary.get("history", {})
-        if history:
-            bus.publish(LogBundle.from_dict(_training_history_figures(history)))
-    logger.info("Model saved under %s", paths.models)
-
-
-@timed
-def _evaluate_stage(
-    cfg,
-    paths: OutputPaths,
-    test_df: pd.DataFrame,
-    feat_cols: list[str],
-    label_col: str,
-    df_meta: dict,
-    num_cols: list[str],
-    cat_cols: list[str],
-    bus: LogDispatcher,
-) -> None:
-    """Load the trained model, predict the test split, publish metrics + figures + dumps."""
-    kind = cfg.classifier.kind
-    training_mod = _resolve_training_module(kind)
-    context = _build_context(cfg, paths, df_meta, num_cols, cat_cols, label_col)
-
-    logger.info("Loading model from %s ...", paths.models)
-    y_pred, y_proba, embedding = _predict_model(
-        training_mod,
-        paths.models,
-        test_df,
-        feat_cols,
-        kind,
-        context,
-        return_embedding=True,
-    )
-    y_true = test_df[label_col].to_numpy()
-    clusters = test_df["cluster"].to_numpy() if "cluster" in test_df.columns else None
-
-    _publish_evaluation(
-        bus,
-        df_meta,
-        test_df[feat_cols].to_numpy(),
-        y_true,
-        y_pred,
-        y_proba,
-        clusters,
-        eval_mode="single_split",
-        embedding=embedding,
-        predictions_dir=paths.outputs / "analysis/predictions",
-    )
+    train_df: pd.DataFrame
+    fold_dir: Path
+    eval_idx: np.ndarray
 
 
 def _oof_splits(base: pd.DataFrame, label_col: str, k: int, seed: int) -> list:
@@ -650,58 +541,39 @@ def _oof_splits(base: pd.DataFrame, label_col: str, k: int, seed: int) -> list:
     )
 
 
-@timed
-def _train_kfold_stage(
+def _build_universe_and_splits(
     cfg,
     paths: OutputPaths,
     train_df: pd.DataFrame,
-    val_df: pd.DataFrame,
     test_df: pd.DataFrame,
-    feat_cols: list[str],
     label_col: str,
-    df_meta: dict,
-    num_cols: list[str],
-    cat_cols: list[str],
-) -> None:
-    """Train one classifier per OOF fold over train+test, each saved under `fold_{f}/`."""
-    kind = cfg.classifier.kind
-    training_mod = _resolve_training_module(kind)
-    context = _build_context(cfg, paths, df_meta, num_cols, cat_cols, label_col)
-    params = _resolve_fit_params(cfg, kind, num_cols, cat_cols, df_meta)
-    X_val, y_val = _prepare_train_payload(kind, val_df, feat_cols, label_col)
+) -> tuple[pd.DataFrame, list[_Split], str]:
+    """Build the evaluation universe and its splits: the single test split, or k-fold OOF."""
+    universe = pd.concat([train_df, test_df], ignore_index=True)
 
-    base = pd.concat([train_df, test_df], ignore_index=True)
-    for f, (tr_idx, _) in enumerate(
-        _oof_splits(base, label_col, cfg.kfold_splits, cfg.seed)
+    if not cfg.kfold:
+        eval_idx = np.arange(len(train_df), len(universe))
+        return universe, [_Split(train_df, paths.models, eval_idx)], "single_split"
+
+    splits = []
+    for f, (tr_idx, te_idx) in enumerate(
+        _oof_splits(universe, label_col, cfg.kfold_splits, cfg.seed)
     ):
-        fold_dir = paths.models / f"fold_{f}"
-        fold_train = base.iloc[tr_idx]
+        fold_train = universe.iloc[tr_idx]
         if cfg.balance == "undersample":
             fold_train = random_undersample_df(
                 fold_train, label_col, random_state=cfg.seed
             )
-        X, y = _prepare_train_payload(kind, fold_train, feat_cols, label_col)
-        fold_ctx = {**context, "models_path": fold_dir} if kind == "dl" else context
-        _fit_model(
-            training_mod,
-            cfg.classifier.name,
-            params,
-            X,
-            y,
-            X_val,
-            y_val,
-            fold_ctx,
-            fold_dir,
-        )
-    logger.info("k-fold OOF: trained %d fold models under %s", f + 1, paths.models)
+        splits.append(_Split(fold_train, paths.models / f"fold_{f}", te_idx))
+    return universe, splits, "oof_kfold"
 
 
 @timed
-def _evaluate_kfold_stage(
+def _fit_splits(
     cfg,
     paths: OutputPaths,
-    train_df: pd.DataFrame,
-    test_df: pd.DataFrame,
+    splits: list[_Split],
+    val_df: pd.DataFrame,
     feat_cols: list[str],
     label_col: str,
     df_meta: dict,
@@ -709,41 +581,162 @@ def _evaluate_kfold_stage(
     cat_cols: list[str],
     bus: LogDispatcher,
 ) -> None:
-    """Assemble leakage-free OOF predictions from the fold models and publish them."""
+    """Fit one model per split and save it under its own directory.
+
+    Grid search and training-curve figures only apply to a single split: under k-fold
+    they would run/publish once per fold, which today's k-fold path never did.
+    """
+    kind = cfg.classifier.kind
+    training_mod = _resolve_training_module(kind)
+    context = _build_context(cfg, paths, df_meta, num_cols, cat_cols, label_col)
+    params = _resolve_fit_params(cfg, kind, num_cols, cat_cols, df_meta)
+    X_val, y_val = _prepare_train_payload(kind, val_df, feat_cols, label_col)
+
+    is_kfold = len(splits) > 1
+    has_grid = "grid" in cfg.classifier and len(cfg.classifier.grid) > 0
+
+    for split in splits:
+        X, y = _prepare_train_payload(kind, split.train_df, feat_cols, label_col)
+        fold_ctx = (
+            {**context, "models_path": split.fold_dir} if kind == "dl" else context
+        )
+
+        if has_grid and not is_kfold:
+            if kind != "ml":
+                raise NotImplementedError(
+                    f"Grid search is only implemented for ML classifiers; got kind={kind!r}."
+                )
+            logger.info(
+                "Grid search for %s — scoring=%s, cv=%d",
+                cfg.classifier.name,
+                cfg.grid_search.scoring,
+                cfg.grid_search.cv,
+            )
+            model, summary = training_mod.grid_search_classifier(
+                name=cfg.classifier.name,
+                params=params,
+                grid=dict(cfg.classifier.grid),
+                X=X,
+                y=y,
+                scoring=cfg.grid_search.scoring,
+                cv=cfg.grid_search.cv,
+                context=fold_ctx,
+                max_samples=cfg.grid_search.max_samples,
+                random_state=cfg.seed,
+            )
+            logger.info(
+                "Best params: %s | Best score (%s): %.4f",
+                summary["best_params"],
+                summary["scoring"],
+                summary["best_score"],
+            )
+            bus.publish(LogBundle.from_dict({"json/training/grid_search": summary}))
+            training_mod.save_model(
+                model, split.fold_dir, name=cfg.classifier.name, params=params
+            )
+        else:
+            logger.info("Training %s ...", cfg.classifier.name)
+            _, fit_summary = _fit_model(
+                training_mod,
+                cfg.classifier.name,
+                params,
+                X,
+                y,
+                X_val,
+                y_val,
+                fold_ctx,
+                split.fold_dir,
+            )
+            history = fit_summary.get("history", {})
+            if history and not is_kfold:
+                bus.publish(LogBundle.from_dict(_training_history_figures(history)))
+
+    if is_kfold:
+        logger.info(
+            "k-fold OOF: trained %d fold models under %s", len(splits), paths.models
+        )
+    else:
+        logger.info("Model saved under %s", paths.models)
+
+
+@timed
+def _evaluate_splits(
+    cfg,
+    paths: OutputPaths,
+    universe: pd.DataFrame,
+    splits: list[_Split],
+    eval_mode: str,
+    feat_cols: list[str],
+    label_col: str,
+    df_meta: dict,
+    num_cols: list[str],
+    cat_cols: list[str],
+    bus: LogDispatcher,
+) -> None:
+    """Predict each split's held-out rows, merge them, and publish a single evaluation.
+
+    A single split's `eval_idx` covers only the test rows, so the merged evaluation is
+    test-only; k-fold's `eval_idx` values partition the whole universe, so it is not.
+    Embeddings (for the t-SNE latent figure) are only requested for a single split, as
+    today's k-fold path never returns one.
+    """
     kind = cfg.classifier.kind
     training_mod = _resolve_training_module(kind)
     context = _build_context(cfg, paths, df_meta, num_cols, cat_cols, label_col)
 
-    base = pd.concat([train_df, test_df], ignore_index=True)
-    y_true = base[label_col].to_numpy()
-    clusters = base["cluster"].to_numpy() if "cluster" in base.columns else None
-    y_pred = np.empty(len(base), dtype=y_true.dtype)
-    y_proba = np.zeros((len(base), df_meta["num_classes"]))
+    is_kfold = len(splits) > 1
+    want_embedding = not is_kfold
 
-    for f, (_, te_idx) in enumerate(
-        _oof_splits(base, label_col, cfg.kfold_splits, cfg.seed)
-    ):
-        y_pred[te_idx], y_proba[te_idx] = _predict_model(
+    y_pred = np.empty(len(universe), dtype=universe[label_col].to_numpy().dtype)
+    y_proba = np.zeros((len(universe), df_meta["num_classes"]))
+    covered = np.zeros(len(universe), dtype=bool)
+    embedding = None
+
+    logger.info("Loading %d model(s) for %s evaluation ...", len(splits), eval_mode)
+    for split in splits:
+        eval_df = universe.iloc[split.eval_idx]
+        result = _predict_model(
             training_mod,
-            paths.models / f"fold_{f}",
-            base.iloc[te_idx],
+            split.fold_dir,
+            eval_df,
             feat_cols,
             kind,
             context,
+            return_embedding=want_embedding,
         )
+        if want_embedding:
+            y_pred[split.eval_idx], y_proba[split.eval_idx], embedding = result
+        else:
+            y_pred[split.eval_idx], y_proba[split.eval_idx] = result
+        covered[split.eval_idx] = True
+
+    eval_pos = np.flatnonzero(covered)
+    eval_universe = universe.iloc[eval_pos]
+    y_true = eval_universe[label_col].to_numpy()
+    clusters = (
+        eval_universe["cluster"].to_numpy()
+        if "cluster" in eval_universe.columns
+        else None
+    )
 
     _publish_evaluation(
         bus,
         df_meta,
-        base[feat_cols].to_numpy(),
+        eval_universe[feat_cols].to_numpy(),
         y_true,
-        y_pred,
-        y_proba,
+        y_pred[eval_pos],
+        y_proba[eval_pos],
         clusters,
-        eval_mode="oof_kfold",
+        eval_mode=eval_mode,
+        embedding=embedding,
         predictions_dir=paths.outputs / "analysis/predictions",
     )
-    logger.info("k-fold OOF evaluation: %d samples over %d folds", len(base), f + 1)
+    if is_kfold:
+        logger.info(
+            "k-fold OOF evaluation: %d samples over %d folds",
+            len(eval_pos),
+            len(splits),
+        )
 
 
 @timed
@@ -795,58 +788,34 @@ def classify(cfg) -> None:
     bus.subscribe(PickleSubscriber(paths.pickle))
     bus.subscribe(FilesystemFigureSubscriber(paths.figures))
 
-    if use_kfold:
-        _train_kfold_stage(
-            cfg,
-            paths,
-            train_df,
-            val_df,
-            test_df,
-            feat_cols,
-            label_col,
-            df_meta,
-            num_cols,
-            cat_cols,
-        )
-    else:
-        _train_stage(
-            cfg,
-            paths,
-            train_df,
-            val_df,
-            feat_cols,
-            label_col,
-            df_meta,
-            num_cols,
-            cat_cols,
-            bus,
-        )
-
-    if use_kfold:
-        _evaluate_kfold_stage(
-            cfg,
-            paths,
-            train_df,
-            test_df,
-            feat_cols,
-            label_col,
-            df_meta,
-            num_cols,
-            cat_cols,
-            bus,
-        )
-    else:
-        _evaluate_stage(
-            cfg,
-            paths,
-            test_df,
-            feat_cols,
-            label_col,
-            df_meta,
-            num_cols,
-            cat_cols,
-            bus,
-        )
+    universe, splits, eval_mode = _build_universe_and_splits(
+        cfg, paths, train_df, test_df, label_col
+    )
+    _fit_splits(
+        cfg,
+        paths,
+        splits,
+        val_df,
+        feat_cols,
+        label_col,
+        df_meta,
+        num_cols,
+        cat_cols,
+        bus,
+    )
+    _evaluate_splits(
+        cfg,
+        paths,
+        universe,
+        splits,
+        eval_mode,
+        feat_cols,
+        label_col,
+        df_meta,
+        num_cols,
+        cat_cols,
+        bus,
+    )
 
     logger.info("All stages completed.")
 
