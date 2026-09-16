@@ -181,14 +181,14 @@ def _plot_feature_violin_by_rate_bin(
 
 
 def _plot_rf_evaluation(
-    summary_df: pd.DataFrame, classifier_results: dict
+    summary_df: pd.DataFrame, regressor_results: dict
 ) -> dict[str, Plot]:
     """Predicted-vs-observed scatter and feature-importance bar for the RF regressor."""
-    predicted = classifier_results["oof_predicted_rate"]
+    predicted = regressor_results["oof_predicted_rate"]
     cids = [c for c in predicted if c in summary_df.index]
     y_pred = np.array([predicted[c] for c in cids], dtype=float)
     y_true = summary_df.loc[cids, "failure_rate"].to_numpy(dtype=float)
-    importances = classifier_results["feature_importances"]
+    importances = regressor_results["feature_importances"]
 
     squared_error = (y_pred - y_true) ** 2
     mse_vmax = float(np.quantile(squared_error, 0.95)) if squared_error.size else None
@@ -204,8 +204,8 @@ def _plot_rf_evaluation(
             vmax=mse_vmax,
             reference_line=True,
             annotations={
-                "Spearman": classifier_results["spearman"],
-                "R²": classifier_results["r2"],
+                "Spearman": regressor_results["spearman"],
+                "R²": regressor_results["r2"],
             },
             x_label="Observed failure rate",
             y_label="Predicted failure rate (OOF)",
@@ -228,7 +228,7 @@ def _plot_rf_evaluation(
 def assemble_analysis_figures(
     cluster_summary: dict,
     df_meta: dict,
-    classifier_results: dict,
+    regressor_results: dict,
     *,
     analysis_bus: LogDispatcher | None = None,
 ) -> dict[str, Plot]:
@@ -240,10 +240,10 @@ def assemble_analysis_figures(
         summary_df["cluster_class"].astype(str).map(label_mapping)
     )
 
-    if classifier_results.get("skipped"):
+    if regressor_results.get("skipped"):
         logger.warning(
             "[STAGE-SKIP] Skipping failure-classifier plots: %s",
-            classifier_results.get("message", classifier_results.get("reason")),
+            regressor_results.get("message", regressor_results.get("reason")),
         )
         figures: dict[str, Plot] = {}
         if analysis_bus is not None:
@@ -251,7 +251,7 @@ def assemble_analysis_figures(
         return figures
 
     sorted_by_importance = sorted(
-        classifier_results["feature_importances"].items(),
+        regressor_results["feature_importances"].items(),
         key=lambda kv: kv[1],
         reverse=True,
     )
@@ -260,11 +260,11 @@ def assemble_analysis_figures(
 
     figures: dict[str, Plot] = {}
     figures.update(
-        _plot_failure_strips(summary_df, classifier_results.get("oof_predicted_rate"))
+        _plot_failure_strips(summary_df, regressor_results.get("oof_predicted_rate"))
     )
     figures.update(_plot_feature_vs_failure(summary_df, scatter_features))
     figures.update(_plot_feature_violin_by_rate_bin(summary_df, scatter_features))
-    figures.update(_plot_rf_evaluation(summary_df, classifier_results))
+    figures.update(_plot_rf_evaluation(summary_df, regressor_results))
     if analysis_bus is not None:
         analysis_bus.publish(LogBundle(figures=figures))
     return figures
@@ -286,18 +286,18 @@ def main() -> None:
     analysis_bus.subscribe(FilesystemFigureSubscriber(paths.figures))
 
     summary_path = paths.outputs / "analysis/cluster_summary.json"
-    results_path = paths.outputs / "analysis/classifier_results.json"
+    results_path = paths.outputs / "analysis/failure_regressor_results.json"
     if summary_path.exists() and results_path.exists():
         assemble_analysis_figures(
             cluster_summary=load_from_json(summary_path),
             df_meta=load_from_json(paths.shared / "metadata/df_meta.json"),
-            classifier_results=load_from_json(results_path),
+            regressor_results=load_from_json(results_path),
             analysis_bus=analysis_bus,
         )
     else:
         logger.warning(
             "[STAGE-SKIP] Missing failure-analysis artifacts in %s; "
-            "run `make failure-classify` first. Skipping summary figures.",
+            "run `make failure-regress` first. Skipping summary figures.",
             paths.outputs / "analysis",
         )
 

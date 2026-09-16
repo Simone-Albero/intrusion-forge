@@ -31,7 +31,7 @@ complexity:
   min_subsample_per_cluster: 20      # min samples per cluster (measurement floor); keep ≤ clustering.min_cluster_floor
   max_complexity_samples: 50000      # cap on points used to build the k-NN graph; iso-quality knee from the cost sweep (build is Θ(m²))
 
-failure_classifier:
+failure_regressor:
   min_test_support: 5                # clusters with fewer test samples are excluded from the failure dataset
   n_outer_splits: 5
   n_inner_splits: 5

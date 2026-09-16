@@ -95,7 +95,7 @@ def _load_sweep_runs(root: Path) -> list[dict]:
                 p for p in ds_dir.iterdir() if p.is_dir() and p.name != "shared"
             ):
                 base = clf_dir / "outputs/analysis"
-                results_path = base / "classifier_results.json"
+                results_path = base / "failure_regressor_results.json"
                 if not results_path.exists():
                     continue
                 runs.append(

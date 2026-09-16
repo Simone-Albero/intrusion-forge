@@ -169,7 +169,9 @@ def _extract_headline_metrics(classifier_dir: Path) -> dict[str, float | bool | 
     """Headline test and failure-regressor metrics of one classifier run."""
     summary = _read_json(classifier_dir / "outputs" / "testing" / "summary.json") or {}
     fc = (
-        _read_json(classifier_dir / "outputs" / "analysis" / "classifier_results.json")
+        _read_json(
+            classifier_dir / "outputs" / "analysis" / "failure_regressor_results.json"
+        )
         or {}
     )
     rc = fc.get("risk_coverage") or {}
@@ -263,10 +265,10 @@ def load_experiment_detail(record_root: str, record_shared: str) -> ExperimentDe
     detail = ExperimentDetail(
         testing=_read_json(root / "outputs" / "testing" / "summary.json"),
         classifier_results=_read_json(
-            root / "outputs" / "analysis" / "classifier_results.json"
+            root / "outputs" / "analysis" / "failure_regressor_results.json"
         ),
         predictions=_read_json(
-            root / "outputs" / "analysis" / "predictions" / "test.json"
+            root / "outputs" / "analysis" / "predictions" / "clusters.json"
         ),
         grid_search=_read_json(root / "outputs" / "training" / "grid_search.json"),
         df_meta=_read_json(shared / "metadata/df_meta.json") or {},
@@ -895,7 +897,7 @@ def panel_failure_classifier(
     st.markdown("**Failure regressor (RF on cluster complexity)**")
     fc = detail.classifier_results
     if fc is None:
-        st.caption("⚠️ Not computed — run `make failure-classify` to generate.")
+        st.caption("⚠️ Not computed — run `make failure-regress` to generate.")
         return
     if fc.get("skipped"):
         st.warning(
@@ -959,16 +961,18 @@ def panel_feature_importances(
     record: ExperimentRecord, detail: ExperimentDetail, key_prefix: str = "drill"
 ) -> None:
     """Panel: top-K feature importances of the failure regressor."""
-    st.markdown("**Feature importances (failure classifier)**")
+    st.markdown("**Feature importances (failure regressor)**")
     fc = detail.classifier_results
     if fc is None:
-        st.caption("⚠️ Not computed — run `make failure-classify` to generate.")
+        st.caption("⚠️ Not computed — run `make failure-regress` to generate.")
         return
     if fc.get("skipped"):
         st.warning(f"🚫 Skipped — {fc.get('message', fc.get('reason'))}")
         return
     if "feature_importances" not in fc:
-        st.caption("Malformed `classifier_results.json` (no feature_importances).")
+        st.caption(
+            "Malformed `failure_regressor_results.json` (no feature_importances)."
+        )
         return
     top_k = st.slider(
         "Top-K features", 5, 50, 20, key=_wkey(key_prefix, "fi_topk", record)

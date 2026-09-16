@@ -218,7 +218,7 @@ def _failure_rate_distribution(rates: pd.Series) -> dict:
 
 
 @timed
-def fit_failure_classifier(
+def fit_failure_regressor(
     cluster_stats: dict,
     param_grid: dict,
     *,
@@ -230,7 +230,7 @@ def fit_failure_classifier(
     analysis_bus: LogDispatcher | None = None,
 ) -> dict:
     """Fit a nested-CV Random Forest predicting each cluster's failure rate from its features."""
-    logger.info("Running failure classifier ...")
+    logger.info("Running failure regressor ...")
     df = pd.DataFrame.from_dict(cluster_stats, orient="index")
 
     is_noise = (
@@ -294,7 +294,7 @@ def fit_failure_classifier(
     n_used = len(df)
     if n_used < 2 or float(y.std()) < 1e-9:
         message = (
-            f"Failure classifier skipped: {n_used} usable cluster(s), "
+            f"Failure regressor skipped: {n_used} usable cluster(s), "
             f"failure-rate std={float(y.std()):.4g}. Need >=2 clusters with variance."
         )
         logger.warning("[STAGE-SKIP] %s", message)
@@ -307,7 +307,9 @@ def fit_failure_classifier(
         }
         if analysis_bus is not None:
             analysis_bus.publish(
-                LogBundle.from_dict({"json/analysis/classifier_results": results})
+                LogBundle.from_dict(
+                    {"json/analysis/failure_regressor_results": results}
+                )
             )
         return results
 
@@ -357,10 +359,10 @@ def fit_failure_classifier(
 
     if analysis_bus is not None:
         analysis_bus.publish(
-            LogBundle.from_dict({"json/analysis/classifier_results": results})
+            LogBundle.from_dict({"json/analysis/failure_regressor_results": results})
         )
     logger.info(
-        "Classifier results — Spearman: %.4f, R²: %.4f, MAE: %.4f, MSE: %.4f",
+        "Failure regressor results — Spearman: %.4f, R²: %.4f, MAE: %.4f, MSE: %.4f",
         results["spearman"],
         results["r2"],
         results["mae"],
@@ -433,7 +435,7 @@ def instance_baselines(samples: pd.DataFrame, predicted_rate: dict) -> dict:
 
 
 def main() -> None:
-    """Entry point for the failure-classifier stage."""
+    """Entry point for the failure-regressor stage."""
     cfg = load_config(
         config_path=Path(__file__).parent.parent / "configs",
         config_name="config",
@@ -454,7 +456,7 @@ def main() -> None:
             )
     complexity = load_from_json(complexity_path)
     class_complexity = load_from_json(class_complexity_path)
-    predictions = load_from_json(paths.outputs / "analysis/predictions/test.json")
+    predictions = load_from_json(paths.outputs / "analysis/predictions/clusters.json")
 
     cluster_summary = build_cluster_summary(
         complexity,
@@ -464,17 +466,17 @@ def main() -> None:
     bus.publish(LogBundle.from_dict({"json/analysis/cluster_summary": cluster_summary}))
     logger.info("Cluster summary published.")
 
-    results = fit_failure_classifier(
+    results = fit_failure_regressor(
         cluster_summary,
-        to_container(cfg.failure_classifier.param_grid),
-        n_outer_splits=cfg.failure_classifier.n_outer_splits,
-        n_inner_splits=cfg.failure_classifier.n_inner_splits,
-        min_test_support=cfg.failure_classifier.min_test_support,
+        to_container(cfg.failure_regressor.param_grid),
+        n_outer_splits=cfg.failure_regressor.n_outer_splits,
+        n_inner_splits=cfg.failure_regressor.n_inner_splits,
+        min_test_support=cfg.failure_regressor.min_test_support,
         random_state=cfg.seed,
         analysis_bus=bus,
     )
 
-    dump_path = paths.outputs / "analysis/predictions/test_samples.parquet"
+    dump_path = paths.outputs / "analysis/predictions/oof_samples.parquet"
     if (
         not results.get("skipped")
         and results.get("oof_predicted_rate")

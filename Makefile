@@ -14,7 +14,7 @@
 #   make prepare           DATA=cic_2018_v2 NAME=my_exp
 #   make classify          DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=random_forest
 #   make complexity        DATA=cic_2018_v2 NAME=my_exp                     # shared, dataset-level
-#   make failure-classify  DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=random_forest
+#   make failure-regress   DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=random_forest
 #   make render            DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=random_forest
 #
 # Flags:
@@ -87,7 +87,7 @@ KFOLD_FLAG  := $(if $(filter $(DATA),$(LARGE_DATASETS)),kfold=false,)
 SWEEP_DIR       ?= paper/exp
 FIGURES_DIR     ?= paper/figures
 
-.PHONY: prepare classify complexity failure-classify render sweep-results run generate dashboard help
+.PHONY: prepare classify complexity failure-regress render sweep-results run generate dashboard help
 
 ## prepare:            Step 1 — preprocess raw CSV → parquet splits           (DATA, NAME, SEED, FORCE)
 prepare:
@@ -101,9 +101,9 @@ classify:
 complexity:
 	PYTHONPATH=. $(PYTHON) pipelines/compute_complexity.py $(HYDRA) $(FORCE_FLAG)
 
-## failure-classify:   Step 3b — RF to detect problematic clusters            (DATA, NAME, SEED, CLASSIFIER)
-failure-classify: complexity
-	PYTHONPATH=. $(PYTHON) pipelines/fit_failure_classifier.py $(HYDRA)
+## failure-regress:    Step 3b — RF to detect problematic clusters            (DATA, NAME, SEED, CLASSIFIER)
+failure-regress: complexity
+	PYTHONPATH=. $(PYTHON) pipelines/fit_failure_regressor.py $(HYDRA)
 
 ## render:             Step 4 — render plots from analysis artifacts          (DATA, NAME, SEED, CLASSIFIER)
 render:
@@ -174,7 +174,7 @@ run:
 				$(MAKE) --no-print-directory classify \
 					DATA=$$ds NAME=$$name SEED=$(SEED) CLASSIFIER=$$clf \
 					CLUSTERING=$$clu DISTANCE=$(DISTANCE) || exit 1; \
-				$(MAKE) --no-print-directory failure-classify \
+				$(MAKE) --no-print-directory failure-regress \
 					DATA=$$ds NAME=$$name SEED=$(SEED) CLASSIFIER=$$clf \
 					CLUSTERING=$$clu DISTANCE=$(DISTANCE) || exit 1; \
 				$(MAKE) --no-print-directory render \

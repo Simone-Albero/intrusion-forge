@@ -507,14 +507,14 @@ def _publish_evaluation(
     if predictions_dir is not None and clusters is not None:
         save_df(
             _per_sample_scores(y_true, y_pred, y_proba, clusters),
-            predictions_dir / "test_samples.parquet",
+            predictions_dir / "oof_samples.parquet",
         )
     bus.publish(
         LogBundle.from_dict(
             {
                 **figures,
                 "json/testing/summary": full_metrics,
-                "json/analysis/predictions/test": pred_infos,
+                "json/analysis/predictions/clusters": pred_infos,
                 "pickle/analysis/confusion_matrices/test": cm,
             }
         )
