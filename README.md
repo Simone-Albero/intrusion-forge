@@ -192,7 +192,7 @@ Each stage is a script under [pipelines/](pipelines/), wrapped by the [Makefile]
 
 **failure-classify** assembles the table — a region's descriptors, its class's descriptors and its observed error rate — and fits the estimator over five outer and five inner folds. It also compares the estimate with the classifier's own confidence scores, using a bootstrap to establish whether the difference is real.
 
-**render** turns the saved JSON and pickle artefacts into figures. `plots.format` selects `pdf`, the default, or `png`.
+**render** turns the saved JSON and pickle artefacts into figures. `figure_format` selects `pdf`, the default, or `png`.
 
 ### Sweeps
 

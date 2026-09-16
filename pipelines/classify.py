@@ -755,7 +755,7 @@ def classify(cfg) -> None:
         )
 
     _seed_everything(cfg.seed)
-    set_figure_format(cfg.plots.format)
+    set_figure_format(cfg.figure_format)
     paths = paths_from_cfg(cfg)
 
     df_meta_path = paths.shared / "metadata/df_meta.json"

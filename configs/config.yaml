@@ -6,6 +6,9 @@ defaults:
   - optimizer: adamw        # consumed only by DL classifiers
   - scheduler: one_cycle    # consumed only by DL classifiers
   - loops: default          # consumed only by DL classifiers
+  - complexity: default
+  - failure_regressor: random_forest
+  - grid_search: default
   - _self_
   - path: default
 
@@ -18,31 +21,7 @@ distance: cosine                     # euclidean | cosine — single metric for 
 kfold: true                          # classifier evaluation: true = k-fold OOF over train+test (metrics + failure rates); false = single test split
 kfold_splits: 5                      # number of OOF folds when kfold=true
 force: false                         # re-run prepare + complexity even if their shared outputs already exist
-
-grid_search:
-  scoring: f1_macro
-  cv: 5
-  max_samples: 50000
-
-complexity:
-  distance: ${distance}              # inherited from the top-level key — must match the clustering metric
-  k: 30
-  top_k_clusters: 10                 # top-K nearest adversarial clusters per cluster (vs-cluster aggregation)
-  min_subsample_per_cluster: 20      # min samples per cluster (measurement floor); keep ≤ clustering.min_cluster_floor
-  max_complexity_samples: 50000      # cap on points used to build the k-NN graph; iso-quality knee from the cost sweep (build is Θ(m²))
-
-failure_regressor:
-  min_test_support: 5                # clusters with fewer test samples are excluded from the failure dataset
-  n_outer_splits: 5
-  n_inner_splits: 5
-  param_grid:
-    n_estimators: [100, 200, 300, 500]
-    max_depth: [null, 3, 5, 10, 20]
-    min_samples_leaf: [1, 2, 3, 5]
-    max_features: [sqrt, 0.5]
-
-plots:
-  format: pdf                        # figure file format: pdf (vector, lighter) | png
+figure_format: pdf                   # figure file format: pdf (vector, lighter) | png
 
 hydra:
   run:

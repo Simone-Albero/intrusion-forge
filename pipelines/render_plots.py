@@ -277,7 +277,7 @@ def main() -> None:
         config_name="config",
         overrides=sys.argv[1:],
     )
-    set_figure_format(cfg.plots.format)
+    set_figure_format(cfg.figure_format)
     paths = paths_from_cfg(cfg)
     save_config(cfg, paths.configs / "config_composed_render.json")
 
