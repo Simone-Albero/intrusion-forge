@@ -202,26 +202,23 @@ def save_model(
     *,
     name: str = "",
     params: dict | None = None,
-    suffix: str = "",
 ) -> None:
-    """Save the state dict and its metadata to `path / model{suffix}.pt`."""
+    """Save the state dict and its metadata to `path / model.pt`."""
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
     torch.save(
         {"state_dict": model.state_dict(), "name": name, "params": params or {}},
-        path / f"model{suffix}.pt",
+        path / "model.pt",
     )
 
 
-def load_model(
-    path: Path, *, context: dict | None = None, suffix: str = ""
-) -> nn.Module:
-    """Load the model from `path / model{suffix}.pt` onto the context's device."""
+def load_model(path: Path, *, context: dict | None = None) -> nn.Module:
+    """Load the model from `path / model.pt` onto the context's device."""
     if context is None:
         raise ValueError("DL load_model requires `context` with `device`.")
     device = context["device"]
     ckpt = torch.load(
-        Path(path) / f"model{suffix}.pt", map_location="cpu", weights_only=True
+        Path(path) / "model.pt", map_location="cpu", weights_only=True
     )
     model = _create_model(ckpt["name"], ckpt["params"], device)
     model.load_state_dict(ckpt["state_dict"])

@@ -55,7 +55,6 @@ GALLERY_CATEGORIES: list[str] = [
     "summary/correlation",
     "summary/selectivity",
     "summary/global",
-    "explain",
 ]
 
 CLUSTER_NON_FEATURE_COLS = frozenset(

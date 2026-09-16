@@ -7,7 +7,7 @@ from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.compose import ColumnTransformer
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import LabelEncoder, RobustScaler
+from sklearn.preprocessing import LabelEncoder
 
 
 def drop_nans(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
@@ -220,50 +220,3 @@ def build_preprocessor(
     )
 
 
-def cluster_feature_columns(
-    cluster_features: dict[str, dict[str, float | None]],
-    *,
-    exclude: tuple[str, ...] = ("cluster_class",),
-) -> list[str]:
-    """Sorted union of measure names across cluster rows, minus `exclude`."""
-    names: set[str] = set()
-    for row in cluster_features.values():
-        names.update(row.keys())
-    return sorted(names - set(exclude))
-
-
-def attach_cluster_features(
-    df: pd.DataFrame,
-    cluster_features: dict[str, dict[str, float | None]],
-    *,
-    cluster_col: str = "cluster",
-    exclude: tuple[str, ...] = ("cluster_class",),
-) -> pd.DataFrame:
-    """Left-join the per-cluster complexity rows onto `df` by `cluster_col`."""
-    columns = cluster_feature_columns(cluster_features, exclude=exclude)
-    feature_df = pd.DataFrame.from_dict(cluster_features, orient="index").reindex(
-        columns=columns
-    )
-    feature_df.index = feature_df.index.astype(df[cluster_col].dtype)
-    df = df.drop(columns=[c for c in columns if c in df.columns])
-    return df.merge(feature_df, left_on=cluster_col, right_index=True, how="left")
-
-
-def scale_columns_on_train(
-    splits: dict[str, pd.DataFrame],
-    columns: list[str],
-    *,
-    train_key: str = "train",
-) -> dict[str, pd.DataFrame]:
-    """Median-impute then RobustScale `columns`, fitting both on the train split only."""
-    if not columns:
-        return splits
-    train = splits[train_key][columns]
-    medians = train.median()
-    scaler = RobustScaler().fit(train.fillna(medians))
-    scaled: dict[str, pd.DataFrame] = {}
-    for name, df in splits.items():
-        df = df.copy()
-        df[columns] = scaler.transform(df[columns].fillna(medians))
-        scaled[name] = df
-    return scaled

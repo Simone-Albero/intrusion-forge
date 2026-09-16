@@ -838,38 +838,6 @@ def selective_accuracy_plot(
     return _finalize(fig)
 
 
-def beeswarm_plot(
-    shap_values: np.ndarray,
-    feature_values: np.ndarray,
-    feature_names: list[str],
-    *,
-    max_display: int = 20,
-    title: str = "",
-    figsize: tuple[float, float] | None = None,
-    ax: Axes | None = None,  # noqa: ARG001
-) -> Plot | None:
-    """Beeswarm of per-sample SHAP values rendered via the native SHAP library."""
-    import shap as shap_lib
-
-    shap_values = np.asarray(shap_values, dtype=float)
-    feature_values = np.asarray(feature_values, dtype=float)
-    if shap_values.ndim != 2:
-        raise ValueError("`shap_values` must have shape (n_samples, n_features).")
-
-    exp = shap_lib.Explanation(
-        values=shap_values,
-        data=feature_values,
-        feature_names=list(feature_names),
-    )
-    returned_ax = shap_lib.plots.beeswarm(exp, max_display=max_display, show=False)
-    fig = returned_ax.get_figure()
-    if title:
-        returned_ax.set_title(title, fontsize=10)
-    if figsize is not None:
-        fig.set_size_inches(figsize)
-    return _fig_to_plot(fig)
-
-
 def _fit_label(d: str, fit: dict) -> str:
     """Legend label for a fitted cost model."""
     parts = [f"{d}: α = {fit['alpha_mean']:.3f}"]

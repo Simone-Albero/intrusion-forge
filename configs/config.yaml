@@ -57,17 +57,6 @@ failure_classifier:
 plots:
   format: pdf                        # figure file format: pdf (vector, lighter) | png
 
-extend:
-  generate: false                    # opt-in: train an extra complexity-extended classifier + SHAP
-  force: false                       # re-run the SHAP stage even if shap_values.pkl exists
-  labelfree: false                   # nearest-centroid assignment across all clusters, ignoring class labels
-  num_samples: 200                   # test instances explained per run
-  background_samples: 100            # rows sampled before the k-means summarisation
-  background_summary_k: 25           # k-means centroids used as KernelExplainer background
-  nsamples: 200                      # coalition samples per explained instance (KernelExplainer)
-  max_display: 20                    # top features shown in the beeswarm
-
-
 hydra:
   run:
     dir: .

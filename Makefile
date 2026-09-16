@@ -16,13 +16,9 @@
 #   make complexity        DATA=cic_2018_v2 NAME=my_exp                     # shared, dataset-level
 #   make failure-classify  DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=random_forest
 #   make render            DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=random_forest
-#   make extend            DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=tabular  # complexity + classify-extended + render
 #
 # Flags:
 #   FORCE=1               re-run shared stages (prepare, complexity), ignoring skip markers
-#   EXTEND=1              in `run`, adds classify-extended (SHAP) to the flow for every (ds, clf)
-#   LABELFREE=1           build the extended splits with label-free nearest-centroid assignment
-#                         (injection honesty control; pair with EXTEND=1 for the full flow)
 #   CLUSTERING=<name>     fix the clustering strategy (kmeans/hdbscan/birch/spectral);
 #                         omit it in `run` to sweep all of CLUSTERING_ALGOS into NAME_<algo>
 #
@@ -43,10 +39,6 @@ DISTANCE   ?= euclidean
 CLUSTERING ?= kmeans
 CLUSTERING_ALGOS ?= kmeans spectral birch hdbscan
 FORCE      ?=
-EXTEND     ?=
-export EXTEND
-LABELFREE  ?=
-export LABELFREE
 
 # `run` distinguishes "passed on the command line" from "default" via $(origin).
 DATA_GIVEN    := $(if $(filter command line,$(origin DATA)),1,)
@@ -86,7 +78,6 @@ LARGE_DATASETS := nb15_v2 bot_iot_v2 cic_2018_v2 ton_iot_v2
 HYDRA       := data=$(DATA) name=$(NAME) seed=$(SEED) classifier=$(CLASSIFIER) \
                clustering=$(CLUSTERING) distance=$(DISTANCE)
 FORCE_FLAG  := $(if $(FORCE),prepare.force=true complexity.force=true,)
-EXTEND_FLAGS := $(if $(LABELFREE),extend.generate=true extend.labelfree=true,$(if $(EXTEND),extend.generate=true,))
 KFOLD_FLAG  := $(if $(filter $(DATA),$(LARGE_DATASETS)),kfold=false,)
 # STAGE=testing runs inference only (loads saved models, no retrain), used to dump
 # per-sample test confidences for the instance-level baseline comparison.
@@ -114,7 +105,7 @@ EXPERIMENTS_DIR ?= resources/experiments
 SWEEP_DIR       ?= paper/exp
 FIGURES_DIR     ?= paper/figures
 
-.PHONY: prepare classify classify-extended extend complexity failure-classify render sweep-results run infer sweep-infer cost-model cost-summary cost-aggregate generate dashboard help
+.PHONY: prepare classify complexity failure-classify render sweep-results run infer sweep-infer cost-model cost-summary cost-aggregate generate dashboard help
 
 ## prepare:            Step 1 — preprocess raw CSV → parquet splits           (DATA, NAME, SEED, FORCE)
 prepare:
@@ -128,25 +119,9 @@ classify:
 infer:
 	PYTHONPATH=. $(PYTHON) pipelines/classify.py $(HYDRA) $(KFOLD_FLAG) stage=testing testing.figures=false
 
-## classify-extended:  Step 2b — train classifier on complexity-extended features + SHAP  (DATA, NAME, SEED, CLASSIFIER)
-classify-extended:
-	PYTHONPATH=. $(PYTHON) pipelines/classify.py $(HYDRA) extend.generate=true
-
-## extend:             complexity + classify-extended + render (assumes prepare + classify done)  (DATA, NAME, SEED, CLASSIFIER)
-extend:
-	PYTHONPATH=. $(PYTHON) pipelines/compute_complexity.py $(HYDRA) $(FORCE_FLAG) extend.generate=true
-	PYTHONPATH=. $(PYTHON) pipelines/classify.py $(HYDRA) extend.generate=true
-	PYTHONPATH=. $(PYTHON) pipelines/render_plots.py $(HYDRA)
-
-## extend-lf:          label-free extended: nearest-centroid assignment, ignores class labels    (DATA, NAME, SEED, CLASSIFIER)
-extend-lf:
-	PYTHONPATH=. $(PYTHON) pipelines/compute_complexity.py $(HYDRA) $(FORCE_FLAG) extend.generate=true extend.labelfree=true
-	PYTHONPATH=. $(PYTHON) pipelines/classify.py $(HYDRA) extend.generate=true
-	PYTHONPATH=. $(PYTHON) pipelines/render_plots.py $(HYDRA)
-
-## complexity:         Step 3a — cluster + class complexity (shared, idempotent)  (DATA, NAME, SEED, FORCE, LABELFREE)
+## complexity:         Step 3a — cluster + class complexity (shared, idempotent)  (DATA, NAME, SEED, FORCE)
 complexity:
-	PYTHONPATH=. $(PYTHON) pipelines/compute_complexity.py $(HYDRA) $(FORCE_FLAG) $(EXTEND_FLAGS)
+	PYTHONPATH=. $(PYTHON) pipelines/compute_complexity.py $(HYDRA) $(FORCE_FLAG)
 
 ## failure-classify:   Step 3b — RF to detect problematic clusters            (DATA, NAME, SEED, CLASSIFIER, REUSE, NOSIG)
 failure-classify: complexity
@@ -161,7 +136,7 @@ sweep-results:
 	PYTHONPATH=. $(PYTHON) pipelines/sweep_results.py sweep=$(SWEEP_DIR) out=$(FIGURES_DIR)
 	@echo ""; echo "sweep-results done -> $(FIGURES_DIR)/{rho_by_config,rho_vs_clusters,family_importance,gain_by_algo,selective_stability,instance_gain,cost_quality_*}.pdf + $(SWEEP_DIR)/{perconfig,nclusters,perclf_perdataset,selective,selective_by_clf,instance}_table.json"
 
-## run:                Whole flow — fix passed vars, iterate the rest (DATA?, CLASSIFIER?, CLUSTERING?)  (NAME, SEED, DISTANCE, FORCE, EXTEND)
+## run:                Whole flow — fix passed vars, iterate the rest (DATA?, CLASSIFIER?, CLUSTERING?)  (NAME, SEED, DISTANCE, FORCE)
 run:
 	@data_given="$(DATA_GIVEN)"; \
 	clf_given="$(CLF_GIVEN)"; \
@@ -224,11 +199,6 @@ run:
 				$(MAKE) --no-print-directory failure-classify \
 					DATA=$$ds NAME=$$name SEED=$(SEED) CLASSIFIER=$$clf \
 					CLUSTERING=$$clu DISTANCE=$(DISTANCE) || exit 1; \
-				if [ -n "$(EXTEND)" ]; then \
-					$(MAKE) --no-print-directory classify-extended \
-						DATA=$$ds NAME=$$name SEED=$(SEED) CLASSIFIER=$$clf \
-						CLUSTERING=$$clu DISTANCE=$(DISTANCE) || exit 1; \
-				fi; \
 				$(MAKE) --no-print-directory render \
 					DATA=$$ds NAME=$$name SEED=$(SEED) CLASSIFIER=$$clf \
 					CLUSTERING=$$clu DISTANCE=$(DISTANCE) || exit 1; \
