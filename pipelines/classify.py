@@ -502,7 +502,6 @@ def _publish_evaluation(
     eval_mode: str,
     embedding: np.ndarray | None = None,
     predictions_dir: Path | None = None,
-    build_figures: bool = True,
 ) -> None:
     """Build metrics, confusion matrix, figures and per-sample dumps, then publish them."""
     full_metrics = {
@@ -514,12 +513,8 @@ def _publish_evaluation(
         "eval_mode": eval_mode,
     }
     cm = confusion_matrix(y_true, y_pred, labels=np.unique(y_true), normalize="true")
-    figures = (
-        _build_test_figures(
-            X_np, y_true, y_pred, df_meta["label_mapping"], embedding=embedding
-        )
-        if build_figures
-        else {}
+    figures = _build_test_figures(
+        X_np, y_true, y_pred, df_meta["label_mapping"], embedding=embedding
     )
     if predictions_dir is not None and clusters is not None:
         save_df(
@@ -589,9 +584,7 @@ def _train_stage(
             summary["scoring"],
             summary["best_score"],
         )
-        bus.publish(
-            LogBundle.from_dict({"json/training/grid_search": summary})
-        )
+        bus.publish(LogBundle.from_dict({"json/training/grid_search": summary}))
         training_mod.save_model(
             model, paths.models, name=cfg.classifier.name, params=params
         )
@@ -610,9 +603,7 @@ def _train_stage(
         )
         history = fit_summary.get("history", {})
         if history:
-            bus.publish(
-                LogBundle.from_dict(_training_history_figures(history))
-            )
+            bus.publish(LogBundle.from_dict(_training_history_figures(history)))
     logger.info("Model saved under %s", paths.models)
 
 
@@ -657,7 +648,6 @@ def _evaluate_stage(
         eval_mode="single_split",
         embedding=embedding,
         predictions_dir=paths.outputs / "analysis/predictions",
-        build_figures=cfg.testing.figures,
     )
 
 
@@ -764,7 +754,6 @@ def _evaluate_kfold_stage(
         clusters,
         eval_mode="oof_kfold",
         predictions_dir=paths.outputs / "analysis/predictions",
-        build_figures=cfg.testing.figures,
     )
     logger.info("k-fold OOF evaluation: %d samples over %d folds", len(base), f + 1)
 
@@ -772,10 +761,6 @@ def _evaluate_kfold_stage(
 @timed
 def classify(cfg) -> None:
     """Run the supervised classification pipeline for a single classifier."""
-    if cfg.stage not in ("all", "training", "testing"):
-        raise ValueError(
-            f"Unknown stage: {cfg.stage!r}. Valid: 'all', 'training', 'testing'."
-        )
     if cfg.balance not in ("undersample", "none"):
         raise ValueError(
             f"Unknown balance: {cfg.balance!r}. Valid: 'undersample', 'none'."
@@ -806,7 +791,6 @@ def classify(cfg) -> None:
         balance=cfg.balance,
     )
 
-    stage = cfg.stage
     use_kfold = cfg.kfold
     load_cfg = replace(data, balance="none", n_samples=None) if use_kfold else data
     train_df, val_df, test_df = _load_data(load_cfg, cfg.seed)
@@ -823,60 +807,58 @@ def classify(cfg) -> None:
     bus.subscribe(PickleSubscriber(paths.pickle))
     bus.subscribe(FilesystemFigureSubscriber(paths.figures))
 
-    if stage in ("training", "all"):
-        if use_kfold:
-            _train_kfold_stage(
-                cfg,
-                paths,
-                train_df,
-                val_df,
-                test_df,
-                feat_cols,
-                label_col,
-                df_meta,
-                num_cols,
-                cat_cols,
-            )
-        else:
-            _train_stage(
-                cfg,
-                paths,
-                train_df,
-                val_df,
-                feat_cols,
-                label_col,
-                df_meta,
-                num_cols,
-                cat_cols,
-                bus,
-            )
+    if use_kfold:
+        _train_kfold_stage(
+            cfg,
+            paths,
+            train_df,
+            val_df,
+            test_df,
+            feat_cols,
+            label_col,
+            df_meta,
+            num_cols,
+            cat_cols,
+        )
+    else:
+        _train_stage(
+            cfg,
+            paths,
+            train_df,
+            val_df,
+            feat_cols,
+            label_col,
+            df_meta,
+            num_cols,
+            cat_cols,
+            bus,
+        )
 
-    if stage in ("testing", "all"):
-        if use_kfold:
-            _evaluate_kfold_stage(
-                cfg,
-                paths,
-                train_df,
-                test_df,
-                feat_cols,
-                label_col,
-                df_meta,
-                num_cols,
-                cat_cols,
-                bus,
-            )
-        else:
-            _evaluate_stage(
-                cfg,
-                paths,
-                test_df,
-                feat_cols,
-                label_col,
-                df_meta,
-                num_cols,
-                cat_cols,
-                bus,
-            )
+    if use_kfold:
+        _evaluate_kfold_stage(
+            cfg,
+            paths,
+            train_df,
+            test_df,
+            feat_cols,
+            label_col,
+            df_meta,
+            num_cols,
+            cat_cols,
+            bus,
+        )
+    else:
+        _evaluate_stage(
+            cfg,
+            paths,
+            test_df,
+            feat_cols,
+            label_col,
+            df_meta,
+            num_cols,
+            cat_cols,
+            bus,
+        )
 
     logger.info("All stages completed.")
 

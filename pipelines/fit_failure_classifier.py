@@ -576,43 +576,35 @@ def main() -> None:
     bus = LogDispatcher()
     bus.subscribe(JSONSubscriber(paths.outputs))
 
-    results_path = paths.outputs / "analysis/classifier_results.json"
-    if cfg.failure_classifier.reuse and results_path.exists():
-        results = load_from_json(results_path)
-        logger.info("Reusing %s; skipping predictor re-fit.", results_path)
-    else:
-        complexity_path = paths.shared / "complexity.json"
-        class_complexity_path = paths.shared / "class_complexity.json"
-        for p in (complexity_path, class_complexity_path):
-            if not p.exists():
-                raise FileNotFoundError(
-                    f"Missing complexity artifact at {p}. "
-                    "Run `make complexity` first."
-                )
-        complexity = load_from_json(complexity_path)
-        class_complexity = load_from_json(class_complexity_path)
-        predictions = load_from_json(paths.outputs / "analysis/predictions/test.json")
+    complexity_path = paths.shared / "complexity.json"
+    class_complexity_path = paths.shared / "class_complexity.json"
+    for p in (complexity_path, class_complexity_path):
+        if not p.exists():
+            raise FileNotFoundError(
+                f"Missing complexity artifact at {p}. Run `make complexity` first."
+            )
+    complexity = load_from_json(complexity_path)
+    class_complexity = load_from_json(class_complexity_path)
+    predictions = load_from_json(paths.outputs / "analysis/predictions/test.json")
 
-        cluster_summary = build_cluster_summary(
-            complexity,
-            class_complexity,
-            predictions,
-        )
-        bus.publish(
-            LogBundle.from_dict({"json/analysis/cluster_summary": cluster_summary})
-        )
-        logger.info("Cluster summary published.")
+    cluster_summary = build_cluster_summary(
+        complexity,
+        class_complexity,
+        predictions,
+    )
+    bus.publish(LogBundle.from_dict({"json/analysis/cluster_summary": cluster_summary}))
+    logger.info("Cluster summary published.")
 
-        results = fit_failure_classifier(
-            cluster_summary,
-            to_container(cfg.failure_classifier.param_grid),
-            n_outer_splits=cfg.failure_classifier.n_outer_splits,
-            n_inner_splits=cfg.failure_classifier.n_inner_splits,
-            min_test_support=cfg.failure_classifier.min_test_support,
-            n_bootstrap=cfg.failure_classifier.n_bootstrap,
-            random_state=cfg.seed,
-            analysis_bus=bus,
-        )
+    results = fit_failure_classifier(
+        cluster_summary,
+        to_container(cfg.failure_classifier.param_grid),
+        n_outer_splits=cfg.failure_classifier.n_outer_splits,
+        n_inner_splits=cfg.failure_classifier.n_inner_splits,
+        min_test_support=cfg.failure_classifier.min_test_support,
+        n_bootstrap=cfg.failure_classifier.n_bootstrap,
+        random_state=cfg.seed,
+        analysis_bus=bus,
+    )
 
     dump_path = paths.outputs / "analysis/predictions/test_samples.parquet"
     if (

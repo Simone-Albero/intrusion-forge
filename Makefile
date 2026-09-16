@@ -79,17 +79,6 @@ HYDRA       := data=$(DATA) name=$(NAME) seed=$(SEED) classifier=$(CLASSIFIER) \
                clustering=$(CLUSTERING) distance=$(DISTANCE)
 FORCE_FLAG  := $(if $(FORCE),prepare.force=true complexity.force=true,)
 KFOLD_FLAG  := $(if $(filter $(DATA),$(LARGE_DATASETS)),kfold=false,)
-# STAGE=testing runs inference only (loads saved models, no retrain), used to dump
-# per-sample test confidences for the instance-level baseline comparison.
-STAGE       ?=
-STAGE_FLAG  := $(if $(STAGE),stage=$(STAGE),)
-# REUSE=1 skips the failure-predictor re-fit and reuses an existing classifier_results.json,
-# computing only the instance baselines — used by sweep-infer on already-trained runs.
-REUSE       ?=
-REUSE_FLAG  := $(if $(REUSE),failure_classifier.reuse=true,)
-# NOSIG=1 skips the instance-level bootstrap significance test (fastest — point estimates only).
-NOSIG       ?=
-NOSIG_FLAG  := $(if $(NOSIG),failure_classifier.significance=false,)
 
 # Sweep-level paper results: aggregate the full experiment tree under SWEEP_DIR into the
 # four cross-run figures (rho by config / vs clusters, family importance, selective curves),
@@ -98,27 +87,23 @@ NOSIG_FLAG  := $(if $(NOSIG),failure_classifier.significance=false,)
 SWEEP_DIR       ?= paper/exp
 FIGURES_DIR     ?= paper/figures
 
-.PHONY: prepare classify complexity failure-classify render sweep-results run infer sweep-infer generate dashboard help
+.PHONY: prepare classify complexity failure-classify render sweep-results run generate dashboard help
 
 ## prepare:            Step 1 — preprocess raw CSV → parquet splits           (DATA, NAME, SEED, FORCE)
 prepare:
 	PYTHONPATH=. $(PYTHON) pipelines/prepare_data.py $(HYDRA) $(FORCE_FLAG)
 
-## classify:           Step 2 — train & evaluate one classifier (ML or DL)    (DATA, NAME, SEED, CLASSIFIER, STAGE)
+## classify:           Step 2 — train & evaluate one classifier (ML or DL)    (DATA, NAME, SEED, CLASSIFIER)
 classify:
-	PYTHONPATH=. $(PYTHON) pipelines/classify.py $(HYDRA) $(KFOLD_FLAG) $(STAGE_FLAG)
-
-## infer:              Inference only (loads saved model) → dump per-sample test confidences, skip figures  (DATA, NAME, SEED, CLASSIFIER)
-infer:
-	PYTHONPATH=. $(PYTHON) pipelines/classify.py $(HYDRA) $(KFOLD_FLAG) stage=testing testing.figures=false
+	PYTHONPATH=. $(PYTHON) pipelines/classify.py $(HYDRA) $(KFOLD_FLAG)
 
 ## complexity:         Step 3a — cluster + class complexity (shared, idempotent)  (DATA, NAME, SEED, FORCE)
 complexity:
 	PYTHONPATH=. $(PYTHON) pipelines/compute_complexity.py $(HYDRA) $(FORCE_FLAG)
 
-## failure-classify:   Step 3b — RF to detect problematic clusters            (DATA, NAME, SEED, CLASSIFIER, REUSE, NOSIG)
+## failure-classify:   Step 3b — RF to detect problematic clusters            (DATA, NAME, SEED, CLASSIFIER)
 failure-classify: complexity
-	PYTHONPATH=. $(PYTHON) pipelines/fit_failure_classifier.py $(HYDRA) $(REUSE_FLAG) $(NOSIG_FLAG)
+	PYTHONPATH=. $(PYTHON) pipelines/fit_failure_classifier.py $(HYDRA)
 
 ## render:             Step 4 — render plots from analysis artifacts          (DATA, NAME, SEED, CLASSIFIER)
 render:
@@ -200,53 +185,6 @@ run:
 	done
 	@echo ""
 	@echo "Done."
-
-## sweep-infer:        Re-run inference (testing) + failure-classify over the tree → per-sample dumps + instance baselines  (NAME, SEED, DISTANCE, CLUSTERING?, DATA?, CLASSIFIER?)
-sweep-infer:
-	@data_given="$(DATA_GIVEN)"; \
-	clf_given="$(CLF_GIVEN)"; \
-	clu_given="$(CLUSTER_GIVEN)"; \
-	requested_data="$(DATA)"; \
-	requested_clf="$(CLASSIFIER)"; \
-	if [ -n "$$clu_given" ]; then clu_list="$(CLUSTERING)"; else clu_list="$(CLUSTERING_ALGOS)"; fi; \
-	if [ -n "$$data_given" ]; then \
-		pairs=""; \
-		for entry in $(DATASET_FORMATS); do \
-			ds=$${entry%%:*}; \
-			if [ "$$ds" = "$$requested_data" ]; then pairs="$$entry"; break; fi; \
-		done; \
-		if [ -z "$$pairs" ]; then echo "ERROR: DATA='$$requested_data' not in DATASET_FORMATS."; exit 1; fi; \
-	else \
-		pairs="$(DATASET_FORMATS)"; \
-	fi; \
-	for clu in $$clu_list; do \
-		if [ -n "$$clu_given" ]; then name="$(NAME)"; else name="$(NAME)_$$clu"; fi; \
-		echo ""; echo "### sweep-infer  CLUSTERING=$$clu  name=$$name"; \
-		for entry in $$pairs; do \
-			ds=$${entry%%:*}; fmt=$${entry##*:}; \
-			if [ -n "$$clf_given" ]; then \
-				skip=""; \
-				if [ "$$requested_clf" = "tabular" ]   && [ "$$fmt" != "mixed" ];     then skip=1; fi; \
-				if [ "$$requested_clf" = "numerical" ] && [ "$$fmt" != "numerical" ]; then skip=1; fi; \
-				if [ -n "$$skip" ]; then echo "skip: $$requested_clf not compatible with $$ds ($$fmt)"; continue; fi; \
-				clf_list="$$requested_clf"; \
-			elif [ "$$fmt" = "mixed" ]; then \
-				clf_list="$(ML_CLASSIFIERS) $(DL_CLASSIFIERS_MIXED)"; \
-			else \
-				clf_list="$(ML_CLASSIFIERS) $(DL_CLASSIFIERS_NUMERICAL)"; \
-			fi; \
-			for clf in $$clf_list; do \
-				echo "── infer+failure: $$ds / $$clf ($$clu)"; \
-				$(MAKE) --no-print-directory infer \
-					DATA=$$ds NAME=$$name SEED=$(SEED) CLASSIFIER=$$clf \
-					CLUSTERING=$$clu DISTANCE=$(DISTANCE) || exit 1; \
-				$(MAKE) --no-print-directory failure-classify \
-					DATA=$$ds NAME=$$name SEED=$(SEED) CLASSIFIER=$$clf \
-					CLUSTERING=$$clu DISTANCE=$(DISTANCE) REUSE=1 || exit 1; \
-			done; \
-		done; \
-	done
-	@echo ""; echo "sweep-infer done → test_samples.parquet + instance_baselines.json per run. Now: make sweep-results."
 
 ## generate:           Generate synthetic test dataset                        (ROWS)
 generate:
