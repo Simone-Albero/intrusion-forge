@@ -24,11 +24,7 @@ from src.domain.analysis.metadata import (
     get_df_info,
 )
 from src.domain.clustering import build_cluster_fn, resolution_aware_floor
-from src.domain.clustering.base import (
-    assign_clusters_within_class,
-    assign_nearest_centroid,
-    cluster_size_balance,
-)
+from src.domain.clustering.base import assign_nearest_centroid, cluster_size_balance
 from src.domain.data.preprocessing import (
     LogTransformer,
     TopNHashEncoder,
@@ -257,29 +253,16 @@ def _cluster_splits(
         LogBundle.from_dict({"json/clustering_report": clustering_report})
     )
 
-    cluster_to_class = {
-        int(cid): y_class[labels == cid][0] for cid in np.unique(labels)
-    }
-
     train_df = train_df.copy()
     train_df["cluster"] = labels
     assigned: dict[str, pd.DataFrame] = {}
     for name, split_df in (("val", val_df), ("test", test_df)):
         split_df = split_df.copy()
-        if cfg.label_free_assignment:
-            split_df["cluster"] = assign_nearest_centroid(
-                split_df[num_cols].to_numpy(dtype=np.float64),
-                centroids,
-                metric=cfg.clustering.distance,
-            )
-        else:
-            split_df["cluster"] = assign_clusters_within_class(
-                split_df[num_cols].to_numpy(dtype=np.float64),
-                split_df[label_col].to_numpy(),
-                centroids,
-                cluster_to_class,
-                metric=cfg.clustering.distance,
-            )
+        split_df["cluster"] = assign_nearest_centroid(
+            split_df[num_cols].to_numpy(dtype=np.float64),
+            centroids,
+            metric=cfg.clustering.distance,
+        )
         assigned[name] = split_df
     val_df, test_df = assigned["val"], assigned["test"]
 
@@ -423,7 +406,7 @@ def main() -> None:
     shared = Path(cfg.path.shared)
     markers = [processed / f"{s}.{ext}" for s in ("train", "val", "test")]
     markers.append(shared / "metadata/clusters_meta.json")
-    if skip_if_exists(markers, cfg.prepare.force, "prepare"):
+    if skip_if_exists(markers, cfg.force, "prepare"):
         return
 
     save_config(cfg, shared / "config_composed.json")

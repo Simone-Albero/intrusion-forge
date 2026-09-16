@@ -89,10 +89,8 @@ def main() -> None:
 
     cluster_marker = paths.shared / "complexity.json"
     class_marker = paths.shared / "class_complexity.json"
-    run_cluster = not skip_if_exists(cluster_marker, cfg.complexity.force, "complexity")
-    run_class = not skip_if_exists(
-        class_marker, cfg.complexity.force, "class_complexity"
-    )
+    run_cluster = not skip_if_exists(cluster_marker, cfg.force, "complexity")
+    run_class = not skip_if_exists(class_marker, cfg.force, "class_complexity")
     if not (run_cluster or run_class):
         return
 

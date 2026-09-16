@@ -77,7 +77,7 @@ LARGE_DATASETS := nb15_v2 bot_iot_v2 cic_2018_v2 ton_iot_v2
 
 HYDRA       := data=$(DATA) name=$(NAME) seed=$(SEED) classifier=$(CLASSIFIER) \
                clustering=$(CLUSTERING) distance=$(DISTANCE)
-FORCE_FLAG  := $(if $(FORCE),prepare.force=true complexity.force=true,)
+FORCE_FLAG  := $(if $(FORCE),force=true,)
 KFOLD_FLAG  := $(if $(filter $(DATA),$(LARGE_DATASETS)),kfold=false,)
 
 # Sweep-level paper results: aggregate the full experiment tree under SWEEP_DIR into the

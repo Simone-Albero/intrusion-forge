@@ -1,7 +1,7 @@
 import itertools
 import logging
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 
 import numpy as np
 from sklearn.metrics import pairwise_distances, silhouette_score
@@ -83,14 +83,10 @@ def assign_nearest_centroid(
     centroids: dict,
     *,
     metric: str,
-    candidate_ids: Sequence[int] | None = None,
     batch_size: int = 50_000,
 ) -> np.ndarray:
-    """Assign each row to the nearest centroid id, restricted to `candidate_ids` if given."""
+    """Assign each row to the nearest centroid id."""
     items = [(int(k), v) for k, v in centroids.items()]
-    if candidate_ids is not None:
-        cand = {int(c) for c in candidate_ids}
-        items = [(k, v) for k, v in items if k in cand]
     id_arr = np.array([k for k, _ in items], dtype=np.int64)
     C = np.array([np.asarray(v, dtype=np.float64) for _, v in items], dtype=np.float64)
     result = np.empty(len(X_num), dtype=np.int64)
@@ -98,32 +94,6 @@ def assign_nearest_centroid(
         batch = X_num[start : start + batch_size]
         D = pairwise_distances(batch, C, metric=metric)
         result[start : start + batch_size] = id_arr[D.argmin(axis=1)]
-    return result
-
-
-def assign_clusters_within_class(
-    X_num: np.ndarray,
-    y_class: np.ndarray,
-    centroids: dict,
-    cluster_to_class: dict[int, int],
-    *,
-    metric: str,
-    batch_size: int = 50_000,
-) -> np.ndarray:
-    """Assign each row to the nearest centroid of its own class, or -1 when it has none."""
-    result = np.full(len(X_num), -1, dtype=np.int64)
-    for cls in np.unique(y_class):
-        candidate_ids = [cid for cid, c in cluster_to_class.items() if c == cls]
-        if not candidate_ids:
-            continue
-        rows = np.where(y_class == cls)[0]
-        result[rows] = assign_nearest_centroid(
-            X_num[rows],
-            centroids,
-            metric=metric,
-            candidate_ids=candidate_ids,
-            batch_size=batch_size,
-        )
     return result
 
 

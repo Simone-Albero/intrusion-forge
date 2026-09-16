@@ -555,7 +555,7 @@ def _train_stage(
     X_val, y_val = _prepare_train_payload(kind, val_df, feat_cols, label_col)
 
     has_grid = "grid" in cfg.classifier and len(cfg.classifier.grid) > 0
-    if cfg.grid_search.enabled and has_grid:
+    if has_grid:
         if kind != "ml":
             raise NotImplementedError(
                 f"Grid search is only implemented for ML classifiers; got kind={kind!r}."

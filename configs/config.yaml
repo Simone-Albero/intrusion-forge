@@ -15,18 +15,14 @@ device: cpu
 n_samples: null
 balance: undersample                 # training-set class balancing at training time: undersample | none
 distance: cosine                     # euclidean | cosine — single metric for clustering AND complexity analysis
-label_free_assignment: true          # val/test cluster routing: true = label-free (nearest centroid over all clusters, ignores class at inference) | false = label-aware (nearest centroid within own class)
 kfold: true                          # classifier evaluation: true = k-fold OOF over train+test (metrics + failure rates); false = single test split
 kfold_splits: 5                      # number of OOF folds when kfold=true
+force: false                         # re-run prepare + complexity even if their shared outputs already exist
 
 grid_search:
-  enabled: true
   scoring: f1_macro
   cv: 5
   max_samples: 50000
-
-prepare:
-  force: false                       # re-run preprocessing+clustering even if shared outputs exist
 
 complexity:
   distance: ${distance}              # inherited from the top-level key — must match the clustering metric
@@ -34,7 +30,6 @@ complexity:
   top_k_clusters: 10                 # top-K nearest adversarial clusters per cluster (vs-cluster aggregation)
   min_subsample_per_cluster: 20      # min samples per cluster (measurement floor); keep ≤ clustering.min_cluster_floor
   max_complexity_samples: 50000      # cap on points used to build the k-NN graph; iso-quality knee from the cost sweep (build is Θ(m²))
-  force: false                       # re-run complexity computation even if shared output exists
 
 failure_classifier:
   min_test_support: 5                # clusters with fewer test samples are excluded from the failure dataset
