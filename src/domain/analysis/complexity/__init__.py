@@ -236,7 +236,7 @@ def compute_complexity_from_graph(
     all_ids = set(f_out) | set(n_out) | set(nd_out) | set(t_out) | set(g_out)
 
     result: dict[str, dict[str, float | None]] = {}
-    for cid in all_ids:
+    for cid in sorted(all_ids, key=int):
         row: dict[str, float | None] = {}
         row.update(f_out.get(cid, {}))
         row.update(n_out.get(cid, {}))
@@ -246,7 +246,7 @@ def compute_complexity_from_graph(
         row["is_noise_cluster"] = False
         result[cid] = row
 
-    for nid in noise_cluster_ids or set():
+    for nid in sorted(noise_cluster_ids or set()):
         result[str(nid)] = {"is_noise_cluster": True}
 
     return result
