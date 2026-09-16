@@ -23,12 +23,7 @@ from src.core.log import (
 from src.core.utils import flush_timing, load_from_json, timed
 from src.domain.analysis.selective_prediction import (
     atc_cluster_risk,
-    atc_threshold,
-    block_bootstrap_instance,
-    bootstrap_compare,
-    instance_risk_scores,
-    selective_prediction_metrics,
-    selective_recall_metrics,
+    oracle_benefit_recovered,
 )
 
 setup_logger(log_file="resources/logs.txt")
@@ -123,8 +118,6 @@ def build_cluster_summary(
             "n_test": error_entry.get("n_total", 0),
             "failure_rate": error_entry.get("error_rate"),
             "mcp_risk": error_entry.get("mcp_risk"),
-            "margin_risk": error_entry.get("margin_risk"),
-            "entropy_risk": error_entry.get("entropy_risk"),
         }
     return summary
 
@@ -199,6 +192,7 @@ def _aggregate_oof_results(oof: dict, feature_cols: list[str]) -> dict:
         "mae": float(mean_absolute_error(y_true, y_pred)),
         "mae_std": float(np.std(oof["fold_maes"])),
         "mae_per_fold": oof["fold_maes"],
+        "mse": float(np.mean((y_pred - y_true) ** 2)),
         "feature_importances": dict(zip(feature_cols, mean_importances.tolist())),
         "oof_predicted_rate": {
             str(cid): float(pred) for cid, pred in zip(oof["indices"], y_pred)
@@ -233,7 +227,6 @@ def fit_failure_classifier(
     n_inner_splits: int = 5,
     random_state: int = 42,
     min_test_support: int = 5,
-    n_bootstrap: int = 2000,
     analysis_bus: LogDispatcher | None = None,
 ) -> dict:
     """Fit a nested-CV Random Forest predicting each cluster's failure rate from its features."""
@@ -290,15 +283,7 @@ def fit_failure_classifier(
         feature_cols = [
             c
             for c in df.select_dtypes("number").columns
-            if c
-            not in (
-                "failure_rate",
-                "n_test",
-                "is_noise_cluster",
-                "mcp_risk",
-                "margin_risk",
-                "entropy_risk",
-            )
+            if c not in ("failure_rate", "n_test", "is_noise_cluster", "mcp_risk")
         ]
     X = df[feature_cols].copy()
     y = df["failure_rate"].astype(float)
@@ -370,101 +355,26 @@ def fit_failure_classifier(
         **_aggregate_oof_results(oof, feature_cols),
     }
 
-    support = df.loc[oof["indices"], "n_test"].astype(float).to_numpy()
-    cluster_class = df.loc[oof["indices"], "cluster_class"].to_numpy()
-    results["risk_coverage"] = selective_prediction_metrics(
-        oof["y_pred"], oof["y_true"], support
-    )
-    results["selective_macro_recall"] = selective_recall_metrics(
-        oof["y_pred"], oof["y_true"], support, cluster_class
-    )
-    baseline_scores = {
-        name: df.loc[oof["indices"], name].astype(float).to_numpy()
-        for name in ("mcp_risk", "margin_risk", "entropy_risk")
-        if name in df.columns and df[name].notna().all()
-    }
-    results["confidence_baselines"] = {}
-    for name, risk in baseline_scores.items():
-        rho = spearmanr(risk, oof["y_true"])
-        results["confidence_baselines"][name] = {
-            "spearman": float(rho.statistic),
-            "spearman_pvalue": float(rho.pvalue),
-            "risk_coverage": selective_prediction_metrics(risk, oof["y_true"], support),
-            "selective_macro_recall": selective_recall_metrics(
-                risk, oof["y_true"], support, cluster_class
-            ),
-        }
-    results["significance"] = bootstrap_compare(
-        {"predictor": oof["y_pred"], **baseline_scores},
-        oof["y_true"],
-        support,
-        n_resamples=n_bootstrap,
-        random_state=random_state,
-    )
     if analysis_bus is not None:
         analysis_bus.publish(
             LogBundle.from_dict({"json/analysis/classifier_results": results})
         )
-    rc = results["risk_coverage"]
     logger.info(
-        "Classifier results — Spearman: %.4f, R²: %.4f, MAE: %.4f; "
-        "selective acc@%.0f%%: %.4f (random %.4f, oracle benefit recovered %.2f)",
+        "Classifier results — Spearman: %.4f, R²: %.4f, MAE: %.4f, MSE: %.4f",
         results["spearman"],
         results["r2"],
         results["mae"],
-        100 * rc.get("coverage_target", 0.8),
-        rc.get("acc_at_target_predictor", float("nan")),
-        rc.get("global_accuracy", float("nan")),
-        rc.get("oracle_benefit_recovered", float("nan")),
+        results["mse"],
     )
-    significant_vs = [
-        name
-        for name, v in results["significance"]["vs_reference"].items()
-        if v["lift_significant"]
-    ]
-    if significant_vs:
-        logger.info(
-            "Bootstrap (n=%d): significantly different lift vs predictor: %s",
-            n_bootstrap,
-            ", ".join(significant_vs),
-        )
     return results
 
 
-_INSTANCE_METRIC_KEYS = (
-    "oracle_benefit_recovered",
-    "lift_over_random",
-    "aurc_predictor",
-    "global_accuracy",
-)
+_RATE_BASELINE_NAMES = ("region", "mcp_cluster", "atc_cluster")
 
 
-def _cluster_stratified_subsample(
-    cluster: np.ndarray, cap: int, rng: np.random.Generator
-) -> np.ndarray:
-    """Indices of a proportional subsample of size ~cap keeping at least one sample per cluster."""
-    n = cluster.size
-    if cap <= 0 or n <= cap:
-        return np.arange(n)
-    frac = cap / n
-    keep = []
-    for c in np.unique(cluster):
-        idx = np.where(cluster == c)[0]
-        k = max(1, int(round(idx.size * frac)))
-        keep.append(idx if k >= idx.size else rng.choice(idx, size=k, replace=False))
-    return np.concatenate(keep)
-
-
-def _instance_baselines(
-    samples: pd.DataFrame,
-    predicted_rate: dict,
-    *,
-    n_bootstrap: int,
-    max_bootstrap_samples: int,
-    random_state: int,
-    run_significance: bool = True,
-) -> dict:
-    """Compare per-sample selective-prediction risks: label-free scores against the region rate."""
+def instance_baselines(samples: pd.DataFrame, predicted_rate: dict) -> dict:
+    """Compare the 5 baseline variants against observed failure: cluster rho, cluster-rate MSE
+    (rate variants only) and per-sample oracle benefit recovered."""
     cluster = samples["cluster"].to_numpy()
     failure = (samples["y_true"].to_numpy() != samples["y_pred"].to_numpy()).astype(
         float
@@ -477,89 +387,48 @@ def _instance_baselines(
         [predicted_rate.get(str(c), fallback) for c in cluster], dtype=float
     )
 
-    scores = instance_risk_scores(mcp, region, cluster)
-    scores["atc_cluster"] = atc_cluster_risk(confidence, correct, cluster)
+    mcp_cluster = np.empty_like(mcp)
+    for c in np.unique(cluster):
+        m = cluster == c
+        mcp_cluster[m] = mcp[m].mean()
+    atc_cluster = atc_cluster_risk(confidence, correct, cluster)
+
     n = failure.size
-    scores["combo_atc_rankavg"] = rankdata(scores["region"]) / (n + 1) + rankdata(
-        scores["atc_cluster"]
-    ) / (n + 1)
+    combo_rankavg = rankdata(region) / (n + 1) + rankdata(mcp) / (n + 1)
+    combo_atc_rankavg = rankdata(region) / (n + 1) + rankdata(atc_cluster) / (n + 1)
+
+    scores = {
+        "mcp_cluster": mcp_cluster,
+        "atc_cluster": atc_cluster,
+        "region": region,
+        "combo_rankavg": combo_rankavg,
+        "combo_atc_rankavg": combo_atc_rankavg,
+    }
 
     support = np.ones(failure.size)
-    point = {
-        name: {
-            k: float(v)
-            for k, v in selective_prediction_metrics(sc, failure, support).items()
-            if k in _INSTANCE_METRIC_KEYS
-        }
-        for name, sc in scores.items()
-    }
     clusters = np.unique(cluster)
     observed = np.array([failure[cluster == c].mean() for c in clusters], dtype=float)
+
+    baselines = {}
     for name, sc in scores.items():
-        pred = np.array([sc[cluster == c].mean() for c in clusters], dtype=float)
+        predicted = np.array([sc[cluster == c].mean() for c in clusters], dtype=float)
         rho = (
-            float(spearmanr(pred, observed).statistic)
-            if np.std(pred) > 1e-12 and np.std(observed) > 1e-12
+            float(spearmanr(predicted, observed).statistic)
+            if np.std(predicted) > 1e-12 and np.std(observed) > 1e-12
             else float("nan")
         )
-        point[name]["spearman"] = rho
-    if run_significance:
-        sub = _cluster_stratified_subsample(
-            cluster, max_bootstrap_samples, np.random.default_rng(random_state)
-        )
-        boot_scores = {
-            name: sc[sub] for name, sc in scores.items() if name != "combo_within"
+        entry = {
+            "spearman": rho,
+            "oracle_benefit_recovered": oracle_benefit_recovered(sc, failure, support),
         }
-        significance = block_bootstrap_instance(
-            boot_scores,
-            failure[sub],
-            cluster[sub],
-            n_resamples=n_bootstrap,
-            decide_on=["region", "combo_rankavg", "combo_atc_rankavg"],
-            random_state=random_state,
-        )
-        significance["n_bootstrap_samples"] = int(sub.size)
-    else:
-        significance = {"skipped": True}
+        if name in _RATE_BASELINE_NAMES:
+            entry["cluster_rate_mse"] = float(np.mean((predicted - observed) ** 2))
+        baselines[name] = entry
+
     return {
         "n_test": int(len(samples)),
-        "n_clusters": int(np.unique(cluster).size),
-        "scores": point,
-        "significance": significance,
-        "calibration": _instance_calibration(
-            confidence, correct, failure, cluster, scores
-        ),
-    }
-
-
-def _instance_calibration(
-    confidence: np.ndarray,
-    correct: np.ndarray,
-    failure: np.ndarray,
-    cluster: np.ndarray,
-    scores: dict,
-) -> dict:
-    """Score ATC as a rate estimator: per-sample accuracy error and per-cluster rate MSE."""
-    t = atc_threshold(confidence, correct)
-    atc_accuracy = float((confidence >= t).mean())
-    actual_accuracy = float(correct.mean())
-
-    clusters = np.unique(cluster)
-    observed = np.array([failure[cluster == c].mean() for c in clusters], dtype=float)
-
-    def _rate_mse(per_sample: np.ndarray) -> float:
-        pred = np.array([per_sample[cluster == c][0] for c in clusters], dtype=float)
-        return float(np.mean((pred - observed) ** 2))
-
-    return {
-        "atc_sample_predicted_accuracy": atc_accuracy,
-        "actual_accuracy": actual_accuracy,
-        "atc_accuracy_abs_error": abs(atc_accuracy - actual_accuracy),
-        "cluster_rate_mse": {
-            "region": _rate_mse(scores["region"]),
-            "mcp_cluster": _rate_mse(scores["mcp_cluster"]),
-            "atc_cluster": _rate_mse(scores["atc_cluster"]),
-        },
+        "n_clusters": int(clusters.size),
+        "baselines": baselines,
     }
 
 
@@ -601,7 +470,6 @@ def main() -> None:
         n_outer_splits=cfg.failure_classifier.n_outer_splits,
         n_inner_splits=cfg.failure_classifier.n_inner_splits,
         min_test_support=cfg.failure_classifier.min_test_support,
-        n_bootstrap=cfg.failure_classifier.n_bootstrap,
         random_state=cfg.seed,
         analysis_bus=bus,
     )
@@ -612,14 +480,7 @@ def main() -> None:
         and results.get("oof_predicted_rate")
         and dump_path.exists()
     ):
-        instance = _instance_baselines(
-            load_df(dump_path),
-            results["oof_predicted_rate"],
-            n_bootstrap=cfg.failure_classifier.n_bootstrap,
-            max_bootstrap_samples=cfg.failure_classifier.max_bootstrap_samples,
-            random_state=cfg.seed,
-            run_significance=cfg.failure_classifier.significance,
-        )
+        instance = instance_baselines(load_df(dump_path), results["oof_predicted_rate"])
         bus.publish(LogBundle.from_dict({"json/analysis/instance_baselines": instance}))
         logger.info(
             "Instance-level baselines published (%d test samples, %d clusters).",

@@ -34,7 +34,7 @@ from src.core.log import (
 )
 from src.core.paths import OutputPaths
 from src.core.utils import flush_timing, load_from_json, timed
-from src.domain.analysis.selective_prediction import entropy_risk, margin_risk, mcp_risk
+from src.domain.analysis.selective_prediction import mcp_risk
 from src.domain.data.preprocessing import random_undersample_df, subsample_df
 from src.domain.plot.base import Plot, set_figure_format
 from src.domain.plot.charts import bar_plot, line_plot, scatter_plot
@@ -164,11 +164,7 @@ def _evaluate_predictions(
 ) -> dict:
     """Per-class prediction quality plus per-cluster error rates and mean risk scores."""
     y_proba = np.asarray(y_proba)
-    mcp, margin, entropy = (
-        mcp_risk(y_proba),
-        margin_risk(y_proba),
-        entropy_risk(y_proba),
-    )
+    mcp = mcp_risk(y_proba)
     confidences = 1.0 - mcp
 
     has_cluster = clusters is not None
@@ -178,11 +174,7 @@ def _evaluate_predictions(
         _cluster_error_rates(
             clusters,
             global_error_mask,
-            extra_scores={
-                "mcp_risk": mcp,
-                "margin_risk": margin,
-                "entropy_risk": entropy,
-            },
+            extra_scores={"mcp_risk": mcp},
         )
         if has_cluster
         else None
@@ -255,12 +247,8 @@ def _per_sample_scores(
             "y_true": np.asarray(y_true),
             "y_pred": np.asarray(y_pred),
             "mcp_risk": mcp_risk(yp),
-            "margin_risk": margin_risk(yp),
-            "entropy_risk": entropy_risk(yp),
         }
-    ).astype(
-        {"mcp_risk": "float32", "margin_risk": "float32", "entropy_risk": "float32"}
-    )
+    ).astype({"mcp_risk": "float32"})
 
 
 def _build_test_figures(

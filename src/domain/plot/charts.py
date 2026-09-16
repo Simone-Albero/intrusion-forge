@@ -774,69 +774,6 @@ def line_plot(
     return _finalize(fig)
 
 
-def selective_accuracy_plot(
-    curves: dict[str, tuple[np.ndarray, np.ndarray]],
-    *,
-    baseline: float,
-    annotations: dict[str, float] | None = None,
-    x_label: str = "Fraction rejected (riskiest first)",
-    y_label: str = "Accuracy on retained set",
-    title: str = "Selective accuracy",
-    figsize: tuple[float, float] = (5.6, 4.2),
-    ax: Axes | None = None,
-) -> Plot | None:
-    """Selective-prediction curves, each series carrying its own x grid."""
-    ax, fig = _ensure_ax(ax, figsize)
-    palette = extended_palette(max(len(curves), 1))
-
-    y_values: list[float] = [baseline]
-    for i, (name, (x, y)) in enumerate(curves.items()):
-        x = np.asarray(x, dtype=float)
-        y = np.asarray(y, dtype=float)
-        if x.size == 0:
-            continue
-        ax.plot(x, y, color=palette[i], linewidth=1.6, label=name)
-        y_values.extend(y.tolist())
-
-    ax.axhline(
-        baseline,
-        color="black",
-        linewidth=1.0,
-        label="Random",
-    )
-    ax.set_xlim(0.0, 1.0)
-    lo, hi = min(y_values), max(y_values)
-    pad = max(0.02, 0.05 * (hi - lo))
-    ax.set_ylim(max(0.0, lo - pad), min(1.0, hi + pad))
-
-    if annotations:
-        text = "\n".join(
-            f"{name} = {_format_value(value, kind='score')}"
-            for name, value in annotations.items()
-        )
-        ax.text(
-            0.97,
-            0.14,
-            text,
-            transform=ax.transAxes,
-            va="bottom",
-            ha="right",
-            fontsize=12,
-            bbox=dict(facecolor="white", edgecolor="#cccccc", boxstyle="round,pad=0.3"),
-        )
-
-    ax.grid(True, alpha=0.15, linewidth=0.5)
-    ax.legend(
-        loc="lower center",
-        bbox_to_anchor=(0.5, 1.0),
-        ncol=min(len(curves) + 1, 4),
-        columnspacing=1.2,
-        frameon=False,
-    )
-    _apply_labels(ax, x_label, y_label, title)
-    return _finalize(fig)
-
-
 def box_strip_plot(
     labels: list[str],
     values: list[np.ndarray],

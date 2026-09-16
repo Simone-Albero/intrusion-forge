@@ -339,7 +339,7 @@ def _fig_instance_gain(runs: list[dict]) -> Plot | None:
         if not inst:
             continue
         for key, _ in _INSTANCE_METHODS:
-            v = inst["scores"].get(key, {}).get("oracle_benefit_recovered")
+            v = inst.get("scores", {}).get(key, {}).get("oracle_benefit_recovered")
             if v is not None and not np.isnan(v):
                 acc[key].append(100.0 * v)
     if not any(acc.values()):
@@ -578,14 +578,14 @@ def _table_instance(runs: list[dict]) -> dict:
         if not inst:
             continue
         vals = {
-            key: inst["scores"].get(key, {}).get("oracle_benefit_recovered")
+            key: inst.get("scores", {}).get(key, {}).get("oracle_benefit_recovered")
             for key, _ in _INSTANCE_METHODS
         }
         core = ("mcp_sample", "region", "combo_rankavg")
         if any(vals[k] is None or np.isnan(vals[k]) for k in core):
             continue
         spear = {
-            key: inst["scores"].get(key, {}).get("spearman")
+            key: inst.get("scores", {}).get(key, {}).get("spearman")
             for key, _ in _INSTANCE_METHODS
         }
         sig = (

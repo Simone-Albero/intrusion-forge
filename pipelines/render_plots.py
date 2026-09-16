@@ -1,6 +1,5 @@
 import logging
 import sys
-from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -17,17 +16,10 @@ from src.core.log import (
     setup_logger,
 )
 from src.core.utils import flush_timing, load_from_json, timed
-from src.domain.analysis.selective_prediction import (
-    macro_recall_curve,
-    risk_coverage_curve,
-    selective_prediction_metrics,
-    selective_recall_metrics,
-)
 from src.domain.plot.base import Plot, set_figure_format
 from src.domain.plot.charts import (
     bar_plot,
     numeric_scatter_plot,
-    selective_accuracy_plot,
     strip_count_panel_plot,
     violin_plot,
 )
@@ -232,110 +224,6 @@ def _plot_rf_evaluation(
     }
 
 
-_BASELINE_LABEL = {
-    "mcp_risk": "MCP",
-    "margin_risk": "Margin",
-    "entropy_risk": "Entropy",
-}
-
-
-def _baseline_curves(
-    summary_df: pd.DataFrame,
-    cids: list,
-    rejection_curve: Callable[[np.ndarray], tuple[np.ndarray, np.ndarray]],
-) -> dict[str, tuple[np.ndarray, np.ndarray]]:
-    """Native-classifier-confidence baseline curves (MCP/margin/entropy), where present."""
-    return {
-        label: rejection_curve(summary_df.loc[cids, col].to_numpy(dtype=float))
-        for col, label in _BASELINE_LABEL.items()
-        if col in summary_df.columns
-    }
-
-
-def _plot_selective_accuracy(
-    summary_df: pd.DataFrame, classifier_results: dict
-) -> dict[str, Plot]:
-    """Selective-accuracy curves: retained accuracy as high-risk clusters are rejected first."""
-    predicted = classifier_results["oof_predicted_rate"]
-    cids = [c for c in predicted if c in summary_df.index]
-    if not cids:
-        return {}
-    y_pred = np.array([predicted[c] for c in cids], dtype=float)
-    y_true = summary_df.loc[cids, "failure_rate"].to_numpy(dtype=float)
-    support = summary_df.loc[cids, "n_test"].to_numpy(dtype=float)
-
-    metrics = selective_prediction_metrics(y_pred, y_true, support)
-    if not metrics:
-        return {}
-
-    def _rejection_curve(score: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        coverage, accuracy = risk_coverage_curve(score, y_true, support)
-        return 1.0 - coverage, accuracy
-
-    curves = {
-        "Predictor": _rejection_curve(y_pred),
-        "Oracle": _rejection_curve(y_true),
-        **_baseline_curves(summary_df, cids, _rejection_curve),
-    }
-    keep = metrics["coverage_target"]
-    return {
-        "summary/selectivity/selective_accuracy": selective_accuracy_plot(
-            curves,
-            baseline=metrics["global_accuracy"],
-            title="",
-            annotations={
-                f"Retained accuracy ({keep:.0%})": metrics["acc_at_target_predictor"],
-                "Random baseline": metrics["global_accuracy"],
-                "Oracle benefit recovered": metrics["oracle_benefit_recovered"],
-            },
-        )
-    }
-
-
-def _plot_selective_macro_recall(
-    summary_df: pd.DataFrame, classifier_results: dict
-) -> dict[str, Plot]:
-    """Class-balanced counterpart of `_plot_selective_accuracy`: macro-recall when rejecting."""
-    predicted = classifier_results["oof_predicted_rate"]
-    cids = [c for c in predicted if c in summary_df.index]
-    if not cids:
-        return {}
-    y_pred = np.array([predicted[c] for c in cids], dtype=float)
-    y_true = summary_df.loc[cids, "failure_rate"].to_numpy(dtype=float)
-    support = summary_df.loc[cids, "n_test"].to_numpy(dtype=float)
-    cluster_class = summary_df.loc[cids, "cluster_class"].to_numpy()
-
-    metrics = selective_recall_metrics(y_pred, y_true, support, cluster_class)
-    if not metrics:
-        return {}
-
-    def _rejection_curve(score: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        coverage, recall = macro_recall_curve(score, y_true, support, cluster_class)
-        return 1.0 - coverage, recall
-
-    curves = {
-        "Predictor": _rejection_curve(y_pred),
-        "Oracle": _rejection_curve(y_true),
-        **_baseline_curves(summary_df, cids, _rejection_curve),
-    }
-    keep = metrics["coverage_target"]
-    return {
-        "summary/selectivity/selective_macro_recall": selective_accuracy_plot(
-            curves,
-            baseline=metrics["global_macro_recall"],
-            y_label="Macro-recall on retained set",
-            title="",
-            annotations={
-                f"Retained macro-recall ({keep:.0%})": metrics[
-                    "recall_at_target_predictor"
-                ],
-                "Random baseline": metrics["global_macro_recall"],
-                "Oracle benefit recovered": metrics["oracle_benefit_recovered"],
-            },
-        )
-    }
-
-
 @timed
 def assemble_analysis_figures(
     cluster_summary: dict,
@@ -377,8 +265,6 @@ def assemble_analysis_figures(
     figures.update(_plot_feature_vs_failure(summary_df, scatter_features))
     figures.update(_plot_feature_violin_by_rate_bin(summary_df, scatter_features))
     figures.update(_plot_rf_evaluation(summary_df, classifier_results))
-    figures.update(_plot_selective_accuracy(summary_df, classifier_results))
-    figures.update(_plot_selective_macro_recall(summary_df, classifier_results))
     if analysis_bus is not None:
         analysis_bus.publish(LogBundle(figures=figures))
     return figures
