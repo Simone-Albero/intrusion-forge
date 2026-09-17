@@ -19,6 +19,7 @@ from src.core.utils import flush_timing, load_from_json, timed
 from src.domain.plot.base import Plot, set_figure_format
 from src.domain.plot.charts import (
     bar_plot,
+    dual_scatter_plot,
     numeric_scatter_plot,
     strip_count_panel_plot,
     violin_plot,
@@ -154,7 +155,7 @@ def _plot_feature_violin_by_rate_bin(
     bin_means = rate.groupby(bins, observed=True).mean()
     categories = list(bin_means.index)
     bin_labels = [
-        f"Q{i + 1}\n({bin_means[cat]:.2f})" for i, cat in enumerate(categories)
+        f"G{i + 1}\n({bin_means[cat]:.2f})" for i, cat in enumerate(categories)
     ]
     label_map = {cat: lab for cat, lab in zip(categories, bin_labels)}
     bin_str = bins.map(label_map)
@@ -183,30 +184,47 @@ def _plot_feature_violin_by_rate_bin(
 def _plot_rf_evaluation(
     summary_df: pd.DataFrame, regressor_results: dict
 ) -> dict[str, Plot]:
-    """Predicted-vs-observed scatter and feature-importance bar for the RF regressor."""
+    """Predicted-vs-observed scatter (regressor + MCP, shared colorbar) and feature-importance bar."""
     predicted = regressor_results["oof_predicted_rate"]
     cids = [c for c in predicted if c in summary_df.index]
-    y_pred = np.array([predicted[c] for c in cids], dtype=float)
     y_true = summary_df.loc[cids, "failure_rate"].to_numpy(dtype=float)
+    y_pred_reg = np.array([predicted[c] for c in cids], dtype=float)
+    y_pred_mcp = summary_df.loc[cids, "mcp_risk"].to_numpy(dtype=float)
     importances = regressor_results["feature_importances"]
 
-    squared_error = (y_pred - y_true) ** 2
-    mse_vmax = float(np.quantile(squared_error, 0.95)) if squared_error.size else None
+    se_reg = (y_pred_reg - y_true) ** 2
+    se_mcp = (y_pred_mcp - y_true) ** 2
+    mse_reg = float(np.mean(se_reg)) if se_reg.size else float("nan")
+    mse_mcp = float(np.mean(se_mcp)) if se_mcp.size else float("nan")
+    finite_mcp = np.isfinite(y_pred_mcp) & np.isfinite(y_true)
+    spearman_mcp = (
+        float(spearmanr(y_pred_mcp[finite_mcp], y_true[finite_mcp]).statistic)
+        if finite_mcp.sum() >= 2
+        and np.std(y_pred_mcp[finite_mcp]) > 0
+        and np.std(y_true[finite_mcp]) > 0
+        else float("nan")
+    )
 
     return {
-        "summary/correlation/pred_vs_actual": numeric_scatter_plot(
+        "summary/correlation/pred_vs_actual": dual_scatter_plot(
             y_true,
-            y_pred,
-            color_values=squared_error,
+            [
+                (
+                    "Regressor",
+                    y_pred_reg,
+                    se_reg,
+                    {"Spearman": regressor_results["spearman"], "MSE": mse_reg},
+                ),
+                (
+                    "MCP",
+                    y_pred_mcp,
+                    se_mcp,
+                    {"Spearman": spearman_mcp, "MSE": mse_mcp},
+                ),
+            ],
             cmap="RdYlGn_r",
             colorbar_label="Squared error (pred − obs)²",
-            alpha=0.9,
-            vmax=mse_vmax,
             reference_line=True,
-            annotations={
-                "Spearman": regressor_results["spearman"],
-                "R²": regressor_results["r2"],
-            },
             x_label="Observed failure rate",
             y_label="Predicted failure rate (OOF)",
         ),

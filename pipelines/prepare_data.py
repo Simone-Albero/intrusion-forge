@@ -19,6 +19,7 @@ from src.core.log import (
 from src.core.utils import flush_timing, skip_if_exists, timed
 from src.domain.analysis.complexity.shared import l2_normalize
 from src.domain.analysis.metadata import (
+    clustering_report_table,
     compute_clusters_metadata,
     compute_df_metadata,
     get_df_info,
@@ -251,6 +252,11 @@ def _cluster_splits(
     )
     dispatcher.publish(
         LogBundle.from_dict({"json/clustering_report": clustering_report})
+    )
+    dispatcher.publish(
+        LogBundle.from_dict(
+            {"json/clustering_table": clustering_report_table(clustering_report)}
+        )
     )
 
     train_df = train_df.copy()

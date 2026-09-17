@@ -56,6 +56,36 @@ def compute_df_metadata(
     }
 
 
+def clustering_report_table(clustering_report: dict) -> dict:
+    """Table 1: per-class train-set sample/cluster counts and mean cluster size, plus a total row."""
+    rows = []
+    total_samples = 0
+    total_clusters = 0
+    for cls, entry in clustering_report.items():
+        n_samples = entry["n_samples"]
+        n_clusters = entry["summary"]["n_clusters"]
+        rows.append(
+            {
+                "class": cls,
+                "samples": n_samples,
+                "clusters": n_clusters,
+                "mean_cluster_size": (n_samples / n_clusters if n_clusters else None),
+            }
+        )
+        total_samples += n_samples
+        total_clusters += n_clusters
+    return {
+        "rows": rows,
+        "total": {
+            "samples": total_samples,
+            "clusters": total_clusters,
+            "mean_cluster_size": (
+                total_samples / total_clusters if total_clusters else None
+            ),
+        },
+    }
+
+
 def compute_clusters_metadata(
     train_df: pd.DataFrame,
     val_df: pd.DataFrame,
