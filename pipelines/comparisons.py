@@ -13,7 +13,7 @@ from src.core.log import (
 )
 from src.core.utils import load_from_json
 from src.domain.plot.base import Plot, set_figure_format
-from src.domain.plot.charts import (
+from src.domain.plot.comparison_charts import (
     box_strip_plot,
     grouped_bar_plot,
     line_whisker_plot,

@@ -16,14 +16,9 @@ from src.core.log import (
     setup_logger,
 )
 from src.core.utils import flush_timing, load_from_json, timed
+from src.domain.plot.analysis_charts import dual_scatter_plot, strip_count_panel_plot
 from src.domain.plot.base import Plot, set_figure_format
-from src.domain.plot.charts import (
-    bar_plot,
-    dual_scatter_plot,
-    numeric_scatter_plot,
-    strip_count_panel_plot,
-    violin_plot,
-)
+from src.domain.plot.primitives import bar_plot, numeric_scatter_plot, violin_plot
 from src.domain.plot.style import PALETTE, apply_plot_style
 
 setup_logger(log_file="resources/logs.txt")
