@@ -6,7 +6,7 @@ It divides a dataset into regions, describes each region by how it sits relative
 
 The estimate belongs to the model you point it at. It is fitted on that model's own errors, so it describes how *that* classifier copes with the shape of your data rather than how difficult the data is in the abstract. This makes it useful for identifying unreliable regions before you have the labels to prove they are unreliable, for deciding where to gather more data or review labels, and for monitoring a model after deployment.
 
-Everything is tabular and everything is driven by configuration: a dozen classifiers (scikit-learn, XGBoost, PyTorch), five ways of dividing the data into regions, configurations for the public network-security datasets, and a synthetic dataset that exercises the whole pipeline in about nine minutes.
+Everything is tabular and everything is driven by configuration: a dozen classifiers (scikit-learn, XGBoost, PyTorch), four ways of dividing the data into regions, configurations for the public network-security datasets, and a synthetic dataset that exercises the whole pipeline in about nine minutes.
 
 ## Quickstart — the synthetic demo
 
@@ -45,21 +45,20 @@ One command, five stages:
 | Stage | What it does | Time |
 |---|---|---|
 | prepare | preprocess, split, divide each class into regions (1021 of them) | 20 s |
-| complexity | describe every region | 2 min |
-| classify | train and evaluate the Random Forest | 21 s |
-| failure-classify | fit the region → error-rate estimator | 5.5 min |
-| render | 28 figures | 5 s |
+| complexity | describe every region | 25 s |
+| classify | train and evaluate the Random Forest | 20 s |
+| failure-regress | fit the region → error-rate estimator | 5 min |
+| render | 26 figures | 5 s |
 
-The result appears at the end of `failure-classify`:
+The result appears at the end of `failure-regress`:
 
 ```
-Classifier results — Spearman: 0.9335, R²: 0.9196, MAE: 0.0342;
-selective acc@80%: 0.9425 (random 0.8507, oracle benefit recovered 0.99)
+Failure regressor results — Spearman: 0.9353, R²: 0.9189, MAE: 0.0343, MSE: 0.0030
 ```
 
-**Spearman ρ ≈ 0.93.** Across 1019 regions the estimated and observed error rates rank almost identically, measured on regions held back from the fitting. Expect a little drift in the third decimal between runs.
+**Spearman ρ ≈ 0.94.** Across 1019 regions the estimated and observed error rates rank almost identically, measured on regions held back from the fitting. Expect a little drift in the third decimal between runs.
 
-The second line is a check on that signal rather than the purpose of the framework. Abstaining on the riskiest 20 % of samples raises accuracy from 0.851 to 0.943, which is 99 % of what a perfect oracle would manage, whereas a random abstention of the same size gains nothing. Were the estimate merely tracking some general notion of difficult data rather than this model's own errors, that would not hold.
+`instance_baselines.json` is a check on that signal rather than the purpose of the framework: it compares the regressor's per-sample ranking against confidence-based baselines (MCP, ATC, and rank-averaged combinations of each with the regressor) using *oracle benefit recovered* — the share of a perfect oracle's accuracy gain that abstaining on the riskiest samples actually captures. The regressor recovers about 61% here, ahead of MCP and ATC alone (~59% each). Were the estimate merely tracking some general notion of difficult data rather than this model's own errors, it would not consistently beat scores derived from the model's own confidence.
 
 ### 4. Read the results
 
@@ -75,11 +74,11 @@ random_forest/
 ├── outputs/testing/summary.json      # accuracy, macro F1, per-class metrics
 ├── outputs/analysis/
 │   ├── cluster_summary.json          #   descriptors + observed error rate, per region
-│   ├── classifier_results.json       #   ρ, R², MAE, importances, selective metrics
-│   ├── instance_baselines.json       #   the same, for the classifier's own confidence
+│   ├── failure_regressor_results.json #  ρ, R², MAE, MSE, importances
+│   ├── instance_baselines.json       #   ρ and oracle-benefit recovered, regressor vs confidence baselines
 │   └── predictions/                  #   per-sample predictions
 ├── models/fold_0 … fold_4/           # one model per fold (~500 MB)
-└── figures/                          # 28 PDFs
+└── figures/                          # 26 PDFs
 ```
 
 The fold models account for ~500 MB of the ~540 MB the run occupies; delete `models/` once you have the metrics.
@@ -103,9 +102,6 @@ make run DATA=synthetic_test NAME=demo_cos CLASSIFIER=random_forest CLUSTERING=k
 
 # a different clustering algorithm
 make run DATA=synthetic_test NAME=demo_birch CLASSIFIER=random_forest CLUSTERING=birch
-
-# skip the bootstrap (fastest failure-classify)
-make failure-classify DATA=synthetic_test NAME=demo CLASSIFIER=random_forest NOSIG=1
 ```
 
 `prepare` and `complexity` are cached per `(NAME, dataset, seed)`, so changing classifier reuses them. `FORCE=1` recomputes them.
@@ -131,7 +127,7 @@ Accuracy settles at about 0.85 by design. The hard rungs are genuinely hard, and
 
 ## Running on your own data
 
-The configurations in [configs/data/](configs/data/) cover UNSW-NB15, BoT-IoT, CIC-IDS-2018, ToN-IoT and seven general benchmarks, but the CSV files are not in the repository: supply them under `resources/raw_data/<dir>/`, matching each configuration's `dir` and `file_name`.
+The configurations in [configs/data/](configs/data/) cover UNSW-NB15, BoT-IoT, CIC-IDS-2018, ToN-IoT and five general benchmarks, but the CSV files are not in the repository: supply them under `resources/raw_data/<dir>/`, matching each configuration's `dir` and `file_name`.
 
 To add a dataset of your own:
 
@@ -180,17 +176,17 @@ Each stage is a script under [pipelines/](pipelines/), wrapped by the [Makefile]
 | `make prepare` | `prepare_data.py` | per dataset, cached |
 | `make complexity` | `compute_complexity.py` | per dataset, cached |
 | `make classify` | `classify.py` | per classifier |
-| `make failure-classify` | `fit_failure_classifier.py` | per classifier (`NOSIG=1` skips the bootstrap, `REUSE=1` reuses a fitted estimator) |
+| `make failure-regress` | `fit_failure_regressor.py` | per classifier |
 | `make render` | `render_plots.py` | per classifier |
 | `make run` | all of the above | omitted variables iterate, those passed stay fixed |
-| `make sweep-results` | `sweep_results.py` | reduces a whole sweep to cross-run figures and tables |
+| `make comparisons` | `comparisons.py` | reduces a whole sweep to cross-run figures and tables |
 | `make help` | — | every target, with defaults |
 
 **prepare** produces the splits and the regions. It removes NaNs, filters rare categories, log-scales and robust-scales the numerical columns, hashes high-cardinality categorical ones, splits the data stratified, then clusters each class and gives every sample a region id. The saved splits retain the original class balance; balancing takes place at training time.
 
 **classify** trains one classifier and records its per-class metrics and per-sample predictions. Evaluation is by default out-of-fold across train and test together: one model per fold, with both the metrics and the per-region error rates taken from predictions no model saw while training.
 
-**failure-classify** assembles the table — a region's descriptors, its class's descriptors and its observed error rate — and fits the estimator over five outer and five inner folds. It also compares the estimate with the classifier's own confidence scores, using a bootstrap to establish whether the difference is real.
+**failure-regress** assembles the table — a region's descriptors, its class's descriptors and its observed error rate — and fits the estimator over five outer and five inner folds. It also compares the estimate against confidence-based baselines (MCP, ATC, and rank-averaged combinations of the two with the regressor).
 
 **render** turns the saved JSON and pickle artefacts into figures. `figure_format` selects `pdf`, the default, or `png`.
 
@@ -200,10 +196,10 @@ Each stage is a script under [pipelines/](pipelines/), wrapped by the [Makefile]
 make run NAME=x                             # every dataset × classifier × clustering algorithm
 make run NAME=x DATA=covertype              # one dataset, every compatible classifier
 make run NAME=x CLASSIFIER=random_forest    # every dataset, one classifier
-make sweep-results SWEEP_DIR=paper/exp FIGURES_DIR=paper/figures
+make comparisons FIGURES_DIR=paper/figures
 ```
 
-Omit `CLUSTERING` and the sweep runs every algorithm into a separate `NAME_<algo>` tree. `sweep-results` then reduces such a tree to the cross-run figures (ρ per configuration, ρ against region count, family importance, selective-prediction curves) and the matching JSON tables.
+Omit `CLUSTERING` and the sweep runs every algorithm into a separate `NAME_<algo>` tree. `comparisons` then reduces such a tree to the cross-run figures (ρ per configuration, ρ against region count, family importance, per-classifier and per-dataset baseline comparisons) and the matching JSON tables.
 
 ## Configuration
 
@@ -216,9 +212,12 @@ PYTHONPATH=. python pipelines/classify.py data=bot_iot_v2 name=my_exp seed=123 c
 
 | Group | Options |
 |---|---|
-| `data` | network traffic: `nb15_v2`, `bot_iot_v2`, `cic_2018_v2`, `cic_2018_f`, `ton_iot_v2` · benchmarks: `bank_marketing`, `covertype`, `letter_recognition`, `statlog_landsat_satellite`, `thyroid_disease`, `parkinsons`, `seeds` · `synthetic_test`, the only one needing no external CSV |
-| `classifier` | deep: `tabular`, `numerical`, `categorical` · classical: `decision_tree`, `random_forest`, `hist_gradient_boosting`, `xgboost`, `knn`, `lda`, `logistic_regression`, `naive_bayes`, `linear_svc`, `svm_rbf` |
-| `clustering` | `kmeans`, `hdbscan`, `birch`, `spectral`, `kprototypes` — the last being the only one that uses categorical features |
+| `data` | network traffic: `nb15_v2`, `bot_iot_v2`, `cic_2018_v2`, `ton_iot_v2` · benchmarks: `bank_marketing`, `covertype`, `letter_recognition`, `statlog_landsat_satellite`, `thyroid_disease` · `synthetic_test`, the only one needing no external CSV |
+| `classifier` | deep: `tabular`, `numerical`, `categorical` · classical: `decision_tree`, `random_forest`, `hist_gradient_boosting`, `xgboost`, `knn`, `lda`, `logistic_regression`, `naive_bayes`, `linear_svc` |
+| `clustering` | `kmeans`, `hdbscan`, `birch`, `spectral` |
+| `complexity` | `default` — descriptor graph parameters (`k`, cluster sample caps) |
+| `failure_regressor` | `random_forest` — nested-CV folds and hyperparameter grid |
+| `grid_search` | `default` — scoring, CV folds and sample cap for classifier tuning |
 | `loss` / `optimizer` / `scheduler` / `loops` | deep learning only: `cross_entropy` \| `focal` / `adamw` / `one_cycle` / `default` |
 | `path` | `default` |
 
@@ -242,12 +241,11 @@ resources/experiments/${name}/${data.file_name}_${seed}/
 intrusion-forge/
 ├── pipelines/                    # entry points — own the config, I/O, logging and paths
 │   ├── prepare_data.py           #   preprocess + divide into regions
-│   ├── classify.py               #   train + evaluate one classifier
+│   ├── classify.py               #   train + evaluate one classifier (splits/training/evaluation in sibling modules)
 │   ├── compute_complexity.py     #   region and class descriptors
-│   ├── fit_failure_classifier.py #   descriptors → error rate
+│   ├── fit_failure_regressor.py  #   descriptors → error rate
 │   ├── render_plots.py           #   figures
-│   ├── sweep_results.py          #   cross-run aggregation
-│   └── cost_sweep.py             #   neighbour-graph cost model
+│   └── comparisons.py            #   cross-run aggregation
 ├── generate_synthetic.py         # synthetic dataset generator
 ├── dashboard.py                  # Streamlit experiment browser
 ├── Makefile                      # experiment runner
@@ -256,16 +254,15 @@ intrusion-forge/
 │   ├── core/                     # config, Factory, LogDispatcher, DataFrame I/O, OutputPaths
 │   ├── domain/
 │   │   ├── data/                 # cleaning, splitting, scaling, encoding
-│   │   ├── clustering/           # the five algorithms + grid search
+│   │   ├── clustering/           # the four algorithms + grid search
 │   │   ├── analysis/complexity/  # the F / N / ND / T / G families
-│   │   ├── analysis/             # metadata, selective prediction, SHAP
+│   │   ├── analysis/             # metadata, confidence & risk-coverage scores, the failure regressor
 │   │   ├── training/             # ml.py (sklearn / XGBoost), dl.py (Ignite loop)
-│   │   ├── plot/                 # Plot payload, charts, metrics, palette
+│   │   ├── plot/                 # Plot payload, chart primitives, analysis/comparison composers, metrics, palette
 │   │   └── projection.py         # t-SNE
-│   ├── engine/
-│   │   ├── dl/                   # models, modules, losses, dataset, EngineBuilder
-│   │   └── ml/                   # sklearn / XGBoost wrappers, column preprocessing
-│   └── registries.py             # the three factories
+│   └── engine/
+│       ├── dl/                   # models, modules, losses, dataset, EngineBuilder
+│       └── ml/                   # sklearn / XGBoost wrappers, column preprocessing
 └── resources/                    # not tracked by git: raw_data/ in, experiments/ out
 ```
 
