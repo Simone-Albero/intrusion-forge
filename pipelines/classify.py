@@ -34,7 +34,8 @@ from src.core.log import (
 )
 from src.core.paths import OutputPaths
 from src.core.utils import flush_timing, load_from_json, timed
-from src.domain.analysis.selective_prediction import mcp_risk
+from src.domain.analysis.confidence import mcp_risk
+from src.domain.analysis.failure import is_failure
 from src.domain.data.preprocessing import random_undersample_df, subsample_df
 from src.domain.plot.base import Plot, set_figure_format
 from src.domain.plot.charts import bar_plot, line_plot, scatter_plot
@@ -168,7 +169,7 @@ def _evaluate_predictions(
     confidences = 1.0 - mcp
 
     has_cluster = clusters is not None
-    global_error_mask = y_true != y_pred
+    global_error_mask = is_failure(y_true, y_pred)
 
     cluster_errors_total = (
         _cluster_error_rates(
@@ -185,7 +186,7 @@ def _evaluate_predictions(
     for label in np.unique(y_true):
         mask = y_true == label
         n_total = int(mask.sum())
-        n_errors = int((y_true[mask] != y_pred[mask]).sum())
+        n_errors = int(is_failure(y_true[mask], y_pred[mask]).sum())
         error_mask = mask & global_error_mask
 
         if has_cluster:

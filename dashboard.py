@@ -11,7 +11,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from src.domain.analysis.selective_prediction import (
+from src.domain.analysis.risk_coverage import (
     macro_recall_curve,
     risk_coverage_curve,
 )
