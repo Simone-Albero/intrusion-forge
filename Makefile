@@ -80,14 +80,14 @@ HYDRA       := data=$(DATA) name=$(NAME) seed=$(SEED) classifier=$(CLASSIFIER) \
 FORCE_FLAG  := $(if $(FORCE),force=true,)
 KFOLD_FLAG  := $(if $(filter $(DATA),$(LARGE_DATASETS)),kfold=false,)
 
-# Sweep-level paper results: aggregate the full experiment tree under SWEEP_DIR into the
-# four cross-run figures (rho by config / vs clusters, family importance, selective curves),
-# written to FIGURES_DIR, and the four Results-section JSON tables (perconfig, nclusters,
-# perclf_perdataset, selective), written back under SWEEP_DIR.
-SWEEP_DIR       ?= paper/exp
+# Cross-run paper comparisons: aggregate the full experiment tree under SWEEP_DIR into the
+# cross-run figures (rho by config / vs clusters, family importance, per-classifier and
+# per-dataset baseline comparisons) written to FIGURES_DIR, and the Results-section JSON
+# tables (perconfig, nclusters, datasets, variant comparisons), written back under SWEEP_DIR.
+SWEEP_DIR       ?= resources/experiments
 FIGURES_DIR     ?= paper/figures
 
-.PHONY: prepare classify complexity failure-regress render sweep-results run generate dashboard help
+.PHONY: prepare classify complexity failure-regress render comparisons run generate dashboard help
 
 ## prepare:            Step 1 — preprocess raw CSV → parquet splits           (DATA, NAME, SEED, FORCE)
 prepare:
@@ -109,10 +109,10 @@ failure-regress: complexity
 render:
 	PYTHONPATH=. $(PYTHON) pipelines/render_plots.py $(HYDRA)
 
-## sweep-results:      Aggregate the experiment tree into cross-run paper figures + result tables  (SWEEP_DIR, FIGURES_DIR)
-sweep-results:
-	PYTHONPATH=. $(PYTHON) pipelines/sweep_results.py sweep=$(SWEEP_DIR) out=$(FIGURES_DIR)
-	@echo ""; echo "sweep-results done -> $(FIGURES_DIR)/{rho_by_config,rho_vs_clusters,family_importance,gain_by_algo,selective_stability,instance_gain}.pdf + $(SWEEP_DIR)/{perconfig,nclusters,perclf_perdataset,selective,selective_by_clf,instance}_table.json"
+## comparisons:        Aggregate the experiment tree into cross-run paper figures + result tables  (SWEEP_DIR, FIGURES_DIR)
+comparisons:
+	PYTHONPATH=. $(PYTHON) pipelines/comparisons.py sweep=$(SWEEP_DIR) out=$(FIGURES_DIR)
+	@echo ""; echo "comparisons done -> $(FIGURES_DIR)/{rho_by_config,rho_vs_clusters,family_importance,spearman_by_classifier,mse_by_classifier,oracle_benefit_by_variant,spearman_by_dataset}.pdf + $(SWEEP_DIR)/{perconfig,nclusters,datasets,variant_spearman,variant_cluster_mse,variant_spearman_by_dataset}_table.json"
 
 ## run:                Whole flow — fix passed vars, iterate the rest (DATA?, CLASSIFIER?, CLUSTERING?)  (NAME, SEED, DISTANCE, FORCE)
 run:
