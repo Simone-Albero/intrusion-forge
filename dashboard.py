@@ -11,11 +11,6 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from src.domain.analysis.risk_coverage import (
-    macro_recall_curve,
-    risk_coverage_curve,
-)
-
 EXPERIMENTS_ROOT_DEFAULT = str(Path(__file__).parent / "resources" / "experiments")
 RESERVED_DIRS = frozenset({"shared", "processed_data", "tb"})
 FIGURE_EXTENSIONS = (".png", ".pdf")
@@ -29,9 +24,6 @@ HEATMAP_METRICS: dict[str, str] = {
     "fc_spearman": "Failure-regressor Spearman ρ",
     "fc_r2": "Failure-regressor R²",
     "fc_mae": "Failure-regressor MAE",
-    "fc_sel_lift": "Selective acc. lift (vs random)",
-    "fc_sel_recall_lift": "Selective macro-recall lift",
-    "fc_oracle_recovered": "Oracle benefit recovered",
 }
 
 METRIC_COLORSCALE_BOUNDS: dict[str, tuple[float | None, float | None]] = {
@@ -43,9 +35,6 @@ METRIC_COLORSCALE_BOUNDS: dict[str, tuple[float | None, float | None]] = {
     "fc_spearman": (-1.0, 1.0),
     "fc_r2": (-1.0, 1.0),
     "fc_mae": (None, None),
-    "fc_sel_lift": (None, None),
-    "fc_sel_recall_lift": (None, None),
-    "fc_oracle_recovered": (0.0, 1.0),
 }
 
 GALLERY_CATEGORIES: list[str] = [
@@ -53,7 +42,6 @@ GALLERY_CATEGORIES: list[str] = [
     "training",
     "summary",
     "summary/correlation",
-    "summary/selectivity",
     "summary/global",
 ]
 
@@ -83,9 +71,6 @@ class ExperimentRecord:
     fc_r2: float | None
     fc_mae: float | None
     fc_skipped: bool = False
-    fc_sel_lift: float | None = None
-    fc_oracle_recovered: float | None = None
-    fc_sel_recall_lift: float | None = None
 
     @property
     def key(self) -> str:
@@ -174,8 +159,6 @@ def _extract_headline_metrics(classifier_dir: Path) -> dict[str, float | bool | 
         )
         or {}
     )
-    rc = fc.get("risk_coverage") or {}
-    smr = fc.get("selective_macro_recall") or {}
     return {
         "accuracy": _safe_float(summary.get("accuracy")),
         "f1_macro": _safe_float(summary.get("f1_macro")),
@@ -186,9 +169,6 @@ def _extract_headline_metrics(classifier_dir: Path) -> dict[str, float | bool | 
         "fc_r2": _safe_float(fc.get("r2")),
         "fc_mae": _safe_float(fc.get("mae")),
         "fc_skipped": bool(fc.get("skipped", False)),
-        "fc_sel_lift": _safe_float(rc.get("lift_over_random")),
-        "fc_oracle_recovered": _safe_float(rc.get("oracle_benefit_recovered")),
-        "fc_sel_recall_lift": _safe_float(smr.get("lift_over_random")),
     }
 
 
@@ -354,9 +334,6 @@ def records_to_df(records: list[ExperimentRecord]) -> pd.DataFrame:
                 "fc_spearman": r.fc_spearman,
                 "fc_r2": r.fc_r2,
                 "fc_mae": r.fc_mae,
-                "fc_sel_lift": r.fc_sel_lift,
-                "fc_oracle_recovered": r.fc_oracle_recovered,
-                "fc_sel_recall_lift": r.fc_sel_recall_lift,
                 "key": r.key,
             }
             for r in records
@@ -750,56 +727,6 @@ def pred_vs_actual_fig(fc: dict, cluster_df: pd.DataFrame) -> go.Figure:
     return fig
 
 
-def selective_curve_fig(
-    fc: dict, cluster_df: pd.DataFrame, *, metric: str = "accuracy"
-) -> go.Figure | None:
-    """Selective-prediction curve rebuilt from the persisted OOF predictions."""
-    needed = ["cluster_id", "failure_rate", "n_test"]
-    if metric == "macro_recall":
-        needed.append("cluster_class")
-    if not set(needed).issubset(cluster_df.columns):
-        return None
-    predicted = fc.get("oof_predicted_rate", {})
-    df = cluster_df[needed].copy()
-    df["predicted"] = df["cluster_id"].astype(str).map(predicted)
-    df = df.dropna(subset=["failure_rate", "predicted", "n_test"])
-    if df.empty:
-        return None
-
-    y_pred = df["predicted"].to_numpy(dtype=float)
-    y_true = df["failure_rate"].to_numpy(dtype=float)
-    support = df["n_test"].to_numpy(dtype=float)
-    if metric == "macro_recall":
-        cls = df["cluster_class"].to_numpy()
-        cov_p, val_p = macro_recall_curve(y_pred, y_true, support, cls)
-        cov_o, val_o = macro_recall_curve(y_true, y_true, support, cls)
-        baseline = float(val_p[-1])
-        y_title = "Macro-recall on retained set"
-    else:
-        cov_p, val_p = risk_coverage_curve(y_pred, y_true, support)
-        cov_o, val_o = risk_coverage_curve(y_true, y_true, support)
-        baseline = float(1.0 - (y_true * support).sum() / support.sum())
-        y_title = "Accuracy on retained set"
-
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=1.0 - cov_p, y=val_p, mode="lines", name="Predictor"))
-    fig.add_trace(
-        go.Scatter(
-            x=1.0 - cov_o, y=val_o, mode="lines", name="Oracle", line=dict(dash="dot")
-        )
-    )
-    fig.add_hline(
-        y=baseline, line_dash="dash", line_color="grey", annotation_text="Random"
-    )
-    fig.update_layout(
-        height=380,
-        xaxis=dict(title="Fraction rejected (riskiest first)", range=[0, 1]),
-        yaxis=dict(title=y_title, range=[0, 1]),
-        legend=dict(orientation="h"),
-    )
-    return fig
-
-
 def failure_rate_strip(cluster_df: pd.DataFrame, label_map: dict) -> go.Figure:
     """Strip plot of per-cluster failure rate, grouped by class."""
     plot_df = cluster_df[["cluster_id", "cluster_class", "failure_rate"]].copy()
@@ -893,7 +820,7 @@ def panel_confusion_matrix(
 def panel_failure_classifier(
     record: ExperimentRecord, detail: ExperimentDetail, key_prefix: str = "drill"
 ) -> None:
-    """Panel: failure-regressor scores and its selective-prediction curves."""
+    """Panel: failure-regressor scores and predicted-vs-actual plot."""
     st.markdown("**Failure regressor (RF on cluster complexity)**")
     fc = detail.classifier_results
     if fc is None:
@@ -922,39 +849,6 @@ def panel_failure_classifier(
             width="stretch",
             key=_wkey(key_prefix, "pred_vs_actual", record),
         )
-
-    rc = fc.get("risk_coverage") or {}
-    if rc:
-        smr = fc.get("selective_macro_recall") or {}
-        keep = rc.get("coverage_target", 0.8)
-        st.markdown("**Selective prediction** — reject the riskiest clusters first")
-        m = st.columns(3)
-        m[0].metric(
-            f"Accuracy @ {keep:.0%} kept",
-            f"{rc.get('acc_at_target_predictor', float('nan')):.3f}",
-            delta=f"{rc.get('lift_over_random', 0.0):+.3f} vs random",
-        )
-        m[1].metric(
-            "Macro-recall lift",
-            f"{smr.get('lift_over_random', float('nan')):+.3f}",
-        )
-        m[2].metric(
-            "Oracle benefit recovered",
-            f"{rc.get('oracle_benefit_recovered', float('nan')):.2f}",
-        )
-        if detail.cluster_summary is not None:
-            acc_fig = selective_curve_fig(fc, detail.cluster_summary, metric="accuracy")
-            if acc_fig is not None:
-                st.plotly_chart(
-                    acc_fig, width="stretch", key=_wkey(key_prefix, "sel_acc", record)
-                )
-            rec_fig = selective_curve_fig(
-                fc, detail.cluster_summary, metric="macro_recall"
-            )
-            if rec_fig is not None:
-                st.plotly_chart(
-                    rec_fig, width="stretch", key=_wkey(key_prefix, "sel_rec", record)
-                )
 
 
 def panel_feature_importances(
@@ -1184,26 +1078,6 @@ def _render_hypothesis_scoreboard(
         )
         st.plotly_chart(hist_fig, width="stretch", key="hyp_rho_hist")
 
-    sel_lift = [r.fc_sel_lift for r in rs if r.fc_sel_lift is not None]
-    rec_lift = [r.fc_sel_recall_lift for r in rs if r.fc_sel_recall_lift is not None]
-    orc = [r.fc_oracle_recovered for r in rs if r.fc_oracle_recovered is not None]
-    if sel_lift or orc:
-        st.markdown(
-            "**Selective prediction** — operational value of the predicted risk"
-        )
-        s1, s2, s3 = st.columns(3)
-        s1.metric(
-            "Mean acc. lift vs random",
-            f"{float(np.mean(sel_lift)):+.3f}" if sel_lift else "—",
-        )
-        s2.metric(
-            "Mean macro-recall lift",
-            f"{float(np.mean(rec_lift)):+.3f}" if rec_lift else "—",
-        )
-        s3.metric(
-            "Mean oracle recovered",
-            f"{float(np.mean(orc)):.2f}" if orc else "—",
-        )
     st.divider()
 
 
