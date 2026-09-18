@@ -43,7 +43,7 @@ class ModelOutput(dict):
 class BaseModel(nn.Module):
     """Base class for models."""
 
-    def forward(self, x: Tensor) -> ModelOutput:
+    def forward(self, x_numerical: Tensor, x_categorical: Tensor) -> ModelOutput:
         """Run the model; implemented by subclasses."""
         raise NotImplementedError
 
@@ -53,16 +53,16 @@ class BaseModel(nn.Module):
 
 
 class ComposableClassifier(BaseModel):
-    """Classifier composed of an encoder + linear head."""
+    """Classifier composed of an encoder + linear head, over numerical and categorical inputs."""
 
     def __init__(self, encoder_module: nn.Module, head_module: nn.Module) -> None:
         super().__init__()
         self.encoder_module = encoder_module
         self.head_module = head_module
 
-    def forward(self, x: Tensor) -> ModelOutput:
-        """Encode the input and return logits with the latent embedding."""
-        z = self.encoder_module(x)
+    def forward(self, x_numerical: Tensor, x_categorical: Tensor) -> ModelOutput:
+        """Encode both feature blocks and return logits with the latent embedding."""
+        z = self.encoder_module(x_numerical, x_categorical)
         return ModelOutput(logits=self.head_module(z), z=z)
 
     def for_loss(
@@ -70,12 +70,3 @@ class ComposableClassifier(BaseModel):
     ) -> tuple[Tensor, ...]:
         """Prepare (logits, target, *extras) for the loss function."""
         return (output["logits"], target, *args)
-
-
-class ComposableTabularClassifier(ComposableClassifier):
-    """Classifier for tabular (numerical + categorical) input."""
-
-    def forward(self, x_numerical: Tensor, x_categorical: Tensor) -> ModelOutput:
-        """Encode both feature blocks and return logits with the latent embedding."""
-        z = self.encoder_module(x_numerical, x_categorical)
-        return ModelOutput(logits=self.head_module(z), z=z)

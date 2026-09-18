@@ -5,11 +5,11 @@ from torch import nn
 from src.engine.dl.module.encoder import TabularEncoderModule
 
 from . import DLClassifierFactory
-from .base import ComposableTabularClassifier
+from .base import ComposableClassifier
 
 
 @DLClassifierFactory.register("tabular")
-class TabularClassifier(ComposableTabularClassifier):
+class TabularClassifier(ComposableClassifier):
     """Classifier for mixed tabular data (numerical + categorical)."""
 
     def __init__(
@@ -18,8 +18,7 @@ class TabularClassifier(ComposableTabularClassifier):
         num_classes: int,
         hidden_dims: Sequence[int],
         *,
-        num_categorical_features: int | None = None,
-        cardinalities: Sequence[int] | None = None,
+        cardinalities: Sequence[int] = (),
         max_emb_dim: int = 50,
         dropout: float = 0.0,
         activation: Callable[[], nn.Module] = nn.ReLU,
@@ -30,7 +29,6 @@ class TabularClassifier(ComposableTabularClassifier):
             encoder_module=TabularEncoderModule(
                 num_numerical_features,
                 hidden_dims[-1],
-                num_categorical_features=num_categorical_features,
                 cardinalities=cardinalities,
                 max_emb_dim=max_emb_dim,
                 hidden_dims=hidden_dims[:-1],

@@ -9,16 +9,11 @@ class EmbeddingModule(nn.Module):
 
     def __init__(
         self,
-        num_features: int | None,
-        cardinalities: Sequence[int] | None,
+        cardinalities: Sequence[int],
         *,
         max_emb_dim: int = 50,
     ) -> None:
         super().__init__()
-        if num_features is None and cardinalities is None:
-            raise ValueError("Either num_features or cardinalities must be provided.")
-        if cardinalities is None:
-            cardinalities = [max_emb_dim] * num_features
         self.embedding_dims = [min(max_emb_dim, int(c**0.5)) for c in cardinalities]
         self.embedding_layers = nn.ModuleList(
             nn.Embedding(c + 1, d, padding_idx=0)
@@ -27,6 +22,8 @@ class EmbeddingModule(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         """Embed every categorical column and concatenate the results."""
+        if not self.embedding_layers:
+            return x.new_zeros((x.size(0), 0), dtype=torch.float32)
         return torch.cat(
             [layer(x[:, i]) for i, layer in enumerate(self.embedding_layers)], dim=1
         )

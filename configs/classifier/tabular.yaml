@@ -2,6 +2,6 @@
 kind: dl
 name: tabular
 params:
-  max_emb_dim: 384
+  max_emb_dim: 64
   hidden_dims: [128, 64, 32, 16]
   dropout: 0.1

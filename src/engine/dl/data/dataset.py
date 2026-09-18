@@ -22,12 +22,12 @@ class TabularDataset(Dataset):
         self.numerical_features = (
             torch.as_tensor(df[num_cols].values.copy(), dtype=torch.float32)
             if num_cols
-            else None
+            else torch.empty(len(df), 0, dtype=torch.float32)
         )
         self.categorical_features = (
             torch.as_tensor(df[cat_cols].values.copy(), dtype=torch.long)
             if cat_cols
-            else None
+            else torch.empty(len(df), 0, dtype=torch.long)
         )
 
         if label_col is not None:
@@ -45,11 +45,7 @@ class TabularDataset(Dataset):
         return self._length
 
     def __getitem__(self, index: int) -> Sample:
-        features = [
-            t[index]
-            for t in (self.numerical_features, self.categorical_features)
-            if t is not None
-        ]
+        features = [self.numerical_features[index], self.categorical_features[index]]
         labels = (
             [t[index] for t in self.labels] if self.labels is not None else features
         )

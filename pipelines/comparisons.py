@@ -72,17 +72,6 @@ _CLF_LABEL = {
     "hist_gradient_boosting": "HistGB",
     "xgboost": "XGBoost",
 }
-# The sweep fills the single "neural network" slot with a different classifier config
-# depending on the dataset's feature layout (`numerical`/`categorical`/`tabular`, see
-# Makefile's DATASET_FORMATS); the paper reports all of these as one "MLP" classifier.
-_CLF_MERGE = {"numerical": "tabular", "categorical": "tabular"}
-
-
-def _clf_name(run: dict) -> str:
-    """Paper-level classifier identity for a run, merging the DL feature-layout variants."""
-    return _CLF_MERGE.get(run["clf"], run["clf"])
-
-
 # The 5 unified baseline variants from `instance_baselines` (see failure_regressor.py),
 # in the order the paper reports them.
 _VARIANT_ORDER = [
@@ -125,7 +114,12 @@ def _load_instance(base: Path) -> dict | None:
 
 
 def _load_sweep_runs(root: Path) -> list[dict]:
-    """Collect one record per `<config>/<dataset>/<classifier>` run under `root`."""
+    """Collect one record per `<config>/<dataset>/<classifier>` run under `root`.
+
+    `clf` is the run directory name, taken verbatim. A tree with runs from before the
+    `numerical`/`categorical` DL classifiers were merged into `tabular` will report
+    those as separate bars instead of one — re-run them under `tabular` first.
+    """
     runs: list[dict] = []
     for cfg_dir in sorted(p for p in root.iterdir() if p.is_dir()):
         for ds_dir in sorted(p for p in cfg_dir.iterdir() if p.is_dir()):
@@ -348,10 +342,10 @@ def _fig_spearman_by_classifier(runs: list[dict]) -> Plot | None:
     """Figure 8: cluster-level Spearman rho (median, IQR) of the 5 variants, per classifier
     (kmeans-euclidean subset, 90 runs)."""
     subset = [r for r in runs if _is_kmeans_euclidean(r)]
-    clfs = sorted({_clf_name(r) for r in subset})
+    clfs = sorted({r["clf"] for r in subset})
     if not clfs:
         return None
-    series = _variant_series(subset, clfs, _clf_name, "spearman")
+    series = _variant_series(subset, clfs, lambda r: r["clf"], "spearman")
     return grouped_bar_plot(
         [_CLF_LABEL.get(c, c) for c in clfs],
         series,
@@ -364,11 +358,11 @@ def _fig_mse_by_classifier(runs: list[dict]) -> Plot | None:
     """Figure 9: cluster-rate MSE (median, IQR) of the 3 rate variants, per classifier
     (kmeans-euclidean subset, 90 runs)."""
     subset = [r for r in runs if _is_kmeans_euclidean(r)]
-    clfs = sorted({_clf_name(r) for r in subset})
+    clfs = sorted({r["clf"] for r in subset})
     if not clfs:
         return None
     series = _variant_series(
-        subset, clfs, _clf_name, "cluster_rate_mse", _RATE_VARIANT_ORDER
+        subset, clfs, lambda r: r["clf"], "cluster_rate_mse", _RATE_VARIANT_ORDER
     )
     return grouped_bar_plot(
         [_CLF_LABEL.get(c, c) for c in clfs],

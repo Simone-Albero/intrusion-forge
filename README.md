@@ -133,7 +133,7 @@ To add a dataset of your own:
 
 1. Place the CSV at `resources/raw_data/<dir>/<file_name>.csv`.
 2. Copy a configuration from [configs/data/](configs/data/) and edit it: `label_col`, `num_cols`, `cat_cols`, `benign_tag`, split fractions, filtering.
-3. Add it to `DATASET_FORMATS` in the [Makefile](Makefile) as `<name>:mixed` or `<name>:numerical`.
+3. Add it to `DATASETS` in the [Makefile](Makefile).
 4. Run `make run DATA=<name> NAME=my_exp CLASSIFIER=random_forest CLUSTERING=kmeans`.
 
 On datasets of millions of rows, out-of-fold evaluation is disabled automatically (`LARGE_DATASETS` in the Makefile), since one model per fold would otherwise take hours.
@@ -213,7 +213,7 @@ PYTHONPATH=. python pipelines/classify.py data=bot_iot_v2 name=my_exp seed=123 c
 | Group | Options |
 |---|---|
 | `data` | network traffic: `nb15_v2`, `bot_iot_v2`, `cic_2018_v2`, `ton_iot_v2` · benchmarks: `bank_marketing`, `covertype`, `letter_recognition`, `statlog_landsat_satellite`, `thyroid_disease` · `synthetic_test`, the only one needing no external CSV |
-| `classifier` | deep: `tabular`, `numerical`, `categorical` · classical: `decision_tree`, `random_forest`, `hist_gradient_boosting`, `xgboost`, `knn`, `lda`, `logistic_regression`, `naive_bayes`, `linear_svc` |
+| `classifier` | deep: `tabular` (adapts to the dataset's numerical/categorical feature counts) · classical: `decision_tree`, `random_forest`, `hist_gradient_boosting`, `xgboost`, `knn`, `lda`, `logistic_regression`, `naive_bayes`, `linear_svc` |
 | `clustering` | `kmeans`, `hdbscan`, `birch`, `spectral` |
 | `complexity` | `default` — descriptor graph parameters (`k`, cluster sample caps) |
 | `failure_regressor` | `random_forest` — nested-CV folds and hyperparameter grid |

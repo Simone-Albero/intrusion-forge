@@ -5,7 +5,7 @@
 # FIXED; those omitted are ITERATED.
 #
 #   make run            NAME=my_exp                                # all datasets × ML+DL × all clustering algos
-#   make run            NAME=my_exp DATA=letter_recognition        # 1 dataset × all compatible classifiers × all clustering
+#   make run            NAME=my_exp DATA=letter_recognition        # 1 dataset × all classifiers × all clustering
 #   make run            NAME=my_exp CLASSIFIER=random_forest       # all datasets × 1 classifier × all clustering
 #   make run            NAME=my_exp CLUSTERING=kmeans              # all datasets × all classifiers × 1 clustering
 #   make run            NAME=my_exp DATA=cic_2018_v2 CLASSIFIER=tabular CLUSTERING=kmeans   # single (ds, clf, clustering)
@@ -56,20 +56,19 @@ ML_CLASSIFIERS := \
     linear_svc \
     xgboost
 
-DL_CLASSIFIERS_MIXED     := tabular
-DL_CLASSIFIERS_NUMERICAL := numerical
+DL_CLASSIFIERS := tabular
 
-DATASET_FORMATS := \
-    statlog_landsat_satellite:numerical \
-    thyroid_disease:numerical \
-    letter_recognition:numerical \
-    bank_marketing:mixed \
-    covertype:numerical \
-    nb15_v2:mixed \
-    ton_iot_v2:mixed \
-    cic_2018_v2:mixed \
-    bot_iot_v2:mixed \
-   synthetic_test:mixed
+DATASETS := \
+    statlog_landsat_satellite \
+    thyroid_disease \
+    letter_recognition \
+    bank_marketing \
+    covertype \
+    nb15_v2 \
+    ton_iot_v2 \
+    cic_2018_v2 \
+    bot_iot_v2 \
+    synthetic_test
 
 # Datasets too large for k-fold evaluation (millions of rows → hours per classifier).
 # kfold=false is injected automatically for these; override with KFOLD=true if needed.
@@ -121,47 +120,29 @@ run:
 	clf_given="$(CLF_GIVEN)"; \
 	clu_given="$(CLUSTER_GIVEN)"; \
 	requested_data="$(DATA)"; \
-	requested_clf="$(CLASSIFIER)"; \
 	if [ -n "$$clu_given" ]; then clu_list="$(CLUSTERING)"; else clu_list="$(CLUSTERING_ALGOS)"; fi; \
 	if [ -n "$$data_given" ]; then \
-		pairs=""; \
-		for entry in $(DATASET_FORMATS); do \
-			ds=$${entry%%:*}; \
-			if [ "$$ds" = "$$requested_data" ]; then pairs="$$entry"; break; fi; \
+		ds_list=""; \
+		for ds in $(DATASETS); do \
+			if [ "$$ds" = "$$requested_data" ]; then ds_list="$$ds"; break; fi; \
 		done; \
-		if [ -z "$$pairs" ]; then \
-			echo "ERROR: DATA='$$requested_data' not in DATASET_FORMATS."; exit 1; \
+		if [ -z "$$ds_list" ]; then \
+			echo "ERROR: DATA='$$requested_data' not in DATASETS."; exit 1; \
 		fi; \
 	else \
-		pairs="$(DATASET_FORMATS)"; \
+		ds_list="$(DATASETS)"; \
 	fi; \
+	if [ -n "$$clf_given" ]; then clf_list="$(CLASSIFIER)"; else clf_list="$(ML_CLASSIFIERS) $(DL_CLASSIFIERS)"; fi; \
 	for clu in $$clu_list; do \
 		if [ -n "$$clu_given" ]; then name="$(NAME)"; else name="$(NAME)_$$clu"; fi; \
 		echo ""; \
 		echo "##############################################"; \
 		echo " CLUSTERING = $$clu   →   name=$$name"; \
 		echo "##############################################"; \
-		for entry in $$pairs; do \
-			ds=$${entry%%:*}; fmt=$${entry##*:}; \
-			if [ -n "$$clf_given" ]; then \
-				skip=""; \
-				if [ "$$requested_clf" = "tabular" ]   && [ "$$fmt" != "mixed" ];     then skip=1; fi; \
-				if [ "$$requested_clf" = "numerical" ] && [ "$$fmt" != "numerical" ]; then skip=1; fi; \
-				if [ -n "$$skip" ]; then \
-					echo "skip: $$requested_clf not compatible with $$ds ($$fmt)"; \
-					continue; \
-				fi; \
-				clf_list="$$requested_clf"; \
-			else \
-				if [ "$$fmt" = "mixed" ]; then \
-					clf_list="$(ML_CLASSIFIERS) $(DL_CLASSIFIERS_MIXED)"; \
-				else \
-					clf_list="$(ML_CLASSIFIERS) $(DL_CLASSIFIERS_NUMERICAL)"; \
-				fi; \
-			fi; \
+		for ds in $$ds_list; do \
 			echo ""; \
 			echo "══════════════════════════════════════════════"; \
-			echo " Dataset: $$ds  |  format=$$fmt  |  name=$$name  seed=$(SEED)"; \
+			echo " Dataset: $$ds  |  name=$$name  seed=$(SEED)"; \
 			echo "══════════════════════════════════════════════"; \
 			$(MAKE) --no-print-directory prepare \
 				DATA=$$ds NAME=$$name SEED=$(SEED) CLUSTERING=$$clu \
@@ -204,9 +185,8 @@ help:
 	@echo ""
 	@echo "Defaults:  DATA=$(DATA)  NAME=$(NAME)  SEED=$(SEED)  CLASSIFIER=$(CLASSIFIER)  DISTANCE=$(DISTANCE)  CLUSTERING=$(CLUSTERING)"
 	@echo "Python:    $(PYTHON)  (override with PYTHON=)"
-	@echo "ML classifiers:         $(ML_CLASSIFIERS)"
-	@echo "DL classifiers (mixed): $(DL_CLASSIFIERS_MIXED)"
-	@echo "DL classifiers (num):   $(DL_CLASSIFIERS_NUMERICAL)"
+	@echo "ML classifiers: $(ML_CLASSIFIERS)"
+	@echo "DL classifiers: $(DL_CLASSIFIERS)"
 	@echo "Clustering strategies:  kmeans hdbscan birch spectral"
 	@echo ""
 	@echo "Datasets (smallest → largest, kfold auto-disabled for large):"
@@ -215,7 +195,7 @@ help:
 	@echo ""
 	@echo "Run examples (omitted vars iterate; passed vars are fixed):"
 	@echo "  make run NAME=x                                      # all datasets × all classifiers × all clustering algos"
-	@echo "  make run NAME=x DATA=letter_recognition              # 1 dataset, all compatible classifiers, all clustering"
+	@echo "  make run NAME=x DATA=letter_recognition              # 1 dataset, all classifiers, all clustering"
 	@echo "  make run NAME=x CLASSIFIER=random_forest             # all datasets, 1 classifier, all clustering"
 	@echo "  make run NAME=x CLUSTERING=kmeans                    # all datasets × all classifiers, 1 clustering"
 	@echo "  make run NAME=x DATA=cic_2018_v2 CLASSIFIER=tabular CLUSTERING=kmeans  # single"

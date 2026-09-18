@@ -115,22 +115,17 @@ def _build_context(
 
 
 def _resolve_dl_params(
-    name: str,
     params: dict,
     num_cols: list[str],
     cat_cols: list[str],
     num_classes: int,
+    cardinality: int,
 ) -> dict:
-    """Inject the data-shape params a DL classifier needs, keeping them out of the YAML."""
+    """Inject the data-shape params the tabular DL classifier needs, keeping them out of the YAML."""
     out = dict(params)
     out["num_classes"] = num_classes
-    if name == "numerical":
-        out["in_features"] = len(num_cols)
-    elif name == "categorical":
-        out["num_features"] = len(cat_cols)
-    elif name == "tabular":
-        out["num_numerical_features"] = len(num_cols)
-        out["num_categorical_features"] = len(cat_cols)
+    out["num_numerical_features"] = len(num_cols)
+    out["cardinalities"] = [cardinality] * len(cat_cols)
     return out
 
 
@@ -144,8 +139,9 @@ def _resolve_fit_params(
         else {}
     )
     if kind == "dl":
+        cardinality = cfg.data.top_n + cfg.data.hash_buckets
         params = _resolve_dl_params(
-            cfg.classifier.name, params, num_cols, cat_cols, df_meta["num_classes"]
+            params, num_cols, cat_cols, df_meta["num_classes"], cardinality
         )
     elif _supports_random_state(MLClassifierFactory.get(cfg.classifier.name)):
         params.setdefault("random_state", cfg.seed)

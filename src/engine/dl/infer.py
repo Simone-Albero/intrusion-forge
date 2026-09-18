@@ -26,7 +26,7 @@ def run_model(
     inputs: list[torch.Tensor],
     device: torch.device,
 ) -> ModelOutput:
-    """Move inputs to device and run a forward pass, skipping zero-width tensors."""
+    """Move inputs to device and run a forward pass."""
     model.eval()
     with torch.no_grad():
-        return model(*[t.to(device) for t in inputs if t.size(1) > 0])
+        return model(*[t.to(device) for t in inputs])

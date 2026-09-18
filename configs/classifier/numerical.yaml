@@ -1,6 +1,0 @@
-# @package classifier
-kind: dl
-name: numerical
-params:
-  hidden_dims: [128, 64, 32, 16]
-  dropout: 0.1
