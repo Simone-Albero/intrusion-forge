@@ -1,3 +1,4 @@
 scoring: f1_macro
 cv: 5
+nested_cv: 3  # inner cv when the grid search runs per k-fold (5x already, cheaper per fold)
 max_samples: 50000

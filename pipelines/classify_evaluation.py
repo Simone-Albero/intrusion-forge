@@ -180,15 +180,62 @@ def _per_sample_scores(
     ).astype({"mcp_risk": "float32"})
 
 
+_TSNE_MIN_POINTS = 6  # tsne_projection's perplexity floor (5) requires n_samples > 5
+
+
+def _projection_figure(
+    space: np.ndarray,
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    label_mapping: dict,
+    n_samples: int = 2000,
+) -> Plot | None:
+    """t-SNE scatter of `space`, sampled to prioritize the classes with the most errors."""
+    classes = np.unique(y_true)
+    correct = y_pred == y_true
+    mis = ~correct
+    total_mis = int(mis.sum())
+    mis_per_class = {int(c): int((mis & (y_true == c)).sum()) for c in classes}
+    keep_classes: list[int] = []
+    cumulative = 0
+    for c in sorted(mis_per_class, key=mis_per_class.get, reverse=True):
+        if len(keep_classes) >= 2 and total_mis and cumulative >= 0.9 * total_mis:
+            break
+        keep_classes.append(c)
+        cumulative += mis_per_class[c]
+    if not keep_classes:
+        keep_classes = [int(c) for c in classes]
+
+    names = {c: label_mapping.get(str(c), str(c)) for c in keep_classes}
+    prob_pos = np.flatnonzero(np.isin(y_true, keep_classes))
+    # Fixed seed (matching tsne_projection's own default) so "raw" and "latent" draw
+    # the same visualized rows on a single split, where y_true/y_pred are identical.
+    sub = stratified_subsample(
+        y_true[prob_pos], n_samples=n_samples, stratify=False, random_state=42
+    )
+    vis_idx = prob_pos[sub]
+    if len(vis_idx) < _TSNE_MIN_POINTS:
+        return None
+
+    return scatter_plot(
+        tsne_projection(space[vis_idx], n_components=2),
+        y_true[vis_idx],
+        highlight_mask=~correct[vis_idx],
+        names=names,
+        marker_size=35.0,
+        marker_alpha=0.85,
+        legend_on_top=True,
+    )
+
+
 def _build_test_figures(
     X: np.ndarray,
     y_true: np.ndarray,
     y_pred: np.ndarray,
     label_mapping: dict,
     n_samples: int = 2000,
-    embedding: np.ndarray | None = None,
 ) -> dict[str, Plot]:
-    """Confusion matrix, per-class F1 bar and t-SNE scatter of raw features and embedding."""
+    """Confusion matrix, per-class F1 bar and t-SNE scatter of raw features."""
     figures: dict[str, Plot] = {}
 
     classes = np.unique(y_true)
@@ -212,40 +259,9 @@ def _build_test_figures(
         ylim=(0, 1),
     )
 
-    correct = y_pred == y_true
-
-    mis = ~correct
-    total_mis = int(mis.sum())
-    mis_per_class = {int(c): int((mis & (y_true == c)).sum()) for c in classes}
-    keep_classes: list[int] = []
-    cumulative = 0
-    for c in sorted(mis_per_class, key=mis_per_class.get, reverse=True):
-        if len(keep_classes) >= 2 and total_mis and cumulative >= 0.9 * total_mis:
-            break
-        keep_classes.append(c)
-        cumulative += mis_per_class[c]
-    if not keep_classes:
-        keep_classes = [int(c) for c in classes]
-
-    names = {c: label_mapping.get(str(c), str(c)) for c in keep_classes}
-    prob_pos = np.flatnonzero(np.isin(y_true, keep_classes))
-    sub = stratified_subsample(y_true[prob_pos], n_samples=n_samples, stratify=False)
-    vis_idx = prob_pos[sub]
-
-    def _projection(space: np.ndarray) -> Plot | None:
-        return scatter_plot(
-            tsne_projection(space[vis_idx], n_components=2),
-            y_true[vis_idx],
-            highlight_mask=~correct[vis_idx],
-            names=names,
-            marker_size=35.0,
-            marker_alpha=0.85,
-            legend_on_top=True,
-        )
-
-    figures["figure/testing/raw"] = _projection(X)
-    if embedding is not None:
-        figures["figure/testing/latent"] = _projection(embedding)
+    raw_fig = _projection_figure(X, y_true, y_pred, label_mapping, n_samples)
+    if raw_fig is not None:
+        figures["figure/testing/raw"] = raw_fig
     return figures
 
 
@@ -259,7 +275,6 @@ def _publish_evaluation(
     clusters: np.ndarray | None,
     *,
     eval_mode: str,
-    embedding: np.ndarray | None = None,
     predictions_dir: Path | None = None,
 ) -> None:
     """Build metrics, confusion matrix, figures and per-sample dumps, then publish them."""
@@ -272,9 +287,7 @@ def _publish_evaluation(
         "eval_mode": eval_mode,
     }
     cm = confusion_matrix(y_true, y_pred, labels=np.unique(y_true), normalize="true")
-    figures = _build_test_figures(
-        X_np, y_true, y_pred, df_meta["label_mapping"], embedding=embedding
-    )
+    figures = _build_test_figures(X_np, y_true, y_pred, df_meta["label_mapping"])
     if predictions_dir is not None and clusters is not None:
         save_df(
             _per_sample_scores(y_true, y_pred, y_proba, clusters),
@@ -310,38 +323,48 @@ def _evaluate_splits(
 
     A single split's `eval_idx` covers only the test rows, so the merged evaluation is
     test-only; k-fold's `eval_idx` values partition the whole universe, so it is not.
-    Embeddings (for the t-SNE latent figure) are only requested for a single split, as
-    today's k-fold path never returns one.
+    Each split also gets its own t-SNE latent figure, built from that split's own model
+    and eval rows — fold-scoped under k-fold, since the K latent spaces come from K
+    different models and are not mutually aligned.
     """
     kind = cfg.classifier.kind
     training_mod = _resolve_training_module(kind)
     context = _build_context(cfg, paths, df_meta, num_cols, cat_cols, label_col)
+    label_mapping = df_meta["label_mapping"]
 
     is_kfold = len(splits) > 1
-    want_embedding = not is_kfold
 
     y_pred = np.empty(len(universe), dtype=universe[label_col].to_numpy().dtype)
     y_proba = np.zeros((len(universe), df_meta["num_classes"]))
     covered = np.zeros(len(universe), dtype=bool)
-    embedding = None
 
     logger.info("Loading %d model(s) for %s evaluation ...", len(splits), eval_mode)
     for split in splits:
         eval_df = universe.iloc[split.eval_idx]
-        result = _predict_model(
+        fold_y_pred, fold_y_proba, embedding = _predict_model(
             training_mod,
             split.fold_dir,
             eval_df,
             feat_cols,
             kind,
             context,
-            return_embedding=want_embedding,
+            return_embedding=True,
         )
-        if want_embedding:
-            y_pred[split.eval_idx], y_proba[split.eval_idx], embedding = result
-        else:
-            y_pred[split.eval_idx], y_proba[split.eval_idx] = result
+        y_pred[split.eval_idx] = fold_y_pred
+        y_proba[split.eval_idx] = fold_y_proba
         covered[split.eval_idx] = True
+
+        if embedding is not None:
+            fold_y_true = eval_df[label_col].to_numpy()
+            latent_fig = _projection_figure(
+                embedding, fold_y_true, fold_y_pred, label_mapping
+            )
+            if latent_fig is not None:
+                bus.publish(
+                    LogBundle.from_dict(
+                        {f"figure/testing/{split.fold_prefix}latent": latent_fig}
+                    )
+                )
 
     eval_pos = np.flatnonzero(covered)
     eval_universe = universe.iloc[eval_pos]
@@ -361,7 +384,6 @@ def _evaluate_splits(
         y_proba[eval_pos],
         clusters,
         eval_mode=eval_mode,
-        embedding=embedding,
         predictions_dir=paths.outputs / "analysis/predictions",
     )
     if is_kfold:

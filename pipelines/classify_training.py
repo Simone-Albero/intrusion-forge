@@ -29,10 +29,12 @@ def _supports_random_state(clf_cls: type) -> bool:
         return False
 
 
-def _training_history_figures(history: dict[str, list[float]]) -> dict[str, Plot]:
+def _training_history_figures(
+    history: dict[str, list[float]], fold_prefix: str = ""
+) -> dict[str, Plot]:
     """One line plot per scalar in the per-step DL training history."""
     return {
-        f"figure/training/{name}_curve": line_plot(
+        f"figure/training/{fold_prefix}{name}_curve": line_plot(
             {name: values},
             y_label=name,
             show_legend=False,
@@ -202,8 +204,8 @@ def _fit_splits(
 ) -> None:
     """Fit one model per split and save it under its own directory.
 
-    Grid search and training-curve figures only apply to a single split: under k-fold
-    they would run/publish once per fold, which today's k-fold path never did.
+    Grid search and training-curve figures are published for every split (nested CV
+    under k-fold), under a fold-scoped key when there is more than one split.
     """
     kind = cfg.classifier.kind
     training_mod = _resolve_training_module(kind)
@@ -213,23 +215,32 @@ def _fit_splits(
 
     is_kfold = len(splits) > 1
     has_grid = "grid" in cfg.classifier and len(cfg.classifier.grid) > 0
+    fold_records = []
 
-    for split in splits:
+    for f, split in enumerate(splits):
         X, y = _prepare_train_payload(kind, split.train_df, feat_cols, label_col)
         fold_ctx = (
             {**context, "models_path": split.fold_dir} if kind == "dl" else context
         )
+        fold_record = {
+            "fold": f,
+            "n_train": len(split.train_df),
+            "n_eval": len(split.eval_idx),
+        }
+        fold_records.append(fold_record)
 
-        if has_grid and not is_kfold:
+        if has_grid:
             if kind != "ml":
                 raise NotImplementedError(
                     f"Grid search is only implemented for ML classifiers; got kind={kind!r}."
                 )
+            cv = cfg.grid_search.nested_cv if is_kfold else cfg.grid_search.cv
             logger.info(
-                "Grid search for %s — scoring=%s, cv=%d",
+                "Grid search for %s%s — scoring=%s, cv=%d",
                 cfg.classifier.name,
+                f" (fold {f + 1}/{len(splits)})" if is_kfold else "",
                 cfg.grid_search.scoring,
-                cfg.grid_search.cv,
+                cv,
             )
             model, summary = training_mod.grid_search_classifier(
                 name=cfg.classifier.name,
@@ -238,7 +249,7 @@ def _fit_splits(
                 X=X,
                 y=y,
                 scoring=cfg.grid_search.scoring,
-                cv=cfg.grid_search.cv,
+                cv=cv,
                 context=fold_ctx,
                 max_samples=cfg.grid_search.max_samples,
                 random_state=cfg.seed,
@@ -249,7 +260,13 @@ def _fit_splits(
                 summary["scoring"],
                 summary["best_score"],
             )
-            bus.publish(LogBundle.from_dict({"json/training/grid_search": summary}))
+            fold_record["best_params"] = summary["best_params"]
+            fold_record["best_score"] = summary["best_score"]
+            bus.publish(
+                LogBundle.from_dict(
+                    {f"json/training/{split.fold_prefix}grid_search": summary}
+                )
+            )
             training_mod.save_model(
                 model, split.fold_dir, name=cfg.classifier.name, params=params
             )
@@ -267,12 +284,30 @@ def _fit_splits(
                 split.fold_dir,
             )
             history = fit_summary.get("history", {})
-            if history and not is_kfold:
-                bus.publish(LogBundle.from_dict(_training_history_figures(history)))
+            if history:
+                bus.publish(
+                    LogBundle.from_dict(
+                        _training_history_figures(history, split.fold_prefix)
+                    )
+                )
 
     if is_kfold:
         logger.info(
             "k-fold OOF: trained %d fold models under %s", len(splits), paths.models
+        )
+        bus.publish(
+            LogBundle.from_dict(
+                {
+                    "json/training/kfold_summary": {
+                        "k_requested": cfg.kfold_splits,
+                        "k_effective": len(splits),
+                        "seed": cfg.seed,
+                        "balance": cfg.balance,
+                        "n_samples": cfg.n_samples,
+                        "folds": fold_records,
+                    }
+                }
+            )
         )
     else:
         logger.info("Model saved under %s", paths.models)

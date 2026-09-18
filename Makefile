@@ -24,7 +24,7 @@
 #
 # k-fold note: k-fold evaluation (kfold=true) is disabled automatically for LARGE_DATASETS
 #   (nb15_v2, bot_iot_v2, cic_2018_v2, ton_iot_v2) because millions of rows make it impractical.
-#   Override per-call: make classify DATA=cic_2018_v2 ... kfold=true
+#   Override per-call: make classify DATA=cic_2018_v2 ... KFOLD=true
 # ──────────────────────────────────────────────────────────────────────────────
 
 # Use venv if present; falls back to the active conda (or system) python otherwise.
@@ -72,13 +72,14 @@ DATASET_FORMATS := \
    synthetic_test:mixed
 
 # Datasets too large for k-fold evaluation (millions of rows → hours per classifier).
-# kfold=false is injected automatically for these; override with kfold=true if needed.
+# kfold=false is injected automatically for these; override with KFOLD=true if needed.
 LARGE_DATASETS := nb15_v2 bot_iot_v2 cic_2018_v2 ton_iot_v2
 
 HYDRA       := data=$(DATA) name=$(NAME) seed=$(SEED) classifier=$(CLASSIFIER) \
                clustering=$(CLUSTERING) distance=$(DISTANCE)
 FORCE_FLAG  := $(if $(FORCE),force=true,)
-KFOLD_FLAG  := $(if $(filter $(DATA),$(LARGE_DATASETS)),kfold=false,)
+KFOLD       ?= $(if $(filter $(DATA),$(LARGE_DATASETS)),false,true)
+KFOLD_FLAG  := kfold=$(KFOLD)
 
 # Cross-run paper comparisons: aggregate the full experiment tree under SWEEP_DIR into the
 # cross-run figures (rho by config / vs clusters, family importance, per-classifier and

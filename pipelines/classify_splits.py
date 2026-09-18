@@ -6,7 +6,7 @@ import pandas as pd
 from sklearn.model_selection import StratifiedKFold
 
 from src.core.paths import OutputPaths
-from src.domain.data.preprocessing import random_undersample_df
+from src.domain.data.preprocessing import random_undersample_df, subsample_df
 
 
 @dataclass
@@ -16,6 +16,7 @@ class _Split:
     train_df: pd.DataFrame
     fold_dir: Path
     eval_idx: np.ndarray
+    fold_prefix: str = ""
 
 
 def _oof_splits(base: pd.DataFrame, label_col: str, k: int, seed: int) -> list:
@@ -52,5 +53,11 @@ def _build_universe_and_splits(
             fold_train = random_undersample_df(
                 fold_train, label_col, random_state=cfg.seed
             )
-        splits.append(_Split(fold_train, paths.models / f"fold_{f}", te_idx))
+        if cfg.n_samples is not None:
+            fold_train = subsample_df(
+                fold_train, cfg.n_samples, random_state=cfg.seed, label_col=label_col
+            )
+        splits.append(
+            _Split(fold_train, paths.models / f"fold_{f}", te_idx, f"fold_{f}/")
+        )
     return universe, splits, "oof_kfold"
