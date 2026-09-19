@@ -13,11 +13,7 @@ from sklearn.metrics import (
 )
 
 from pipelines.classify_splits import _Split
-from pipelines.classify_training import (
-    _build_context,
-    _predict_model,
-    _resolve_training_module,
-)
+from pipelines.classify_training import build_trainer, predict_split
 from src.core.io import save_df
 from src.core.log import LogBundle, LogDispatcher
 from src.core.paths import OutputPaths
@@ -327,9 +323,7 @@ def _evaluate_splits(
     and eval rows — fold-scoped under k-fold, since the K latent spaces come from K
     different models and are not mutually aligned.
     """
-    kind = cfg.classifier.kind
-    training_mod = _resolve_training_module(kind)
-    context = _build_context(cfg, paths, df_meta, num_cols, cat_cols, label_col)
+    trainer = build_trainer(cfg, df_meta, num_cols, cat_cols, label_col)
     label_mapping = df_meta["label_mapping"]
 
     is_kfold = len(splits) > 1
@@ -341,13 +335,11 @@ def _evaluate_splits(
     logger.info("Loading %d model(s) for %s evaluation ...", len(splits), eval_mode)
     for split in splits:
         eval_df = universe.iloc[split.eval_idx]
-        fold_y_pred, fold_y_proba, embedding = _predict_model(
-            training_mod,
+        fold_y_pred, fold_y_proba, embedding = predict_split(
+            trainer,
             split.fold_dir,
             eval_df,
             feat_cols,
-            kind,
-            context,
             return_embedding=True,
         )
         y_pred[split.eval_idx] = fold_y_pred

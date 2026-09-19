@@ -1,4 +1,5 @@
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
@@ -9,6 +10,7 @@ from ignite.engine import Events
 from ignite.metrics import Average
 from torch.utils.data import DataLoader
 
+from src.domain.training.base import ComponentSpec
 from src.engine.dl.builders import (
     create_dataloader,
     create_dataset,
@@ -30,20 +32,7 @@ def _create_model(name: str, params: dict, device: torch.device) -> nn.Module:
     return DLClassifierFactory.create(name, params).to(device)
 
 
-def _make_loader(
-    df: pd.DataFrame,
-    num_cols: list[str],
-    cat_cols: list[str],
-    label_col: str,
-    dataloader_cfg,
-) -> DataLoader:
-    """Wrap a split in a DataLoader over the tabular dataset."""
-    return create_dataloader(
-        create_dataset(df, num_cols, cat_cols, label_col=[label_col]), dataloader_cfg
-    )
-
-
-def _build_trainer(model, loss_fn, optimizer, scheduler, device, max_grad_norm):
+def _build_train_engine(model, loss_fn, optimizer, scheduler, device, max_grad_norm):
     """Engine that trains for one epoch and collects per-step loss into history."""
     builder = (
         EngineBuilder(train_step)
@@ -61,7 +50,9 @@ def _build_trainer(model, loss_fn, optimizer, scheduler, device, max_grad_norm):
     return builder.build(), builder.history
 
 
-def _build_validator(model, loss_fn, device, trainer, patience, min_delta, models_path):
+def _build_validation_engine(
+    model, loss_fn, device, trainer, patience, min_delta, models_path
+):
     """Validator engine with early stopping + best-loss checkpointing."""
     return (
         EngineBuilder(eval_step)
@@ -80,146 +71,165 @@ def _build_validator(model, loss_fn, device, trainer, patience, min_delta, model
     )
 
 
-def fit_classifier(
-    name: str,
-    params: dict,
-    X: pd.DataFrame,
-    y: object = None,
-    *,
-    X_val: pd.DataFrame | None = None,
-    y_val: object = None,
-    context: dict | None = None,
-) -> tuple[nn.Module, dict]:
-    """Fit a DL classifier from the `context` blocks and return (model, {"history": ...})."""
-    if context is None:
-        raise ValueError("DL fit_classifier requires `context`.")
-    if X_val is None:
-        raise ValueError("DL fit_classifier requires `X_val`.")
+@dataclass
+class DLTrainer:
+    """Fits PyTorch classifiers through Ignite engines over a tabular dataset."""
 
-    device = context["device"]
-    df_meta = context["df_meta"]
-    num_cols = context["num_cols"]
-    cat_cols = context["cat_cols"]
-    label_col = context["label_col"]
-    loss_cfg = context["loss_cfg"]
-    optimizer_cfg = context["optimizer_cfg"]
-    scheduler_cfg = context["scheduler_cfg"]
-    loops_cfg = context["loops_cfg"]
-    models_path = Path(context["models_path"])
+    device: torch.device
+    num_cols: list[str]
+    cat_cols: list[str]
+    label_col: str
+    class_weights: list[float] | None
+    loss: ComponentSpec
+    optimizer: ComponentSpec
+    scheduler: ComponentSpec
+    epochs: int
+    max_grad_norm: float
+    patience: int
+    min_delta: float
+    train_loader_params: dict
+    val_loader_params: dict
 
-    loss_params = dict(loss_cfg.params)
-    loss_params.setdefault("class_weight", df_meta["class_weights"])
+    def features(self, df: pd.DataFrame, feat_cols: list[str]) -> pd.DataFrame:
+        """The whole frame: the dataset selects its own feature columns."""
+        return df
 
-    model = _create_model(name, params, device)
-    loss_fn = create_loss(loss_cfg.name, loss_params, device)
+    def prepare(
+        self, df: pd.DataFrame, feat_cols: list[str], label_col: str
+    ) -> tuple[pd.DataFrame, None]:
+        """The whole frame: the dataset selects its own feature and label columns."""
+        return df, None
 
-    train_loader = _make_loader(
-        X, num_cols, cat_cols, label_col, loops_cfg.training.dataloader
-    )
-    val_loader = _make_loader(
-        X_val, num_cols, cat_cols, label_col, loops_cfg.validation.dataloader
-    )
-
-    optimizer = create_optimizer(
-        optimizer_cfg.name, optimizer_cfg.params, model, loss_fn=loss_fn
-    )
-    scheduler = create_scheduler(
-        scheduler_cfg.name, scheduler_cfg.params, optimizer, train_loader
-    )
-
-    trainer, history = _build_trainer(
-        model,
-        loss_fn,
-        optimizer,
-        scheduler,
-        device,
-        loops_cfg.training.max_grad_norm,
-    )
-    validator = _build_validator(
-        model,
-        loss_fn,
-        device,
-        trainer,
-        loops_cfg.training.early_stopping.patience,
-        loops_cfg.training.early_stopping.min_delta,
-        models_path,
-    )
-
-    @trainer.on(Events.EPOCH_COMPLETED)
-    def _run_validation(engine) -> None:
-        logger.info(
-            "Epoch [%d] Train Loss: %.6f",
-            engine.state.epoch,
-            engine.state.metrics["loss"],
-        )
-        validator.run(val_loader)
-        logger.info(
-            "Epoch [%d] Val Loss: %.6f",
-            engine.state.epoch,
-            validator.state.metrics["loss"],
+    def _loader(self, df: pd.DataFrame, params: dict) -> DataLoader:
+        """Wrap a split in a DataLoader over the tabular dataset."""
+        return create_dataloader(
+            create_dataset(
+                df, self.num_cols, self.cat_cols, label_col=[self.label_col]
+            ),
+            params,
         )
 
-    trainer.run(train_loader, max_epochs=loops_cfg.training.epochs)
+    def fit(
+        self,
+        name: str,
+        params: dict,
+        X: pd.DataFrame,
+        y: object = None,
+        *,
+        X_val: pd.DataFrame,
+        save_dir: Path,
+    ) -> tuple[nn.Module, dict]:
+        """Train with early stopping and return the best checkpoint plus its loss history."""
+        models_path = Path(save_dir)
 
-    load_best_checkpoint(models_path, model, device)
-    logger.info("Best checkpoint reloaded after training.")
+        loss_params = dict(self.loss.params)
+        loss_params.setdefault("class_weight", self.class_weights)
 
-    return model, {"history": history}
+        model = _create_model(name, params, self.device)
+        loss_fn = create_loss(self.loss.name, loss_params, self.device)
 
+        train_loader = self._loader(X, self.train_loader_params)
+        val_loader = self._loader(X_val, self.val_loader_params)
 
-def predict_with_proba(
-    model: nn.Module,
-    X: pd.DataFrame,
-    *,
-    context: dict | None = None,
-    return_embedding: bool = False,
-) -> tuple:
-    """Predict a DataFrame → (y_pred, y_proba), plus the latent embedding on request."""
-    if context is None:
-        raise ValueError("DL predict_with_proba requires `context`.")
-    device = context["device"]
-    num_cols = context["num_cols"]
-    cat_cols = context["cat_cols"]
+        optimizer = create_optimizer(
+            self.optimizer.name, self.optimizer.params, model, loss_fn=loss_fn
+        )
+        scheduler = create_scheduler(
+            self.scheduler.name, self.scheduler.params, optimizer, train_loader
+        )
 
-    inputs = df_to_tensors(
-        X,
-        [num_cols, cat_cols],
-        dtypes=[torch.float32, torch.long],
-    )
-    output = run_model(model, inputs, device)
-    probs = F.softmax(output["logits"].cpu(), dim=1)
-    y_pred = probs.argmax(dim=1).numpy()
-    y_proba = probs.numpy()
-    if return_embedding:
-        z = output["z"].cpu().numpy() if "z" in output else None
-        return y_pred, y_proba, z
-    return y_pred, y_proba
+        trainer, history = _build_train_engine(
+            model, loss_fn, optimizer, scheduler, self.device, self.max_grad_norm
+        )
+        validator = _build_validation_engine(
+            model,
+            loss_fn,
+            self.device,
+            trainer,
+            self.patience,
+            self.min_delta,
+            models_path,
+        )
 
+        @trainer.on(Events.EPOCH_COMPLETED)
+        def _run_validation(engine) -> None:
+            logger.info(
+                "Epoch [%d] Train Loss: %.6f",
+                engine.state.epoch,
+                engine.state.metrics["loss"],
+            )
+            validator.run(val_loader)
+            logger.info(
+                "Epoch [%d] Val Loss: %.6f",
+                engine.state.epoch,
+                validator.state.metrics["loss"],
+            )
 
-def save_model(
-    model: nn.Module,
-    path: Path,
-    *,
-    name: str = "",
-    params: dict | None = None,
-) -> None:
-    """Save the state dict and its metadata to `path / model.pt`."""
-    path = Path(path)
-    path.mkdir(parents=True, exist_ok=True)
-    torch.save(
-        {"state_dict": model.state_dict(), "name": name, "params": params or {}},
-        path / "model.pt",
-    )
+        trainer.run(train_loader, max_epochs=self.epochs)
 
+        load_best_checkpoint(models_path, model, self.device)
+        logger.info("Best checkpoint reloaded after training.")
 
-def load_model(path: Path, *, context: dict | None = None) -> nn.Module:
-    """Load the model from `path / model.pt` onto the context's device."""
-    if context is None:
-        raise ValueError("DL load_model requires `context` with `device`.")
-    device = context["device"]
-    ckpt = torch.load(
-        Path(path) / "model.pt", map_location="cpu", weights_only=True
-    )
-    model = _create_model(ckpt["name"], ckpt["params"], device)
-    model.load_state_dict(ckpt["state_dict"])
-    return model
+        return model, {"history": history}
+
+    def grid_search(
+        self,
+        name: str,
+        params: dict,
+        grid: dict,
+        X: pd.DataFrame,
+        y: object = None,
+        *,
+        scoring: str = "f1_macro",
+        cv: int = 5,
+        max_samples: int | None = None,
+        random_state: int = 42,
+    ) -> tuple[nn.Module, dict]:
+        """Not available: grid search is implemented for ML classifiers only."""
+        raise NotImplementedError(
+            "Grid search is implemented for ML classifiers only; "
+            f"{name!r} is a DL classifier."
+        )
+
+    def predict(
+        self, model: nn.Module, X: pd.DataFrame, *, return_embedding: bool = False
+    ) -> tuple:
+        """Predict a DataFrame → (y_pred, y_proba), plus the latent embedding on request."""
+        inputs = df_to_tensors(
+            X,
+            [self.num_cols, self.cat_cols],
+            dtypes=[torch.float32, torch.long],
+        )
+        output = run_model(model, inputs, self.device)
+        probs = F.softmax(output["logits"].cpu(), dim=1)
+        y_pred = probs.argmax(dim=1).numpy()
+        y_proba = probs.numpy()
+        if return_embedding:
+            z = output["z"].cpu().numpy() if "z" in output else None
+            return y_pred, y_proba, z
+        return y_pred, y_proba
+
+    def save(
+        self,
+        model: nn.Module,
+        path: Path,
+        *,
+        name: str = "",
+        params: dict | None = None,
+    ) -> None:
+        """Save the state dict and its metadata to `path / model.pt`."""
+        path = Path(path)
+        path.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {"state_dict": model.state_dict(), "name": name, "params": params or {}},
+            path / "model.pt",
+        )
+
+    def load(self, path: Path) -> nn.Module:
+        """Load the model from `path / model.pt` onto this trainer's device."""
+        ckpt = torch.load(
+            Path(path) / "model.pt", map_location="cpu", weights_only=True
+        )
+        model = _create_model(ckpt["name"], ckpt["params"], self.device)
+        model.load_state_dict(ckpt["state_dict"])
+        return model
