@@ -9,9 +9,13 @@ import pandas as pd
 import torch
 
 from pipelines import paths_from_cfg
-from pipelines.classify_evaluation import _evaluate_splits
-from pipelines.classify_splits import _build_universe_and_splits
-from pipelines.classify_training import _fit_splits
+from pipelines.classify_evaluation import publish_evaluation
+from pipelines.classify_training import (
+    ClassifyContext,
+    build_splits,
+    build_trainer,
+    train_splits,
+)
 from src.core.config import load_config, save_config
 from src.core.io import load_listed_dfs
 from src.core.log import (
@@ -44,8 +48,6 @@ class DataConfig:
 
     processed_data_path: Path
     extension: str
-    num_cols: list[str]
-    cat_cols: list[str]
     label_col: str
     n_samples: int | None
     balance: str = "undersample"
@@ -103,8 +105,6 @@ def classify(cfg) -> None:
     data = DataConfig(
         processed_data_path=paths.processed_data,
         extension=cfg.data.extension,
-        num_cols=num_cols,
-        cat_cols=cat_cols,
         label_col=label_col,
         n_samples=cfg.n_samples,
         balance=cfg.balance,
@@ -126,34 +126,18 @@ def classify(cfg) -> None:
     bus.subscribe(PickleSubscriber(paths.pickle))
     bus.subscribe(FilesystemFigureSubscriber(paths.figures))
 
-    universe, splits, eval_mode = _build_universe_and_splits(
-        cfg, paths, train_df, test_df, label_col
+    context = ClassifyContext(
+        cfg=cfg,
+        paths=paths,
+        trainer=build_trainer(cfg, df_meta, num_cols, cat_cols, label_col),
+        feat_cols=feat_cols,
+        label_col=label_col,
+        df_meta=df_meta,
+        bus=bus,
     )
-    _fit_splits(
-        cfg,
-        paths,
-        splits,
-        val_df,
-        feat_cols,
-        label_col,
-        df_meta,
-        num_cols,
-        cat_cols,
-        bus,
-    )
-    _evaluate_splits(
-        cfg,
-        paths,
-        universe,
-        splits,
-        eval_mode,
-        feat_cols,
-        label_col,
-        df_meta,
-        num_cols,
-        cat_cols,
-        bus,
-    )
+    plan = build_splits(cfg, paths, train_df, test_df, label_col)
+    predictions = train_splits(context, plan, val_df)
+    publish_evaluation(context, plan, predictions)
 
     logger.info("All stages completed.")
 

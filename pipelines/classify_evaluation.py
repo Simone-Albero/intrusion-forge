@@ -1,6 +1,5 @@
 import logging
 from collections.abc import Callable
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -12,11 +11,9 @@ from sklearn.metrics import (
     recall_score,
 )
 
-from pipelines.classify_splits import _Split
-from pipelines.classify_training import build_trainer, predict_split
+from pipelines.classify_training import ClassifyContext, SplitPlan, SplitPredictions
 from src.core.io import save_df
-from src.core.log import LogBundle, LogDispatcher
-from src.core.paths import OutputPaths
+from src.core.log import LogBundle
 from src.core.utils import timed
 from src.domain.analysis.confidence import mcp_risk
 from src.domain.analysis.failure import is_failure
@@ -261,35 +258,75 @@ def _build_test_figures(
     return figures
 
 
-def _publish_evaluation(
-    bus: LogDispatcher,
-    df_meta: dict,
-    X_np: np.ndarray,
-    y_true: np.ndarray,
-    y_pred: np.ndarray,
-    y_proba: np.ndarray,
-    clusters: np.ndarray | None,
-    *,
-    eval_mode: str,
-    predictions_dir: Path | None = None,
+def _latent_figures(
+    plan: SplitPlan, predictions: SplitPredictions, label_col: str, label_mapping: dict
+) -> dict[str, Plot]:
+    """One t-SNE latent scatter per split, keyed under that split's own prefix.
+
+    The K latent spaces come from K different models and are not mutually aligned, so
+    they stay fold-scoped instead of being merged into one figure.
+    """
+    figures: dict[str, Plot] = {}
+    for split, embedding in zip(plan.splits, predictions.embeddings):
+        if embedding is None:
+            continue
+        eval_df = plan.universe.iloc[split.eval_idx]
+        figure = _projection_figure(
+            embedding,
+            eval_df[label_col].to_numpy(),
+            predictions.y_pred[split.eval_idx],
+            label_mapping,
+        )
+        if figure is not None:
+            figures[f"figure/testing/{split.fold_prefix}latent"] = figure
+    return figures
+
+
+@timed
+def publish_evaluation(
+    context: ClassifyContext, plan: SplitPlan, predictions: SplitPredictions
 ) -> None:
-    """Build metrics, confusion matrix, figures and per-sample dumps, then publish them."""
+    """Turn the merged out-of-fold predictions into metrics, figures and per-sample dumps.
+
+    A single split's `eval_idx` covers only the test rows, so the merged evaluation is
+    test-only; k-fold's `eval_idx` values partition the whole universe, so it is not.
+    """
+    label_col, df_meta = context.label_col, context.df_meta
+    label_mapping = df_meta["label_mapping"]
+
+    eval_pos = np.flatnonzero(predictions.covered)
+    eval_universe = plan.universe.iloc[eval_pos]
+    y_true = eval_universe[label_col].to_numpy()
+    y_pred = predictions.y_pred[eval_pos]
+    y_proba = predictions.y_proba[eval_pos]
+    clusters = (
+        eval_universe["cluster"].to_numpy()
+        if "cluster" in eval_universe.columns
+        else None
+    )
+
     full_metrics = {
         **_compute_classification_metrics(y_true, y_pred),
-        "eval_mode": eval_mode,
+        "eval_mode": plan.mode,
     }
     pred_infos = {
         **_evaluate_predictions(y_true, y_pred, y_proba, clusters),
-        "eval_mode": eval_mode,
+        "eval_mode": plan.mode,
     }
     cm = confusion_matrix(y_true, y_pred, labels=np.unique(y_true), normalize="true")
-    figures = _build_test_figures(X_np, y_true, y_pred, df_meta["label_mapping"])
-    if predictions_dir is not None and clusters is not None:
+    figures = {
+        **_build_test_figures(
+            eval_universe[context.feat_cols].to_numpy(), y_true, y_pred, label_mapping
+        ),
+        **_latent_figures(plan, predictions, label_col, label_mapping),
+    }
+    if clusters is not None:
         save_df(
             _per_sample_scores(y_true, y_pred, y_proba, clusters),
-            predictions_dir / "oof_samples.parquet",
+            context.paths.outputs / "analysis/predictions/oof_samples.parquet",
         )
-    bus.publish(
+
+    context.bus.publish(
         LogBundle.from_dict(
             {
                 **figures,
@@ -299,88 +336,9 @@ def _publish_evaluation(
             }
         )
     )
-
-
-@timed
-def _evaluate_splits(
-    cfg,
-    paths: OutputPaths,
-    universe: pd.DataFrame,
-    splits: list[_Split],
-    eval_mode: str,
-    feat_cols: list[str],
-    label_col: str,
-    df_meta: dict,
-    num_cols: list[str],
-    cat_cols: list[str],
-    bus: LogDispatcher,
-) -> None:
-    """Predict each split's held-out rows, merge them, and publish a single evaluation.
-
-    A single split's `eval_idx` covers only the test rows, so the merged evaluation is
-    test-only; k-fold's `eval_idx` values partition the whole universe, so it is not.
-    Each split also gets its own t-SNE latent figure, built from that split's own model
-    and eval rows — fold-scoped under k-fold, since the K latent spaces come from K
-    different models and are not mutually aligned.
-    """
-    trainer = build_trainer(cfg, df_meta, num_cols, cat_cols, label_col)
-    label_mapping = df_meta["label_mapping"]
-
-    is_kfold = len(splits) > 1
-
-    y_pred = np.empty(len(universe), dtype=universe[label_col].to_numpy().dtype)
-    y_proba = np.zeros((len(universe), df_meta["num_classes"]))
-    covered = np.zeros(len(universe), dtype=bool)
-
-    logger.info("Loading %d model(s) for %s evaluation ...", len(splits), eval_mode)
-    for split in splits:
-        eval_df = universe.iloc[split.eval_idx]
-        fold_y_pred, fold_y_proba, embedding = predict_split(
-            trainer,
-            split.fold_dir,
-            eval_df,
-            feat_cols,
-            return_embedding=True,
-        )
-        y_pred[split.eval_idx] = fold_y_pred
-        y_proba[split.eval_idx] = fold_y_proba
-        covered[split.eval_idx] = True
-
-        if embedding is not None:
-            fold_y_true = eval_df[label_col].to_numpy()
-            latent_fig = _projection_figure(
-                embedding, fold_y_true, fold_y_pred, label_mapping
-            )
-            if latent_fig is not None:
-                bus.publish(
-                    LogBundle.from_dict(
-                        {f"figure/testing/{split.fold_prefix}latent": latent_fig}
-                    )
-                )
-
-    eval_pos = np.flatnonzero(covered)
-    eval_universe = universe.iloc[eval_pos]
-    y_true = eval_universe[label_col].to_numpy()
-    clusters = (
-        eval_universe["cluster"].to_numpy()
-        if "cluster" in eval_universe.columns
-        else None
-    )
-
-    _publish_evaluation(
-        bus,
-        df_meta,
-        eval_universe[feat_cols].to_numpy(),
-        y_true,
-        y_pred[eval_pos],
-        y_proba[eval_pos],
-        clusters,
-        eval_mode=eval_mode,
-        predictions_dir=paths.outputs / "analysis/predictions",
-    )
-    if is_kfold:
+    if plan.is_kfold:
         logger.info(
             "k-fold OOF evaluation: %d samples over %d folds",
             len(eval_pos),
-            len(splits),
+            len(plan.splits),
         )

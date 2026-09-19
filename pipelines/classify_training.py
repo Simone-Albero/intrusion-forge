@@ -1,16 +1,19 @@
 import inspect
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import torch
 from omegaconf import OmegaConf
+from sklearn.model_selection import StratifiedKFold
 
-from pipelines.classify_splits import _Split
 from src.core.config import to_container
 from src.core.log import LogBundle, LogDispatcher
 from src.core.paths import OutputPaths
 from src.core.utils import timed
+from src.domain.data.preprocessing import random_undersample_df, subsample_df
 from src.domain.plot.base import Plot
 from src.domain.plot.primitives import line_plot
 from src.domain.training.base import ComponentSpec, Trainer
@@ -19,6 +22,101 @@ from src.domain.training.ml import MLTrainer
 from src.engine.ml.model import MLClassifierFactory
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class Split:
+    """One split: the training rows and the universe positions it evaluates."""
+
+    train_df: pd.DataFrame
+    fold_dir: Path
+    eval_idx: np.ndarray
+    fold_prefix: str = ""
+
+
+@dataclass
+class SplitPlan:
+    """The evaluation universe and the splits drawn from it."""
+
+    universe: pd.DataFrame
+    splits: list[Split]
+
+    @property
+    def is_kfold(self) -> bool:
+        """True when more than one split covers the universe out of fold."""
+        return len(self.splits) > 1
+
+    @property
+    def mode(self) -> str:
+        """Evaluation mode recorded in the published artifacts."""
+        return "oof_kfold" if self.is_kfold else "single_split"
+
+
+@dataclass
+class SplitPredictions:
+    """Out-of-fold predictions over the universe, plus each split's latent embedding."""
+
+    y_pred: np.ndarray
+    y_proba: np.ndarray
+    covered: np.ndarray
+    embeddings: list[np.ndarray | None]
+
+
+@dataclass
+class ClassifyContext:
+    """What both passes of the classify stage share."""
+
+    cfg: object
+    paths: OutputPaths
+    trainer: Trainer
+    feat_cols: list[str]
+    label_col: str
+    df_meta: dict
+    bus: LogDispatcher
+
+
+def _oof_splits(base: pd.DataFrame, label_col: str, k: int, seed: int) -> list:
+    """Deterministic stratified OOF folds over `base`; K capped to the rarest class."""
+    y = base[label_col].to_numpy()
+    k = min(k, int(np.unique(y, return_counts=True)[1].min()))
+    if k < 2:
+        raise ValueError(f"k-fold OOF needs >=2 samples per class, got k={k}.")
+    return list(
+        StratifiedKFold(n_splits=k, shuffle=True, random_state=seed).split(base, y)
+    )
+
+
+def build_splits(
+    cfg,
+    paths: OutputPaths,
+    train_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    label_col: str,
+) -> SplitPlan:
+    """Build the evaluation universe and its splits: the single test split, or k-fold OOF."""
+    universe = pd.concat([train_df, test_df], ignore_index=True)
+
+    if not cfg.kfold:
+        eval_idx = np.arange(len(train_df), len(universe))
+        return SplitPlan(universe, [Split(train_df, paths.models, eval_idx)])
+
+    splits = []
+    for f, (tr_idx, te_idx) in enumerate(
+        _oof_splits(universe, label_col, cfg.kfold_splits, cfg.seed)
+    ):
+        fold_train = universe.iloc[tr_idx]
+        if cfg.balance == "undersample":
+            fold_train = random_undersample_df(
+                fold_train, label_col, random_state=cfg.seed
+            )
+        if cfg.n_samples is not None:
+            fold_train = subsample_df(
+                fold_train, cfg.n_samples, random_state=cfg.seed, label_col=label_col
+            )
+        splits.append(
+            Split(fold_train, paths.models / f"fold_{f}", te_idx, f"fold_{f}/")
+        )
+    return SplitPlan(universe, splits)
 
 
 def _supports_random_state(clf_cls: type) -> bool:
@@ -119,135 +217,122 @@ def _resolve_fit_params(
     return params
 
 
-def _fit_model(
-    trainer: Trainer,
-    name: str,
+def _train_split(
+    context: ClassifyContext,
+    plan: SplitPlan,
+    split: Split,
+    fold: int,
     params: dict,
-    X,
-    y,
     X_val,
-    save_dir: Path,
 ) -> tuple[object, dict]:
-    """Fit one classifier on (X, y) and save it under `save_dir`."""
-    save_dir.mkdir(parents=True, exist_ok=True)
-    model, summary = trainer.fit(name, params, X, y, X_val=X_val, save_dir=save_dir)
-    trainer.save(model, save_dir, name=name, params=params)
-    return model, summary
+    """Fit one split's model, publishing that split's training artifacts."""
+    cfg, trainer, bus = context.cfg, context.trainer, context.bus
+    record = {
+        "fold": fold,
+        "n_train": len(split.train_df),
+        "n_eval": len(split.eval_idx),
+    }
+    X, y = trainer.prepare(split.train_df, context.feat_cols, context.label_col)
 
+    if "grid" in cfg.classifier and len(cfg.classifier.grid) > 0:
+        cv = cfg.grid_search.nested_cv if plan.is_kfold else cfg.grid_search.cv
+        logger.info(
+            "Grid search for %s%s — scoring=%s, cv=%d",
+            cfg.classifier.name,
+            f" (fold {fold + 1}/{len(plan.splits)})" if plan.is_kfold else "",
+            cfg.grid_search.scoring,
+            cv,
+        )
+        model, summary = trainer.grid_search(
+            cfg.classifier.name,
+            params,
+            dict(cfg.classifier.grid),
+            X,
+            y,
+            scoring=cfg.grid_search.scoring,
+            cv=cv,
+            max_samples=cfg.grid_search.max_samples,
+            random_state=cfg.seed,
+        )
+        logger.info(
+            "Best params: %s | Best score (%s): %.4f",
+            summary["best_params"],
+            summary["scoring"],
+            summary["best_score"],
+        )
+        record["best_params"] = summary["best_params"]
+        record["best_score"] = summary["best_score"]
+        bus.publish(
+            LogBundle.from_dict(
+                {f"json/training/{split.fold_prefix}grid_search": summary}
+            )
+        )
+        trainer.save(model, split.fold_dir, name=cfg.classifier.name, params=params)
+        return model, record
 
-def predict_split(
-    trainer: Trainer,
-    model_dir: Path,
-    df: pd.DataFrame,
-    feat_cols: list[str],
-    *,
-    return_embedding: bool = False,
-) -> tuple:
-    """Load the model in `model_dir` and predict `df` → (y_pred, y_proba[, embedding])."""
-    model = trainer.load(model_dir)
-    return trainer.predict(
-        model, trainer.features(df, feat_cols), return_embedding=return_embedding
+    logger.info("Training %s ...", cfg.classifier.name)
+    split.fold_dir.mkdir(parents=True, exist_ok=True)
+    model, summary = trainer.fit(
+        cfg.classifier.name, params, X, y, X_val=X_val, save_dir=split.fold_dir
     )
+    trainer.save(model, split.fold_dir, name=cfg.classifier.name, params=params)
+    history = summary.get("history", {})
+    if history:
+        bus.publish(
+            LogBundle.from_dict(_training_history_figures(history, split.fold_prefix))
+        )
+    return model, record
 
 
 @timed
-def _fit_splits(
-    cfg,
-    paths: OutputPaths,
-    splits: list[_Split],
-    val_df: pd.DataFrame,
-    feat_cols: list[str],
-    label_col: str,
-    df_meta: dict,
-    num_cols: list[str],
-    cat_cols: list[str],
-    bus: LogDispatcher,
-) -> None:
-    """Fit one model per split and save it under its own directory.
+def train_splits(
+    context: ClassifyContext, plan: SplitPlan, val_df: pd.DataFrame
+) -> SplitPredictions:
+    """Fit one model per split and predict the universe rows that split holds out.
 
-    Grid search and training-curve figures are published for every split (nested CV
-    under k-fold), under a fold-scoped key when there is more than one split.
+    Each model is used for prediction while still in memory and then dropped, so one
+    model is held at a time and no split's model is written and read back.
     """
-    trainer = build_trainer(cfg, df_meta, num_cols, cat_cols, label_col)
-    params = _resolve_fit_params(cfg, cfg.classifier.kind, num_cols, cat_cols, df_meta)
-    X_val = trainer.features(val_df, feat_cols)
+    cfg, trainer = context.cfg, context.trainer
+    params = _resolve_fit_params(
+        cfg, cfg.classifier.kind, trainer.num_cols, trainer.cat_cols, context.df_meta
+    )
+    X_val = trainer.features(val_df, context.feat_cols)
 
-    is_kfold = len(splits) > 1
-    has_grid = "grid" in cfg.classifier and len(cfg.classifier.grid) > 0
+    universe = plan.universe
+    y_pred = np.empty(len(universe), dtype=universe[context.label_col].to_numpy().dtype)
+    y_proba = np.zeros((len(universe), context.df_meta["num_classes"]))
+    covered = np.zeros(len(universe), dtype=bool)
+    embeddings: list[np.ndarray | None] = []
     fold_records = []
 
-    for f, split in enumerate(splits):
-        X, y = trainer.prepare(split.train_df, feat_cols, label_col)
-        fold_record = {
-            "fold": f,
-            "n_train": len(split.train_df),
-            "n_eval": len(split.eval_idx),
-        }
-        fold_records.append(fold_record)
+    for fold, split in enumerate(plan.splits):
+        model, record = _train_split(context, plan, split, fold, params, X_val)
+        fold_records.append(record)
 
-        if has_grid:
-            cv = cfg.grid_search.nested_cv if is_kfold else cfg.grid_search.cv
-            logger.info(
-                "Grid search for %s%s — scoring=%s, cv=%d",
-                cfg.classifier.name,
-                f" (fold {f + 1}/{len(splits)})" if is_kfold else "",
-                cfg.grid_search.scoring,
-                cv,
-            )
-            model, summary = trainer.grid_search(
-                cfg.classifier.name,
-                params,
-                dict(cfg.classifier.grid),
-                X,
-                y,
-                scoring=cfg.grid_search.scoring,
-                cv=cv,
-                max_samples=cfg.grid_search.max_samples,
-                random_state=cfg.seed,
-            )
-            logger.info(
-                "Best params: %s | Best score (%s): %.4f",
-                summary["best_params"],
-                summary["scoring"],
-                summary["best_score"],
-            )
-            fold_record["best_params"] = summary["best_params"]
-            fold_record["best_score"] = summary["best_score"]
-            bus.publish(
-                LogBundle.from_dict(
-                    {f"json/training/{split.fold_prefix}grid_search": summary}
-                )
-            )
-            trainer.save(model, split.fold_dir, name=cfg.classifier.name, params=params)
-        else:
-            logger.info("Training %s ...", cfg.classifier.name)
-            _, fit_summary = _fit_model(
-                trainer,
-                cfg.classifier.name,
-                params,
-                X,
-                y,
-                X_val,
-                split.fold_dir,
-            )
-            history = fit_summary.get("history", {})
-            if history:
-                bus.publish(
-                    LogBundle.from_dict(
-                        _training_history_figures(history, split.fold_prefix)
-                    )
-                )
-
-    if is_kfold:
-        logger.info(
-            "k-fold OOF: trained %d fold models under %s", len(splits), paths.models
+        eval_df = universe.iloc[split.eval_idx]
+        fold_pred, fold_proba, embedding = trainer.predict(
+            model,
+            trainer.features(eval_df, context.feat_cols),
+            return_embedding=True,
         )
-        bus.publish(
+        y_pred[split.eval_idx] = fold_pred
+        y_proba[split.eval_idx] = fold_proba
+        covered[split.eval_idx] = True
+        embeddings.append(embedding)
+
+    if plan.is_kfold:
+        logger.info(
+            "k-fold OOF: trained %d fold models under %s",
+            len(plan.splits),
+            context.paths.models,
+        )
+        context.bus.publish(
             LogBundle.from_dict(
                 {
                     "json/training/kfold_summary": {
                         "k_requested": cfg.kfold_splits,
-                        "k_effective": len(splits),
+                        "k_effective": len(plan.splits),
                         "seed": cfg.seed,
                         "balance": cfg.balance,
                         "n_samples": cfg.n_samples,
@@ -257,4 +342,6 @@ def _fit_splits(
             )
         )
     else:
-        logger.info("Model saved under %s", paths.models)
+        logger.info("Model saved under %s", context.paths.models)
+
+    return SplitPredictions(y_pred, y_proba, covered, embeddings)
