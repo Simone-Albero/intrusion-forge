@@ -40,7 +40,7 @@ def compute_cluster_complexity(
     top_k_clusters: int,
     metric: str,
     random_state: int,
-) -> dict:
+) -> list[dict]:
     """Compute per-cluster complexity measures and attach the class of each cluster."""
     logger.info("Computing cluster-level complexity measures ...")
     complexity = compute_complexity_from_graph(
@@ -52,10 +52,14 @@ def compute_cluster_complexity(
         random_state=random_state,
     )
 
-    return {
-        str(cid): {**measures, "cluster_class": cluster_to_class.get(str(cid))}
+    return [
+        {
+            "cluster_id": int(cid),
+            **measures,
+            "cluster_class": cluster_to_class.get(str(cid)),
+        }
         for cid, measures in complexity.items()
-    }
+    ]
 
 
 @timed
@@ -65,10 +69,10 @@ def compute_class_complexity(
     top_k_clusters: int,
     metric: str,
     random_state: int,
-) -> dict:
+) -> list[dict]:
     """Compute per-class complexity measures, treating each class as a partition."""
     logger.info("Computing class-level complexity measures ...")
-    return compute_complexity_from_graph(
+    complexity = compute_complexity_from_graph(
         graph,
         graph.y_class,
         top_k_clusters=top_k_clusters,
@@ -76,6 +80,7 @@ def compute_class_complexity(
         noise_cluster_ids=None,
         random_state=random_state,
     )
+    return [{"class_id": int(cid), **measures} for cid, measures in complexity.items()]
 
 
 def main() -> None:

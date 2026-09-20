@@ -275,19 +275,19 @@ def _first_difference(previous: dict, current: dict) -> str | None:
     return None
 
 
-def _fingerprint_path(paths: OutputPaths) -> Path:
-    """Where the fingerprint of the models currently on disk lives."""
-    return paths.outputs / "training/fingerprint.json"
+def _training_record_path(paths: OutputPaths) -> Path:
+    """Where the record of the models currently on disk lives."""
+    return paths.outputs / "training/folds.json"
 
 
-def _invalidate_fingerprint(paths: OutputPaths) -> None:
-    """Drop the fingerprint before retraining.
+def _invalidate_training_record(paths: OutputPaths) -> None:
+    """Drop the training record before retraining.
 
     Models are overwritten one split at a time, so a run interrupted mid-loop leaves a
-    mix of old and new models on disk. Without this, the surviving fingerprint would
-    still describe the old ones and the next run would reuse that mix.
+    mix of old and new models on disk. Without this, the surviving record would still
+    describe the old ones and the next run would reuse that mix.
     """
-    _fingerprint_path(paths).unlink(missing_ok=True)
+    _training_record_path(paths).unlink(missing_ok=True)
 
 
 def _can_reuse(context: ClassifyContext, plan: SplitPlan, fingerprint: dict) -> bool:
@@ -296,11 +296,12 @@ def _can_reuse(context: ClassifyContext, plan: SplitPlan, fingerprint: dict) -> 
     if context.cfg.force:
         return False
 
-    previous_path = _fingerprint_path(context.paths)
+    previous_path = _training_record_path(context.paths)
     if not previous_path.exists():
         return False
 
-    changed = _first_difference(load_from_json(previous_path), fingerprint)
+    previous = load_from_json(previous_path).get("fingerprint", {})
+    changed = _first_difference(previous, fingerprint)
     if changed is not None:
         logger.info("[RETRAIN] training config changed (%s) — retraining.", changed)
         return False
@@ -321,6 +322,11 @@ def _can_reuse(context: ClassifyContext, plan: SplitPlan, fingerprint: dict) -> 
     return True
 
 
+def _grid_cv(cfg, plan: SplitPlan) -> int:
+    """Inner CV of the grid search: smaller under k-fold, which already resamples."""
+    return cfg.grid_search.nested_cv if plan.is_kfold else cfg.grid_search.cv
+
+
 def _train_split(
     context: ClassifyContext,
     plan: SplitPlan,
@@ -328,8 +334,8 @@ def _train_split(
     fold: int,
     params: dict,
     X_val,
-) -> tuple[object, dict]:
-    """Fit one split's model, publishing that split's training artifacts."""
+) -> tuple[object, dict, list]:
+    """Fit one split's model, returning it with its fold record and grid-search rows."""
     cfg, trainer, bus = context.cfg, context.trainer, context.bus
     record = {
         "fold": fold,
@@ -339,7 +345,7 @@ def _train_split(
     X, y = trainer.prepare(split.train_df, context.feat_cols, context.label_col)
 
     if "grid" in cfg.classifier and len(cfg.classifier.grid) > 0:
-        cv = cfg.grid_search.nested_cv if plan.is_kfold else cfg.grid_search.cv
+        cv = _grid_cv(cfg, plan)
         logger.info(
             "Grid search for %s%s — scoring=%s, cv=%d",
             cfg.classifier.name,
@@ -366,13 +372,19 @@ def _train_split(
         )
         record["best_params"] = summary["best_params"]
         record["best_score"] = summary["best_score"]
-        bus.publish(
-            LogBundle.from_dict(
-                {f"json/training/{split.fold_prefix}grid_search": summary}
-            )
-        )
+        # Flat rows: the grid's parameter names are the same for every combination in a
+        # run, and the `param_` prefix keeps them from colliding with the score columns.
+        grid_rows = [
+            {
+                "fold": fold,
+                **{f"param_{k}": v for k, v in combination["params"].items()},
+                "mean_test_score": combination["mean_test_score"],
+                "std_test_score": combination["std_test_score"],
+            }
+            for combination in summary["cv_results"]
+        ]
         trainer.save(model, split.fold_dir, name=cfg.classifier.name, params=params)
-        return model, record
+        return model, record, grid_rows
 
     logger.info("Training %s ...", cfg.classifier.name)
     split.fold_dir.mkdir(parents=True, exist_ok=True)
@@ -385,32 +397,42 @@ def _train_split(
         bus.publish(
             LogBundle.from_dict(_training_history_figures(history, split.fold_prefix))
         )
-    return model, record
+    return model, record, []
 
 
-def _publish_training_summary(
-    context: ClassifyContext, plan: SplitPlan, fingerprint: dict, fold_records: list
+def _publish_training_record(
+    context: ClassifyContext,
+    plan: SplitPlan,
+    fingerprint: dict,
+    fold_records: list,
+    grid_rows: list,
 ) -> None:
-    """Publish the fingerprint identifying these models, plus the k-fold training record."""
+    """Publish the one record of what was trained: run scalars plus two tables.
+
+    Identical in shape whether or not k-fold ran, so nothing has to know which mode
+    produced it to read it.
+    """
     cfg = context.cfg
-    artifacts = {"json/training/fingerprint": fingerprint}
-    if plan.is_kfold:
-        logger.info(
-            "k-fold OOF: trained %d fold models under %s",
-            len(plan.splits),
-            context.paths.models,
+    logger.info("Trained %d model(s) under %s", len(plan.splits), context.paths.models)
+    context.bus.publish(
+        LogBundle.from_dict(
+            {
+                "json/training/folds": {
+                    "mode": plan.mode,
+                    "k_requested": cfg.kfold_splits if plan.is_kfold else 1,
+                    "k_effective": len(plan.splits),
+                    "seed": cfg.seed,
+                    "balance": cfg.balance,
+                    "n_samples": cfg.n_samples,
+                    "scoring": cfg.grid_search.scoring if grid_rows else None,
+                    "cv": _grid_cv(cfg, plan) if grid_rows else None,
+                    "fingerprint": fingerprint,
+                    "folds": fold_records,
+                    "grid_search": grid_rows,
+                }
+            }
         )
-        artifacts["json/training/kfold_summary"] = {
-            "k_requested": cfg.kfold_splits,
-            "k_effective": len(plan.splits),
-            "seed": cfg.seed,
-            "balance": cfg.balance,
-            "n_samples": cfg.n_samples,
-            "folds": fold_records,
-        }
-    else:
-        logger.info("Model saved under %s", context.paths.models)
-    context.bus.publish(LogBundle.from_dict(artifacts))
+    )
 
 
 @timed
@@ -438,7 +460,7 @@ def train_splits(
     )
     reuse = _can_reuse(context, plan, fingerprint)
     if not reuse:
-        _invalidate_fingerprint(context.paths)
+        _invalidate_training_record(context.paths)
     X_val = None if reuse else trainer.features(val_df, context.feat_cols)
 
     universe = plan.universe
@@ -446,14 +468,18 @@ def train_splits(
     y_proba = np.zeros((len(universe), context.df_meta["num_classes"]))
     covered = np.zeros(len(universe), dtype=bool)
     embeddings: list[np.ndarray | None] = []
-    fold_records = []
+    fold_records: list[dict] = []
+    grid_rows: list[dict] = []
 
     for fold, split in enumerate(plan.splits):
         if reuse:
             model = trainer.load(split.fold_dir)
         else:
-            model, record = _train_split(context, plan, split, fold, params, X_val)
+            model, record, fold_grid = _train_split(
+                context, plan, split, fold, params, X_val
+            )
             fold_records.append(record)
+            grid_rows.extend(fold_grid)
 
         eval_df = universe.iloc[split.eval_idx]
         fold_pred, fold_proba, embedding = trainer.predict(
@@ -467,6 +493,6 @@ def train_splits(
         embeddings.append(embedding)
 
     if not reuse:
-        _publish_training_summary(context, plan, fingerprint, fold_records)
+        _publish_training_record(context, plan, fingerprint, fold_records, grid_rows)
 
     return SplitPredictions(y_pred, y_proba, covered, embeddings)

@@ -74,38 +74,48 @@ def _quantile_strata(y: pd.Series, q: int) -> pd.Series | None:
 
 
 def build_cluster_summary(
-    complexity: dict,
-    class_complexity: dict,
+    complexity: list[dict],
+    class_complexity: list[dict],
     predictions: dict,
-) -> dict:
-    """Merge per-cluster and class-level complexity with the observed failure rates."""
-    cluster_errors = predictions.get("clusters", {}).get("global", {}) or {}
-    summary: dict[str, dict] = {}
-    for cid, cluster_measures in complexity.items():
+) -> list[dict]:
+    """Merge per-cluster and class-level complexity with the observed failure rates.
+
+    Cluster and class share the same measure names, so each side keeps its prefix: they
+    are two different numbers about the same quantity, not a naming accident.
+    """
+    by_class = {rec["class_id"]: rec for rec in class_complexity}
+    errors = {rec["cluster_id"]: rec for rec in predictions.get("clusters", [])}
+
+    summary = []
+    for cluster_measures in complexity:
+        cluster_id = cluster_measures["cluster_id"]
         class_id = cluster_measures.get("cluster_class")
-        class_measures = (
-            class_complexity.get(str(class_id), {}) if class_id is not None else {}
-        )
+        class_measures = by_class.get(class_id, {}) if class_id is not None else {}
         cluster_feats = {
             f"cluster_{k}": v
             for k, v in cluster_measures.items()
-            if k not in ("cluster_class", "is_noise_cluster")
+            if k not in ("cluster_id", "cluster_class", "is_noise_cluster")
         }
         class_feats = {
             f"class_{k}": v
             for k, v in class_measures.items()
-            if k != "is_noise_cluster"
+            if k not in ("class_id", "is_noise_cluster")
         }
-        error_entry = cluster_errors.get(str(cid), {})
-        summary[str(cid)] = {
-            **cluster_feats,
-            **class_feats,
-            "cluster_class": class_id,
-            "is_noise_cluster": int(cluster_measures.get("is_noise_cluster", False)),
-            "n_test": error_entry.get("n_total", 0),
-            "failure_rate": error_entry.get("error_rate"),
-            "mcp_risk": error_entry.get("mcp_risk"),
-        }
+        error = errors.get(cluster_id, {})
+        summary.append(
+            {
+                "cluster_id": cluster_id,
+                **cluster_feats,
+                **class_feats,
+                "cluster_class": class_id,
+                "is_noise_cluster": int(
+                    cluster_measures.get("is_noise_cluster", False)
+                ),
+                "n_test": error.get("n_total", 0),
+                "failure_rate": error.get("error_rate"),
+                "mcp_risk": error.get("mcp_risk"),
+            }
+        )
     return summary
 
 
@@ -172,18 +182,25 @@ def _aggregate_oof_results(oof: dict, feature_cols: list[str]) -> dict:
     return {
         "spearman": float(rho.statistic),
         "spearman_pvalue": float(rho.pvalue),
-        "spearman_per_fold": fold_spearmans.tolist(),
         "r2": float(r2_score(y_true, y_pred)),
         "r2_std": float(np.nanstd(oof["fold_r2s"])),
-        "r2_per_fold": oof["fold_r2s"],
         "mae": float(mean_absolute_error(y_true, y_pred)),
         "mae_std": float(np.std(oof["fold_maes"])),
-        "mae_per_fold": oof["fold_maes"],
         "mse": float(np.mean((y_pred - y_true) ** 2)),
-        "feature_importances": dict(zip(feature_cols, mean_importances.tolist())),
-        "oof_predicted_rate": {
-            str(cid): float(pred) for cid, pred in zip(oof["indices"], y_pred)
-        },
+        "per_fold": [
+            {"fold": f, "spearman": spearman, "r2": r2, "mae": mae}
+            for f, (spearman, r2, mae) in enumerate(
+                zip(fold_spearmans.tolist(), oof["fold_r2s"], oof["fold_maes"])
+            )
+        ],
+        "feature_importances": [
+            {"feature": feature, "importance": importance}
+            for feature, importance in zip(feature_cols, mean_importances.tolist())
+        ],
+        "oof_predicted_rate": [
+            {"cluster_id": cid, "predicted_rate": float(pred)}
+            for cid, pred in zip(oof["indices"], y_pred)
+        ],
     }
 
 
@@ -217,7 +234,7 @@ def fit_failure_regressor(
 ) -> dict:
     """Fit a nested-CV Random Forest predicting each cluster's failure rate from its features."""
     logger.info("Running failure regressor ...")
-    df = pd.DataFrame.from_dict(cluster_stats, orient="index")
+    df = pd.DataFrame(cluster_stats).set_index("cluster_id")
 
     is_noise = (
         df["is_noise_cluster"].fillna(0).astype(bool)
@@ -348,9 +365,10 @@ def fit_failure_regressor(
 _RATE_BASELINE_NAMES = ("region", "mcp_cluster", "atc_cluster")
 
 
-def instance_baselines(samples: pd.DataFrame, predicted_rate: dict) -> dict:
+def instance_baselines(samples: pd.DataFrame, predicted_rate: list[dict]) -> dict:
     """Compare the 5 baseline variants against observed failure: cluster rho, cluster-rate MSE
     (rate variants only) and per-sample oracle benefit recovered."""
+    rate_by_cluster = {r["cluster_id"]: r["predicted_rate"] for r in predicted_rate}
     cluster = samples["cluster"].to_numpy()
     failure = is_failure(
         samples["y_true"].to_numpy(), samples["y_pred"].to_numpy()
@@ -358,10 +376,10 @@ def instance_baselines(samples: pd.DataFrame, predicted_rate: dict) -> dict:
     correct = 1.0 - failure
     mcp = samples["mcp_risk"].to_numpy(dtype=float)
     confidence = 1.0 - mcp
-    fallback = float(np.mean(list(predicted_rate.values()))) if predicted_rate else 0.0
-    region = np.array(
-        [predicted_rate.get(str(c), fallback) for c in cluster], dtype=float
+    fallback = (
+        float(np.mean(list(rate_by_cluster.values()))) if rate_by_cluster else 0.0
     )
+    region = np.array([rate_by_cluster.get(c, fallback) for c in cluster], dtype=float)
 
     mcp_cluster = np.empty_like(mcp)
     for c in np.unique(cluster):
@@ -385,7 +403,7 @@ def instance_baselines(samples: pd.DataFrame, predicted_rate: dict) -> dict:
     clusters = np.unique(cluster)
     observed = np.array([failure[cluster == c].mean() for c in clusters], dtype=float)
 
-    baselines = {}
+    baselines = []
     for name, sc in scores.items():
         predicted = np.array([sc[cluster == c].mean() for c in clusters], dtype=float)
         rho = (
@@ -393,13 +411,22 @@ def instance_baselines(samples: pd.DataFrame, predicted_rate: dict) -> dict:
             if np.std(predicted) > 1e-12 and np.std(observed) > 1e-12
             else float("nan")
         )
-        entry = {
-            "spearman": rho,
-            "oracle_benefit_recovered": oracle_benefit_recovered(sc, failure, support),
-        }
-        if name in _RATE_BASELINE_NAMES:
-            entry["cluster_rate_mse"] = float(np.mean((predicted - observed) ** 2))
-        baselines[name] = entry
+        baselines.append(
+            {
+                "variant": name,
+                "spearman": rho,
+                "oracle_benefit_recovered": oracle_benefit_recovered(
+                    sc, failure, support
+                ),
+                # Null rather than absent: the rank-average variants have no rate to
+                # compare, and a uniform row shape is what makes this a table.
+                "cluster_rate_mse": (
+                    float(np.mean((predicted - observed) ** 2))
+                    if name in _RATE_BASELINE_NAMES
+                    else None
+                ),
+            }
+        )
 
     return {
         "n_test": int(len(samples)),

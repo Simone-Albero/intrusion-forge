@@ -10,6 +10,7 @@ from sklearn.metrics import (
     precision_score,
     recall_score,
 )
+from sklearn.utils.multiclass import unique_labels
 
 from pipelines.classify_training import ClassifyContext, SplitPlan, SplitPredictions
 from src.core.io import save_df
@@ -34,7 +35,7 @@ _METRIC_FNS: list[tuple[str, Callable]] = [
 
 
 def _compute_classification_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
-    """Overall accuracy, macro/weighted precision/recall/F1, plus per-class arrays."""
+    """Overall accuracy, macro/weighted precision/recall/F1, plus one row per class."""
     full: dict = {"accuracy": float(accuracy_score(y_true, y_pred))}
 
     for avg in ("macro", "weighted"):
@@ -43,10 +44,18 @@ def _compute_classification_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> d
                 fn(y_true, y_pred, average=avg, zero_division=0)
             )
 
-    for name, fn in _METRIC_FNS:
-        full[f"{name}_per_class"] = fn(
-            y_true, y_pred, average=None, zero_division=0
-        ).tolist()
+    # sklearn's per-class arrays are ordered by unique_labels(y_true, y_pred), which
+    # includes labels only ever predicted: enumerating np.unique(y_true) instead would
+    # shift every metric onto the wrong class.
+    labels = unique_labels(y_true, y_pred)
+    per_class = {
+        name: fn(y_true, y_pred, average=None, zero_division=0).tolist()
+        for name, fn in _METRIC_FNS
+    }
+    full["per_class"] = [
+        {"class": int(c), **{name: values[i] for name, values in per_class.items()}}
+        for i, c in enumerate(labels)
+    ]
 
     return full
 
@@ -55,27 +64,28 @@ def _cluster_error_rates(
     clusters: np.ndarray,
     error_mask: np.ndarray,
     extra_scores: dict[str, np.ndarray] | None = None,
-) -> dict[str, dict]:
-    """Per-cluster error counts, rate and mean extra scores, sorted by rate descending."""
+) -> list[dict]:
+    """One row per cluster: error counts, rate and mean extra scores, worst rate first."""
     failed = clusters[error_mask]
     extra_scores = extra_scores or {}
-    stats: dict[str, dict] = {}
+    rows = []
     for c in np.unique(clusters):
         mask = clusters == c
         n_total = int(mask.sum())
         n_error = int((failed == c).sum())
-        stats[str(c)] = {
-            "n_error": n_error,
-            "n_total": n_total,
-            "error_rate": (n_error / n_total) if n_total > 0 else None,
-            **{
-                name: float(scores[mask].mean()) if n_total > 0 else None
-                for name, scores in extra_scores.items()
-            },
-        }
-    return dict(
-        sorted(stats.items(), key=lambda x: x[1]["error_rate"] or 0.0, reverse=True)
-    )
+        rows.append(
+            {
+                "cluster_id": int(c),
+                "n_error": n_error,
+                "n_total": n_total,
+                "error_rate": (n_error / n_total) if n_total > 0 else None,
+                **{
+                    name: float(scores[mask].mean()) if n_total > 0 else None
+                    for name, scores in extra_scores.items()
+                },
+            }
+        )
+    return sorted(rows, key=lambda r: r["error_rate"] or 0.0, reverse=True)
 
 
 def _evaluate_predictions(
@@ -84,74 +94,38 @@ def _evaluate_predictions(
     y_proba: np.ndarray,
     clusters: np.ndarray | None = None,
 ) -> dict:
-    """Per-class prediction quality plus per-cluster error rates and mean risk scores."""
+    """Two tables of observed failures: one row per class, one row per cluster."""
     y_proba = np.asarray(y_proba)
     mcp = mcp_risk(y_proba)
     confidences = 1.0 - mcp
+    error_mask = is_failure(y_true, y_pred)
 
-    has_cluster = clusters is not None
-    global_error_mask = is_failure(y_true, y_pred)
-
-    cluster_errors_total = (
-        _cluster_error_rates(
-            clusters,
-            global_error_mask,
-            extra_scores={"mcp_risk": mcp},
-        )
-        if has_cluster
-        else None
-    )
-    cluster_errors_by_class: dict[str, dict] | None = {} if has_cluster else None
-
-    classes: dict[str, dict] = {}
+    class_rows = []
     for label in np.unique(y_true):
         mask = y_true == label
         n_total = int(mask.sum())
-        n_errors = int(is_failure(y_true[mask], y_pred[mask]).sum())
-        error_mask = mask & global_error_mask
-
-        if has_cluster:
-            wrong_preds = y_pred[error_mask]
-            wrong_clusters = clusters[error_mask]
-            cluster_in_fn = {
-                str(cls): np.unique(wrong_clusters[wrong_preds == cls]).tolist()
-                for cls in np.unique(wrong_preds)
+        n_error = int(error_mask[mask].sum())
+        class_rows.append(
+            {
+                "class": int(label),
+                "n_error": n_error,
+                "n_total": n_total,
+                "error_rate": n_error / n_total if n_total > 0 else None,
+                "mean_confidence": (
+                    float(confidences[mask].mean()) if n_total > 0 else None
+                ),
             }
-            tp_clusters = clusters[mask & ~global_error_mask]
-            cluster_in_tp = np.unique(tp_clusters).tolist()
-
-            class_clusters = clusters[mask]
-            cluster_errors_by_class[str(label)] = _cluster_error_rates(
-                class_clusters, error_mask[mask]
-            )
-        else:
-            cluster_in_fn = cluster_in_tp = None
-
-        classes[str(label)] = {
-            "tot_failures": n_errors,
-            "tot_samples": n_total,
-            "failure_rate": n_errors / n_total if n_total > 0 else None,
-            "mean_confidence": (
-                float(confidences[mask].mean()) if n_total > 0 else None
-            ),
-            "cluster_in_fn": cluster_in_fn,
-            "cluster_in_tp": cluster_in_tp,
-        }
-
-    classes = dict(
-        sorted(
-            classes.items(),
-            key=lambda x: x[1]["failure_rate"] or 0.0,
-            reverse=True,
         )
-    )
 
     return {
-        "classes": classes,
-        "clusters": {
-            "global": cluster_errors_total,
-            "by_class": cluster_errors_by_class,
-        },
+        "classes": sorted(
+            class_rows, key=lambda r: r["error_rate"] or 0.0, reverse=True
+        ),
+        "clusters": (
+            _cluster_error_rates(clusters, error_mask, extra_scores={"mcp_risk": mcp})
+            if clusters is not None
+            else []
+        ),
     }
 
 
@@ -238,7 +212,9 @@ def _build_test_figures(
         cm, class_names=class_names, normalize=None
     )
 
-    f1_per_class = f1_score(y_true, y_pred, average=None, zero_division=0)
+    f1_per_class = f1_score(
+        y_true, y_pred, labels=classes, average=None, zero_division=0
+    )
     f1_dict = {
         label_mapping.get(str(int(c)), str(c)): float(v)
         for c, v in zip(classes, f1_per_class)
@@ -332,7 +308,7 @@ def publish_evaluation(
                 **figures,
                 "json/testing/summary": full_metrics,
                 "json/analysis/predictions/clusters": pred_infos,
-                "pickle/analysis/confusion_matrices/test": cm,
+                "pickle/analysis/confusion_matrices/testing": cm,
             }
         )
     )

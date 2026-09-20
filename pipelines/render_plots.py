@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 def _plot_failure_strips(
     summary_df: pd.DataFrame,
-    oof_predicted_rate: dict[str, float] | None = None,
+    oof_predicted_rate: list[dict] | None = None,
 ) -> dict[str, Plot]:
     """Strip plot of failure rate per class, dots coloured by RF predicted rate."""
     class_order = (
@@ -42,9 +42,9 @@ def _plot_failure_strips(
     counts_by_class = summary_df.groupby("class_name").size().to_dict()
 
     if oof_predicted_rate is not None:
-        cids = [str(cid) for cid in summary_df.index]
+        predicted = {r["cluster_id"]: r["predicted_rate"] for r in oof_predicted_rate}
         fill_vals = np.array(
-            [oof_predicted_rate.get(cid, np.nan) for cid in cids], dtype=float
+            [predicted.get(cid, np.nan) for cid in summary_df.index], dtype=float
         )
         fill_cmap: str | None = "viridis"
         fill_cmap_label = "RF predicted rate"
@@ -180,7 +180,10 @@ def _plot_rf_evaluation(
     summary_df: pd.DataFrame, regressor_results: dict
 ) -> dict[str, Plot]:
     """Predicted-vs-observed scatter (regressor + MCP, shared colorbar) and feature-importance bar."""
-    predicted = regressor_results["oof_predicted_rate"]
+    predicted = {
+        r["cluster_id"]: r["predicted_rate"]
+        for r in regressor_results["oof_predicted_rate"]
+    }
     cids = [c for c in predicted if c in summary_df.index]
     y_true = summary_df.loc[cids, "failure_rate"].to_numpy(dtype=float)
     y_pred_reg = np.array([predicted[c] for c in cids], dtype=float)
@@ -224,8 +227,8 @@ def _plot_rf_evaluation(
             y_label="Predicted failure rate (OOF)",
         ),
         "summary/correlation/feature_importances": bar_plot(
-            labels=[_feature_label(name) for name in importances],
-            values=list(importances.values()),
+            labels=[_feature_label(r["feature"]) for r in importances],
+            values=[r["importance"] for r in importances],
             orientation="v",
             sort="desc",
             top_k=10,
@@ -239,7 +242,7 @@ def _plot_rf_evaluation(
 
 @timed
 def assemble_analysis_figures(
-    cluster_summary: dict,
+    cluster_summary: list[dict],
     df_meta: dict,
     regressor_results: dict,
     *,
@@ -247,7 +250,7 @@ def assemble_analysis_figures(
 ) -> dict[str, Plot]:
     """Build every analysis figure and publish it on the log bus."""
     logger.info("Building summary visualizations ...")
-    summary_df = pd.DataFrame.from_dict(cluster_summary, orient="index")
+    summary_df = pd.DataFrame(cluster_summary).set_index("cluster_id")
     label_mapping = {str(k): v for k, v in df_meta["label_mapping"].items()}
     summary_df["class_name"] = (
         summary_df["cluster_class"].astype(str).map(label_mapping)
@@ -263,12 +266,12 @@ def assemble_analysis_figures(
             analysis_bus.publish(LogBundle(figures=figures))
         return figures
 
-    sorted_by_importance = sorted(
-        regressor_results["feature_importances"].items(),
-        key=lambda kv: kv[1],
+    ranked = sorted(
+        regressor_results["feature_importances"],
+        key=lambda r: r["importance"],
         reverse=True,
     )
-    top10 = [name for name, _ in sorted_by_importance[:10]]
+    top10 = [r["feature"] for r in ranked[:10]]
     scatter_features = [f for f in top10 if f in summary_df.columns]
 
     figures: dict[str, Plot] = {}

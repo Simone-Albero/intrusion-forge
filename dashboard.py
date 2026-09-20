@@ -90,13 +90,10 @@ class ExperimentDetail:
     testing: dict | None = None
     classifier_results: dict | None = None
     cluster_summary: pd.DataFrame | None = None
-    predictions: dict | None = None
     confusion_matrix: np.ndarray | None = None
     grid_search: dict | None = None
     df_meta: dict = field(default_factory=dict)
     df_info: dict = field(default_factory=dict)
-    complexity: dict = field(default_factory=dict)
-    clusters_meta: dict = field(default_factory=dict)
 
 
 def _read_json(path: Path) -> dict | list | None:
@@ -227,11 +224,11 @@ def discover_experiments(root: str) -> tuple[list[ExperimentRecord], int]:
     return records, skipped
 
 
-def _cluster_summary_df(data: dict | None) -> pd.DataFrame | None:
+def _cluster_summary_df(data: list | None) -> pd.DataFrame | None:
     """Cluster summary as a DataFrame sorted by failure rate."""
     if not data:
         return None
-    df = pd.DataFrame([{"cluster_id": cid, **row} for cid, row in data.items()])
+    df = pd.DataFrame(data)
     if "failure_rate" in df.columns:
         df = df.sort_values("failure_rate", ascending=False).reset_index(drop=True)
     return df
@@ -247,18 +244,15 @@ def load_experiment_detail(record_root: str, record_shared: str) -> ExperimentDe
         classifier_results=_read_json(
             root / "outputs" / "analysis" / "failure_regressor_results.json"
         ),
-        predictions=_read_json(
-            root / "outputs" / "analysis" / "predictions" / "clusters.json"
-        ),
-        grid_search=_read_json(root / "outputs" / "training" / "grid_search.json"),
+        grid_search=_read_json(root / "outputs" / "training" / "folds.json"),
         df_meta=_read_json(shared / "metadata/df_meta.json") or {},
         df_info=_read_json(shared / "metadata/df_info.json") or {},
-        complexity=_read_json(shared / "complexity.json") or {},
-        clusters_meta=_read_json(shared / "metadata/clusters_meta.json") or {},
     )
     cs = _read_json(root / "outputs" / "analysis" / "cluster_summary.json")
-    detail.cluster_summary = _cluster_summary_df(cs if isinstance(cs, dict) else None)
-    cm = _read_pickle(root / "pickle" / "analysis" / "confusion_matrices" / "test.pkl")
+    detail.cluster_summary = _cluster_summary_df(cs if isinstance(cs, list) else None)
+    cm = _read_pickle(
+        root / "pickle" / "analysis" / "confusion_matrices" / "testing.pkl"
+    )
     if isinstance(cm, np.ndarray):
         detail.confusion_matrix = cm
     elif isinstance(cm, list):
@@ -296,14 +290,12 @@ def count_clusters(record_shared: str) -> int | None:
 def count_failing_clusters(record_root: str) -> int | None:
     """Number of clusters with failure_rate > 0 for one experiment (classifier-specific)."""
     cs = _read_json(Path(record_root) / "outputs" / "analysis" / "cluster_summary.json")
-    if not isinstance(cs, dict) or not cs:
+    if not isinstance(cs, list) or not cs:
         return None
     return sum(
         1
-        for v in cs.values()
-        if isinstance(v, dict)
-        and isinstance(v.get("failure_rate"), (int, float))
-        and v["failure_rate"] > 0
+        for row in cs
+        if isinstance(row.get("failure_rate"), (int, float)) and row["failure_rate"] > 0
     )
 
 
@@ -678,11 +670,11 @@ def per_class_bar_fig(
     return fig
 
 
-def feature_importance_bar(importances: dict, *, top_k: int = 20) -> go.Figure:
+def feature_importance_bar(importances: list, *, top_k: int = 20) -> go.Figure:
     """Horizontal bar chart of the top-K feature importances."""
-    pairs = sorted(importances.items(), key=lambda kv: kv[1], reverse=True)[:top_k]
-    names = [p[0] for p in pairs][::-1]
-    values = [p[1] for p in pairs][::-1]
+    pairs = sorted(importances, key=lambda r: r["importance"], reverse=True)[:top_k]
+    names = [p["feature"] for p in pairs][::-1]
+    values = [p["importance"] for p in pairs][::-1]
     fig = go.Figure(go.Bar(x=values, y=names, orientation="h", marker_color="#2ca02c"))
     fig.update_layout(
         height=max(280, 22 * len(pairs)),
@@ -695,9 +687,11 @@ def feature_importance_bar(importances: dict, *, top_k: int = 20) -> go.Figure:
 
 def pred_vs_actual_fig(fc: dict, cluster_df: pd.DataFrame) -> go.Figure:
     """Scatter of predicted against observed per-cluster failure rate."""
-    predicted = fc.get("oof_predicted_rate", {})
+    predicted = {
+        r["cluster_id"]: r["predicted_rate"] for r in fc.get("oof_predicted_rate", [])
+    }
     df = cluster_df[["cluster_id", "cluster_class", "failure_rate"]].copy()
-    df["predicted"] = df["cluster_id"].astype(str).map(predicted)
+    df["predicted"] = df["cluster_id"].map(predicted)
     df = df.dropna(subset=["failure_rate", "predicted"])
     fig = px.scatter(
         df,
@@ -842,7 +836,7 @@ def panel_failure_classifier(
         f"{fc.get('mae', float('nan')):.4f}",
         delta=f"± {fc.get('mae_std', 0):.3f}",
     )
-    cols[3].metric("CV folds", f"{len(fc.get('r2_per_fold', []))}")
+    cols[3].metric("CV folds", f"{len(fc.get('per_fold', []))}")
     if fc.get("oof_predicted_rate") and detail.cluster_summary is not None:
         st.plotly_chart(
             pred_vs_actual_fig(fc, detail.cluster_summary),
@@ -932,11 +926,12 @@ def panel_per_class_breakdown(
     if detail.testing is None:
         st.caption("No `summary.json` for per-class metrics.")
         return
-    f1 = detail.testing.get("f1_per_class") or []
-    prec = detail.testing.get("precision_per_class") or []
-    rec = detail.testing.get("recall_per_class") or []
+    per_class = detail.testing.get("per_class") or []
+    f1 = [row["f1"] for row in per_class]
+    prec = [row["precision"] for row in per_class]
+    rec = [row["recall"] for row in per_class]
     label_map = detail.df_meta.get("label_mapping") or {}
-    classes = [label_map.get(str(i), str(i)) for i in range(len(f1))]
+    classes = [label_map.get(str(row["class"]), str(row["class"])) for row in per_class]
     st.plotly_chart(
         per_class_bar_fig(classes=classes, f1=f1, precision=prec, recall=rec),
         width="stretch",
@@ -1039,10 +1034,11 @@ def panel_training_curve(record: ExperimentRecord) -> None:
 def panel_grid_search(record: ExperimentRecord, detail: ExperimentDetail) -> None:
     """Panel: raw ML grid-search results."""
     st.markdown("**Grid search (ML)**")
-    if not detail.grid_search:
+    rows = (detail.grid_search or {}).get("grid_search")
+    if not rows:
         st.caption("Grid search not run for this classifier.")
         return
-    st.json(detail.grid_search, expanded=False)
+    st.json(rows, expanded=False)
 
 
 def _render_hypothesis_scoreboard(

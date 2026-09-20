@@ -195,11 +195,13 @@ def _median_iqr(values: list[float]) -> dict:
 
 
 def _variant_value(run: dict, variant: str, field: str) -> float | None:
-    """One scalar field of one baseline variant from a run's instance-baselines dict, if valid."""
+    """One scalar field of one baseline variant from a run's instance-baselines table, if valid."""
     inst = run.get("instance")
     if not inst:
         return None
-    entry = inst.get("baselines", {}).get(variant)
+    entry = next(
+        (r for r in inst.get("baselines", []) if r["variant"] == variant), None
+    )
     if not entry:
         return None
     v = entry.get(field)
@@ -312,8 +314,8 @@ def _fig_family_importance(runs: list[dict]) -> Plot | None:
     """Figure 11: feature-family importance, cluster- vs class-level (full sweep)."""
     acc: dict[str, list[float]] = {}
     for r in runs:
-        for k, v in r["results"].get("feature_importances", {}).items():
-            acc.setdefault(k, []).append(v)
+        for row in r["results"].get("feature_importances", []):
+            acc.setdefault(row["feature"], []).append(row["importance"])
     if not acc:
         return None
     mean_imp = {k: float(np.mean(v)) for k, v in acc.items()}
