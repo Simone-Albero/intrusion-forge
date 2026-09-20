@@ -18,7 +18,8 @@
 #   make render            DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=random_forest
 #
 # Flags:
-#   FORCE=1               re-run shared stages (prepare, complexity), ignoring skip markers
+#   FORCE=1               re-run cached stages (prepare, complexity) and retrain the
+#                         classifier even when models for this exact config already exist
 #   CLUSTERING=<name>     fix the clustering strategy (kmeans/hdbscan/birch/spectral);
 #                         omit it in `run` to sweep all of CLUSTERING_ALGOS into NAME_<algo>
 #
@@ -93,9 +94,9 @@ FIGURES_DIR     ?= paper/figures
 prepare:
 	PYTHONPATH=. $(PYTHON) pipelines/prepare_data.py $(HYDRA) $(FORCE_FLAG)
 
-## classify:           Step 2 — train & evaluate one classifier (ML or DL)    (DATA, NAME, SEED, CLASSIFIER)
+## classify:           Step 2 — train & evaluate one classifier (ML or DL)    (DATA, NAME, SEED, CLASSIFIER, FORCE)
 classify:
-	PYTHONPATH=. $(PYTHON) pipelines/classify.py $(HYDRA) $(KFOLD_FLAG)
+	PYTHONPATH=. $(PYTHON) pipelines/classify.py $(HYDRA) $(KFOLD_FLAG) $(FORCE_FLAG)
 
 ## complexity:         Step 3a — cluster + class complexity (shared, idempotent)  (DATA, NAME, SEED, FORCE)
 complexity:
@@ -155,7 +156,7 @@ run:
 				echo "── classifier: $$clf ─────────────────────────────"; \
 				$(MAKE) --no-print-directory classify \
 					DATA=$$ds NAME=$$name SEED=$(SEED) CLASSIFIER=$$clf \
-					CLUSTERING=$$clu DISTANCE=$(DISTANCE) || exit 1; \
+					CLUSTERING=$$clu DISTANCE=$(DISTANCE) FORCE=$(FORCE) || exit 1; \
 				$(MAKE) --no-print-directory failure-regress \
 					DATA=$$ds NAME=$$name SEED=$(SEED) CLASSIFIER=$$clf \
 					CLUSTERING=$$clu DISTANCE=$(DISTANCE) || exit 1; \

@@ -137,3 +137,7 @@ class MLTrainer:
     def load(self, path: Path) -> Pipeline:
         """Load the sklearn Pipeline from `path / model.joblib`."""
         return load_from_joblib(Path(path) / "model.joblib")
+
+    def has_model(self, path: Path) -> bool:
+        """True when `path` holds a saved sklearn Pipeline."""
+        return (Path(path) / "model.joblib").exists()

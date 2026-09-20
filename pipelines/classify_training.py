@@ -12,7 +12,7 @@ from sklearn.model_selection import StratifiedKFold
 from src.core.config import to_container
 from src.core.log import LogBundle, LogDispatcher
 from src.core.paths import OutputPaths
-from src.core.utils import timed
+from src.core.utils import load_from_json, timed
 from src.domain.data.preprocessing import random_undersample_df, subsample_df
 from src.domain.plot.base import Plot
 from src.domain.plot.primitives import line_plot
@@ -217,6 +217,110 @@ def _resolve_fit_params(
     return params
 
 
+def _fingerprint(
+    cfg,
+    params: dict,
+    num_cols: list[str],
+    cat_cols: list[str],
+    label_col: str,
+    df_meta: dict,
+) -> dict:
+    """Everything that determines the trained models, so a mismatch rules out reuse.
+
+    `df_meta` stands in for the prepared data itself: its split sizes and per-class counts
+    move whenever the data is regenerated or `prepare` is reconfigured, which the dataset
+    name alone would not catch. It also carries the `class_weights` the DL loss is built
+    from. `device` is left out on purpose — it does change the weights, but reusing a model
+    trained on another device is the point, not an accident. The dataloader's
+    `num_workers`/`pin_memory` are left out because nothing in the dataset is random.
+    """
+    fingerprint = {
+        "classifier": cfg.classifier.name,
+        "kind": cfg.classifier.kind,
+        "params": params,
+        "grid": to_container(cfg.classifier.grid) if "grid" in cfg.classifier else None,
+        "grid_search": to_container(cfg.grid_search),
+        "seed": cfg.seed,
+        "balance": cfg.balance,
+        "n_samples": cfg.n_samples,
+        "kfold": cfg.kfold,
+        "kfold_splits": cfg.kfold_splits,
+        "dataset": cfg.data.file_name,
+        "extension": cfg.data.extension,
+        "num_cols": num_cols,
+        "cat_cols": cat_cols,
+        "label_col": label_col,
+        "data_meta": df_meta,
+    }
+    if cfg.classifier.kind == "dl":
+        training = cfg.loops.training
+        fingerprint["dl_training"] = {
+            "loss": to_container(cfg.loss),
+            "optimizer": to_container(cfg.optimizer),
+            "scheduler": to_container(cfg.scheduler),
+            "epochs": training.epochs,
+            "max_grad_norm": training.max_grad_norm,
+            "early_stopping": to_container(training.early_stopping),
+            "batch_size": training.dataloader.batch_size,
+            "shuffle": training.dataloader.shuffle,
+        }
+    return fingerprint
+
+
+def _first_difference(previous: dict, current: dict) -> str | None:
+    """Name a field that differs between two fingerprints, or None when they match."""
+    for key in sorted(set(previous) | set(current)):
+        if previous.get(key) != current.get(key):
+            return key
+    return None
+
+
+def _fingerprint_path(paths: OutputPaths) -> Path:
+    """Where the fingerprint of the models currently on disk lives."""
+    return paths.outputs / "training/fingerprint.json"
+
+
+def _invalidate_fingerprint(paths: OutputPaths) -> None:
+    """Drop the fingerprint before retraining.
+
+    Models are overwritten one split at a time, so a run interrupted mid-loop leaves a
+    mix of old and new models on disk. Without this, the surviving fingerprint would
+    still describe the old ones and the next run would reuse that mix.
+    """
+    _fingerprint_path(paths).unlink(missing_ok=True)
+
+
+def _can_reuse(context: ClassifyContext, plan: SplitPlan, fingerprint: dict) -> bool:
+    """True when every split already has a model trained for this exact configuration."""
+    trainer = context.trainer
+    if context.cfg.force:
+        return False
+
+    previous_path = _fingerprint_path(context.paths)
+    if not previous_path.exists():
+        return False
+
+    changed = _first_difference(load_from_json(previous_path), fingerprint)
+    if changed is not None:
+        logger.info("[RETRAIN] training config changed (%s) — retraining.", changed)
+        return False
+
+    missing = [s for s in plan.splits if not trainer.has_model(s.fold_dir)]
+    if missing:
+        logger.info(
+            "[RETRAIN] %d of %d model(s) missing on disk — retraining all.",
+            len(missing),
+            len(plan.splits),
+        )
+        return False
+
+    logger.info(
+        "[STAGE-SKIP] Reusing %d trained model(s) — pass force=true to retrain.",
+        len(plan.splits),
+    )
+    return True
+
+
 def _train_split(
     context: ClassifyContext,
     plan: SplitPlan,
@@ -284,20 +388,58 @@ def _train_split(
     return model, record
 
 
+def _publish_training_summary(
+    context: ClassifyContext, plan: SplitPlan, fingerprint: dict, fold_records: list
+) -> None:
+    """Publish the fingerprint identifying these models, plus the k-fold training record."""
+    cfg = context.cfg
+    artifacts = {"json/training/fingerprint": fingerprint}
+    if plan.is_kfold:
+        logger.info(
+            "k-fold OOF: trained %d fold models under %s",
+            len(plan.splits),
+            context.paths.models,
+        )
+        artifacts["json/training/kfold_summary"] = {
+            "k_requested": cfg.kfold_splits,
+            "k_effective": len(plan.splits),
+            "seed": cfg.seed,
+            "balance": cfg.balance,
+            "n_samples": cfg.n_samples,
+            "folds": fold_records,
+        }
+    else:
+        logger.info("Model saved under %s", context.paths.models)
+    context.bus.publish(LogBundle.from_dict(artifacts))
+
+
 @timed
 def train_splits(
     context: ClassifyContext, plan: SplitPlan, val_df: pd.DataFrame
 ) -> SplitPredictions:
-    """Fit one model per split and predict the universe rows that split holds out.
+    """Obtain a model per split and predict the universe rows that split holds out.
 
-    Each model is used for prediction while still in memory and then dropped, so one
-    model is held at a time and no split's model is written and read back.
+    Each model is trained, or loaded when one already exists for this exact
+    configuration, then used for prediction while still in memory and dropped: one model
+    is held at a time. Reused models keep the training artifacts of the run that produced
+    them, which describe them exactly.
     """
     cfg, trainer = context.cfg, context.trainer
     params = _resolve_fit_params(
         cfg, cfg.classifier.kind, trainer.num_cols, trainer.cat_cols, context.df_meta
     )
-    X_val = trainer.features(val_df, context.feat_cols)
+    fingerprint = _fingerprint(
+        cfg,
+        params,
+        trainer.num_cols,
+        trainer.cat_cols,
+        context.label_col,
+        context.df_meta,
+    )
+    reuse = _can_reuse(context, plan, fingerprint)
+    if not reuse:
+        _invalidate_fingerprint(context.paths)
+    X_val = None if reuse else trainer.features(val_df, context.feat_cols)
 
     universe = plan.universe
     y_pred = np.empty(len(universe), dtype=universe[context.label_col].to_numpy().dtype)
@@ -307,8 +449,11 @@ def train_splits(
     fold_records = []
 
     for fold, split in enumerate(plan.splits):
-        model, record = _train_split(context, plan, split, fold, params, X_val)
-        fold_records.append(record)
+        if reuse:
+            model = trainer.load(split.fold_dir)
+        else:
+            model, record = _train_split(context, plan, split, fold, params, X_val)
+            fold_records.append(record)
 
         eval_df = universe.iloc[split.eval_idx]
         fold_pred, fold_proba, embedding = trainer.predict(
@@ -321,27 +466,7 @@ def train_splits(
         covered[split.eval_idx] = True
         embeddings.append(embedding)
 
-    if plan.is_kfold:
-        logger.info(
-            "k-fold OOF: trained %d fold models under %s",
-            len(plan.splits),
-            context.paths.models,
-        )
-        context.bus.publish(
-            LogBundle.from_dict(
-                {
-                    "json/training/kfold_summary": {
-                        "k_requested": cfg.kfold_splits,
-                        "k_effective": len(plan.splits),
-                        "seed": cfg.seed,
-                        "balance": cfg.balance,
-                        "n_samples": cfg.n_samples,
-                        "folds": fold_records,
-                    }
-                }
-            )
-        )
-    else:
-        logger.info("Model saved under %s", context.paths.models)
+    if not reuse:
+        _publish_training_summary(context, plan, fingerprint, fold_records)
 
     return SplitPredictions(y_pred, y_proba, covered, embeddings)

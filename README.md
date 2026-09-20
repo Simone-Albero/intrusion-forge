@@ -104,7 +104,7 @@ make run DATA=synthetic_test NAME=demo_cos CLASSIFIER=random_forest CLUSTERING=k
 make run DATA=synthetic_test NAME=demo_birch CLASSIFIER=random_forest CLUSTERING=birch
 ```
 
-`prepare` and `complexity` are cached per `(NAME, dataset, seed)`, so changing classifier reuses them. `FORCE=1` recomputes them.
+`prepare` and `complexity` are cached per `(NAME, dataset, seed)`, so changing classifier reuses them. `classify` is cached too: re-running it under the same `NAME` reuses the models already on disk when they were trained for exactly this configuration, and retrains by itself — saying which field changed — when they were not. The classifier depends on neither the clustering nor the descriptors, so re-deriving results after changing those costs an evaluation rather than a retrain. `FORCE=1` recomputes everything.
 
 How the data is divided into regions matters more than which classifier you use. `kmeans` and `birch` both find about a thousand regions here; `hdbscan` finds thirty and consigns a quarter of the points to leftover buckets, because this dataset's difficulty gradient is continuous rather than broken by real gaps. Count-based algorithms suit data of this kind, density-based ones suit data with genuine separation.
 
@@ -241,7 +241,7 @@ resources/experiments/${name}/${data.file_name}_${seed}/
 intrusion-forge/
 ├── pipelines/                    # entry points — own the config, I/O, logging and paths
 │   ├── prepare_data.py           #   preprocess + divide into regions
-│   ├── classify.py               #   train + evaluate one classifier (splits/training/evaluation in sibling modules)
+│   ├── classify.py               #   train + evaluate one classifier (training/evaluation in sibling modules)
 │   ├── compute_complexity.py     #   region and class descriptors
 │   ├── fit_failure_regressor.py  #   descriptors → error rate
 │   ├── render_plots.py           #   figures

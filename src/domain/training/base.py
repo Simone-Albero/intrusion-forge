@@ -62,3 +62,6 @@ class Trainer(Protocol):
 
     def load(self, path: Path) -> Any:
         """Load the model persisted under `path`."""
+
+    def has_model(self, path: Path) -> bool:
+        """True when `path` holds a model this trainer can load."""

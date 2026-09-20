@@ -233,3 +233,7 @@ class DLTrainer:
         model = _create_model(ckpt["name"], ckpt["params"], self.device)
         model.load_state_dict(ckpt["state_dict"])
         return model
+
+    def has_model(self, path: Path) -> bool:
+        """True when `path` holds a saved state dict."""
+        return (Path(path) / "model.pt").exists()
