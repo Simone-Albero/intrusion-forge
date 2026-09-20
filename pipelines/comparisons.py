@@ -66,7 +66,7 @@ _CLF_LABEL = {
     "lda": "LDA",
     "linear_svc": "Linear SVC",
     "logistic_regression": "Logistic Reg.",
-    "tabular": "MLP",
+    "mlp": "MLP",
     "knn": "$k$-NN",
     "random_forest": "Random Forest",
     "hist_gradient_boosting": "HistGB",
@@ -116,9 +116,8 @@ def _load_instance(base: Path) -> dict | None:
 def _load_sweep_runs(root: Path) -> list[dict]:
     """Collect one record per `<config>/<dataset>/<classifier>` run under `root`.
 
-    `clf` is the run directory name, taken verbatim. A tree with runs from before the
-    `numerical`/`categorical` DL classifiers were merged into `tabular` will report
-    those as separate bars instead of one — re-run them under `tabular` first.
+    `clf` is the run directory name, taken verbatim: runs saved under a name a classifier
+    no longer uses are reported as a classifier of their own. Re-run them before comparing.
     """
     runs: list[dict] = []
     for cfg_dir in sorted(p for p in root.iterdir() if p.is_dir()):

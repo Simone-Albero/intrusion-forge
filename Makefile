@@ -8,7 +8,7 @@
 #   make run            NAME=my_exp DATA=letter_recognition        # 1 dataset × all classifiers × all clustering
 #   make run            NAME=my_exp CLASSIFIER=random_forest       # all datasets × 1 classifier × all clustering
 #   make run            NAME=my_exp CLUSTERING=kmeans              # all datasets × all classifiers × 1 clustering
-#   make run            NAME=my_exp DATA=cic_2018_v2 CLASSIFIER=tabular CLUSTERING=kmeans   # single (ds, clf, clustering)
+#   make run            NAME=my_exp DATA=cic_2018_v2 CLASSIFIER=mlp CLUSTERING=kmeans       # single (ds, clf, clustering)
 #
 # Single-stage targets (DATA + CLASSIFIER explicit):
 #   make prepare           DATA=cic_2018_v2 NAME=my_exp
@@ -35,7 +35,7 @@ STREAMLIT ?= $(if $(wildcard venv/bin/streamlit),venv/bin/streamlit,streamlit)
 DATA       ?= cic_2018_v2
 NAME       ?= exp_euc
 SEED       ?= 42
-CLASSIFIER ?= tabular
+CLASSIFIER ?= mlp
 DISTANCE   ?= euclidean
 CLUSTERING ?= kmeans
 CLUSTERING_ALGOS ?= kmeans spectral birch hdbscan
@@ -57,7 +57,7 @@ ML_CLASSIFIERS := \
     linear_svc \
     xgboost
 
-DL_CLASSIFIERS := tabular
+DL_CLASSIFIERS := mlp
 
 DATASETS := \
     statlog_landsat_satellite \
@@ -199,5 +199,5 @@ help:
 	@echo "  make run NAME=x DATA=letter_recognition              # 1 dataset, all classifiers, all clustering"
 	@echo "  make run NAME=x CLASSIFIER=random_forest             # all datasets, 1 classifier, all clustering"
 	@echo "  make run NAME=x CLUSTERING=kmeans                    # all datasets × all classifiers, 1 clustering"
-	@echo "  make run NAME=x DATA=cic_2018_v2 CLASSIFIER=tabular CLUSTERING=kmeans  # single"
+	@echo "  make run NAME=x DATA=cic_2018_v2 CLASSIFIER=mlp CLUSTERING=kmeans      # single"
 	@echo "  (clustering swept → artifacts land under NAME_<algo>; clustering fixed → under NAME)"

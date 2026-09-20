@@ -8,9 +8,9 @@ from . import DLClassifierFactory
 from .base import ComposableClassifier
 
 
-@DLClassifierFactory.register("tabular")
-class TabularClassifier(ComposableClassifier):
-    """Classifier for mixed tabular data (numerical + categorical)."""
+@DLClassifierFactory.register("mlp")
+class MLPClassifier(ComposableClassifier):
+    """Multi-layer perceptron over numerical features and categorical embeddings."""
 
     def __init__(
         self,

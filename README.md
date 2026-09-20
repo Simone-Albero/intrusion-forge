@@ -95,7 +95,7 @@ A Streamlit application over `resources/experiments/`: choose a dataset, classif
 
 ```bash
 # a deep-learning classifier (much slower: 12-15 min in the classify stage alone)
-make run DATA=synthetic_test NAME=demo_dl CLASSIFIER=tabular CLUSTERING=kmeans
+make run DATA=synthetic_test NAME=demo_dl CLASSIFIER=mlp CLUSTERING=kmeans
 
 # cosine instead of euclidean
 make run DATA=synthetic_test NAME=demo_cos CLASSIFIER=random_forest CLUSTERING=kmeans DISTANCE=cosine
@@ -213,7 +213,7 @@ PYTHONPATH=. python pipelines/classify.py data=bot_iot_v2 name=my_exp seed=123 c
 | Group | Options |
 |---|---|
 | `data` | network traffic: `nb15_v2`, `bot_iot_v2`, `cic_2018_v2`, `ton_iot_v2` · benchmarks: `bank_marketing`, `covertype`, `letter_recognition`, `statlog_landsat_satellite`, `thyroid_disease` · `synthetic_test`, the only one needing no external CSV |
-| `classifier` | deep: `tabular` (adapts to the dataset's numerical/categorical feature counts) · classical: `decision_tree`, `random_forest`, `hist_gradient_boosting`, `xgboost`, `knn`, `lda`, `logistic_regression`, `naive_bayes`, `linear_svc` |
+| `classifier` | deep: `mlp` (adapts to the dataset's numerical/categorical feature counts) · classical: `decision_tree`, `random_forest`, `hist_gradient_boosting`, `xgboost`, `knn`, `lda`, `logistic_regression`, `naive_bayes`, `linear_svc` |
 | `clustering` | `kmeans`, `hdbscan`, `birch`, `spectral` |
 | `complexity` | `default` — descriptor graph parameters (`k`, cluster sample caps) |
 | `failure_regressor` | `random_forest` — nested-CV folds and hyperparameter grid |

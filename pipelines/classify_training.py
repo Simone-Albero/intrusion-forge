@@ -190,7 +190,7 @@ def _resolve_dl_params(
     num_classes: int,
     cardinality: int,
 ) -> dict:
-    """Inject the data-shape params the tabular DL classifier needs, keeping them out of the YAML."""
+    """Inject the data-shape params the DL classifier needs, keeping them out of the YAML."""
     out = dict(params)
     out["num_classes"] = num_classes
     out["num_numerical_features"] = len(num_cols)
