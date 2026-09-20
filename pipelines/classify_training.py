@@ -170,7 +170,15 @@ def build_trainer(
         num_cols=num_cols,
         cat_cols=cat_cols,
         label_col=label_col,
-        class_weights=df_meta["class_weights"],
+        # The weights come from the original, imbalanced distribution, so they only apply
+        # to a split that still has it. Both `balance` and `n_samples` flatten it —
+        # subsample_df caps every class at the same size — and weighting on top of either
+        # would correct the same imbalance twice, over-shooting towards the rare classes.
+        class_weights=(
+            df_meta["class_weights"]
+            if cfg.balance == "none" and cfg.n_samples is None
+            else None
+        ),
         loss=_component(cfg.loss),
         optimizer=_component(cfg.optimizer),
         scheduler=_component(cfg.scheduler),
@@ -230,9 +238,10 @@ def _fingerprint(
     `df_meta` stands in for the prepared data itself: its split sizes and per-class counts
     move whenever the data is regenerated or `prepare` is reconfigured, which the dataset
     name alone would not catch. It also carries the `class_weights` the DL loss is built
-    from. `device` is left out on purpose — it does change the weights, but reusing a model
-    trained on another device is the point, not an accident. The dataloader's
-    `num_workers`/`pin_memory` are left out because nothing in the dataset is random.
+    from when the training split keeps its original distribution. `device` is left out on
+    purpose — it does change the weights, but reusing a model trained on another device is
+    the point, not an accident. The dataloader's `num_workers`/`pin_memory` are left out
+    because nothing in the dataset is random.
     """
     fingerprint = {
         "classifier": cfg.classifier.name,

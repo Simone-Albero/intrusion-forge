@@ -184,7 +184,7 @@ Each stage is a script under [pipelines/](pipelines/), wrapped by the [Makefile]
 
 **prepare** produces the splits and the regions. It removes NaNs, filters rare categories, log-scales and robust-scales the numerical columns, hashes high-cardinality categorical ones, splits the data stratified, then clusters each class and gives every sample a region id. The saved splits retain the original class balance; balancing takes place at training time.
 
-**classify** trains one classifier and records its per-class metrics and per-sample predictions. Evaluation is by default out-of-fold across train and test together: one model per fold, with both the metrics and the per-region error rates taken from predictions no model saw while training.
+**classify** trains one classifier and records its per-class metrics and per-sample predictions. `balance=undersample`, the default, undersamples the training split; `balance=none` leaves it intact, and a deep classifier then weights its loss by the original class frequencies instead. The two are alternatives — applying both would correct the same imbalance twice. Setting `n_samples` also caps every class at the same size, so it takes the place of either. Evaluation is by default out-of-fold across train and test together: one model per fold, with both the metrics and the per-region error rates taken from predictions no model saw while training.
 
 **failure-regress** assembles the table — a region's descriptors, its class's descriptors and its observed error rate — and fits the estimator over five outer and five inner folds. It also compares the estimate against confidence-based baselines (MCP, ATC, and rank-averaged combinations of the two with the regressor).
 

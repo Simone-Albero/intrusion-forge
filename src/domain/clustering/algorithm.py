@@ -3,8 +3,8 @@ import numpy as np
 from sklearn.cluster import Birch, KMeans, SpectralClustering
 from sklearn.neighbors import NearestNeighbors
 
-from src.domain.clustering import ClusteringFactory
 from src.domain.clustering.base import subsample_features
+from src.domain.clustering.factory import ClusteringFactory
 
 _PREDICT_CHUNK = 200_000
 

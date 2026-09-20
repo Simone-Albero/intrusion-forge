@@ -2,8 +2,8 @@ from collections.abc import Callable
 
 import numpy as np
 
-from src.domain.clustering import ClusteringFactory
 from src.domain.clustering.base import ClusterFn, grid_search
+from src.domain.clustering.factory import ClusteringFactory
 
 Reporter = Callable[[str, dict], None]
 

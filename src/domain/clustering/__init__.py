@@ -1,14 +1,11 @@
 from pathlib import Path
 
-from src.core.factory import Factory, discover_and_import_modules
+from src.core.factory import discover_and_import_modules
 from src.domain.clustering.base import ClusterFn, FitFn, grid_search
-
-ClusteringFactory = Factory[FitFn](component_type_name="clustering_algorithm")
-
-_package_path = Path(__file__).parent
-discover_and_import_modules(package_path=_package_path, package_name=__name__)
-
 from src.domain.clustering.compose import build_cluster_fn, resolution_aware_floor
+from src.domain.clustering.factory import ClusteringFactory
+
+discover_and_import_modules(package_path=Path(__file__).parent, package_name=__name__)
 
 __all__ = [
     "ClusteringFactory",

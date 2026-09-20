@@ -123,7 +123,9 @@ class DLTrainer:
         models_path = Path(save_dir)
 
         loss_params = dict(self.loss.params)
-        loss_params.setdefault("class_weight", self.class_weights)
+        # An explicit None means "use the trainer's weights"; a value overrides them.
+        if loss_params.get("class_weight") is None:
+            loss_params["class_weight"] = self.class_weights
 
         model = _create_model(name, params, self.device)
         loss_fn = create_loss(self.loss.name, loss_params, self.device)
