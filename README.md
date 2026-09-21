@@ -241,7 +241,7 @@ resources/experiments/${name}/${data.file_name}_${seed}/
 intrusion-forge/
 ├── pipelines/                    # entry points — own the config, I/O, logging and paths
 │   ├── prepare_data.py           #   preprocess + divide into regions
-│   ├── classify.py               #   train + evaluate one classifier (training/evaluation in sibling modules)
+│   ├── classify.py               #   train + evaluate one classifier
 │   ├── compute_complexity.py     #   region and class descriptors
 │   ├── fit_failure_regressor.py  #   descriptors → error rate
 │   ├── render_plots.py           #   figures
@@ -256,9 +256,9 @@ intrusion-forge/
 │   │   ├── data/                 # cleaning, splitting, scaling, encoding
 │   │   ├── clustering/           # the four algorithms + grid search
 │   │   ├── analysis/complexity/  # the F / N / ND / T / G families
-│   │   ├── analysis/             # metadata, confidence & risk-coverage scores, the failure regressor
+│   │   ├── analysis/             # metadata, classification metrics, confidence & risk-coverage scores, the failure regressor
 │   │   ├── training/             # ml.py (sklearn / XGBoost), dl.py (Ignite loop)
-│   │   ├── plot/                 # Plot payload, chart primitives, analysis/comparison composers, metrics, palette
+│   │   ├── plot/                 # Plot payload, chart primitives, classify/analysis/comparison composers, metrics, palette
 │   │   └── projection.py         # t-SNE
 │   └── engine/
 │       ├── dl/                   # models, modules, losses, dataset, EngineBuilder
