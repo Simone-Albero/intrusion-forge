@@ -37,8 +37,8 @@ def hybrid_row_batch(
     d_cat: int,
 ) -> np.ndarray:
     """Gower-cosine hybrid distance: cosine on the numerics, Hamming on the categoricals."""
-    euclid = cdist(query_num_norm, X_num_norm, metric="euclidean")
-    dist = np.clip(euclid**2 / 2, 0.0, 1.0) * d_num
+    sqeuclid = cdist(query_num_norm, X_num_norm, metric="sqeuclidean")
+    dist = np.clip(sqeuclid / 2, 0.0, 1.0) * d_num
 
     if X_cat is not None and d_cat > 0:
         for f in range(d_cat):
