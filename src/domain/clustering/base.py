@@ -142,6 +142,12 @@ def grid_search(
             continue
 
         duration = time.perf_counter() - t0
+        # Deliberately euclidean regardless of the run's distance: grid_search has no
+        # metric parameter of its own. Harmless on L2-normalised input (prepare_data.py
+        # normalises before clustering under cosine) in most cases, but not provably so
+        # — euclidean and cosine silhouette can pick a different k for the same
+        # partition. Threading a real metric through here would move every cosine run's
+        # numbers.
         sil = _score_silhouette(sub_num, labels)
         entry = _measure(labels, sil, combo, duration)
         entry["silhouette"] = sil

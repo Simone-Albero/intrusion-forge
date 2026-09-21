@@ -18,10 +18,3 @@ validation:
     num_workers: 8
     shuffle: false
     pin_memory: false
-
-test:
-  dataloader:
-    batch_size: 2048
-    num_workers: 8
-    shuffle: false
-    pin_memory: false

@@ -269,5 +269,5 @@ intrusion-forge/
 Three conventions to know before editing:
 
 - `src/` is input to output. Configuration loading, file I/O and path building belong to `pipelines/` and `src/core` alone.
-- Every write, whether JSON, pickle or figure, goes through `LogDispatcher.publish(LogBundle)` and a subscriber, never a direct `save_to_*`.
+- Every write, whether JSON, pickle or figure, goes through `LogDispatcher.publish(LogBundle)` and a subscriber — except model persistence (the `Trainer`'s `save`/`load`), the resolved config (`save_config`), parquet DataFrames (`save_df`) and timing records (`flush_timing`).
 - Classifiers and losses register themselves with a factory (`@DLClassifierFactory.register()`, `@LossFactory.register()`, or `MLClassifierFactory.register("name")(SklearnClass)`) and are discovered automatically at import.

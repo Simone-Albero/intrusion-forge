@@ -10,7 +10,6 @@ from pipelines import paths_from_cfg
 from src.core.config import load_config, save_config
 from src.core.log import (
     FilesystemFigureSubscriber,
-    JSONSubscriber,
     LogBundle,
     LogDispatcher,
     setup_logger,
@@ -243,7 +242,7 @@ def assemble_analysis_figures(
 
     if regressor_results.get("skipped"):
         logger.warning(
-            "[STAGE-SKIP] Skipping failure-classifier plots: %s",
+            "[STAGE-SKIP] Skipping failure-regressor plots: %s",
             regressor_results.get("message", regressor_results.get("reason")),
         )
         return
@@ -263,7 +262,9 @@ def assemble_analysis_figures(
     figures.update(_plot_feature_vs_failure(summary_df, scatter_features))
     figures.update(_plot_feature_violin_by_rate_bin(summary_df, scatter_features))
     figures.update(_plot_rf_evaluation(summary_df, regressor_results))
-    analysis_bus.publish(LogBundle(figures=figures))
+    analysis_bus.publish(
+        LogBundle.from_dict({f"figure/{name}": plot for name, plot in figures.items()})
+    )
 
 
 def main() -> None:
@@ -278,7 +279,6 @@ def main() -> None:
     save_config(cfg, paths.configs / "config_composed_render.json")
 
     analysis_bus = LogDispatcher()
-    analysis_bus.subscribe(JSONSubscriber(paths.outputs))
     analysis_bus.subscribe(FilesystemFigureSubscriber(paths.figures))
 
     summary_path = paths.outputs / "analysis/cluster_summary.json"

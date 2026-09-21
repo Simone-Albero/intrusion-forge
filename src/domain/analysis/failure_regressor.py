@@ -256,8 +256,13 @@ def fit_failure_regressor(
         "min_test_support": min_test_support,
         "global_error_rate": global_error_rate,
     }
-    if n_excluded_no_test or n_excluded_low_support or n_excluded_noise:
-        logger.info(
+    total_excluded = n_excluded_no_test + n_excluded_low_support + n_excluded_noise
+    if total_excluded:
+        # Above one cluster in five gone, the target is thin enough to flag — routinely
+        # true under kfold=false, where a single test split starves per-cluster support.
+        excluded_frac = total_excluded / no_test.size if no_test.size else 0.0
+        log = logger.warning if excluded_frac > 0.2 else logger.info
+        log(
             "Excluded clusters — no test: %d, support < %d: %d, noise pseudo-clusters: %d "
             "(%.1f%% of test support); %d/%d used",
             n_excluded_no_test,
