@@ -69,7 +69,7 @@ processed_data/                       # train / val / test parquet
 shared/                               # dataset-level, the same for every classifier
 ├── complexity.json                   #   descriptors per region
 ├── class_complexity.json             #   descriptors per class
-└── metadata/                         #   label map, split sizes, region centroids
+└── metadata/                         #   label map, split sizes, region sizes
 random_forest/
 ├── outputs/testing/summary.json      # accuracy, macro F1, per-class metrics
 ├── outputs/analysis/

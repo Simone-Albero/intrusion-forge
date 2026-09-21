@@ -19,7 +19,6 @@ from src.core.log import (
 from src.core.utils import flush_timing, skip_if_exists, timed
 from src.domain.analysis.complexity.shared import l2_normalize
 from src.domain.analysis.metadata import (
-    clustering_report_table,
     compute_clusters_metadata,
     compute_df_metadata,
     get_df_info,
@@ -223,7 +222,7 @@ def _cluster_splits(
     num_cols: list[str],
     label_col: str,
     dispatcher: LogDispatcher,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict, set[int]]:
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, set[int]]:
     """Cluster train per class, then attach the `cluster` column to every split."""
     X_num = train_df[num_cols].to_numpy(dtype=np.float64)
     y_class = train_df[label_col].to_numpy()
@@ -235,11 +234,6 @@ def _cluster_splits(
     )
     dispatcher.publish(
         LogBundle.from_dict({"json/clustering_report": clustering_report})
-    )
-    dispatcher.publish(
-        LogBundle.from_dict(
-            {"json/clustering_table": clustering_report_table(clustering_report)}
-        )
     )
 
     train_df = train_df.copy()
@@ -269,7 +263,7 @@ def _cluster_splits(
         len(centroids),
         noise_count,
     )
-    return train_df, val_df, test_df, centroids, noise_cluster_ids
+    return train_df, val_df, test_df, noise_cluster_ids
 
 
 def _publish_metadata(
@@ -281,7 +275,6 @@ def _publish_metadata(
     cat_cols: list[str],
     label_col: str,
     label_mapping: dict,
-    centroids: dict,
     noise_cluster_ids: set[int],
     dispatcher: LogDispatcher,
 ) -> None:
@@ -301,9 +294,7 @@ def _publish_metadata(
         train_df,
         val_df,
         test_df,
-        label_col,
         cluster_col="cluster",
-        centroids={str(k): v.tolist() for k, v in centroids.items()},
         noise_cluster_ids=sorted(noise_cluster_ids),
     )
     dispatcher.publish(LogBundle.from_dict({"json/clusters_meta": clusters_metadata}))
@@ -336,7 +327,7 @@ def prepare(cfg) -> None:
         df.reset_index(drop=True) for df in [train_df, val_df, test_df]
     )
 
-    train_df, val_df, test_df, centroids, noise_cluster_ids = _cluster_splits(
+    train_df, val_df, test_df, noise_cluster_ids = _cluster_splits(
         cfg, train_df, val_df, test_df, num_cols, label_col, dispatcher
     )
 
@@ -361,7 +352,6 @@ def prepare(cfg) -> None:
         cat_cols,
         label_col,
         label_mapping,
-        centroids,
         noise_cluster_ids,
         dispatcher,
     )

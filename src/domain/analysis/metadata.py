@@ -4,19 +4,7 @@ import pandas as pd
 
 def get_df_info(df: pd.DataFrame, *, label_col: str | None = None) -> dict:
     """Return basic information about a DataFrame."""
-    info = {
-        "shape": list(df.shape),
-        "columns": list(df.columns),
-        "dtypes": {col: str(dtype) for col, dtype in df.dtypes.to_dict().items()},
-        "memory_usage": int(df.memory_usage(deep=True).sum()),
-        "feature_info": {
-            col: {
-                "dtype": str(df[col].dtype),
-                "unique_count": int(df[col].nunique()),
-            }
-            for col in df.columns
-        },
-    }
+    info = {"shape": list(df.shape)}
     if label_col and label_col in df.columns:
         info["label_distribution"] = df[label_col].value_counts().to_dict()
     return info
@@ -56,64 +44,20 @@ def compute_df_metadata(
     }
 
 
-def clustering_report_table(clustering_report: dict) -> dict:
-    """Table 1: per-class train-set sample/cluster counts and mean cluster size, plus a total row."""
-    rows = []
-    total_samples = 0
-    total_clusters = 0
-    for cls, entry in clustering_report.items():
-        n_samples = entry["n_samples"]
-        n_clusters = entry["summary"]["n_clusters"]
-        rows.append(
-            {
-                "class": cls,
-                "samples": n_samples,
-                "clusters": n_clusters,
-                "mean_cluster_size": (n_samples / n_clusters if n_clusters else None),
-            }
-        )
-        total_samples += n_samples
-        total_clusters += n_clusters
-    return {
-        "rows": rows,
-        "total": {
-            "samples": total_samples,
-            "clusters": total_clusters,
-            "mean_cluster_size": (
-                total_samples / total_clusters if total_clusters else None
-            ),
-        },
-    }
-
-
 def compute_clusters_metadata(
     train_df: pd.DataFrame,
     val_df: pd.DataFrame,
     test_df: pd.DataFrame,
-    label_col: str,
     cluster_col: str,
-    centroids: dict,
     *,
     noise_cluster_ids: list[int] | None = None,
 ) -> dict:
     """Aggregate cluster metadata across all splits."""
     df_ = pd.concat([train_df, val_df, test_df], ignore_index=True)
-    encoded_label_col = f"encoded_{label_col}"
-
-    class_to_clusters = {
-        str(cls): [
-            str(v) for v in df_[df_[encoded_label_col] == cls][cluster_col].unique()
-        ]
-        for cls in df_[encoded_label_col].unique()
-    }
-
     clusters_distribution = {
         str(k): v for k, v in df_[cluster_col].value_counts().to_dict().items()
     }
-
     return {
-        "class_to_clusters": class_to_clusters,
         "clusters_distribution": clusters_distribution,
-        "centroids": {str(k): v for k, v in centroids.items()},
         "noise_cluster_ids": sorted(noise_cluster_ids) if noise_cluster_ids else [],
     }
