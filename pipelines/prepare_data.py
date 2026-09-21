@@ -54,27 +54,20 @@ def _absorb_small_clusters(
 
 
 def _cluster_per_class(
+    cfg,
     X_num: np.ndarray,
     y_class: np.ndarray,
     classes: list,
-    *,
-    algorithms: dict[str, dict],
-    max_fit_samples: int,
-    random_state: int,
-    metric: str = "euclidean",
-    min_cluster_floor: int = 50,
-    min_clusters: int | None = None,
-    max_clusters_total: int | None = None,
-    grid_target_cluster_size: int | None = None,
-    resolution_weight: float = 0.1,
 ) -> tuple[np.ndarray, dict[int, np.ndarray], set[int], dict[str, dict]]:
     """Cluster each class separately, folding noise into per-class pseudo-clusters."""
     n = X_num.shape[0]
-    max_clusters_per_class = (
-        max(2, max_clusters_total // len(classes))
-        if max_clusters_total is not None
-        else None
+    clustering = cfg.clustering
+    algorithms = OmegaConf.to_container(clustering.algorithms, resolve=True)
+    max_clusters_total = (
+        cfg.complexity.max_complexity_samples
+        // cfg.complexity.min_subsample_per_cluster
     )
+    max_clusters_per_class = max(2, max_clusters_total // len(classes))
     labels = np.full(n, -1, dtype=np.int64)
     centroids: dict[int, np.ndarray] = {}
     offset = 0
@@ -85,35 +78,36 @@ def _cluster_per_class(
         if not mask.any():
             continue
         X_num_cls = X_num[mask]
-        X_num_cls = l2_normalize(X_num_cls) if metric == "cosine" else X_num_cls
+        X_num_cls = (
+            l2_normalize(X_num_cls) if clustering.distance == "cosine" else X_num_cls
+        )
 
         algo_reports: dict[str, dict] = {}
         cluster_fn = build_cluster_fn(
             algorithms=algorithms,
-            max_fit_samples=max_fit_samples,
-            random_state=random_state,
+            max_fit_samples=clustering.max_fit_samples,
+            random_state=cfg.seed,
             reporter=algo_reports.__setitem__,
             max_clusters=max_clusters_per_class,
-            min_clusters=min_clusters,
-            grid_target_cluster_size=grid_target_cluster_size,
-            resolution_weight=resolution_weight,
+            min_clusters=clustering.min_clusters,
+            grid_target_cluster_size=clustering.grid_target_cluster_size,
+            resolution_weight=clustering.resolution_weight,
         )
         raw_labels = cluster_fn(X_num_cls)
         effective_floor = (
             resolution_aware_floor(
-                X_num_cls.shape[0], grid_target_cluster_size, min_cluster_floor
+                X_num_cls.shape[0],
+                clustering.grid_target_cluster_size,
+                clustering.min_cluster_floor,
             )
-            if grid_target_cluster_size
-            else min_cluster_floor
+            if clustering.grid_target_cluster_size
+            else clustering.min_cluster_floor
         )
         raw_labels, n_floor_clusters, n_floor_points = _absorb_small_clusters(
             raw_labels, effective_floor
         )
         n_clusters_cls = int(np.unique(raw_labels[raw_labels != -1]).size)
-        if (
-            max_clusters_per_class is not None
-            and n_clusters_cls > max_clusters_per_class
-        ):
+        if n_clusters_cls > max_clusters_per_class:
             raise ValueError(
                 f"class {cls!r}: {n_clusters_cls} clusters survive absorption, over "
                 f"max_clusters={max_clusters_per_class} for this class — the complexity "
@@ -164,18 +158,11 @@ def _cluster_per_class(
 
 @timed
 def preprocess_df(
+    cfg,
     df: pd.DataFrame,
     num_cols: list[str],
     cat_cols: list[str],
     label_col: str,
-    filter_query: str | None,
-    min_cat_count: int,
-    train_frac: float,
-    val_frac: float,
-    test_frac: float,
-    random_state: int,
-    top_n: int,
-    hash_buckets: int,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Preprocess dataframe: filter, encode, scale, and split."""
     logger.info(
@@ -185,15 +172,15 @@ def preprocess_df(
         len(cat_cols),
     )
     df = drop_nans(df, num_cols + cat_cols + [label_col])
-    df = query_filter(df, query=filter_query)
-    df = rare_category_filter(df, [label_col], min_count=min_cat_count)
+    df = query_filter(df, query=cfg.data.filter_query)
+    df = rare_category_filter(df, [label_col], min_count=cfg.data.min_cat_count)
 
     train_df, val_df, test_df = ml_split(
         df,
-        train_frac=train_frac,
-        val_frac=val_frac,
-        test_frac=test_frac,
-        random_state=random_state,
+        train_frac=cfg.data.train_frac,
+        val_frac=cfg.data.val_frac,
+        test_frac=cfg.data.test_frac,
+        random_state=cfg.seed,
         label_col=label_col,
     )
     logger.info(
@@ -211,7 +198,12 @@ def preprocess_df(
             ("scaler", RobustScaler()),
         ],
         cat_steps=[
-            ("top_n_encoder", TopNHashEncoder(top_n=top_n, hash_buckets=hash_buckets)),
+            (
+                "top_n_encoder",
+                TopNHashEncoder(
+                    top_n=cfg.data.top_n, hash_buckets=cfg.data.hash_buckets
+                ),
+            ),
         ],
     )
     logger.info("Preprocessor: %s", preprocessor)
@@ -238,24 +230,8 @@ def _cluster_splits(
     all_classes = sorted(train_df[label_col].unique().tolist())
 
     logger.info("Running per-class clustering on train (n=%d)...", len(train_df))
-    algorithms = OmegaConf.to_container(cfg.clustering.algorithms, resolve=True)
-    max_clusters_total = (
-        cfg.complexity.max_complexity_samples
-        // cfg.complexity.min_subsample_per_cluster
-    )
     labels, centroids, noise_cluster_ids, clustering_report = _cluster_per_class(
-        X_num,
-        y_class,
-        all_classes,
-        algorithms=algorithms,
-        max_fit_samples=cfg.clustering.max_fit_samples,
-        random_state=cfg.seed,
-        metric=cfg.clustering.distance,
-        min_cluster_floor=cfg.clustering.min_cluster_floor,
-        min_clusters=cfg.clustering.min_clusters,
-        max_clusters_total=max_clusters_total,
-        grid_target_cluster_size=cfg.clustering.grid_target_cluster_size,
-        resolution_weight=cfg.clustering.resolution_weight,
+        cfg, X_num, y_class, all_classes
     )
     dispatcher.publish(
         LogBundle.from_dict({"json/clustering_report": clustering_report})
@@ -355,20 +331,7 @@ def prepare(cfg) -> None:
     df_info = get_df_info(df, label_col=label_col)
     dispatcher.publish(LogBundle.from_dict({"json/df_info": df_info}))
 
-    train_df, val_df, test_df = preprocess_df(
-        df,
-        num_cols,
-        cat_cols,
-        label_col,
-        cfg.data.filter_query,
-        cfg.data.min_cat_count,
-        cfg.data.train_frac,
-        cfg.data.val_frac,
-        cfg.data.test_frac,
-        cfg.seed,
-        cfg.data.top_n,
-        cfg.data.hash_buckets,
-    )
+    train_df, val_df, test_df = preprocess_df(cfg, df, num_cols, cat_cols, label_col)
     train_df, val_df, test_df = (
         df.reset_index(drop=True) for df in [train_df, val_df, test_df]
     )

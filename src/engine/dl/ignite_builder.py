@@ -1,117 +1,30 @@
-import shutil
 from collections.abc import Callable
-from pathlib import Path
 
 from ignite.engine import Engine, Events
-from ignite.handlers import EarlyStopping, ModelCheckpoint
 from ignite.metrics import Metric
 
 
-class EngineBuilder:
-    """Builder for creating and configuring Ignite engines with dynamic state."""
+def build_engine(
+    step_fn: Callable,
+    *,
+    state: dict[str, object],
+    metric: tuple[str, Metric],
+    handlers: list[tuple[Events, Callable[[Engine], None]]],
+) -> Engine:
+    """Build an Ignite engine: inject `state` on start, attach `metric`, attach `handlers`.
 
-    def __init__(self, step_function: Callable):
-        self._step_function = step_function
-        self._state_kwargs: dict[str, object] = {}
-        self._metrics: dict[str, Metric] = {}
-        self._event_handlers: list = []
-        self._history: dict[str, list[float]] = {}
+    State is injected on Events.STARTED rather than set directly, because `Engine.run()`
+    replaces `engine.state` with a fresh one at the start of every run.
+    """
+    engine = Engine(step_fn)
 
-    def with_state(self, **kwargs) -> "EngineBuilder":
-        """Add attributes to engine state."""
-        self._state_kwargs.update(kwargs)
-        return self
+    def _inject_state(engine: Engine) -> None:
+        for key, value in state.items():
+            setattr(engine.state, key, value)
 
-    def with_metric(self, name: str, metric: Metric) -> "EngineBuilder":
-        """Attach a metric to the engine."""
-        self._metrics[name] = metric
-        return self
-
-    def with_handler(
-        self, event: Events, handler: Callable, *args, **kwargs
-    ) -> "EngineBuilder":
-        """Add an event handler."""
-        self._event_handlers.append((event, handler, args, kwargs))
-        return self
-
-    def with_early_stopping(
-        self,
-        trainer: Engine,
-        *,
-        metric: str = "loss",
-        patience: int = 10,
-        min_delta: float = 0.0,
-        maximize: bool = False,
-    ) -> "EngineBuilder":
-        """Add early stopping (for validator engines)."""
-        sign = 1 if maximize else -1
-        handler = EarlyStopping(
-            patience=patience,
-            min_delta=min_delta,
-            score_function=lambda engine: sign * engine.state.metrics[metric],
-            trainer=trainer,
-        )
-        return self.with_handler(Events.COMPLETED, handler)
-
-    def with_checkpointing(
-        self,
-        trainer: Engine,
-        checkpoint_dir: Path,
-        objects_to_save: dict[str, object],
-        *,
-        metric: str = "loss",
-        maximize: bool = False,
-        n_saved: int = 1,
-        filename_prefix: str = "",
-    ) -> "EngineBuilder":
-        """Add model checkpointing (for validator engines)."""
-        if checkpoint_dir.exists():
-            shutil.rmtree(checkpoint_dir)
-        checkpoint_dir.mkdir(parents=True)
-
-        sign = 1 if maximize else -1
-        handler = ModelCheckpoint(
-            dirname=checkpoint_dir,
-            filename_prefix=filename_prefix,
-            score_function=lambda engine: sign * engine.state.metrics[metric],
-            score_name=metric,
-            n_saved=n_saved,
-            global_step_transform=lambda engine, _: trainer.state.epoch,
-            require_empty=False,
-        )
-        return self.with_handler(Events.COMPLETED, handler, objects_to_save)
-
-    def with_history(
-        self,
-        output_transform: Callable[[object], dict[str, float]],
-        *,
-        event: Events = Events.ITERATION_COMPLETED,
-    ) -> "EngineBuilder":
-        """Collect the flat `{name: float}` dict of `output_transform` into `self.history`."""
-
-        def _collect(engine: Engine) -> None:
-            for name, value in output_transform(engine.state.output).items():
-                self._history.setdefault(name, []).append(float(value))
-
-        return self.with_handler(event, _collect)
-
-    @property
-    def history(self) -> dict[str, list[float]]:
-        """Scalars collected via `.with_history(...)`."""
-        return self._history
-
-    def build(self) -> Engine:
-        """Build and return the configured engine."""
-        engine = Engine(self._step_function)
-        state_kwargs = self._state_kwargs
-
-        def _inject_state(engine: Engine) -> None:
-            for key, value in state_kwargs.items():
-                setattr(engine.state, key, value)
-
-        engine.add_event_handler(Events.STARTED, _inject_state)
-        for name, metric in self._metrics.items():
-            metric.attach(engine, name)
-        for event, handler, args, kwargs in self._event_handlers:
-            engine.add_event_handler(event, handler, *args, **kwargs)
-        return engine
+    engine.add_event_handler(Events.STARTED, _inject_state)
+    name, m = metric
+    m.attach(engine, name)
+    for event, handler in handlers:
+        engine.add_event_handler(event, handler)
+    return engine

@@ -1,4 +1,5 @@
 import logging
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -7,6 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from ignite.engine import Events
+from ignite.handlers import EarlyStopping, ModelCheckpoint
 from ignite.metrics import Average
 from torch.utils.data import DataLoader
 
@@ -19,7 +21,7 @@ from src.engine.dl.builders import (
     create_scheduler,
 )
 from src.engine.dl.engine import eval_step, train_step
-from src.engine.dl.ignite_builder import EngineBuilder
+from src.engine.dl.ignite_builder import build_engine
 from src.engine.dl.infer import df_to_tensors, run_model
 from src.engine.dl.model import DLClassifierFactory
 from src.engine.dl.model.checkpoint import load_best_checkpoint
@@ -34,40 +36,59 @@ def _create_model(name: str, params: dict, device: torch.device) -> nn.Module:
 
 def _build_train_engine(model, loss_fn, optimizer, scheduler, device, max_grad_norm):
     """Engine that trains for one epoch and collects per-step loss into history."""
-    builder = (
-        EngineBuilder(train_step)
-        .with_state(
-            model=model,
-            loss_fn=loss_fn,
-            optimizer=optimizer,
-            scheduler=scheduler,
-            device=device,
-            max_grad_norm=max_grad_norm,
-        )
-        .with_metric("loss", Average(output_transform=lambda x: x["loss"]))
-        .with_history(output_transform=lambda x: {"loss": x["loss"]})
+    history: dict[str, list[float]] = {"loss": []}
+
+    def _collect(engine) -> None:
+        history["loss"].append(float(engine.state.output["loss"]))
+
+    engine = build_engine(
+        train_step,
+        state={
+            "model": model,
+            "loss_fn": loss_fn,
+            "optimizer": optimizer,
+            "scheduler": scheduler,
+            "device": device,
+            "max_grad_norm": max_grad_norm,
+        },
+        metric=("loss", Average(output_transform=lambda x: x["loss"])),
+        handlers=[(Events.ITERATION_COMPLETED, _collect)],
     )
-    return builder.build(), builder.history
+    return engine, history
 
 
 def _build_validation_engine(
     model, loss_fn, device, trainer, patience, min_delta, models_path
 ):
     """Validator engine with early stopping + best-loss checkpointing."""
-    return (
-        EngineBuilder(eval_step)
-        .with_state(model=model, loss_fn=loss_fn, device=device)
-        .with_metric("loss", Average(output_transform=lambda x: x["loss"]))
-        .with_early_stopping(
-            trainer=trainer, metric="loss", patience=patience, min_delta=min_delta
-        )
-        .with_checkpointing(
-            trainer=trainer,
-            checkpoint_dir=models_path,
-            objects_to_save={"model": model},
-            metric="loss",
-        )
-        .build()
+    # Both score functions minimize loss: Ignite's handlers maximize by convention.
+    early_stopping = EarlyStopping(
+        patience=patience,
+        min_delta=min_delta,
+        score_function=lambda engine: -engine.state.metrics["loss"],
+        trainer=trainer,
+    )
+
+    if models_path.exists():
+        shutil.rmtree(models_path)
+    models_path.mkdir(parents=True)
+    checkpoint = ModelCheckpoint(
+        dirname=models_path,
+        score_function=lambda engine: -engine.state.metrics["loss"],
+        score_name="loss",
+        n_saved=1,
+        global_step_transform=lambda engine, _: trainer.state.epoch,
+        require_empty=False,
+    )
+
+    return build_engine(
+        eval_step,
+        state={"model": model, "loss_fn": loss_fn, "device": device},
+        metric=("loss", Average(output_transform=lambda x: x["loss"])),
+        handlers=[
+            (Events.COMPLETED, early_stopping),
+            (Events.COMPLETED, lambda engine: checkpoint(engine, {"model": model})),
+        ],
     )
 
 

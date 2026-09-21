@@ -2,7 +2,7 @@ import numpy as np
 from tqdm import tqdm
 
 from src.core.utils import timed
-from src.domain.analysis.complexity.shared import aggregate_min_mean_max
+from src.domain.analysis.complexity.shared import aggregate_min_mean_max, make_null_row
 
 
 def compute_cls_coef(
@@ -54,9 +54,7 @@ def compute_network_density(
 ) -> dict[str, dict[str, float | None]]:
     """Cross-class k-NN density per cluster against its top-K adversarial clusters."""
     k = knn_idx.shape[1]
-    null_row: dict[str, float | None] = {
-        f"network_density_{stat}": None for stat in ("min", "mean", "max")
-    }
+    null_row = make_null_row(("network_density",))
 
     result: dict[str, dict[str, float | None]] = {}
     for cid, c_mask in tqdm(

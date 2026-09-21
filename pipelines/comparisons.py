@@ -339,18 +339,37 @@ def _fig_family_importance(runs: list[dict]) -> Plot | None:
     )
 
 
+def _fig_variant_by_group(
+    runs: list[dict],
+    group_key,
+    label_map: dict[str, str],
+    field: str,
+    y_label: str,
+    *,
+    variants: list[str] = _VARIANT_ORDER,
+    y_lim: tuple[float, float] | None = None,
+) -> Plot | None:
+    """Grouped bar of the baseline variants' median (+IQR) `field`, one bar per variant
+    within each group."""
+    subset = [r for r in runs if _is_kmeans_euclidean(r)]
+    groups = sorted({group_key(r) for r in subset})
+    if not groups:
+        return None
+    series = _variant_series(subset, groups, group_key, field, variants)
+    return grouped_bar_plot(
+        [label_map.get(g, g) for g in groups], series, y_label=y_label, y_lim=y_lim
+    )
+
+
 def _fig_spearman_by_classifier(runs: list[dict]) -> Plot | None:
     """Figure 8: cluster-level Spearman rho (median, IQR) of the 5 variants, per classifier
     (kmeans-euclidean subset, 90 runs)."""
-    subset = [r for r in runs if _is_kmeans_euclidean(r)]
-    clfs = sorted({r["clf"] for r in subset})
-    if not clfs:
-        return None
-    series = _variant_series(subset, clfs, lambda r: r["clf"], "spearman")
-    return grouped_bar_plot(
-        [_CLF_LABEL.get(c, c) for c in clfs],
-        series,
-        y_label=r"Spearman $\rho$ (median, IQR)",
+    return _fig_variant_by_group(
+        runs,
+        lambda r: r["clf"],
+        _CLF_LABEL,
+        "spearman",
+        r"Spearman $\rho$ (median, IQR)",
         y_lim=(-0.05, 1.05),
     )
 
@@ -358,34 +377,25 @@ def _fig_spearman_by_classifier(runs: list[dict]) -> Plot | None:
 def _fig_mse_by_classifier(runs: list[dict]) -> Plot | None:
     """Figure 9: cluster-rate MSE (median, IQR) of the 3 rate variants, per classifier
     (kmeans-euclidean subset, 90 runs)."""
-    subset = [r for r in runs if _is_kmeans_euclidean(r)]
-    clfs = sorted({r["clf"] for r in subset})
-    if not clfs:
-        return None
-    series = _variant_series(
-        subset, clfs, lambda r: r["clf"], "cluster_rate_mse", _RATE_VARIANT_ORDER
-    )
-    return grouped_bar_plot(
-        [_CLF_LABEL.get(c, c) for c in clfs],
-        series,
-        y_label="MSE (median, IQR)",
+    return _fig_variant_by_group(
+        runs,
+        lambda r: r["clf"],
+        _CLF_LABEL,
+        "cluster_rate_mse",
+        "MSE (median, IQR)",
+        variants=_RATE_VARIANT_ORDER,
     )
 
 
 def _fig_spearman_by_dataset(runs: list[dict]) -> Plot | None:
     """Figure 13: cluster-level Spearman rho (median, IQR) of the 5 variants, per dataset
     (kmeans-euclidean subset)."""
-    subset = [r for r in runs if _is_kmeans_euclidean(r)]
-    datasets = sorted({_dataset_base(r["dataset"]) for r in subset})
-    if not datasets:
-        return None
-    series = _variant_series(
-        subset, datasets, lambda r: _dataset_base(r["dataset"]), "spearman"
-    )
-    return grouped_bar_plot(
-        [_DATASET_LABEL.get(d, d) for d in datasets],
-        series,
-        y_label=r"Spearman $\rho$ (median, IQR)",
+    return _fig_variant_by_group(
+        runs,
+        lambda r: _dataset_base(r["dataset"]),
+        _DATASET_LABEL,
+        "spearman",
+        r"Spearman $\rho$ (median, IQR)",
         y_lim=(-0.05, 1.05),
     )
 
@@ -504,32 +514,29 @@ def _table_datasets(runs: list[dict]) -> dict:
     return {"rows": [seen[ds] for ds in sorted(seen)]}
 
 
-def _table_variant_spearman(runs: list[dict]) -> dict:
-    """Table 5: cluster-level Spearman rho for the 5 baseline variants (kmeans-euclidean, 90 runs)."""
+def _table_variant_field(
+    runs: list[dict], field: str, variants: list[str] = _VARIANT_ORDER
+) -> dict:
+    """Median (+IQR) of `field` per baseline variant (kmeans-euclidean subset)."""
     subset = [r for r in runs if _is_kmeans_euclidean(r)]
     rows = [
         {
             "variant": variant,
-            **_median_iqr([_variant_value(r, variant, "spearman") for r in subset]),
+            **_median_iqr([_variant_value(r, variant, field) for r in subset]),
         }
-        for variant in _VARIANT_ORDER
+        for variant in variants
     ]
     return {"n_runs": len(subset), "rows": rows}
+
+
+def _table_variant_spearman(runs: list[dict]) -> dict:
+    """Table 5: cluster-level Spearman rho for the 5 baseline variants (kmeans-euclidean, 90 runs)."""
+    return _table_variant_field(runs, "spearman")
 
 
 def _table_variant_cluster_mse(runs: list[dict]) -> dict:
     """Table 6: cluster-rate MSE for the 3 rate-scale variants (kmeans-euclidean, 90 runs)."""
-    subset = [r for r in runs if _is_kmeans_euclidean(r)]
-    rows = [
-        {
-            "variant": variant,
-            **_median_iqr(
-                [_variant_value(r, variant, "cluster_rate_mse") for r in subset]
-            ),
-        }
-        for variant in _RATE_VARIANT_ORDER
-    ]
-    return {"n_runs": len(subset), "rows": rows}
+    return _table_variant_field(runs, "cluster_rate_mse", _RATE_VARIANT_ORDER)
 
 
 def _table_variant_spearman_by_dataset(runs: list[dict]) -> dict:

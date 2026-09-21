@@ -167,12 +167,14 @@ def grid_search(
                 max_k,
             )
 
-    best_score = float("-inf")
-    best_entry: dict | None = None
-    for e in candidates:
-        if e["score"] > best_score:
-            best_score = e["score"]
-            best_entry = e
+    # Filtered, not a plain max(): when every candidate scores -inf (every combo in the
+    # grid degenerated — e.g. all-noise or a single cluster), max() would still return an
+    # arbitrary one of them instead of falling through to the sweep[0] fallback below.
+    best_entry = max(
+        (e for e in candidates if e["score"] > float("-inf")),
+        key=lambda e: e["score"],
+        default=None,
+    )
 
     if best_entry is None:
         logger.warning(

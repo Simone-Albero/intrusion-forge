@@ -34,9 +34,8 @@ def resolution_aware_floor(n_class: int, target_size: int, floor_cap: int) -> in
     return min(floor_cap, max(5, round(0.5 * finest_avg_size)))
 
 
-def _make_single_cluster_fn(
-    name: str,
-    params: dict,
+def build_cluster_fn(
+    algorithms: dict[str, dict],
     max_fit_samples: int,
     random_state: int,
     reporter: Reporter | None = None,
@@ -45,7 +44,13 @@ def _make_single_cluster_fn(
     grid_target_cluster_size: int | None = None,
     resolution_weight: float = 0.1,
 ) -> ClusterFn:
-    """Build a ClusterFn for a single registered algorithm."""
+    """Build a ClusterFn from a single {algorithm_name: params} config entry."""
+    if len(algorithms) != 1:
+        raise ValueError(
+            f"build_cluster_fn expects exactly one algorithm, got {len(algorithms)}: "
+            f"{list(algorithms)}"
+        )
+    ((name, params),) = algorithms.items()
     fit_fn = ClusteringFactory.get(name)
     grid, fixed = _split_grid_fixed(params or {})
 
@@ -79,33 +84,3 @@ def _make_single_cluster_fn(
         return fit_fn(X_num, **common)
 
     return _fn
-
-
-def build_cluster_fn(
-    algorithms: dict[str, dict],
-    max_fit_samples: int,
-    random_state: int,
-    reporter: Reporter | None = None,
-    max_clusters: int | None = None,
-    min_clusters: int | None = None,
-    grid_target_cluster_size: int | None = None,
-    resolution_weight: float = 0.1,
-) -> ClusterFn:
-    """Build a ClusterFn from a single {algorithm_name: params} entry."""
-    if len(algorithms) != 1:
-        raise ValueError(
-            f"build_cluster_fn expects exactly one algorithm, got {len(algorithms)}: "
-            f"{list(algorithms)}"
-        )
-    ((name, params),) = algorithms.items()
-    return _make_single_cluster_fn(
-        name,
-        params,
-        max_fit_samples,
-        random_state,
-        reporter=reporter,
-        max_clusters=max_clusters,
-        min_clusters=min_clusters,
-        grid_target_cluster_size=grid_target_cluster_size,
-        resolution_weight=resolution_weight,
-    )

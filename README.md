@@ -261,7 +261,7 @@ intrusion-forge/
 │   │   ├── plot/                 # Plot payload, chart primitives, classify/analysis/comparison composers, metrics, palette
 │   │   └── projection.py         # t-SNE
 │   └── engine/
-│       ├── dl/                   # models, modules, losses, dataset, EngineBuilder
+│       ├── dl/                   # models, modules, losses, dataset, Ignite engine builder
 │       └── ml/                   # sklearn / XGBoost wrappers, column preprocessing
 └── resources/                    # not tracked by git: raw_data/ in, experiments/ out
 ```

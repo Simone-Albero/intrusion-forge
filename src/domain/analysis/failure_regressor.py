@@ -130,15 +130,7 @@ def _run_nested_cv(
     random_state: int,
 ) -> dict:
     """Run the outer CV loop and collect per-fold scores + out-of-fold predictions."""
-    fold_r2s: list[float] = []
-    fold_maes: list[float] = []
-    fold_spearmans: list[float] = []
-    fold_importances: list[np.ndarray] = []
-    oof_y_true: list[float] = []
-    oof_y_pred: list[float] = []
-    oof_indices: list = []
-    oof_fold_ids: list[int] = []
-
+    folds = []
     for f, (train_idx, test_idx) in enumerate(
         tqdm(outer_cv.split(X, split_labels), total=outer_k, desc="Outer CV")
     ):
@@ -151,24 +143,19 @@ def _run_nested_cv(
             param_grid,
             random_state,
         )
-        fold_r2s.append(fold["r2"])
-        fold_maes.append(fold["mae"])
-        fold_spearmans.append(fold["spearman"])
-        fold_importances.append(fold["importances"])
-        oof_y_true.extend(y.iloc[test_idx].tolist())
-        oof_y_pred.extend(fold["y_pred"])
-        oof_indices.extend(fold["indices"])
-        oof_fold_ids.extend([f] * len(fold["y_pred"]))
+        folds.append({**fold, "y_true": y.iloc[test_idx].tolist(), "fold_id": f})
 
     return {
-        "fold_r2s": fold_r2s,
-        "fold_maes": fold_maes,
-        "fold_spearmans": fold_spearmans,
-        "fold_importances": fold_importances,
-        "y_true": np.array(oof_y_true),
-        "y_pred": np.array(oof_y_pred),
-        "indices": oof_indices,
-        "fold_ids": np.array(oof_fold_ids),
+        "fold_r2s": [fold["r2"] for fold in folds],
+        "fold_maes": [fold["mae"] for fold in folds],
+        "fold_spearmans": [fold["spearman"] for fold in folds],
+        "fold_importances": [fold["importances"] for fold in folds],
+        "y_true": np.array([v for fold in folds for v in fold["y_true"]]),
+        "y_pred": np.array([v for fold in folds for v in fold["y_pred"]]),
+        "indices": [i for fold in folds for i in fold["indices"]],
+        "fold_ids": np.array(
+            [fold["fold_id"] for fold in folds for _ in fold["y_pred"]]
+        ),
     }
 
 

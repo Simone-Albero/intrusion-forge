@@ -1,3 +1,5 @@
+from collections.abc import Callable
+
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
@@ -57,6 +59,19 @@ class CappedCategoryEncoder(BaseEstimator, TransformerMixin):
         return self.feature_names_in_.copy()
 
 
+_CAT_ENCODERS: dict[str, Callable[[], TransformerMixin] | None] = {
+    "drop_cat": None,
+    "onehot": lambda: OneHotEncoder(handle_unknown="ignore", sparse_output=False),
+    "native_sklearn": lambda: CappedCategoryEncoder(
+        max_cardinality=_HISTGB_MAX_CARDINALITY
+    ),
+    "native_xgb": lambda: CappedCategoryEncoder(max_cardinality=None),
+}
+# native_* strategies feed a classifier that reads pandas categorical dtype directly, so
+# their ColumnTransformer keeps plain column names and emits a DataFrame.
+_NATIVE_CATEGORICAL_STRATEGIES = ("native_sklearn", "native_xgb")
+
+
 def _build_preprocess(
     strategy: str,
     num_cols: list[str],
@@ -65,43 +80,19 @@ def _build_preprocess(
     """Build the preprocessor a strategy calls for."""
     if strategy == "passthrough":
         return "passthrough"
-    if strategy == "drop_cat":
-        return ColumnTransformer([("num", "passthrough", num_cols)], remainder="drop")
-    if strategy == "onehot":
-        return ColumnTransformer(
-            [
-                ("num", "passthrough", num_cols),
-                (
-                    "cat",
-                    OneHotEncoder(handle_unknown="ignore", sparse_output=False),
-                    cat_cols,
-                ),
-            ],
-            remainder="drop",
-        )
-    if strategy == "native_sklearn":
-        return ColumnTransformer(
-            [
-                ("num", "passthrough", num_cols),
-                (
-                    "cat",
-                    CappedCategoryEncoder(max_cardinality=_HISTGB_MAX_CARDINALITY),
-                    cat_cols,
-                ),
-            ],
-            remainder="drop",
-            verbose_feature_names_out=False,
-        ).set_output(transform="pandas")
-    if strategy == "native_xgb":
-        return ColumnTransformer(
-            [
-                ("num", "passthrough", num_cols),
-                ("cat", CappedCategoryEncoder(max_cardinality=None), cat_cols),
-            ],
-            remainder="drop",
-            verbose_feature_names_out=False,
-        ).set_output(transform="pandas")
-    raise ValueError(f"Unknown preprocessing strategy: {strategy!r}")
+    if strategy not in _CAT_ENCODERS:
+        raise ValueError(f"Unknown preprocessing strategy: {strategy!r}")
+
+    transformers = [("num", "passthrough", num_cols)]
+    encoder_factory = _CAT_ENCODERS[strategy]
+    if encoder_factory is not None:
+        transformers.append(("cat", encoder_factory(), cat_cols))
+
+    native = strategy in _NATIVE_CATEGORICAL_STRATEGIES
+    pre = ColumnTransformer(
+        transformers, remainder="drop", verbose_feature_names_out=not native
+    )
+    return pre.set_output(transform="pandas") if native else pre
 
 
 def _augment_params_for_strategy(strategy: str, params: dict) -> dict:
