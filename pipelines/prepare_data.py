@@ -111,6 +111,18 @@ def _cluster_per_class(
         raw_labels, n_floor_clusters, n_floor_points = _absorb_small_clusters(
             raw_labels, effective_floor
         )
+        n_clusters_cls = int(np.unique(raw_labels[raw_labels != -1]).size)
+        if (
+            max_clusters_per_class is not None
+            and n_clusters_cls > max_clusters_per_class
+        ):
+            raise ValueError(
+                f"class {cls!r}: {n_clusters_cls} clusters survive absorption, over "
+                f"max_clusters={max_clusters_per_class} for this class — the complexity "
+                "stage's point budget cannot subsample this many. Raise "
+                "max_complexity_samples, lower min_subsample_per_cluster, or tighten "
+                "the clustering grid."
+            )
 
         n_cls = int(raw_labels.shape[0])
         n_noise_cls = int((raw_labels == -1).sum())
@@ -118,7 +130,7 @@ def _cluster_per_class(
             "n_samples": n_cls,
             "algorithms": algo_reports,
             "summary": {
-                "n_clusters": int(np.unique(raw_labels[raw_labels != -1]).size),
+                "n_clusters": n_clusters_cls,
                 "n_noise": n_noise_cls,
                 "noise_ratio": n_noise_cls / n_cls if n_cls > 0 else 0.0,
                 "size_balance": cluster_size_balance(raw_labels),

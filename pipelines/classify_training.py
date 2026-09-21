@@ -150,6 +150,14 @@ def _component(node) -> ComponentSpec:
     return ComponentSpec(name=node.name, params=params)
 
 
+_INERT_LOADER_KEYS = ("num_workers", "pin_memory")
+
+
+def _loader_fingerprint(node) -> dict:
+    """A dataloader config, minus the keys that can't change what it produces."""
+    return {k: v for k, v in to_container(node).items() if k not in _INERT_LOADER_KEYS}
+
+
 def build_trainer(
     cfg,
     df_meta: dict,
@@ -240,8 +248,11 @@ def _fingerprint(
     name alone would not catch. It also carries the `class_weights` the DL loss is built
     from when the training split keeps its original distribution. `device` is left out on
     purpose — it does change the weights, but reusing a model trained on another device is
-    the point, not an accident. The dataloader's `num_workers`/`pin_memory` are left out
-    because nothing in the dataset is random.
+    the point, not an accident. Both dataloaders are fingerprinted wholesale via
+    `_loader_fingerprint`, minus `num_workers`/`pin_memory` — nothing in the dataset is
+    random, but every other key (`batch_size`, `shuffle`, `drop_last`, ...) can shift
+    training or the early-stopping metric Ignite computes as an average of per-batch means,
+    so enumerating fields by hand would leave the same hole open for the next key added.
     """
     fingerprint = {
         "classifier": cfg.classifier.name,
@@ -270,8 +281,8 @@ def _fingerprint(
             "epochs": training.epochs,
             "max_grad_norm": training.max_grad_norm,
             "early_stopping": to_container(training.early_stopping),
-            "batch_size": training.dataloader.batch_size,
-            "shuffle": training.dataloader.shuffle,
+            "train_loader": _loader_fingerprint(training.dataloader),
+            "val_loader": _loader_fingerprint(cfg.loops.validation.dataloader),
         }
     return fingerprint
 
