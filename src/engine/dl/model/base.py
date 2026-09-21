@@ -1,5 +1,3 @@
-import numpy as np
-import torch
 from torch import Tensor, nn
 
 
@@ -24,20 +22,6 @@ class ModelOutput(dict):
                 f"ModelOutput['{key}'] must be a Tensor, got {type(value)}."
             )
         super().__setitem__(key, value)
-
-    def detach(self) -> "ModelOutput":
-        """Detach every tensor from the autograd graph."""
-        return ModelOutput(data={k: v.detach() for k, v in self.items()})
-
-    def to(self, device: torch.device, *, non_blocking: bool = True) -> "ModelOutput":
-        """Move every tensor to `device`."""
-        return ModelOutput(
-            data={k: v.to(device, non_blocking=non_blocking) for k, v in self.items()}
-        )
-
-    def numpy(self) -> dict[str, np.ndarray]:
-        """Numpy view of every tensor."""
-        return {k: v.cpu().numpy() for k, v in self.items()}
 
 
 class BaseModel(nn.Module):

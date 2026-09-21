@@ -24,12 +24,6 @@ class Factory(Generic[T]):
 
         return decorator
 
-    def __contains__(self, name: str) -> bool:
-        return name in self._registry
-
-    def __len__(self) -> int:
-        return len(self._registry)
-
     def get(self, name: str) -> Type[T]:
         """Return the registered class/callable for name, without instantiation."""
         cls = self._registry.get(name)
@@ -49,22 +43,6 @@ class Factory(Generic[T]):
                 f"Available: {sorted(self._registry)}"
             )
         return cls(**params) if params else cls()
-
-    def create_from_list(self, names: list[str], params_list: list[dict]) -> list[T]:
-        """Create multiple instances from parallel name/params lists."""
-        if len(names) != len(params_list):
-            raise ValueError(
-                f"Length mismatch: {len(names)} names vs {len(params_list)} params"
-            )
-        return [self.create(name, params) for name, params in zip(names, params_list)]
-
-    def get_available(self) -> list[str]:
-        """Return sorted list of all registered type names."""
-        return sorted(self._registry)
-
-    def get_registry(self) -> dict[str, Type[T]]:
-        """Return a copy of the registry."""
-        return self._registry.copy()
 
 
 def _to_snake_case(name: str) -> str:

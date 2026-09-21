@@ -19,28 +19,6 @@ class Batch:
             labels=[t.to(device, non_blocking=non_blocking) for t in self.labels],
         )
 
-    def detach(self) -> "Batch":
-        """Detach every tensor from the autograd graph."""
-        return Batch(
-            features=[t.detach() for t in self.features],
-            labels=[t.detach() for t in self.labels],
-        )
-
-    def as_dict(self) -> dict[str, list[torch.Tensor]]:
-        """Plain-dict view of the batch."""
-        return {"features": self.features, "labels": self.labels}
-
-    def __getitem__(self, key: str) -> list[torch.Tensor]:
-        if key == "features":
-            return self.features
-        if key == "labels":
-            return self.labels
-        raise KeyError(key)
-
-    def __iter__(self):
-        yield "features"
-        yield "labels"
-
 
 def ensure_batch(x: Batch | Sample) -> Batch:
     """Return x as a Batch, collating it first if necessary."""

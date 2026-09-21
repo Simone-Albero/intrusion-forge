@@ -7,6 +7,7 @@ from .base import (
     Plot,
     _apply_labels,
     _ensure_ax,
+    _fig_to_plot,
     _finalize,
     _format_value,
     _smart_legend_loc,
@@ -33,15 +34,12 @@ def bar_plot(
     color_gradient: bool = False,
     x_label: str = "",
     y_label: str = "",
-    title: str = "",
     ylim: tuple[float, float] | None = None,
     xlim: tuple[float, float] | None = None,
     figsize: tuple[float, float] | None = None,
     ax: Axes | None = None,
     bar_positions: np.ndarray | None = None,
     bar_alpha: float = 1.0,
-    axvline: float | None = None,
-    axvline_color: str = "black",
     hide_yticks: bool = False,
     hide_left_spine: bool = False,
 ) -> Plot | None:
@@ -126,10 +124,6 @@ def bar_plot(
         ax.set_ylim(ylim)
     if xlim is not None:
         ax.set_xlim(xlim)
-    if title:
-        ax.set_title(title)
-    if axvline is not None:
-        ax.axvline(axvline, color=axvline_color, linewidth=1.0, zorder=5)
     if hide_yticks:
         ax.tick_params(axis="y", left=False, labelleft=False)
     if hide_left_spine:
@@ -143,21 +137,14 @@ def violin_plot(
     values: np.ndarray,
     *,
     category_order: list | None = None,
-    split: bool = False,
-    inner: str = "box",
     colors: tuple[str, ...] | None = None,
     violin_alpha: float = 0.55,
     x_label: str = "",
     y_label: str = "",
     title: str = "",
-    show_legend: bool = True,
     figsize: tuple[float, float] = (5.4, 3.6),
-    ax: Axes | None = None,
 ) -> Plot | None:
-    """Violin plot with optional split layout and inner box/quartile indicators."""
-    if inner not in ("box", "quartiles", "none"):
-        raise ValueError("`inner` must be 'box', 'quartiles', or 'none'.")
-
+    """Violin plot with an inner box (quartiles + median), one per category."""
     categories = np.asarray(categories)
     values = np.asarray(values)
 
@@ -168,15 +155,11 @@ def violin_plot(
     )
     n_cats = len(unique_cats)
 
-    if split and n_cats != 2:
-        raise ValueError("split=True requires exactly 2 categories.")
-
     cat_colors = list(colors) if colors is not None else extended_palette(n_cats)
     if len(cat_colors) < n_cats:
         raise ValueError("`colors` must have at least one entry per category.")
 
-    ax, fig = _ensure_ax(ax, figsize)
-    legend_handles = []
+    fig, ax = plt.subplots(figsize=figsize)
 
     for idx, (cat, color) in enumerate(zip(unique_cats, cat_colors)):
         mask = categories == cat
@@ -184,10 +167,9 @@ def violin_plot(
         if len(vals) < 2 or np.unique(vals).size < 2:
             continue
 
-        position = 0 if split else idx
         parts = ax.violinplot(
             vals,
-            positions=[position],
+            positions=[idx],
             showmedians=False,
             showextrema=False,
             widths=0.85,
@@ -198,80 +180,51 @@ def violin_plot(
         body.set_edgecolor(color)
         body.set_linewidth(1.0)
 
-        if split and body.get_paths():
-            verts = body.get_paths()[0].vertices
-            clip = np.minimum if idx == 0 else np.maximum
-            verts[:, 0] = clip(verts[:, 0], position)
-
         q1, med, q3 = np.percentile(vals, [25, 50, 75])
         whisker_low = float(np.min(vals))
         whisker_high = float(np.max(vals))
 
-        if inner == "box":
-            box_half = 0.05
-            ax.add_patch(
-                plt.Rectangle(
-                    (position - box_half, q1),
-                    box_half * 2,
-                    q3 - q1,
-                    facecolor="white",
-                    edgecolor=MUTED_COLOR,
-                    linewidth=1.0,
-                    zorder=4,
-                )
-            )
-            ax.plot(
-                [position - box_half, position + box_half],
-                [med, med],
-                color=MUTED_COLOR,
-                linewidth=1.8,
-                zorder=5,
-            )
-            for y0, y1 in ((whisker_low, q1), (q3, whisker_high)):
-                ax.plot(
-                    [position, position],
-                    [y0, y1],
-                    color=MUTED_COLOR,
-                    linewidth=0.8,
-                    zorder=4,
-                )
-        elif inner == "quartiles":
-            sign = 0 if not split else (-1 if idx == 0 else 1)
-            ax.plot(
-                [position, position + sign * 0.06],
-                [med, med],
-                color=color,
-                lw=2.0,
+        box_half = 0.05
+        ax.add_patch(
+            plt.Rectangle(
+                (idx - box_half, q1),
+                box_half * 2,
+                q3 - q1,
+                facecolor="white",
+                edgecolor=MUTED_COLOR,
+                linewidth=1.0,
                 zorder=4,
             )
-            ax.vlines(position + sign * 0.04, q1, q3, color=color, lw=1.5, zorder=4)
-
-        legend_handles.append(
-            plt.Line2D([], [], color=color, lw=6, alpha=violin_alpha, label=str(cat))
         )
+        ax.plot(
+            [idx - box_half, idx + box_half],
+            [med, med],
+            color=MUTED_COLOR,
+            linewidth=1.8,
+            zorder=5,
+        )
+        for y0, y1 in ((whisker_low, q1), (q3, whisker_high)):
+            ax.plot(
+                [idx, idx],
+                [y0, y1],
+                color=MUTED_COLOR,
+                linewidth=0.8,
+                zorder=4,
+            )
 
-    if split:
-        ax.axvline(0, color="#aaaaaa", lw=0.8, zorder=2)
-        ax.set_xticks([])
-    else:
-        ax.set_xticks(range(n_cats))
-        ax.set_xticklabels([str(c) for c in unique_cats])
-
-    if show_legend and legend_handles:
-        ax.legend(handles=legend_handles, loc="best")
+    ax.set_xticks(range(n_cats))
+    ax.set_xticklabels([str(c) for c in unique_cats])
 
     _apply_labels(ax, x_label, y_label, title)
-    return _finalize(fig)
+    return _fig_to_plot(fig)
 
 
 def scatter_plot(
     X: np.ndarray,
     labels: np.ndarray,
     *,
-    noise_mask: np.ndarray | None = None,
     highlight_mask: np.ndarray | None = None,
     names: dict | None = None,
-    palette: str | list[str] = "extended",
     marker_size: float = 14.0,
     marker_alpha: float | None = None,
     minority_fraction: float = 0.05,
@@ -282,57 +235,33 @@ def scatter_plot(
     legend_max_items: int = 20,
     legend_on_top: bool = False,
     figsize: tuple[float, float] = (5.6, 4.3),
-    ax: Axes | None = None,
-) -> Plot | None:
+) -> Plot:
     """2D scatter coloured by label, with an optional highlight mask."""
     X = np.asarray(X)
     labels = np.asarray(labels)
     if X.ndim != 2 or X.shape[1] != 2:
         raise ValueError("`X` must have shape (n, 2).")
 
-    noise = (
-        np.asarray(noise_mask, dtype=bool)
-        if noise_mask is not None
-        else np.zeros(len(X), dtype=bool)
-    )
     highlight = (
         np.asarray(highlight_mask, dtype=bool)
         if highlight_mask is not None
         else np.zeros(len(X), dtype=bool)
     )
 
-    unique_labels = sorted(int(l) for l in np.unique(labels[~noise]))
+    unique_labels = sorted(int(l) for l in np.unique(labels))
     n_labels = max(len(unique_labels), 1)
-    if isinstance(palette, list):
-        color_list = list(palette)
-        while len(color_list) < n_labels:
-            color_list.extend(palette)
-        color_list = color_list[:n_labels]
-    else:
-        color_list = extended_palette(n_labels)
+    color_list = extended_palette(n_labels)
     color_map = {lbl: color_list[i] for i, lbl in enumerate(unique_labels)}
 
-    ax, fig = _ensure_ax(ax, figsize)
+    fig, ax = plt.subplots(figsize=figsize)
     ax.set_aspect("equal", adjustable="datalim")
 
-    if noise.any():
-        ax.scatter(
-            X[noise, 0],
-            X[noise, 1],
-            c=MUTED_COLOR,
-            marker=".",
-            s=marker_size * 0.45,
-            alpha=0.4,
-            linewidths=0,
-            zorder=1,
-        )
-
-    counts = {lbl: int(((labels == lbl) & ~noise).sum()) for lbl in unique_labels}
+    counts = {lbl: int((labels == lbl).sum()) for lbl in unique_labels}
     total_visible = max(sum(counts.values()), 1)
     draw_order = sorted(unique_labels, key=lambda l: counts[l], reverse=True)
 
     for lbl in draw_order:
-        base = (labels == lbl) & ~noise
+        base = labels == lbl
         if not base.any():
             continue
         color = color_map[lbl]
@@ -418,7 +347,7 @@ def scatter_plot(
                     )
                 )
             ncol = 1 if len(handles) <= 6 else 2 if len(handles) <= 12 else 3
-            loc = _smart_legend_loc(ax, X[~noise]) if (~noise).any() else "best"
+            loc = _smart_legend_loc(ax, X) if len(X) else "best"
             legend = ax.legend(
                 handles=handles,
                 loc=loc,
@@ -429,7 +358,7 @@ def scatter_plot(
                 legend.set_zorder(100)
 
     _apply_labels(ax, x_label, y_label, title)
-    return _finalize(fig)
+    return _fig_to_plot(fig)
 
 
 def numeric_scatter_plot(
@@ -520,10 +449,9 @@ def line_plot(
     linewidth: float = 1.2,
     show_legend: bool = True,
     figsize: tuple[float, float] = (8.0, 4.0),
-    ax: Axes | None = None,
-) -> Plot | None:
+) -> Plot:
     """Multi-series line plot (e.g. training history curves) sharing a step-index x axis."""
-    ax, fig = _ensure_ax(ax, figsize)
+    fig, ax = plt.subplots(figsize=figsize)
     keys = list(series.keys())
     palette = colors if colors is not None else extended_palette(max(len(keys), 1))
 
@@ -540,4 +468,4 @@ def line_plot(
     if show_legend and len(keys) > 1:
         ax.legend(loc="best", fontsize=8)
 
-    return _finalize(fig)
+    return _fig_to_plot(fig)

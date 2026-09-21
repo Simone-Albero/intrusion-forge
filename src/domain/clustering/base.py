@@ -12,7 +12,7 @@ from src.core.utils import timed
 logger = logging.getLogger(__name__)
 
 FitFn = Callable[..., np.ndarray]
-ClusterFn = Callable[[np.ndarray, np.ndarray | None], np.ndarray]
+ClusterFn = Callable[[np.ndarray], np.ndarray]
 
 
 def cluster_size_balance(labels: np.ndarray) -> float:
@@ -47,17 +47,16 @@ def _measure(labels: np.ndarray, score: float, combo: dict, duration_s: float) -
 
 def subsample_features(
     X_num: np.ndarray,
-    X_cat: np.ndarray | None,
     max_samples: int,
     random_state: int = 0,
-) -> tuple[np.ndarray, np.ndarray | None]:
-    """Random subsample of the feature blocks, unchanged when already small enough."""
+) -> np.ndarray:
+    """Random subsample of X_num, unchanged when already small enough."""
     n = X_num.shape[0]
     if n <= max_samples:
-        return X_num, X_cat
+        return X_num
     rng = np.random.default_rng(random_state)
     idx = rng.choice(n, size=max_samples, replace=False)
-    return X_num[idx], (X_cat[idx] if X_cat is not None else None)
+    return X_num[idx]
 
 
 def _score_silhouette(
@@ -100,7 +99,6 @@ def assign_nearest_centroid(
 @timed
 def grid_search(
     X_num: np.ndarray,
-    X_cat: np.ndarray | None,
     fit_fn: FitFn,
     param_grid: dict[str, list],
     *,
@@ -112,7 +110,7 @@ def grid_search(
     **fixed_params,
 ) -> dict:
     """Grid search scored by silhouette − noise_penalty·noise_ratio + resolution tilt."""
-    sub_num, sub_cat = subsample_features(X_num, X_cat, max_fit_samples, random_state)
+    sub_num = subsample_features(X_num, max_fit_samples, random_state)
 
     keys = list(param_grid.keys())
     values = list(param_grid.values())
@@ -127,7 +125,7 @@ def grid_search(
         combo = dict(zip(keys, combo_values))
         t0 = time.perf_counter()
         try:
-            labels = fit_fn(sub_num, X_cat=sub_cat, **combo, **fixed_params)
+            labels = fit_fn(sub_num, **combo, **fixed_params)
         except Exception:
             sweep.append(
                 {

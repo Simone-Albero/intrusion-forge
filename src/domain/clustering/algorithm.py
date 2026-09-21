@@ -13,7 +13,6 @@ _PREDICT_CHUNK = 200_000
 def fit_hdbscan(
     X_num: np.ndarray,
     *,
-    X_cat: np.ndarray | None = None,
     min_cluster_size: int = 50,
     min_samples: int | None = None,
     cluster_selection_method: str = "leaf",
@@ -35,7 +34,7 @@ def fit_hdbscan(
     )
 
     if n > max_fit_samples:
-        sub_num, _ = subsample_features(X_num, None, max_fit_samples, random_state)
+        sub_num = subsample_features(X_num, max_fit_samples, random_state)
         clf.fit(sub_num)
         labels = np.concatenate(
             [
@@ -56,7 +55,6 @@ def fit_hdbscan(
 def fit_kmeans(
     X_num: np.ndarray,
     *,
-    X_cat: np.ndarray | None = None,
     n_clusters: int = 8,
     random_state: int = 0,
     **_,
@@ -73,7 +71,6 @@ def fit_kmeans(
 def fit_birch(
     X_num: np.ndarray,
     *,
-    X_cat: np.ndarray | None = None,
     n_clusters: int = 8,
     threshold: float = 0.5,
     branching_factor: int = 50,
@@ -91,7 +88,7 @@ def fit_birch(
         n_clusters=n_clusters,
     )
     if n > max_fit_samples:
-        sub_num, _sub = subsample_features(X_num, None, max_fit_samples, random_state)
+        sub_num = subsample_features(X_num, max_fit_samples, random_state)
         clf.fit(sub_num)
         labels = clf.predict(X_num)
     else:
@@ -104,7 +101,6 @@ def fit_birch(
 def fit_spectral(
     X_num: np.ndarray,
     *,
-    X_cat: np.ndarray | None = None,
     n_clusters: int = 8,
     affinity: str = "rbf",
     gamma: float | None = None,
@@ -133,7 +129,7 @@ def fit_spectral(
     if n <= max_fit_samples:
         return SpectralClustering(**spec_kwargs).fit_predict(X_num)
 
-    sub_num, _ = subsample_features(X_num, None, max_fit_samples, random_state)
+    sub_num = subsample_features(X_num, max_fit_samples, random_state)
     sub_labels = SpectralClustering(**spec_kwargs).fit_predict(sub_num)
     nn = NearestNeighbors(n_neighbors=1, algorithm="auto").fit(sub_num)
     _, idx = nn.kneighbors(X_num, n_neighbors=1, return_distance=True)

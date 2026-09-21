@@ -1,9 +1,8 @@
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.axes import Axes
 from matplotlib.patches import Patch
 
-from .base import Plot, _apply_labels, _ensure_ax, _finalize
+from .base import Plot, _apply_labels, _fig_to_plot
 from .style import MUTED_COLOR
 
 
@@ -19,12 +18,11 @@ def box_strip_plot(
     axvline: float | None = None,
     legend: dict[str, str] | None = None,
     figsize: tuple[float, float] = (5.4, 3.0),
-    ax: Axes | None = None,
-) -> Plot | None:
+) -> Plot:
     """Horizontal box plots with an optional jittered strip overlay, one row per group."""
     faded = faded or [False] * len(labels)
     pos = list(range(len(labels), 0, -1))
-    ax, fig = _ensure_ax(ax, figsize)
+    fig, ax = plt.subplots(figsize=figsize)
     bp = ax.boxplot(
         values,
         positions=pos,
@@ -63,7 +61,7 @@ def box_strip_plot(
         ]
         ax.legend(handles=handles, loc="lower left")
     _apply_labels(ax, x_label=x_label)
-    return _finalize(fig)
+    return _fig_to_plot(fig)
 
 
 def line_whisker_plot(
@@ -78,10 +76,9 @@ def line_whisker_plot(
     vline_label: str = "",
     hline: float | None = None,
     figsize: tuple[float, float] = (5.4, 3.2),
-    ax: Axes | None = None,
-) -> Plot | None:
+) -> Plot:
     """Binned trend line with ±1 std whiskers, one connected line per `(x, y, colour)`."""
-    ax, fig = _ensure_ax(ax, figsize)
+    fig, ax = plt.subplots(figsize=figsize)
     if log_x:
         ax.set_xscale("log")
 
@@ -148,7 +145,7 @@ def line_whisker_plot(
     ax.grid(True, axis="both")
     ax.legend(loc="lower right")
     _apply_labels(ax, x_label=x_label, y_label=y_label)
-    return _finalize(fig)
+    return _fig_to_plot(fig)
 
 
 def stacked_bar_plot(
@@ -159,8 +156,7 @@ def stacked_bar_plot(
     total_format: str = "{:.1f}",
     sort: str | None = "asc",
     figsize: tuple[float, float] = (5.4, 2.9),
-    ax: Axes | None = None,
-) -> Plot | None:
+) -> Plot:
     """Horizontal stacked bars with the total annotated at the end of each row."""
     totals = [sum(seg[1][i] for seg in segments) for i in range(len(labels))]
     if sort == "asc":
@@ -176,7 +172,7 @@ def stacked_bar_plot(
     ]
 
     y = np.arange(len(labels))
-    ax, fig = _ensure_ax(ax, figsize)
+    fig, ax = plt.subplots(figsize=figsize)
     left = np.zeros(len(labels))
     for name, vals, color in segments:
         vals = np.asarray(vals, dtype=float)
@@ -206,7 +202,7 @@ def stacked_bar_plot(
         frameon=False,
     )
     _apply_labels(ax, x_label=x_label)
-    return _finalize(fig)
+    return _fig_to_plot(fig)
 
 
 def grouped_bar_plot(
@@ -218,8 +214,7 @@ def grouped_bar_plot(
     y_lim: tuple[float, float] | None = None,
     hline: float | None = None,
     figsize: tuple[float, float] | None = None,
-    ax: Axes | None = None,
-) -> Plot | None:
+) -> Plot:
     """Vertical grouped bars with asymmetric error bars, one colour per series.
 
     Each `series` entry is `(name, values, err_low, err_high, color)`, one value per group.
@@ -228,7 +223,7 @@ def grouped_bar_plot(
     n_series = len(series)
     if figsize is None:
         figsize = (max(8.0, n_groups * 0.9 + 1.5), 4.2)
-    ax, fig = _ensure_ax(ax, figsize)
+    fig, ax = plt.subplots(figsize=figsize)
 
     width = 0.8 / max(n_series, 1)
     x = np.arange(n_groups, dtype=float)
@@ -266,4 +261,4 @@ def grouped_bar_plot(
         frameon=False,
     )
     _apply_labels(ax, x_label=x_label, y_label=y_label)
-    return _finalize(fig)
+    return _fig_to_plot(fig)

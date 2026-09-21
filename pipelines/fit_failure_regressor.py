@@ -13,7 +13,7 @@ from src.domain.analysis.failure_regressor import (
     instance_baselines,
 )
 
-setup_logger(log_file="resources/logs.txt")
+setup_logger()
 logger = logging.getLogger(__name__)
 
 

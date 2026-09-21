@@ -37,7 +37,7 @@ from src.domain.data.preprocessing import (
     rare_category_filter,
 )
 
-setup_logger(log_file="resources/logs.txt")
+setup_logger()
 logger = logging.getLogger(__name__)
 
 
@@ -58,7 +58,6 @@ def _cluster_per_class(
     y_class: np.ndarray,
     classes: list,
     *,
-    X_cat: np.ndarray | None = None,
     algorithms: dict[str, dict],
     max_fit_samples: int,
     random_state: int,
@@ -87,7 +86,6 @@ def _cluster_per_class(
             continue
         X_num_cls = X_num[mask]
         X_num_cls = l2_normalize(X_num_cls) if metric == "cosine" else X_num_cls
-        X_cat_cls = X_cat[mask] if X_cat is not None else None
 
         algo_reports: dict[str, dict] = {}
         cluster_fn = build_cluster_fn(
@@ -100,7 +98,7 @@ def _cluster_per_class(
             grid_target_cluster_size=grid_target_cluster_size,
             resolution_weight=resolution_weight,
         )
-        raw_labels = cluster_fn(X_num_cls, X_cat_cls)
+        raw_labels = cluster_fn(X_num_cls)
         effective_floor = (
             resolution_aware_floor(
                 X_num_cls.shape[0], grid_target_cluster_size, min_cluster_floor
@@ -231,13 +229,11 @@ def _cluster_splits(
     val_df: pd.DataFrame,
     test_df: pd.DataFrame,
     num_cols: list[str],
-    cat_cols: list[str],
     label_col: str,
     dispatcher: LogDispatcher,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict, set[int]]:
     """Cluster train per class, then attach the `cluster` column to every split."""
     X_num = train_df[num_cols].to_numpy(dtype=np.float64)
-    X_cat = train_df[cat_cols].to_numpy() if cat_cols else None
     y_class = train_df[label_col].to_numpy()
     all_classes = sorted(train_df[label_col].unique().tolist())
 
@@ -251,7 +247,6 @@ def _cluster_splits(
         X_num,
         y_class,
         all_classes,
-        X_cat=X_cat,
         algorithms=algorithms,
         max_fit_samples=cfg.clustering.max_fit_samples,
         random_state=cfg.seed,
@@ -313,8 +308,8 @@ def _publish_metadata(
     centroids: dict,
     noise_cluster_ids: set[int],
     dispatcher: LogDispatcher,
-) -> dict:
-    """Compute and publish dataset + cluster metadata; returns df_meta."""
+) -> None:
+    """Compute and publish dataset + cluster metadata."""
     logger.info("Computing and saving metadata...")
     metadata = compute_df_metadata(
         {"train": train_df, "val": val_df, "test": test_df},
@@ -337,11 +332,10 @@ def _publish_metadata(
     )
     dispatcher.publish(LogBundle.from_dict({"json/clusters_meta": clusters_metadata}))
     logger.info("Cluster metadata saved.")
-    return metadata
 
 
 @timed
-def prepare(cfg) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict]:
+def prepare(cfg) -> None:
     """Preprocess, cluster and persist the train/val/test splits."""
     num_cols = list(cfg.data.num_cols) if cfg.data.num_cols else []
     cat_cols = list(cfg.data.cat_cols) if cfg.data.cat_cols else []
@@ -380,7 +374,7 @@ def prepare(cfg) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict]:
     )
 
     train_df, val_df, test_df, centroids, noise_cluster_ids = _cluster_splits(
-        cfg, train_df, val_df, test_df, num_cols, cat_cols, label_col, dispatcher
+        cfg, train_df, val_df, test_df, num_cols, label_col, dispatcher
     )
 
     train_df, val_df, test_df, label_mapping = encode_labels(
@@ -395,7 +389,7 @@ def prepare(cfg) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict]:
     ]:
         save_df(split_df, processed_data_path / f"{split_name}.{cfg.data.extension}")
 
-    metadata = _publish_metadata(
+    _publish_metadata(
         cfg,
         train_df,
         val_df,
@@ -408,7 +402,6 @@ def prepare(cfg) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict]:
         noise_cluster_ids,
         dispatcher,
     )
-    return train_df, val_df, test_df, metadata
 
 
 def main() -> None:

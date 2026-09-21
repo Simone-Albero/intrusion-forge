@@ -15,9 +15,6 @@ PALETTE: list[str] = [
     "#56B4E9",
 ]
 
-CORRECT_COLOR: str = PALETTE[2]
-FAILED_COLOR: str = PALETTE[1]
-
 HIGHLIGHT_COLOR: str = "#B22222"
 MUTED_COLOR: str = "#777777"
 NEUTRAL_COLOR: str = "#cccccc"

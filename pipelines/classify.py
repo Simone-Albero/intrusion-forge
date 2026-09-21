@@ -30,7 +30,7 @@ from src.domain.data.preprocessing import random_undersample_df, subsample_df
 from src.domain.plot.base import set_figure_format
 from src.domain.plot.style import apply_plot_style
 
-setup_logger(log_file="resources/logs.txt")
+setup_logger()
 apply_plot_style()
 logger = logging.getLogger(__name__)
 

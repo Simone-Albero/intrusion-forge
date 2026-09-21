@@ -19,16 +19,15 @@ from src.core.utils import flush_timing, load_from_json, timed
 from src.domain.plot.analysis_charts import dual_scatter_plot, strip_count_panel_plot
 from src.domain.plot.base import Plot, set_figure_format
 from src.domain.plot.primitives import bar_plot, numeric_scatter_plot, violin_plot
-from src.domain.plot.style import PALETTE, apply_plot_style
+from src.domain.plot.style import apply_plot_style
 
-setup_logger(log_file="resources/logs.txt")
+setup_logger()
 apply_plot_style()
 logger = logging.getLogger(__name__)
 
 
 def _plot_failure_strips(
-    summary_df: pd.DataFrame,
-    oof_predicted_rate: list[dict] | None = None,
+    summary_df: pd.DataFrame, oof_predicted_rate: list[dict]
 ) -> dict[str, Plot]:
     """Strip plot of failure rate per class, dots coloured by RF predicted rate."""
     class_order = (
@@ -41,19 +40,10 @@ def _plot_failure_strips(
     failure_rate = summary_df["failure_rate"].values
     counts_by_class = summary_df.groupby("class_name").size().to_dict()
 
-    if oof_predicted_rate is not None:
-        predicted = {r["cluster_id"]: r["predicted_rate"] for r in oof_predicted_rate}
-        fill_vals = np.array(
-            [predicted.get(cid, np.nan) for cid in summary_df.index], dtype=float
-        )
-        fill_cmap: str | None = "viridis"
-        fill_cmap_label = "RF predicted rate"
-        fill_categorical_colors: tuple[str, ...] = ()
-    else:
-        fill_vals = np.zeros(len(classes), dtype=float)
-        fill_cmap = None
-        fill_cmap_label = ""
-        fill_categorical_colors = (PALETTE[0],)
+    predicted = {r["cluster_id"]: r["predicted_rate"] for r in oof_predicted_rate}
+    fill_vals = np.array(
+        [predicted.get(cid, np.nan) for cid in summary_df.index], dtype=float
+    )
 
     return {
         "summary/failure_rate_strip_box": strip_count_panel_plot(
@@ -62,9 +52,8 @@ def _plot_failure_strips(
             category_order=class_order,
             counts_by_class=counts_by_class,
             fill_values=fill_vals,
-            fill_categorical_colors=fill_categorical_colors,
-            fill_cmap=fill_cmap,
-            fill_cmap_label=fill_cmap_label,
+            fill_cmap="viridis",
+            fill_cmap_label="RF predicted rate",
             x_label="Failure rate",
         ),
     }
@@ -162,17 +151,13 @@ def _plot_feature_violin_by_rate_bin(
         valid = x.notna() & rate.notna()
         if valid.sum() < 4:
             continue
-        p = violin_plot(
+        out[f"summary/global/{feature}_violin"] = violin_plot(
             categories=bin_str[valid].to_numpy(),
             values=x[valid].to_numpy(dtype=float),
             category_order=ordered,
             x_label="Failure rate bin",
             y_label=_feature_label(feature),
-            show_legend=False,
-            inner="box",
         )
-        if p is not None:
-            out[f"summary/global/{feature}_violin"] = p
     return out
 
 
@@ -246,8 +231,8 @@ def assemble_analysis_figures(
     df_meta: dict,
     regressor_results: dict,
     *,
-    analysis_bus: LogDispatcher | None = None,
-) -> dict[str, Plot]:
+    analysis_bus: LogDispatcher,
+) -> None:
     """Build every analysis figure and publish it on the log bus."""
     logger.info("Building summary visualizations ...")
     summary_df = pd.DataFrame(cluster_summary).set_index("cluster_id")
@@ -261,10 +246,7 @@ def assemble_analysis_figures(
             "[STAGE-SKIP] Skipping failure-classifier plots: %s",
             regressor_results.get("message", regressor_results.get("reason")),
         )
-        figures: dict[str, Plot] = {}
-        if analysis_bus is not None:
-            analysis_bus.publish(LogBundle(figures=figures))
-        return figures
+        return
 
     ranked = sorted(
         regressor_results["feature_importances"],
@@ -281,9 +263,7 @@ def assemble_analysis_figures(
     figures.update(_plot_feature_vs_failure(summary_df, scatter_features))
     figures.update(_plot_feature_violin_by_rate_bin(summary_df, scatter_features))
     figures.update(_plot_rf_evaluation(summary_df, regressor_results))
-    if analysis_bus is not None:
-        analysis_bus.publish(LogBundle(figures=figures))
-    return figures
+    analysis_bus.publish(LogBundle(figures=figures))
 
 
 def main() -> None:

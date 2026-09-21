@@ -21,7 +21,7 @@ from src.domain.plot.comparison_charts import (
 )
 from src.domain.plot.style import PALETTE, apply_plot_style
 
-setup_logger(log_file="resources/logs.txt")
+setup_logger()
 apply_plot_style()
 logger = logging.getLogger(__name__)
 

@@ -20,7 +20,7 @@ from src.domain.analysis.complexity import (
     prepare_complexity_graph,
 )
 
-setup_logger(log_file="resources/logs.txt")
+setup_logger()
 logger = logging.getLogger(__name__)
 
 
@@ -116,33 +116,32 @@ def main() -> None:
     bus = LogDispatcher()
     bus.subscribe(JSONSubscriber(paths.shared))
 
-    graph = None
-    noise_cluster_ids: list[int] = []
-    if run_cluster or run_class:
-        clusters_meta = load_from_json(paths.shared / "metadata/clusters_meta.json")
-        noise_cluster_ids = clusters_meta.get("noise_cluster_ids", [])
+    # Both markers were checked above and at least one is missing (else we'd already have
+    # returned), so the graph both stages share is always needed from here on.
+    clusters_meta = load_from_json(paths.shared / "metadata/clusters_meta.json")
+    noise_cluster_ids = clusters_meta.get("noise_cluster_ids", [])
 
-        y_cluster = train_df["cluster"].to_numpy(dtype=np.int64)
-        if noise_cluster_ids:
-            genuine = ~np.isin(y_cluster, noise_cluster_ids)
-            X_num_g = X_num[genuine]
-            X_cat_g = X_cat[genuine] if X_cat is not None else None
-            y_class_g = y_class[genuine]
-            y_cluster_g = y_cluster[genuine]
-        else:
-            X_num_g, X_cat_g, y_class_g, y_cluster_g = X_num, X_cat, y_class, y_cluster
+    y_cluster = train_df["cluster"].to_numpy(dtype=np.int64)
+    if noise_cluster_ids:
+        genuine = ~np.isin(y_cluster, noise_cluster_ids)
+        X_num_g = X_num[genuine]
+        X_cat_g = X_cat[genuine] if X_cat is not None else None
+        y_class_g = y_class[genuine]
+        y_cluster_g = y_cluster[genuine]
+    else:
+        X_num_g, X_cat_g, y_class_g, y_cluster_g = X_num, X_cat, y_class, y_cluster
 
-        graph = prepare_complexity_graph(
-            X_num_g,
-            X_cat_g,
-            y_class_g,
-            y_cluster_g,
-            k=cfg.complexity.k,
-            max_samples=cfg.complexity.max_complexity_samples,
-            min_per_cluster=cfg.complexity.min_subsample_per_cluster,
-            metric=cfg.complexity.distance,
-            random_state=cfg.seed,
-        )
+    graph = prepare_complexity_graph(
+        X_num_g,
+        X_cat_g,
+        y_class_g,
+        y_cluster_g,
+        k=cfg.complexity.k,
+        max_samples=cfg.complexity.max_complexity_samples,
+        min_per_cluster=cfg.complexity.min_subsample_per_cluster,
+        metric=cfg.complexity.distance,
+        random_state=cfg.seed,
+    )
 
     if run_cluster:
         cluster_to_class = cluster_class_map(y_cluster, y_class)

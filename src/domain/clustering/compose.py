@@ -49,7 +49,7 @@ def _make_single_cluster_fn(
     fit_fn = ClusteringFactory.get(name)
     grid, fixed = _split_grid_fixed(params or {})
 
-    def _fn(X_num: np.ndarray, X_cat: np.ndarray | None = None) -> np.ndarray:
+    def _fn(X_num: np.ndarray) -> np.ndarray:
         common = {
             "max_fit_samples": max_fit_samples,
             "random_state": random_state,
@@ -67,7 +67,6 @@ def _make_single_cluster_fn(
             effective_min_clusters = min_clusters if name in _N_CLUSTERS_ALGOS else None
             result = grid_search(
                 X_num,
-                X_cat,
                 fit_fn,
                 algo_grid,
                 resolution_weight=resolution_weight,
@@ -76,8 +75,8 @@ def _make_single_cluster_fn(
             )
             if reporter is not None:
                 reporter(name, result)
-            return fit_fn(X_num, X_cat=X_cat, **result["best"]["combo"], **common)
-        return fit_fn(X_num, X_cat=X_cat, **common)
+            return fit_fn(X_num, **result["best"]["combo"], **common)
+        return fit_fn(X_num, **common)
 
     return _fn
 

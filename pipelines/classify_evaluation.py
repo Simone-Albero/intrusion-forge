@@ -177,9 +177,7 @@ def _projection_figure(
     prob_pos = np.flatnonzero(np.isin(y_true, keep_classes))
     # Fixed seed (matching tsne_projection's own default) so "raw" and "latent" draw
     # the same visualized rows on a single split, where y_true/y_pred are identical.
-    sub = stratified_subsample(
-        y_true[prob_pos], n_samples=n_samples, stratify=False, random_state=42
-    )
+    sub = stratified_subsample(y_true[prob_pos], n_samples=n_samples, random_state=42)
     vis_idx = prob_pos[sub]
     if len(vis_idx) < _TSNE_MIN_POINTS:
         return None
@@ -209,7 +207,7 @@ def _build_test_figures(
     class_names = [label_mapping.get(str(int(c)), str(c)) for c in classes]
     cm = confusion_matrix(y_true, y_pred, labels=classes, normalize="true")
     figures["figure/testing/confusion_matrix"] = confusion_matrix_plot(
-        cm, class_names=class_names, normalize=None
+        cm, class_names=class_names
     )
 
     f1_per_class = f1_score(

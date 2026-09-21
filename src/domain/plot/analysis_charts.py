@@ -5,32 +5,22 @@ from matplotlib.axes import Axes
 
 from .base import Plot, _apply_labels, _ensure_ax, _fig_to_plot, _finalize
 from .primitives import bar_plot, numeric_scatter_plot
-from .style import HIGHLIGHT_COLOR, MUTED_COLOR
+from .style import MUTED_COLOR
 
 
 def _strip_plot(
     categories: np.ndarray,
     values: np.ndarray,
-    fill_categorical_colors: tuple[str, ...] = (),
     *,
     fill_values: np.ndarray | None = None,
-    fill_cmap: str | None = None,
-    marker_values: np.ndarray | None = None,
-    marker_shapes: tuple[str, ...] = ("o", "X"),
+    fill_cmap: str,
     category_order: list | None = None,
-    orientation: str = "v",
     show_median: bool = True,
     x_label: str = "",
     y_label: str = "",
-    title: str = "",
-    marker_size: float = 36.0,
-    figsize: tuple[float, float] | None = None,
     ax: Axes | None = None,
 ) -> Plot | None:
-    """Strip plot with categorical or colormapped fill and optional marker encoding."""
-    if orientation not in ("v", "h"):
-        raise ValueError("`orientation` must be 'v' or 'h'.")
-
+    """Horizontal strip plot with a colormapped fill, one row per category."""
     categories = np.asarray(categories)
     values = np.asarray(values, dtype=float)
 
@@ -43,71 +33,31 @@ def _strip_plot(
         np.asarray(fill_values, dtype=float) if fill_values is not None else values
     )
     finite = np.isfinite(fill_arr)
-    if fill_cmap is not None:
-        cmap_fn = plt.get_cmap(fill_cmap)
-        lo = float(np.nanmin(fill_arr)) if finite.any() else 0.0
-        hi = float(np.nanmax(fill_arr)) if finite.any() else 1.0
-        span = hi - lo if hi > lo else 1.0
-        normed = np.where(finite, (fill_arr - lo) / span, 0.5)
-        point_colors = np.array([cmap_fn(float(v)) for v in normed], dtype=float)
-        point_colors[~finite] = [0.75, 0.75, 0.75, 0.85]
-    else:
-        fill_idx = np.clip(
-            np.where(finite, fill_arr.astype(int), 0),
-            0,
-            len(fill_categorical_colors) - 1,
-        )
-        point_colors = np.array(
-            [mcolors.to_rgba(fill_categorical_colors[i]) for i in fill_idx], dtype=float
-        )
-        point_colors[~finite] = [0.75, 0.75, 0.75, 0.85]
-
-    if marker_values is not None:
-        marker_arr = np.asarray(marker_values, dtype=float)
-        finite_m = np.isfinite(marker_arr)
-        marker_idx = np.clip(
-            np.where(finite_m, marker_arr, 0.0).astype(int),
-            0,
-            len(marker_shapes) - 1,
-        )
-        per_point_marker = np.array([marker_shapes[i] for i in marker_idx])
-    else:
-        per_point_marker = None
+    cmap_fn = plt.get_cmap(fill_cmap)
+    lo = float(np.nanmin(fill_arr)) if finite.any() else 0.0
+    hi = float(np.nanmax(fill_arr)) if finite.any() else 1.0
+    span = hi - lo if hi > lo else 1.0
+    normed = np.where(finite, (fill_arr - lo) / span, 0.5)
+    point_colors = np.array([cmap_fn(float(v)) for v in normed], dtype=float)
+    point_colors[~finite] = [0.75, 0.75, 0.75, 0.85]
 
     rng = np.random.default_rng(seed=42)
     base_positions = np.array([cat_to_pos[c] for c in categories], dtype=float)
     positions = base_positions + rng.uniform(-0.25, 0.25, size=len(categories))
 
-    if figsize is None:
-        figsize = (
-            (11, max(6.0, 0.35 * n_cats + 2.0))
-            if orientation == "h"
-            else (max(8.0, 0.6 * n_cats + 2.0), 7.0)
-        )
-
+    figsize = (11, max(6.0, 0.35 * n_cats + 2.0))
     ax, fig = _ensure_ax(ax, figsize)
 
-    def _xy(pos: np.ndarray, val: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        return (pos, val) if orientation == "v" else (val, pos)
-
-    scatter_kwargs = dict(
-        s=marker_size,
+    ax.scatter(
+        values,
+        positions,
+        c=point_colors,
+        s=36.0,
         edgecolors="white",
         linewidths=0.4,
         zorder=3,
         alpha=0.85,
     )
-
-    if per_point_marker is None:
-        x, y = _xy(positions, values)
-        ax.scatter(x, y, c=point_colors, **scatter_kwargs)
-    else:
-        for shape in np.unique(per_point_marker):
-            mask = per_point_marker == shape
-            if not mask.any():
-                continue
-            x, y = _xy(positions[mask], values[mask])
-            ax.scatter(x, y, c=point_colors[mask], marker=shape, **scatter_kwargs)
 
     if show_median:
         for cat in category_order:
@@ -116,26 +66,22 @@ def _strip_plot(
                 continue
             pos = cat_to_pos[cat]
             med = float(np.median(values[mask]))
-            along = (pos - 0.3, pos + 0.3)
-            across = (med, med)
-            x, y = (along, across) if orientation == "v" else (across, along)
-            ax.plot(x, y, color=MUTED_COLOR, linewidth=1.5, zorder=4)
+            ax.plot(
+                (med, med),
+                (pos - 0.3, pos + 0.3),
+                color=MUTED_COLOR,
+                linewidth=1.5,
+                zorder=4,
+            )
 
     cat_labels = [str(c) for c in category_order]
-    if orientation == "v":
-        ax.set_xticks(range(n_cats))
-        ax.set_xticklabels(cat_labels)
-        plt.setp(ax.get_xticklabels(), rotation=90, ha="center")
-        ax.grid(False, axis="x")
-        ax.grid(True, axis="y")
-    else:
-        ax.set_yticks(range(n_cats))
-        ax.set_yticklabels(cat_labels)
-        ax.invert_yaxis()
-        ax.grid(True, axis="x")
-        ax.grid(False, axis="y")
+    ax.set_yticks(range(n_cats))
+    ax.set_yticklabels(cat_labels)
+    ax.invert_yaxis()
+    ax.grid(True, axis="x")
+    ax.grid(False, axis="y")
 
-    _apply_labels(ax, x_label, y_label, title)
+    _apply_labels(ax, x_label, y_label)
     return _finalize(fig)
 
 
@@ -145,14 +91,10 @@ def strip_count_panel_plot(
     category_order: list[str],
     counts_by_class: dict[str, int],
     fill_values: np.ndarray,
-    fill_categorical_colors: tuple[str, ...],
+    fill_cmap: str,
     x_label: str,
     *,
-    fill_cmap: str | None = None,
     fill_cmap_label: str = "",
-    marker_values: np.ndarray | None = None,
-    marker_shapes: tuple[str, ...] = ("o", "X"),
-    failed_counts_by_class: dict[str, int] | None = None,
 ) -> Plot:
     """Strip plot and horizontal count bar side by side, sharing the y-axis."""
     n_cats = len(category_order)
@@ -169,28 +111,23 @@ def strip_count_panel_plot(
         categories=categories,
         values=values,
         fill_values=fill_values,
-        fill_categorical_colors=fill_categorical_colors,
         fill_cmap=fill_cmap,
-        marker_values=marker_values,
-        marker_shapes=marker_shapes,
         category_order=category_order,
-        orientation="h",
         show_median=True,
         x_label=x_label,
         y_label="Class",
         ax=ax_left,
     )
 
-    if fill_cmap is not None:
-        fill_arr = np.asarray(fill_values, dtype=float)
-        finite = np.isfinite(fill_arr)
-        lo = float(np.nanmin(fill_arr[finite])) if finite.any() else 0.0
-        hi = float(np.nanmax(fill_arr[finite])) if finite.any() else 1.0
-        norm = mcolors.Normalize(vmin=lo, vmax=hi)
-        sm = plt.cm.ScalarMappable(cmap=fill_cmap, norm=norm)
-        sm.set_array([])
-        cbar = fig.colorbar(sm, ax=ax_left, fraction=0.025, pad=0.02, shrink=0.8)
-        cbar.set_label(fill_cmap_label, fontsize=8)
+    fill_arr = np.asarray(fill_values, dtype=float)
+    finite = np.isfinite(fill_arr)
+    lo = float(np.nanmin(fill_arr[finite])) if finite.any() else 0.0
+    hi = float(np.nanmax(fill_arr[finite])) if finite.any() else 1.0
+    norm = mcolors.Normalize(vmin=lo, vmax=hi)
+    sm = plt.cm.ScalarMappable(cmap=fill_cmap, norm=norm)
+    sm.set_array([])
+    cbar = fig.colorbar(sm, ax=ax_left, fraction=0.025, pad=0.02, shrink=0.8)
+    cbar.set_label(fill_cmap_label, fontsize=8)
 
     counts = [int(counts_by_class.get(cat, 0)) for cat in category_order]
     y_positions = np.arange(n_cats)
@@ -210,29 +147,8 @@ def strip_count_panel_plot(
         hide_yticks=True,
         hide_left_spine=True,
         xlim=(0, max_count * 1.18),
-        axvline=0 if failed_counts_by_class is not None else None,
         ax=ax_right,
     )
-
-    if failed_counts_by_class is not None:
-        failed_counts = [
-            int(failed_counts_by_class.get(cat, 0)) for cat in category_order
-        ]
-        if any(failed_counts):
-            bar_plot(
-                labels=list(category_order),
-                values=failed_counts,
-                orientation="h",
-                sort=None,
-                bar_positions=y_positions,
-                bar_alpha=0.85,
-                color=HIGHLIGHT_COLOR,
-                annotate_values=False,
-                x_label="n clusters",
-                hide_yticks=True,
-                hide_left_spine=True,
-                ax=ax_right,
-            )
 
     return _fig_to_plot(fig)
 
