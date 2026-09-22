@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.axes import Axes
 
-from .base import Plot, _apply_labels, _ensure_ax, _fig_to_plot, _finalize
+from .base import Plot, _apply_labels, _fig_to_plot
 from .primitives import bar_plot, numeric_scatter_plot
 from .style import MUTED_COLOR
 
@@ -18,9 +18,9 @@ def _strip_plot(
     show_median: bool = True,
     x_label: str = "",
     y_label: str = "",
-    ax: Axes | None = None,
-) -> Plot | None:
-    """Horizontal strip plot with a colormapped fill, one row per category."""
+    ax: Axes,
+) -> None:
+    """Horizontal strip plot with a colormapped fill, one row per category, drawn onto ax."""
     categories = np.asarray(categories)
     values = np.asarray(values, dtype=float)
 
@@ -44,9 +44,6 @@ def _strip_plot(
     rng = np.random.default_rng(seed=42)
     base_positions = np.array([cat_to_pos[c] for c in categories], dtype=float)
     positions = base_positions + rng.uniform(-0.25, 0.25, size=len(categories))
-
-    figsize = (11, max(6.0, 0.35 * n_cats + 2.0))
-    ax, fig = _ensure_ax(ax, figsize)
 
     ax.scatter(
         values,
@@ -82,7 +79,6 @@ def _strip_plot(
     ax.grid(False, axis="y")
 
     _apply_labels(ax, x_label, y_label)
-    return _finalize(fig)
 
 
 def strip_count_panel_plot(

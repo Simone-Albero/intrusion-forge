@@ -33,6 +33,7 @@ def _run_outer_fold(
     y_test: pd.Series,
     inner_cv: KFold | None,
     param_grid: dict,
+    *,
     random_state: int,
     n_iter: int,
     fold: int,
@@ -60,10 +61,7 @@ def _run_outer_fold(
         )
         search.fit(X_train, y_train)
         best = search.best_estimator_
-        # Stringified: the grid mixes types within one key (max_features: "sqrt" | 0.5),
-        # which a JSON/DB column can't hold natively — this is a diagnostic record, not
-        # something anything parses back, so losing native typing costs nothing.
-        best_params = {k: str(v) for k, v in search.best_params_.items()}
+        best_params = search.best_params_
         best_score = float(search.best_score_)
 
     y_pred = best.predict(X_test)
@@ -147,6 +145,7 @@ def _run_nested_cv(
     split_labels: pd.Series | None,
     inner_cv: KFold | None,
     param_grid: dict,
+    *,
     random_state: int,
     n_iter: int,
 ) -> dict:
@@ -162,9 +161,9 @@ def _run_nested_cv(
             y.iloc[test_idx],
             inner_cv,
             param_grid,
-            random_state,
-            n_iter,
-            f,
+            random_state=random_state,
+            n_iter=n_iter,
+            fold=f,
         )
         folds.append({**fold, "y_true": y.iloc[test_idx].tolist(), "fold_id": f})
 
@@ -173,9 +172,6 @@ def _run_nested_cv(
         "y_true": np.array([v for fold in folds for v in fold["y_true"]]),
         "y_pred": np.array([v for fold in folds for v in fold["y_pred"]]),
         "indices": [i for fold in folds for i in fold["indices"]],
-        "fold_ids": np.array(
-            [fold["fold_id"] for fold in folds for _ in fold["y_pred"]]
-        ),
     }
 
 
@@ -369,8 +365,8 @@ def fit_failure_regressor(
         split_labels,
         inner_cv,
         param_grid,
-        random_state,
-        n_iter,
+        random_state=random_state,
+        n_iter=n_iter,
     )
 
     results = {

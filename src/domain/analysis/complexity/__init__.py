@@ -1,4 +1,4 @@
-from src.domain.analysis.complexity.pipeline import (
+from src.domain.analysis.complexity.graph import (
     ComplexityGraph,
     compute_complexity_from_graph,
     prepare_complexity_graph,

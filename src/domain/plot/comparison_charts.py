@@ -6,21 +6,18 @@ from .base import Plot, _apply_labels, _fig_to_plot
 from .style import MUTED_COLOR
 
 
-def box_strip_plot(
+def box_plot(
     labels: list[str],
     values: list[np.ndarray],
     *,
     colors: list[str],
-    faded: list[bool] | None = None,
-    show_points: bool = True,
     x_label: str = "",
     x_lim: tuple[float, float] | None = None,
     axvline: float | None = None,
     legend: dict[str, str] | None = None,
     figsize: tuple[float, float] = (5.4, 3.0),
 ) -> Plot:
-    """Horizontal box plots with an optional jittered strip overlay, one row per group."""
-    faded = faded or [False] * len(labels)
+    """Horizontal box plots, one row per group."""
     pos = list(range(len(labels), 0, -1))
     fig, ax = plt.subplots(figsize=figsize)
     bp = ax.boxplot(
@@ -35,18 +32,10 @@ def box_strip_plot(
         whiskerprops=dict(color=MUTED_COLOR),
         capprops=dict(color=MUTED_COLOR),
     )
-    for patch, color, fade in zip(bp["boxes"], colors, faded):
+    for patch, color in zip(bp["boxes"], colors):
         patch.set_facecolor(color)
-        patch.set_alpha(0.35 if fade else 0.65)
+        patch.set_alpha(0.65)
         patch.set_edgecolor("0.3")
-    if show_points:
-        rng = np.random.default_rng(0)
-        for vals, p, color in zip(values, pos, colors):
-            vals = np.asarray(vals, dtype=float)
-            y = p + (rng.random(vals.size) - 0.5) * 0.32
-            ax.scatter(
-                vals, y, s=7, color=color, alpha=0.55, edgecolor="none", zorder=3
-            )
     if axvline is not None:
         ax.axvline(axvline, color=MUTED_COLOR, linewidth=0.8, linestyle="--", zorder=1)
     ax.set_yticks(pos, labels)

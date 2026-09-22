@@ -14,7 +14,7 @@ from src.core.log import (
 from src.core.utils import load_from_json
 from src.domain.plot.base import Plot, set_figure_format
 from src.domain.plot.comparison_charts import (
-    box_strip_plot,
+    box_plot,
     grouped_bar_plot,
     line_whisker_plot,
     stacked_bar_plot,
@@ -251,7 +251,7 @@ def _fig_rho_by_config(runs: list[dict]) -> Plot | None:
             _ALGO_ORDER.index(algo) if algo in _ALGO_ORDER else 99,
         )
 
-    labels, values, colors, faded = [], [], [], []
+    labels, values, colors = [], [], []
     for cfg in sorted({r["config"] for r in runs}, key=sort_key):
         crows = [r for r in runs if r["config"] == cfg]
         vals = [
@@ -266,13 +266,10 @@ def _fig_rho_by_config(runs: list[dict]) -> Plot | None:
         labels.append(label)
         values.append(np.asarray(vals, dtype=float))
         colors.append(_dist_color(meta["distance"]))
-        faded.append(False)
-    return box_strip_plot(
+    return box_plot(
         labels,
         values,
         colors=colors,
-        faded=faded,
-        show_points=False,
         x_label=r"Spearman $\rho$",
         x_lim=(-1.05, 1.05),
         axvline=0.0,
@@ -415,11 +412,10 @@ def _fig_oracle_benefit_by_variant(runs: list[dict]) -> Plot | None:
     labels = [_VARIANT_LABEL[v] for v in _ORACLE_BENEFIT_ORDER]
     values = [np.asarray(acc[v], dtype=float) for v in _ORACLE_BENEFIT_ORDER]
     colors = [_VARIANT_COLOR[v] for v in _ORACLE_BENEFIT_ORDER]
-    return box_strip_plot(
+    return box_plot(
         labels,
         values,
         colors=colors,
-        show_points=False,
         x_label="oracle benefit recovered (%)",
         x_lim=(-25.0, 105.0),
         axvline=0.0,

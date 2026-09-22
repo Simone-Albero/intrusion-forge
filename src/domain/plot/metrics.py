@@ -15,7 +15,7 @@ def confusion_matrix_plot(
     max_annotated_classes: int = 20,
     max_label_chars: int = 18,
 ) -> Plot:
-    """Plot a confusion matrix, with a metrics row."""
+    """Plot a confusion matrix."""
     if cm.ndim != 2 or cm.shape[0] != cm.shape[1]:
         raise ValueError("`cm` must be a square 2D array (n_classes x n_classes).")
 
