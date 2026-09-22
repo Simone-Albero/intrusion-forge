@@ -118,7 +118,11 @@ class MLTrainer:
         self, model: Pipeline, X: pd.DataFrame, *, return_embedding: bool = False
     ) -> tuple:
         """Predict a DataFrame → (y_pred, y_proba); ML pipelines have no embedding, so z is None."""
-        y_pred, y_proba = model.predict(X), model.predict_proba(X)
+        # Every registered classifier's predict() is an argmax over the same scores
+        # predict_proba() normalises, so one pass answers both — and y_pred is then
+        # consistent by construction with the y_proba published beside it.
+        y_proba = model.predict_proba(X)
+        y_pred = model.classes_[np.argmax(y_proba, axis=1)]
         if return_embedding:
             return y_pred, y_proba, None
         return y_pred, y_proba
