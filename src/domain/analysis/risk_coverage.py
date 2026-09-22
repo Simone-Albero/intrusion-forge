@@ -26,10 +26,16 @@ def oracle_benefit_recovered(
     score: np.ndarray,
     actual: np.ndarray,
     support: np.ndarray,
+    oracle_curve: tuple[np.ndarray, np.ndarray],
     *,
     coverage_target: float = 0.8,
 ) -> float:
-    """Fraction of the oracle's accuracy gain over random that `score` recovers at `coverage_target`."""
+    """Fraction of the oracle's accuracy gain over random that `score` recovers at `coverage_target`.
+
+    `oracle_curve` must be `risk_coverage_curve(actual, actual, support)` for this same
+    `actual`/`support` pair. It doesn't depend on `score`, so the caller computes it
+    once and shares it across every variant scored against the same ground truth.
+    """
     score = np.asarray(score, dtype=float)
     actual = np.asarray(actual, dtype=float)
     support = np.asarray(support, dtype=float)
@@ -39,7 +45,7 @@ def oracle_benefit_recovered(
 
     global_accuracy = float(1.0 - (actual * support).sum() / total)
     cov_p, acc_p = risk_coverage_curve(score, actual, support)
-    cov_o, acc_o = risk_coverage_curve(actual, actual, support)
+    cov_o, acc_o = oracle_curve
     at_target_p = float(np.interp(coverage_target, cov_p, acc_p))
     at_target_o = float(np.interp(coverage_target, cov_o, acc_o))
 

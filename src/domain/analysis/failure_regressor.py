@@ -12,7 +12,10 @@ from tqdm import tqdm
 from src.core.utils import timed
 from src.domain.analysis.confidence import atc_cluster_risk
 from src.domain.analysis.failure import is_failure
-from src.domain.analysis.risk_coverage import oracle_benefit_recovered
+from src.domain.analysis.risk_coverage import (
+    oracle_benefit_recovered,
+    risk_coverage_curve,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -373,15 +376,19 @@ def instance_baselines(samples: pd.DataFrame, predicted_rate: list[dict]) -> dic
     )
     region = np.array([rate_by_cluster.get(c, fallback) for c in cluster], dtype=float)
 
+    clusters = np.unique(cluster)
     mcp_cluster = np.empty_like(mcp)
-    for c in np.unique(cluster):
+    observed = np.empty(clusters.size)
+    for i, c in enumerate(clusters):
         m = cluster == c
         mcp_cluster[m] = mcp[m].mean()
+        observed[i] = failure[m].mean()
     atc_cluster = atc_cluster_risk(confidence, correct, cluster)
 
     n = failure.size
-    combo_rankavg = rankdata(region) / (n + 1) + rankdata(mcp) / (n + 1)
-    combo_atc_rankavg = rankdata(region) / (n + 1) + rankdata(atc_cluster) / (n + 1)
+    region_rank = rankdata(region) / (n + 1)
+    combo_rankavg = region_rank + rankdata(mcp) / (n + 1)
+    combo_atc_rankavg = region_rank + rankdata(atc_cluster) / (n + 1)
 
     scores = {
         "mcp_cluster": mcp_cluster,
@@ -392,12 +399,20 @@ def instance_baselines(samples: pd.DataFrame, predicted_rate: list[dict]) -> dic
     }
 
     support = np.ones(failure.size)
-    clusters = np.unique(cluster)
-    observed = np.array([failure[cluster == c].mean() for c in clusters], dtype=float)
+    oracle_curve = risk_coverage_curve(failure, failure, support)
+
+    # Not a pandas groupby: its Cython mean accumulates in a different order from
+    # numpy's pairwise sum, so the two disagree in the last ulp on any cluster with
+    # enough rows — enough to move the published spearman in its fifth decimal.
+    predicted_by_name = {name: np.empty(clusters.size) for name in scores}
+    for i, c in enumerate(clusters):
+        m = cluster == c
+        for name, sc in scores.items():
+            predicted_by_name[name][i] = sc[m].mean()
 
     baselines = []
     for name, sc in scores.items():
-        predicted = np.array([sc[cluster == c].mean() for c in clusters], dtype=float)
+        predicted = predicted_by_name[name]
         rho = (
             float(spearmanr(predicted, observed).statistic)
             if np.std(predicted) > 1e-12 and np.std(observed) > 1e-12
@@ -408,7 +423,7 @@ def instance_baselines(samples: pd.DataFrame, predicted_rate: list[dict]) -> dic
                 "variant": name,
                 "spearman": rho,
                 "oracle_benefit_recovered": oracle_benefit_recovered(
-                    sc, failure, support
+                    sc, failure, support, oracle_curve
                 ),
                 # Null rather than absent: the rank-average variants have no rate to
                 # compare, and a uniform row shape is what makes this a table.
