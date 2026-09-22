@@ -6,7 +6,7 @@ import pandas as pd
 from scipy.stats import rankdata, spearmanr
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error, r2_score
-from sklearn.model_selection import GridSearchCV, KFold, StratifiedKFold
+from sklearn.model_selection import KFold, RandomizedSearchCV, StratifiedKFold
 from tqdm import tqdm
 
 from src.core.utils import timed
@@ -34,22 +34,37 @@ def _run_outer_fold(
     inner_cv: KFold | None,
     param_grid: dict,
     random_state: int,
+    n_iter: int,
+    fold: int,
 ) -> dict:
-    """Run one outer CV fold. When inner_cv is None, skip GridSearchCV and use default RF."""
+    """Run one outer CV fold; with inner_cv None, skip the search and use a default RF."""
     if inner_cv is None:
         best = RandomForestRegressor(random_state=random_state)
         best.fit(X_train, y_train)
+        best_params = {}
+        best_score = None
     else:
-        grid = GridSearchCV(
+        search = RandomizedSearchCV(
             estimator=RandomForestRegressor(random_state=random_state),
-            param_grid=param_grid,
+            param_distributions=param_grid,
+            n_iter=n_iter,
             cv=inner_cv,
             scoring="r2",
             n_jobs=-1,
+            # Offset by fold, not the bare seed: RandomizedSearchCV draws the same n_iter
+            # combinations on every call at a fixed random_state regardless of the data it
+            # sees, so a single shared seed would sample the same 40-of-160 slice in every
+            # outer fold, forever. Varying it deterministically covers more of the grid.
+            random_state=random_state + fold,
             verbose=0,
         )
-        grid.fit(X_train, y_train)
-        best = grid.best_estimator_
+        search.fit(X_train, y_train)
+        best = search.best_estimator_
+        # Stringified: the grid mixes types within one key (max_features: "sqrt" | 0.5),
+        # which a JSON/DB column can't hold natively — this is a diagnostic record, not
+        # something anything parses back, so losing native typing costs nothing.
+        best_params = {k: str(v) for k, v in search.best_params_.items()}
+        best_score = float(search.best_score_)
 
     y_pred = best.predict(X_test)
     has_variance = len(y_test) > 1 and np.std(y_test) > 0 and np.std(y_pred) > 0
@@ -62,6 +77,8 @@ def _run_outer_fold(
         "importances": best.feature_importances_,
         "y_pred": y_pred.tolist(),
         "indices": X_test.index.tolist(),
+        "best_params": best_params,
+        "best_score": best_score,
     }
 
 
@@ -131,6 +148,7 @@ def _run_nested_cv(
     inner_cv: KFold | None,
     param_grid: dict,
     random_state: int,
+    n_iter: int,
 ) -> dict:
     """Run the outer CV loop and collect per-fold scores + out-of-fold predictions."""
     folds = []
@@ -145,14 +163,13 @@ def _run_nested_cv(
             inner_cv,
             param_grid,
             random_state,
+            n_iter,
+            f,
         )
         folds.append({**fold, "y_true": y.iloc[test_idx].tolist(), "fold_id": f})
 
     return {
-        "fold_r2s": [fold["r2"] for fold in folds],
-        "fold_maes": [fold["mae"] for fold in folds],
-        "fold_spearmans": [fold["spearman"] for fold in folds],
-        "fold_importances": [fold["importances"] for fold in folds],
+        "folds": folds,
         "y_true": np.array([v for fold in folds for v in fold["y_true"]]),
         "y_pred": np.array([v for fold in folds for v in fold["y_pred"]]),
         "indices": [i for fold in folds for i in fold["indices"]],
@@ -165,23 +182,28 @@ def _run_nested_cv(
 def _aggregate_oof_results(oof: dict, feature_cols: list[str]) -> dict:
     """Aggregate out-of-fold predictions into the published regression-metrics block."""
     y_true, y_pred = oof["y_true"], oof["y_pred"]
-    mean_importances = np.mean(oof["fold_importances"], axis=0)
+    folds = oof["folds"]
+    mean_importances = np.mean([f["importances"] for f in folds], axis=0)
     rho = spearmanr(y_pred, y_true)
-    fold_spearmans = np.array(oof["fold_spearmans"], dtype=float)
 
     return {
         "spearman": float(rho.statistic),
         "spearman_pvalue": float(rho.pvalue),
         "r2": float(r2_score(y_true, y_pred)),
-        "r2_std": float(np.nanstd(oof["fold_r2s"])),
+        "r2_std": float(np.nanstd([f["r2"] for f in folds])),
         "mae": float(mean_absolute_error(y_true, y_pred)),
-        "mae_std": float(np.std(oof["fold_maes"])),
+        "mae_std": float(np.std([f["mae"] for f in folds])),
         "mse": float(np.mean((y_pred - y_true) ** 2)),
         "per_fold": [
-            {"fold": f, "spearman": spearman, "r2": r2, "mae": mae}
-            for f, (spearman, r2, mae) in enumerate(
-                zip(fold_spearmans.tolist(), oof["fold_r2s"], oof["fold_maes"])
-            )
+            {
+                "fold": f["fold_id"],
+                "spearman": f["spearman"],
+                "r2": f["r2"],
+                "mae": f["mae"],
+                "best_params": f["best_params"],
+                "best_score": f["best_score"],
+            }
+            for f in folds
         ],
         "feature_importances": [
             {"feature": feature, "importance": importance}
@@ -219,6 +241,7 @@ def fit_failure_regressor(
     feature_cols: list[str] | None = None,
     n_outer_splits: int = 5,
     n_inner_splits: int = 5,
+    n_iter: int = 40,
     random_state: int = 42,
     min_test_support: int = 5,
 ) -> dict:
@@ -329,7 +352,7 @@ def fit_failure_regressor(
             outer_k,
             n_inner_splits,
             inner_k or 0,
-            " (no GridSearchCV — using RF defaults)" if inner_k == 0 else "",
+            " (no search — using RF defaults)" if inner_k == 0 else "",
         )
 
     inner_cv = (
@@ -339,7 +362,15 @@ def fit_failure_regressor(
     )
 
     oof = _run_nested_cv(
-        X, y, outer_cv, outer_k, split_labels, inner_cv, param_grid, random_state
+        X,
+        y,
+        outer_cv,
+        outer_k,
+        split_labels,
+        inner_cv,
+        param_grid,
+        random_state,
+        n_iter,
     )
 
     results = {

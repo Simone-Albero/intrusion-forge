@@ -74,7 +74,7 @@ random_forest/
 ├── outputs/testing/summary.json      # accuracy, macro F1, per-class metrics
 ├── outputs/analysis/
 │   ├── cluster_summary.json          #   descriptors + observed error rate, per region
-│   ├── failure_regressor_results.json #  ρ, R², MAE, MSE, importances
+│   ├── failure_regressor_results.json #  ρ, R², MAE, MSE, importances, best_params per fold
 │   ├── instance_baselines.json       #   ρ and oracle-benefit recovered, regressor vs confidence baselines
 │   └── predictions/                  #   per-sample predictions
 ├── models/fold_0 … fold_4/           # one model per fold (~500 MB)
@@ -216,7 +216,7 @@ PYTHONPATH=. python pipelines/classify.py data=bot_iot_v2 name=my_exp seed=123 c
 | `classifier` | deep: `mlp` (adapts to the dataset's numerical/categorical feature counts) · classical: `decision_tree`, `random_forest`, `hist_gradient_boosting`, `xgboost`, `knn`, `lda`, `logistic_regression`, `naive_bayes`, `linear_svc` |
 | `clustering` | `kmeans`, `hdbscan`, `birch`, `spectral` |
 | `complexity` | `default` — descriptor graph parameters (`k`, cluster sample caps) |
-| `failure_regressor` | `random_forest` — nested-CV folds and hyperparameter grid |
+| `failure_regressor` | `random_forest` — nested-CV folds, hyperparameter grid and the draws sampled from it (`n_iter`) |
 | `grid_search` | `default` — scoring, CV folds and sample cap for classifier tuning |
 | `loss` / `optimizer` / `scheduler` / `loops` | deep learning only: `cross_entropy` \| `focal` / `adamw` / `one_cycle` / `default` |
 | `path` | `default` |

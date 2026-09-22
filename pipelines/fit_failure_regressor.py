@@ -54,6 +54,7 @@ def main() -> None:
         to_container(cfg.failure_regressor.param_grid),
         n_outer_splits=cfg.failure_regressor.n_outer_splits,
         n_inner_splits=cfg.failure_regressor.n_inner_splits,
+        n_iter=cfg.failure_regressor.n_iter,
         min_test_support=cfg.failure_regressor.min_test_support,
         random_state=cfg.seed,
     )
