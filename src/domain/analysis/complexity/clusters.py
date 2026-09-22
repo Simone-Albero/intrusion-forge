@@ -64,15 +64,6 @@ def _nearest_other(pw_row: np.ndarray) -> float | None:
     return float(np.min(finite))
 
 
-def _spherical_centroid(X: np.ndarray, eps: float = 1e-8) -> np.ndarray:
-    """Fréchet mean under cosine distance: mean of L2-normalised samples, re-normalised."""
-    norms = np.linalg.norm(X, axis=1, keepdims=True)
-    X_norm = X / np.maximum(norms, eps)
-    sph = X_norm.mean(axis=0)
-    sph_norm = np.linalg.norm(sph)
-    return sph / max(sph_norm, eps)
-
-
 @timed
 def compute_cluster_geometry(
     X_num: np.ndarray,
@@ -91,14 +82,9 @@ def compute_cluster_geometry(
     if not present_ids:
         return {}
 
-    if metric == "cosine":
-        centroid_matrix = np.stack(
-            [_spherical_centroid(X_v[yk_v == int(cid)]) for cid in present_ids]
-        )
-    else:
-        centroid_matrix = np.stack(
-            [np.asarray(centroids[cid], dtype=np.float64) for cid in present_ids]
-        )
+    centroid_matrix = np.stack(
+        [np.asarray(centroids[cid], dtype=np.float64) for cid in present_ids]
+    )
 
     id_to_idx = {cid: i for i, cid in enumerate(present_ids)}
 
