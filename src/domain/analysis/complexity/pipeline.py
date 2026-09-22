@@ -11,6 +11,7 @@ from src.domain.analysis.complexity.feature import compute_f_measures
 from src.domain.analysis.complexity.neighborhood import compute_n_measures
 from src.domain.analysis.complexity.network import compute_network_measures
 from src.domain.analysis.complexity.shared import (
+    build_approx_mst,
     build_knn_graph,
     topk_adversarial_clusters,
 )
@@ -20,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class ComplexityGraph:
-    """Subsampled point cloud and its partition-independent Gower-hybrid k-NN graph."""
+    """Subsampled point cloud, its partition-independent k-NN graph, and its MST."""
 
     X_num: np.ndarray
     X_cat: np.ndarray | None
@@ -28,6 +29,7 @@ class ComplexityGraph:
     y_cluster: np.ndarray
     knn_idx: np.ndarray
     knn_dist: np.ndarray
+    mst_edges: np.ndarray
 
 
 def _stratified_subsample(
@@ -159,7 +161,7 @@ def prepare_complexity_graph(
     metric: str = "cosine",
     random_state: int = 42,
 ) -> ComplexityGraph:
-    """Build the cluster-stratified subsample and the k-NN graph shared by both passes."""
+    """Build the subsample, k-NN graph and MST that both complexity passes share."""
     if max_samples is not None and len(y_cluster) > max_samples:
         n_orig = len(y_cluster)
         X_num, X_cat, y_class, y_cluster = _stratified_subsample(
@@ -180,7 +182,11 @@ def prepare_complexity_graph(
 
     logger.info("Building Gower-%s hybrid k-NN graph (k=%d)...", metric, k)
     knn_idx, knn_dist = build_knn_graph(X_num, X_cat, k=k, metric=metric)
-    return ComplexityGraph(X_num, X_cat, y_class, y_cluster, knn_idx, knn_dist)
+    logger.info("Building approximate MST over the k-NN graph...")
+    mst_edges = build_approx_mst(knn_idx, knn_dist, X_num, X_cat, metric=metric)
+    return ComplexityGraph(
+        X_num, X_cat, y_class, y_cluster, knn_idx, knn_dist, mst_edges
+    )
 
 
 @timed
@@ -213,11 +219,9 @@ def compute_complexity_from_graph(
         n_out = compute_n_measures(
             knn_idx,
             knn_dist,
-            X_num,
-            X_cat,
+            graph.mst_edges,
             cluster_mask,
             top_k_map,
-            metric=metric,
         )
         pbar.update(1)
 

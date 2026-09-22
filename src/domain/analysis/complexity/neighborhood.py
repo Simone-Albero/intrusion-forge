@@ -2,11 +2,7 @@ import numpy as np
 from tqdm import tqdm
 
 from src.core.utils import timed
-from src.domain.analysis.complexity.shared import (
-    aggregate_min_mean_max,
-    build_approx_mst,
-    make_null_row,
-)
+from src.domain.analysis.complexity.shared import aggregate_min_mean_max, make_null_row
 
 _N_KEYS = ("n1", "n2", "n3", "n4")
 
@@ -107,16 +103,11 @@ def _aggregate_pairs(
 def compute_n_measures(
     knn_idx: np.ndarray,
     knn_dist: np.ndarray,
-    X_num: np.ndarray,
-    X_cat: np.ndarray | None,
+    mst_edges: np.ndarray,
     cluster_mask: dict[str, np.ndarray],
     top_k_map: dict[str, list[str]],
-    *,
-    metric: str = "cosine",
 ) -> dict[str, dict[str, float | None]]:
     """N1-N4 per cluster against its top-K adversarial clusters, as min/mean/max."""
-    edges_uv = build_approx_mst(knn_idx, knn_dist, X_num, X_cat, metric=metric)
-
     result: dict[str, dict[str, float | None]] = {}
     for cid_str, c_mask in tqdm(
         cluster_mask.items(), desc="N measures", unit="cluster", leave=False
@@ -134,7 +125,7 @@ def compute_n_measures(
             cluster_mask[ac] for ac in top_k_map.get(cid_str, []) if ac in cluster_mask
         ]
 
-        agg = _aggregate_pairs(nbs, nb_dists, c_mask, cluster_pops, edges_uv)
+        agg = _aggregate_pairs(nbs, nb_dists, c_mask, cluster_pops, mst_edges)
         for nk in _N_KEYS:
             mn, me, mx = aggregate_min_mean_max(agg[nk])
             row[f"{nk}_min"] = mn
