@@ -37,14 +37,19 @@ def hybrid_row_batch(
     d_cat: int,
 ) -> np.ndarray:
     """Gower-cosine hybrid distance: cosine on the numerics, Hamming on the categoricals."""
-    sqeuclid = cdist(query_num_norm, X_num_norm, metric="sqeuclidean")
-    dist = np.clip(sqeuclid / 2, 0.0, 1.0) * d_num
+    dist = cdist(query_num_norm, X_num_norm, metric="sqeuclidean")
+    dist *= d_num / 2.0
+    # Cap the cosine block at 1, scaled to d_num to match the line above: cosine
+    # distance reaches 2 for opposed vectors, and the Gower average must stay in
+    # [0, 1]. Change the scale factor above and this bound must move with it.
+    np.clip(dist, 0.0, d_num, out=dist)
 
     if X_cat is not None and d_cat > 0:
         for f in range(d_cat):
             dist += (query_cat[:, f : f + 1] != X_cat[:, f]).astype(np.float64)
 
-    return dist / (d_num + d_cat)
+    dist /= d_num + d_cat
+    return dist
 
 
 def hybrid_row_batch_euclidean(
@@ -66,7 +71,8 @@ def hybrid_row_batch_euclidean(
         for f in range(d_cat):
             dist += (query_cat[:, f : f + 1] != X_cat[:, f]).astype(np.float64)
 
-    return dist / (d_num + d_cat)
+    dist /= d_num + d_cat
+    return dist
 
 
 @timed
