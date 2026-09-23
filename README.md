@@ -6,7 +6,7 @@ It divides a dataset into regions, describes each region by how it sits relative
 
 The estimate belongs to the model you point it at. It is fitted on that model's own errors, so it describes how *that* classifier copes with the shape of your data rather than how difficult the data is in the abstract. This makes it useful for identifying unreliable regions before you have the labels to prove they are unreliable, for deciding where to gather more data or review labels, and for monitoring a model after deployment.
 
-Everything is tabular and everything is driven by configuration: a dozen classifiers (scikit-learn, XGBoost, PyTorch), four ways of dividing the data into regions, configurations for the public network-security datasets, and a synthetic dataset that exercises the whole pipeline in about nine minutes.
+Everything is tabular and everything is driven by configuration: a dozen classifiers (scikit-learn, XGBoost, PyTorch), four ways of dividing the data into regions, configurations for the public network-security datasets, and a synthetic dataset that exercises the whole pipeline in about eighteen minutes.
 
 ## Quickstart — the synthetic demo
 
@@ -44,16 +44,20 @@ One command, five stages:
 
 | Stage | What it does | Time |
 |---|---|---|
-| prepare | preprocess, split, divide each class into regions (1021 of them) | 20 s |
-| complexity | describe every region | 25 s |
-| classify | train and evaluate the Random Forest | 20 s |
-| failure-regress | fit the region → error-rate estimator | 5 min |
+| prepare | preprocess, split, divide each class into regions (1021 of them) | 18 s |
+| complexity | describe every region | ~105 s |
+| classify | train and evaluate the Random Forest, 5-fold out-of-fold | ~15 min |
+| failure-regress | fit the region → error-rate estimator | ~80 s |
 | render | 26 figures | 5 s |
+
+`classify` dominates: each fold re-runs the classifier's hyperparameter search on its own held-out-safe
+training slice, which is the point of doing it that way (see [below](#pipeline-reference)) but is not
+quick.
 
 The result appears at the end of `failure-regress`:
 
 ```
-Failure regressor results — Spearman: 0.9353, R²: 0.9189, MAE: 0.0343, MSE: 0.0030
+Failure regressor results — Spearman: 0.9378, R²: 0.9168, MAE: 0.0343, MSE: 0.0031
 ```
 
 **Spearman ρ ≈ 0.94.** Across 1019 regions the estimated and observed error rates rank almost identically, measured on regions held back from the fitting. Expect a little drift in the third decimal between runs.
@@ -77,11 +81,11 @@ random_forest/
 │   ├── failure_regressor_results.json #  ρ, R², MAE, MSE, importances, best_params per fold
 │   ├── instance_baselines.json       #   ρ and oracle-benefit recovered, regressor vs confidence baselines
 │   └── predictions/                  #   per-sample predictions
-├── models/fold_0 … fold_4/           # one model per fold (~500 MB)
+├── models/fold_0 … fold_4/           # one model per fold (~1 GB total)
 └── figures/                          # 26 PDFs
 ```
 
-The fold models account for ~500 MB of the ~540 MB the run occupies; delete `models/` once you have the metrics.
+The fold models account for ~980 MB of the ~1 GB the run occupies; delete `models/` once you have the metrics.
 
 ### 5. Optional — browse in the dashboard
 
@@ -165,7 +169,7 @@ Five families, all built on a single shared nearest-neighbour graph over mixed n
 | **T** — dimensionality | `t2`–`t4` | how many features there are relative to samples, and how many of them matter |
 | **G** — geometry | `max_dispersion`, `p95_dispersion`, `dist_to_nearest_centroid`, `p5_silhouette`, `frac_at_risk` | how widely the region is spread, and how close the nearest rival lies |
 
-In the demo the estimator relies most on `cluster_p5_silhouette`, `cluster_f3_max` and `cluster_network_density_mean`.
+In the demo the estimator relies most on `cluster_f4_mean`, `cluster_f3_max` and `cluster_network_density_mean`.
 
 ## Pipeline reference
 
