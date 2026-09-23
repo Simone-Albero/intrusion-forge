@@ -108,14 +108,20 @@ def grid_search(
     resolution_weight: float = 0.1,
     min_clusters: int | None = None,
     **fixed_params,
-) -> dict:
-    """Grid search scored by silhouette − noise_penalty·noise_ratio + resolution tilt."""
+) -> tuple[dict, np.ndarray | None]:
+    """Grid search scored by silhouette − noise_penalty·noise_ratio + resolution tilt.
+
+    Returns `(report, best_labels)`: `report` is `{"best", "sweep"}`, JSON-safe as-is;
+    `best_labels` is the winning candidate's labels when reusable without a refit (no
+    subsampling occurred), `None` otherwise.
+    """
     sub_num = subsample_features(X_num, max_fit_samples, random_state)
 
     keys = list(param_grid.keys())
     values = list(param_grid.values())
 
     sweep: list[dict] = []
+    sweep_labels: list[np.ndarray | None] = []
 
     for combo_values in tqdm(
         itertools.product(*values),
@@ -125,7 +131,17 @@ def grid_search(
         combo = dict(zip(keys, combo_values))
         t0 = time.perf_counter()
         try:
-            labels = fit_fn(sub_num, **combo, **fixed_params)
+            # random_state/max_fit_samples are named parameters of grid_search itself, so
+            # **fixed_params never contains them — passing them explicitly is what makes
+            # every candidate see the run's real seed and cap instead of whatever default
+            # fit_fn falls back to when a caller omits them.
+            labels = fit_fn(
+                sub_num,
+                **combo,
+                max_fit_samples=max_fit_samples,
+                random_state=random_state,
+                **fixed_params,
+            )
         except Exception:
             sweep.append(
                 {
@@ -139,6 +155,7 @@ def grid_search(
                     "error": True,
                 }
             )
+            sweep_labels.append(None)
             continue
 
         duration = time.perf_counter() - t0
@@ -152,6 +169,7 @@ def grid_search(
         entry = _measure(labels, sil, combo, duration)
         entry["silhouette"] = sil
         sweep.append(entry)
+        sweep_labels.append(labels)
 
     valid = [e for e in sweep if not e.get("error")]
     max_k = max((e["n_clusters"] for e in valid), default=0)
@@ -195,4 +213,14 @@ def grid_search(
             "grid_search: no valid clustering found across all parameter combinations."
         )
 
-    return {"best": best_entry, "sweep": sweep}
+    # The sweep already fit the winner on sub_num with the real random_state — when
+    # sub_num is X_num (no subsampling occurred, `is` not `==`: subsample_features
+    # returns X_num itself, unchanged, exactly in that case), that fit and a fresh refit
+    # on X_num are the same call on the same input, so its labels are reusable as-is.
+    best_idx = next(i for i, e in enumerate(sweep) if e is best_entry)
+    best_labels = sweep_labels[best_idx] if sub_num is X_num else None
+
+    # A (report, labels) pair, not one dict: report is exactly what's safe to hand to a
+    # JSON-writing reporter, and best_labels — a full per-row array — has no way to end up
+    # inside it by accident, today or after a future field is added to either side.
+    return {"best": best_entry, "sweep": sweep}, best_labels

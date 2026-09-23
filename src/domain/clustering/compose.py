@@ -70,7 +70,7 @@ def build_cluster_fn(
             )
         if algo_grid:
             effective_min_clusters = min_clusters if name in _N_CLUSTERS_ALGOS else None
-            result = grid_search(
+            report, best_labels = grid_search(
                 X_num,
                 fit_fn,
                 algo_grid,
@@ -79,8 +79,10 @@ def build_cluster_fn(
                 **common,
             )
             if reporter is not None:
-                reporter(name, result)
-            return fit_fn(X_num, **result["best"]["combo"], **common)
+                reporter(name, report)
+            if best_labels is not None:
+                return best_labels
+            return fit_fn(X_num, **report["best"]["combo"], **common)
         return fit_fn(X_num, **common)
 
     return _fn
