@@ -1,4 +1,3 @@
-import inspect
 import logging
 import random
 import sys
@@ -10,7 +9,6 @@ import pandas as pd
 import torch
 from omegaconf import OmegaConf
 from sklearn.metrics import confusion_matrix
-from sklearn.model_selection import StratifiedKFold
 
 from pipelines import paths_from_cfg
 from src.core.config import load_config, save_config, to_container
@@ -24,14 +22,18 @@ from src.core.log import (
     setup_logger,
 )
 from src.core.paths import OutputPaths
-from src.core.utils import flush_timing, load_from_json, timed
+from src.core.utils import first_difference, flush_timing, load_from_json, timed
 from src.domain.analysis.classification import (
     compute_classification_metrics,
     evaluate_predictions,
     per_sample_scores,
 )
 from src.domain.analysis.confidence import mcp_risk
-from src.domain.data.preprocessing import random_undersample_df, subsample_df
+from src.domain.data.preprocessing import (
+    oof_splits,
+    random_undersample_df,
+    subsample_df,
+)
 from src.domain.plot.base import set_figure_format
 from src.domain.plot.classify_charts import (
     build_test_figures,
@@ -43,6 +45,7 @@ from src.domain.training.base import ComponentSpec, Trainer
 from src.domain.training.dl import DLTrainer
 from src.domain.training.ml import MLTrainer
 from src.engine.ml.model import MLClassifierFactory
+from src.engine.ml.preprocessing import supports_random_state
 
 setup_logger()
 apply_plot_style()
@@ -156,17 +159,6 @@ class ClassifyContext:
     bus: LogDispatcher
 
 
-def _oof_splits(base: pd.DataFrame, label_col: str, k: int, seed: int) -> list:
-    """Deterministic stratified OOF folds over `base`; K capped to the rarest class."""
-    y = base[label_col].to_numpy()
-    k = min(k, int(np.unique(y, return_counts=True)[1].min()))
-    if k < 2:
-        raise ValueError(f"k-fold OOF needs >=2 samples per class, got k={k}.")
-    return list(
-        StratifiedKFold(n_splits=k, shuffle=True, random_state=seed).split(base, y)
-    )
-
-
 def build_splits(
     cfg,
     paths: OutputPaths,
@@ -183,7 +175,7 @@ def build_splits(
 
     splits = []
     for f, (tr_idx, te_idx) in enumerate(
-        _oof_splits(universe, label_col, cfg.kfold_splits, cfg.seed)
+        oof_splits(universe, label_col, cfg.kfold_splits, random_state=cfg.seed)
     ):
         fold_train = _balance_and_subsample(
             universe.iloc[tr_idx],
@@ -196,16 +188,6 @@ def build_splits(
             Split(fold_train, paths.models / f"fold_{f}", te_idx, f"fold_{f}/")
         )
     return SplitPlan(universe, splits)
-
-
-def _supports_random_state(clf_cls: type) -> bool:
-    """True if the estimator accepts a `random_state` parameter."""
-    if "random_state" in inspect.signature(clf_cls.__init__).parameters:
-        return True
-    try:
-        return "random_state" in clf_cls().get_params()
-    except Exception:
-        return False
 
 
 def _component(node) -> ComponentSpec:
@@ -292,7 +274,7 @@ def _resolve_fit_params(
         params = _resolve_dl_params(
             params, num_cols, cat_cols, df_meta["num_classes"], cardinality
         )
-    elif _supports_random_state(MLClassifierFactory.get(cfg.classifier.name)):
+    elif supports_random_state(MLClassifierFactory.get(cfg.classifier.name)):
         params.setdefault("random_state", cfg.seed)
     return params
 
@@ -366,14 +348,6 @@ def _invalidate_training_record(paths: OutputPaths) -> None:
     _training_record_path(paths).unlink(missing_ok=True)
 
 
-def _first_difference(previous: dict, current: dict) -> str | None:
-    """Name a field that differs between two fingerprints, or None when they match."""
-    for key in sorted(set(previous) | set(current)):
-        if previous.get(key) != current.get(key):
-            return key
-    return None
-
-
 def _can_reuse(context: ClassifyContext, plan: SplitPlan, fingerprint: dict) -> bool:
     """True when every split already has a model trained for this exact configuration."""
     trainer = context.trainer
@@ -385,7 +359,7 @@ def _can_reuse(context: ClassifyContext, plan: SplitPlan, fingerprint: dict) -> 
         return False
 
     previous = load_from_json(previous_path).get("fingerprint", {})
-    changed = _first_difference(previous, fingerprint)
+    changed = first_difference(previous, fingerprint)
     if changed is not None:
         logger.info("[RETRAIN] training config changed (%s) — retraining.", changed)
         return False
