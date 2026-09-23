@@ -22,10 +22,19 @@ def _approx_silhouette(
         idx = np.arange(n)
     else:
         rng = np.random.default_rng(random_state)
+        # max_samples is a hard cap, not a target: if every cluster's own floor would
+        # already add up past it, shrink the floor first rather than overshoot. max(1, ...)
+        # is the outer call, not the quotient: it also clamps a misconfigured
+        # min_per_cluster <= 0 instead of feeding rng.choice a non-positive size. This
+        # still assumes n_labels <= max_samples — true today with margin, since the
+        # cluster count is itself capped elsewhere (max_complexity_samples //
+        # min_subsample_per_cluster), but not re-asserted here.
+        n_labels = len(unique_labels)
+        floor = max(1, min(min_per_cluster, max_samples // n_labels))
         idx_parts: list[np.ndarray] = []
         for lbl in unique_labels:
             members = np.where(labels == lbl)[0]
-            take = min(len(members), max(min_per_cluster, 1))
+            take = min(len(members), floor)
             idx_parts.append(rng.choice(members, size=take, replace=False))
         guaranteed = np.concatenate(idx_parts)
         remaining = max_samples - len(guaranteed)
@@ -71,6 +80,8 @@ def compute_cluster_geometry(
     centroids: dict[str, list[float]],
     *,
     metric: str = "cosine",
+    silhouette_max_samples: int = 10_000,
+    silhouette_min_per_cluster: int = 50,
     random_state: int = 42,
 ) -> dict[str, dict[str, float | None]]:
     """Per-cluster geometry: dispersion, centroid separation and silhouette tail."""
@@ -91,7 +102,14 @@ def compute_cluster_geometry(
     pw = pairwise_distances(centroid_matrix, metric=metric)
     np.fill_diagonal(pw, np.inf)
 
-    sil = _approx_silhouette(X_v, yk_v, metric=metric, random_state=random_state)
+    sil = _approx_silhouette(
+        X_v,
+        yk_v,
+        metric=metric,
+        max_samples=silhouette_max_samples,
+        min_per_cluster=silhouette_min_per_cluster,
+        random_state=random_state,
+    )
 
     result: dict[str, dict[str, float | None]] = {}
 

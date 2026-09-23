@@ -3,3 +3,5 @@ k: 30
 top_k_clusters: 10                 # top-K nearest adversarial clusters per cluster (vs-cluster aggregation)
 min_subsample_per_cluster: 20      # min samples per cluster (measurement floor); keep ≤ clustering.min_cluster_floor
 max_complexity_samples: 50000      # cap on points used to build the k-NN graph; iso-quality knee from the cost sweep (build is Θ(m²))
+silhouette_max_samples: 10000      # cap on points used for the per-cluster silhouette tail (p5_silhouette, frac_at_risk). Lower per-cluster support makes both noisier — p5_silhouette drifts toward the minimum, frac_at_risk toward coarser, more quantized values — which reshapes feature_importances even where the regressor's aggregate ρ does not move; raise if that shift looks wrong, not only if ρ does. Must stay under max_complexity_samples // min_subsample_per_cluster (the real cluster-count ceiling) or the cap below silently overshoots again
+silhouette_min_per_cluster: 50     # min samples per cluster for the silhouette subsample; shrinks automatically when the cluster count would blow the cap above

@@ -215,7 +215,7 @@ PYTHONPATH=. python pipelines/classify.py data=bot_iot_v2 name=my_exp seed=123 c
 | `data` | network traffic: `nb15_v2`, `bot_iot_v2`, `cic_2018_v2`, `ton_iot_v2` · benchmarks: `bank_marketing`, `covertype`, `letter_recognition`, `statlog_landsat_satellite`, `thyroid_disease` · `synthetic_test`, the only one needing no external CSV |
 | `classifier` | deep: `mlp` (adapts to the dataset's numerical/categorical feature counts) · classical: `decision_tree`, `random_forest`, `hist_gradient_boosting`, `xgboost`, `knn`, `lda`, `logistic_regression`, `naive_bayes`, `linear_svc` |
 | `clustering` | `kmeans`, `hdbscan`, `birch`, `spectral` |
-| `complexity` | `default` — descriptor graph parameters (`k`, cluster sample caps) |
+| `complexity` | `default` — descriptor graph parameters (`k`, cluster sample caps, silhouette subsample cap) |
 | `failure_regressor` | `random_forest` — nested-CV folds, hyperparameter grid and the draws sampled from it (`n_iter`) |
 | `grid_search` | `default` — scoring, CV folds and sample cap for classifier tuning |
 | `loss` / `optimizer` / `scheduler` / `loops` | deep learning only: `cross_entropy` \| `focal` / `adamw` / `one_cycle` / `default` |

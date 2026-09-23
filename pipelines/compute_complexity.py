@@ -39,6 +39,8 @@ def compute_cluster_complexity(
     *,
     top_k_clusters: int,
     metric: str,
+    silhouette_max_samples: int,
+    silhouette_min_per_cluster: int,
     random_state: int,
 ) -> list[dict]:
     """Compute per-cluster complexity measures and attach the class of each cluster."""
@@ -49,6 +51,8 @@ def compute_cluster_complexity(
         top_k_clusters=top_k_clusters,
         metric=metric,
         noise_cluster_ids=set(noise_cluster_ids),
+        silhouette_max_samples=silhouette_max_samples,
+        silhouette_min_per_cluster=silhouette_min_per_cluster,
         random_state=random_state,
     )
 
@@ -68,6 +72,8 @@ def compute_class_complexity(
     *,
     top_k_clusters: int,
     metric: str,
+    silhouette_max_samples: int,
+    silhouette_min_per_cluster: int,
     random_state: int,
 ) -> list[dict]:
     """Compute per-class complexity measures, treating each class as a partition."""
@@ -78,6 +84,8 @@ def compute_class_complexity(
         top_k_clusters=top_k_clusters,
         metric=metric,
         noise_cluster_ids=None,
+        silhouette_max_samples=silhouette_max_samples,
+        silhouette_min_per_cluster=silhouette_min_per_cluster,
         random_state=random_state,
     )
     return [{"class_id": int(cid), **measures} for cid, measures in complexity.items()]
@@ -151,6 +159,8 @@ def main() -> None:
             cluster_to_class,
             top_k_clusters=cfg.complexity.top_k_clusters,
             metric=cfg.complexity.distance,
+            silhouette_max_samples=cfg.complexity.silhouette_max_samples,
+            silhouette_min_per_cluster=cfg.complexity.silhouette_min_per_cluster,
             random_state=cfg.seed,
         )
         bus.publish(LogBundle.from_dict({"json/complexity": cluster_complexity}))
@@ -161,6 +171,8 @@ def main() -> None:
             graph,
             top_k_clusters=cfg.complexity.top_k_clusters,
             metric=cfg.complexity.distance,
+            silhouette_max_samples=cfg.complexity.silhouette_max_samples,
+            silhouette_min_per_cluster=cfg.complexity.silhouette_min_per_cluster,
             random_state=cfg.seed,
         )
         bus.publish(LogBundle.from_dict({"json/class_complexity": class_complexity}))

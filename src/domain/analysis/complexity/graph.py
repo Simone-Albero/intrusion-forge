@@ -197,6 +197,8 @@ def compute_complexity_from_graph(
     top_k_clusters: int = 10,
     metric: str = "cosine",
     noise_cluster_ids: set[int] | None = None,
+    silhouette_max_samples: int = 10_000,
+    silhouette_min_per_cluster: int = 50,
     random_state: int = 42,
 ) -> dict[str, dict[str, float | None]]:
     """Compute every complexity-measure family for one partition of `graph`."""
@@ -239,6 +241,8 @@ def compute_complexity_from_graph(
             y_partition,
             analysis_centroids,
             metric=metric,
+            silhouette_max_samples=silhouette_max_samples,
+            silhouette_min_per_cluster=silhouette_min_per_cluster,
             random_state=random_state,
         )
         pbar.update(1)
