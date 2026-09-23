@@ -91,6 +91,7 @@ def _cluster_per_class(
             min_clusters=clustering.min_clusters,
             grid_target_cluster_size=clustering.grid_target_cluster_size,
             resolution_weight=clustering.resolution_weight,
+            metric=clustering.distance,
         )
         raw_labels = cluster_fn(X_num_cls)
         effective_floor = (
