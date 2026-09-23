@@ -36,6 +36,7 @@ def resolution_aware_floor(n_class: int, target_size: int, floor_cap: int) -> in
 
 def build_cluster_fn(
     algorithms: dict[str, dict],
+    *,
     max_fit_samples: int,
     random_state: int,
     reporter: Reporter | None = None,
@@ -43,7 +44,7 @@ def build_cluster_fn(
     min_clusters: int | None = None,
     grid_target_cluster_size: int | None = None,
     resolution_weight: float = 0.1,
-    metric: str = "euclidean",
+    metric: str,
 ) -> ClusterFn:
     """Build a ClusterFn from a single {algorithm_name: params} config entry."""
     if len(algorithms) != 1:
@@ -77,7 +78,7 @@ def build_cluster_fn(
                 algo_grid,
                 resolution_weight=resolution_weight,
                 min_clusters=effective_min_clusters,
-                metric=metric,
+                score_metric=metric,
                 **common,
             )
             if reporter is not None:

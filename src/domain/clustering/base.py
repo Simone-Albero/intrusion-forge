@@ -29,7 +29,9 @@ def cluster_size_balance(labels: np.ndarray) -> float:
     return h / float(np.log(k))
 
 
-def _measure(labels: np.ndarray, score: float, combo: dict, duration_s: float) -> dict:
+def _measure(
+    labels: np.ndarray, score: float, combo: dict, duration_s: float, metric: str
+) -> dict:
     """Sweep entry describing one fitted partition."""
     n = int(labels.shape[0])
     n_noise = int((labels == -1).sum())
@@ -42,6 +44,7 @@ def _measure(labels: np.ndarray, score: float, combo: dict, duration_s: float) -
         "noise_ratio": n_noise / n if n > 0 else 0.0,
         "size_balance": cluster_size_balance(labels),
         "duration_s": duration_s,
+        "metric": metric,
     }
 
 
@@ -62,7 +65,7 @@ def subsample_features(
 def _score_silhouette(
     X_num: np.ndarray,
     labels: np.ndarray,
-    metric: str = "euclidean",
+    metric: str,
 ) -> float:
     """Silhouette on non-noise points only. Returns -inf on failure or < 2 clusters."""
     mask = labels != -1
@@ -107,7 +110,12 @@ def grid_search(
     noise_penalty: float = 3.0,
     resolution_weight: float = 0.1,
     min_clusters: int | None = None,
-    metric: str = "euclidean",
+    score_metric: str,
+    # Named score_metric, not metric: "metric" is a real per-algorithm parameter name
+    # (hdbscan's own distance metric, say) that a caller could legitimately put in
+    # **fixed_params — a same-named parameter here would collide with it instead of
+    # scoring silently under the wrong value, the same absorption failure already fixed
+    # once in this function for random_state/max_fit_samples.
     **fixed_params,
 ) -> tuple[dict, np.ndarray | None]:
     """Grid search scored by silhouette − noise_penalty·noise_ratio + resolution tilt.
@@ -132,10 +140,10 @@ def grid_search(
         combo = dict(zip(keys, combo_values))
         t0 = time.perf_counter()
         try:
-            # random_state/max_fit_samples are named parameters of grid_search itself, so
-            # **fixed_params never contains them — passing them explicitly is what makes
-            # every candidate see the run's real seed and cap instead of whatever default
-            # fit_fn falls back to when a caller omits them.
+            # Explicit, not left to **fixed_params: both are named parameters of
+            # grid_search itself, so a caller's **common would never reach fit_fn through
+            # the catch-all — every candidate needs the run's real seed and cap passed
+            # this way, not fit_fn's own default.
             labels = fit_fn(
                 sub_num,
                 **combo,
@@ -153,6 +161,7 @@ def grid_search(
                     "noise_ratio": 0.0,
                     "size_balance": 0.0,
                     "duration_s": time.perf_counter() - t0,
+                    "metric": score_metric,
                     "error": True,
                 }
             )
@@ -160,8 +169,8 @@ def grid_search(
             continue
 
         duration = time.perf_counter() - t0
-        sil = _score_silhouette(sub_num, labels, metric=metric)
-        entry = _measure(labels, sil, combo, duration)
+        sil = _score_silhouette(sub_num, labels, metric=score_metric)
+        entry = _measure(labels, sil, combo, duration, score_metric)
         entry["silhouette"] = sil
         sweep.append(entry)
         sweep_labels.append(labels)
@@ -215,7 +224,4 @@ def grid_search(
     best_idx = next(i for i, e in enumerate(sweep) if e is best_entry)
     best_labels = sweep_labels[best_idx] if sub_num is X_num else None
 
-    # A (report, labels) pair, not one dict: report is exactly what's safe to hand to a
-    # JSON-writing reporter, and best_labels — a full per-row array — has no way to end up
-    # inside it by accident, today or after a future field is added to either side.
     return {"best": best_entry, "sweep": sweep}, best_labels

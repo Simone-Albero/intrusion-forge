@@ -7,9 +7,10 @@ from src.core.utils import timed
 def _approx_silhouette(
     X: np.ndarray,
     labels: np.ndarray,
+    *,
     metric: str = "euclidean",
-    max_samples: int = 10_000,
-    min_per_cluster: int = 50,
+    max_samples: int,
+    min_per_cluster: int,
     random_state: int = 42,
 ) -> np.ndarray | None:
     """Silhouette scores on a stratified subsample, NaN elsewhere, None below two labels."""
@@ -23,12 +24,14 @@ def _approx_silhouette(
     else:
         rng = np.random.default_rng(random_state)
         # max_samples is a hard cap, not a target: if every cluster's own floor would
-        # already add up past it, shrink the floor first rather than overshoot. max(1, ...)
-        # is the outer call, not the quotient: it also clamps a misconfigured
-        # min_per_cluster <= 0 instead of feeding rng.choice a non-positive size. This
-        # still assumes n_labels <= max_samples — true today with margin, since the
-        # cluster count is itself capped elsewhere (max_complexity_samples //
-        # min_subsample_per_cluster), but not re-asserted here.
+        # already add up past it, shrink the floor first rather than overshoot — actual
+        # per-cluster support is max_samples // n_labels, not min_per_cluster, whenever
+        # there are enough clusters to matter. max(1, ...) is the outer call, not the
+        # quotient: it also clamps a misconfigured min_per_cluster <= 0 instead of feeding
+        # rng.choice a non-positive size, and is what keeps this from going negative should
+        # n_labels ever exceed max_samples (today it can't — the caller's cluster count is
+        # itself capped at max_complexity_samples // min_subsample_per_cluster, comfortably
+        # under any max_samples this repo configures).
         n_labels = len(unique_labels)
         floor = max(1, min(min_per_cluster, max_samples // n_labels))
         idx_parts: list[np.ndarray] = []
@@ -80,8 +83,8 @@ def compute_cluster_geometry(
     centroids: dict[str, list[float]],
     *,
     metric: str = "cosine",
-    silhouette_max_samples: int = 10_000,
-    silhouette_min_per_cluster: int = 50,
+    silhouette_max_samples: int,
+    silhouette_min_per_cluster: int,
     random_state: int = 42,
 ) -> dict[str, dict[str, float | None]]:
     """Per-cluster geometry: dispersion, centroid separation and silhouette tail."""
