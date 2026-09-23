@@ -67,6 +67,22 @@ class DataConfig:
     balance: str = "undersample"
 
 
+def _balance_and_subsample(
+    df: pd.DataFrame,
+    *,
+    label_col: str,
+    balance: str,
+    n_samples: int | None,
+    seed: int,
+) -> pd.DataFrame:
+    """Undersample to the rarest class, then cap every remaining class at n_samples // n_classes."""
+    if balance == "undersample":
+        df = random_undersample_df(df, label_col, random_state=seed)
+    if n_samples is not None:
+        df = subsample_df(df, n_samples, random_state=seed, label_col=label_col)
+    return df
+
+
 def _load_data(
     data: DataConfig, random_state: int
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -79,17 +95,13 @@ def _load_data(
             f"test.{data.extension}",
         ],
     )
-    if data.balance == "undersample":
-        train_df = random_undersample_df(
-            train_df, data.label_col, random_state=random_state
-        )
-    if data.n_samples is not None:
-        train_df = subsample_df(
-            train_df,
-            data.n_samples,
-            random_state=random_state,
-            label_col=data.label_col,
-        )
+    train_df = _balance_and_subsample(
+        train_df,
+        label_col=data.label_col,
+        balance=data.balance,
+        n_samples=data.n_samples,
+        seed=random_state,
+    )
     return train_df, val_df, test_df
 
 
@@ -173,15 +185,13 @@ def build_splits(
     for f, (tr_idx, te_idx) in enumerate(
         _oof_splits(universe, label_col, cfg.kfold_splits, cfg.seed)
     ):
-        fold_train = universe.iloc[tr_idx]
-        if cfg.balance == "undersample":
-            fold_train = random_undersample_df(
-                fold_train, label_col, random_state=cfg.seed
-            )
-        if cfg.n_samples is not None:
-            fold_train = subsample_df(
-                fold_train, cfg.n_samples, random_state=cfg.seed, label_col=label_col
-            )
+        fold_train = _balance_and_subsample(
+            universe.iloc[tr_idx],
+            label_col=label_col,
+            balance=cfg.balance,
+            n_samples=cfg.n_samples,
+            seed=cfg.seed,
+        )
         splits.append(
             Split(fold_train, paths.models / f"fold_{f}", te_idx, f"fold_{f}/")
         )
