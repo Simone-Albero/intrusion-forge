@@ -441,26 +441,26 @@ def _train_split(
             }
             for combination in summary["cv_results"]
         ]
-        trainer.save(model, split.fold_dir, name=cfg.classifier.name, params=params)
-        return model, record, grid_rows
-
-    logger.info("Training %s ...", cfg.classifier.name)
-    split.fold_dir.mkdir(parents=True, exist_ok=True)
-    model, summary = trainer.fit(
-        cfg.classifier.name, params, X, y, X_val=X_val, save_dir=split.fold_dir
-    )
-    trainer.save(model, split.fold_dir, name=cfg.classifier.name, params=params)
-    history = summary.get("history", {})
-    if history:
-        bus.publish(
-            LogBundle.from_dict(
-                {
-                    f"figure/training/{split.fold_prefix}{key}": plot
-                    for key, plot in training_history_figures(history).items()
-                }
-            )
+    else:
+        logger.info("Training %s ...", cfg.classifier.name)
+        split.fold_dir.mkdir(parents=True, exist_ok=True)
+        model, summary = trainer.fit(
+            cfg.classifier.name, params, X, y, X_val=X_val, save_dir=split.fold_dir
         )
-    return model, record, []
+        history = summary.get("history", {})
+        if history:
+            bus.publish(
+                LogBundle.from_dict(
+                    {
+                        f"figure/training/{split.fold_prefix}{key}": plot
+                        for key, plot in training_history_figures(history).items()
+                    }
+                )
+            )
+        grid_rows = []
+
+    trainer.save(model, split.fold_dir, name=cfg.classifier.name, params=params)
+    return model, record, grid_rows
 
 
 def _publish_training_record(
