@@ -107,16 +107,6 @@ def _augment_params_for_strategy(strategy: str, params: dict) -> dict:
     return params
 
 
-def supports_random_state(clf_cls: type) -> bool:
-    """True if the estimator accepts a `random_state` parameter."""
-    if "random_state" in inspect.signature(clf_cls.__init__).parameters:
-        return True
-    try:
-        return "random_state" in clf_cls().get_params()
-    except Exception:
-        return False
-
-
 def build_pipeline(
     name: str,
     params: dict,
@@ -129,3 +119,13 @@ def build_pipeline(
     full_params = _augment_params_for_strategy(strategy, params)
     clf = MLClassifierFactory.create(name, full_params)
     return Pipeline([("pre", pre), ("clf", clf)])
+
+
+def supports_random_state(clf_cls: type) -> bool:
+    """True if the estimator accepts a `random_state` parameter."""
+    if "random_state" in inspect.signature(clf_cls.__init__).parameters:
+        return True
+    try:
+        return "random_state" in clf_cls().get_params()
+    except Exception:
+        return False

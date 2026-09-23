@@ -76,13 +76,13 @@ def _balance_and_subsample(
     label_col: str,
     balance: str,
     n_samples: int | None,
-    seed: int,
+    random_state: int,
 ) -> pd.DataFrame:
-    """Undersample to the rarest class, then cap every remaining class at n_samples // n_classes."""
+    """Undersample when asked; cap every class at n_samples // n_classes when set."""
     if balance == "undersample":
-        df = random_undersample_df(df, label_col, random_state=seed)
+        df = random_undersample_df(df, label_col, random_state=random_state)
     if n_samples is not None:
-        df = subsample_df(df, n_samples, random_state=seed, label_col=label_col)
+        df = subsample_df(df, n_samples, random_state=random_state, label_col=label_col)
     return df
 
 
@@ -103,7 +103,7 @@ def _load_data(
         label_col=data.label_col,
         balance=data.balance,
         n_samples=data.n_samples,
-        seed=random_state,
+        random_state=random_state,
     )
     return train_df, val_df, test_df
 
@@ -182,7 +182,7 @@ def build_splits(
             label_col=label_col,
             balance=cfg.balance,
             n_samples=cfg.n_samples,
-            seed=cfg.seed,
+            random_state=cfg.seed,
         )
         splits.append(
             Split(fold_train, paths.models / f"fold_{f}", te_idx, f"fold_{f}/")
@@ -443,12 +443,15 @@ def _train_split(
         ]
     else:
         logger.info("Training %s ...", cfg.classifier.name)
-        split.fold_dir.mkdir(parents=True, exist_ok=True)
         model, summary = trainer.fit(
             cfg.classifier.name, params, X, y, X_val=X_val, save_dir=split.fold_dir
         )
         history = summary.get("history", {})
         if history:
+            # Safe to publish before trainer.save() below: train_splits drops
+            # training/folds.json before any fold runs, and _can_reuse won't reuse
+            # without that record, so a raise from either statement still forces every
+            # fold to retrain on the next run.
             bus.publish(
                 LogBundle.from_dict(
                     {

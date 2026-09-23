@@ -103,7 +103,7 @@ def skip_if_exists(
 
 
 def first_difference(previous: dict, current: dict) -> str | None:
-    """Name a key that differs between two dicts — a missing key reads as None — or None if none do."""
+    """Name a key whose value differs (missing counts as None); None if all match."""
     for key in sorted(set(previous) | set(current)):
         if previous.get(key) != current.get(key):
             return key
