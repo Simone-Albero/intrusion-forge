@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 import torch
 
-from .dataset import Sample
+from src.engine.dl.data.dataset import Sample
 
 
 @dataclass(frozen=True)

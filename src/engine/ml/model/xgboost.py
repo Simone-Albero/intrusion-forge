@@ -1,5 +1,5 @@
 from xgboost import XGBClassifier
 
-from . import MLClassifierFactory
+from src.engine.ml.model.factory import MLClassifierFactory
 
 MLClassifierFactory.register("xgboost")(XGBClassifier)

@@ -2,12 +2,11 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import f1_score
 
+from src.domain.plot.base import Plot
+from src.domain.plot.metrics import confusion_matrix_plot
+from src.domain.plot.primitives import bar_plot, line_plot, scatter_plot
+from src.domain.plot.style import extended_palette
 from src.domain.projection import stratified_subsample, tsne_projection
-
-from .base import Plot
-from .metrics import confusion_matrix_plot
-from .primitives import bar_plot, line_plot, scatter_plot
-from .style import extended_palette
 
 
 def training_history_figures(history: dict[str, list[float]]) -> dict[str, Plot]:

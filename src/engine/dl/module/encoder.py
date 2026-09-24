@@ -3,8 +3,8 @@ from collections.abc import Callable, Sequence
 import torch
 from torch import Tensor, nn
 
-from ..module.embedding import EmbeddingModule
-from ..module.mlp import MLPModule
+from src.engine.dl.module.embedding import EmbeddingModule
+from src.engine.dl.module.mlp import MLPModule
 
 
 class TabularEncoderModule(nn.Module):
@@ -23,7 +23,9 @@ class TabularEncoderModule(nn.Module):
         norm_layer: Callable[[int], nn.Module] | None = nn.BatchNorm1d,
     ) -> None:
         super().__init__()
-        self.embedding = EmbeddingModule(cardinalities=cardinalities, max_emb_dim=max_emb_dim)
+        self.embedding = EmbeddingModule(
+            cardinalities=cardinalities, max_emb_dim=max_emb_dim
+        )
         total = num_numerical_features + sum(self.embedding.embedding_dims)
         self.mlp = MLPModule(
             total,

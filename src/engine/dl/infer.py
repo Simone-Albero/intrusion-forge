@@ -1,7 +1,7 @@
 import pandas as pd
 import torch
 
-from .model.base import BaseModel, ModelOutput
+from src.engine.dl.model.base import BaseModel, ModelOutput
 
 
 def df_to_tensors(
@@ -21,12 +21,12 @@ def df_to_tensors(
     return result
 
 
-def run_model(
+def forward_eval(
     model: BaseModel,
     inputs: list[torch.Tensor],
     device: torch.device,
 ) -> ModelOutput:
-    """Move inputs to device and run a forward pass."""
+    """One forward pass in eval mode, without gradients, on inputs moved to `device`."""
     model.eval()
     with torch.no_grad():
         return model(*[t.to(device) for t in inputs])

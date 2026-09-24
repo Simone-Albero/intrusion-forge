@@ -1,5 +1,5 @@
 from sklearn.neighbors import KNeighborsClassifier
 
-from . import MLClassifierFactory
+from src.engine.ml.model.factory import MLClassifierFactory
 
 MLClassifierFactory.register("knn")(KNeighborsClassifier)

@@ -1,5 +1,5 @@
 from sklearn.naive_bayes import GaussianNB
 
-from . import MLClassifierFactory
+from src.engine.ml.model.factory import MLClassifierFactory
 
 MLClassifierFactory.register("naive_bayes")(GaussianNB)

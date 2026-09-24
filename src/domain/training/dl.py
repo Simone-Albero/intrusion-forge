@@ -22,7 +22,7 @@ from src.engine.dl.builders import (
 )
 from src.engine.dl.engine import eval_step, train_step
 from src.engine.dl.ignite_builder import build_engine
-from src.engine.dl.infer import df_to_tensors, run_model
+from src.engine.dl.infer import df_to_tensors, forward_eval
 from src.engine.dl.model import DLClassifierFactory
 from src.engine.dl.model.checkpoint import load_best_checkpoint
 
@@ -175,7 +175,7 @@ class DLTrainer:
         )
 
         @trainer.on(Events.EPOCH_COMPLETED)
-        def _run_validation(engine) -> None:
+        def _validate(engine) -> None:
             logger.info(
                 "Epoch [%d] Train Loss: %.6f",
                 engine.state.epoch,
@@ -223,7 +223,7 @@ class DLTrainer:
             [self.num_cols, self.cat_cols],
             dtypes=[torch.float32, torch.long],
         )
-        output = run_model(model, inputs, self.device)
+        output = forward_eval(model, inputs, self.device)
         probs = F.softmax(output["logits"].cpu(), dim=1)
         y_pred = probs.argmax(dim=1).numpy()
         y_proba = probs.numpy()

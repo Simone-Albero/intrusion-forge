@@ -1,5 +1,5 @@
 from sklearn.tree import DecisionTreeClassifier
 
-from . import MLClassifierFactory
+from src.engine.ml.model.factory import MLClassifierFactory
 
 MLClassifierFactory.register("decision_tree")(DecisionTreeClassifier)

@@ -8,7 +8,7 @@ from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 
-from .model import MLClassifierFactory
+from src.engine.ml.model import MLClassifierFactory
 
 _HISTGB_MAX_CARDINALITY = 255
 

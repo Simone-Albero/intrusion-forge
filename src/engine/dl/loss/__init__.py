@@ -1,12 +1,8 @@
 from pathlib import Path
 
-from src.core.factory import Factory, discover_and_import_modules
+from src.core.factory import discover_and_import_modules
+from src.engine.dl.loss.factory import LossFactory
 
-from .base import BaseLoss
-
-LossFactory = Factory[BaseLoss](component_type_name="loss")
-
-_package_path = Path(__file__).parent
-discover_and_import_modules(package_path=_package_path, package_name=__name__)
+discover_and_import_modules(package_path=Path(__file__).parent, package_name=__name__)
 
 __all__ = ["LossFactory"]

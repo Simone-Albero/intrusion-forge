@@ -3,9 +3,9 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 
-from .data.batch import default_collate
-from .data.dataset import TabularDataset
-from .loss import LossFactory
+from src.engine.dl.data.batch import default_collate
+from src.engine.dl.data.dataset import TabularDataset
+from src.engine.dl.loss import LossFactory
 
 
 def create_dataset(

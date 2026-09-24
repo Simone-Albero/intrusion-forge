@@ -26,7 +26,7 @@ def _max_safe_splits(n_minority: int, n_splits_cfg: int) -> int:
     return k if k >= 2 else 0
 
 
-def _run_outer_fold(
+def _fit_outer_fold(
     X_train: pd.DataFrame,
     y_train: pd.Series,
     X_test: pd.DataFrame,
@@ -38,7 +38,7 @@ def _run_outer_fold(
     n_iter: int,
     fold: int,
 ) -> dict:
-    """Run one outer CV fold; with inner_cv None, skip the search and use a default RF."""
+    """Fit and score one outer fold; without inner_cv, use a default RF, no search."""
     if inner_cv is None:
         best = RandomForestRegressor(random_state=random_state)
         best.fit(X_train, y_train)
@@ -137,7 +137,7 @@ def build_cluster_summary(
     return summary
 
 
-def _run_nested_cv(
+def _fit_nested_cv(
     X: pd.DataFrame,
     y: pd.Series,
     outer_cv: StratifiedKFold | KFold,
@@ -149,12 +149,12 @@ def _run_nested_cv(
     random_state: int,
     n_iter: int,
 ) -> dict:
-    """Run the outer CV loop and collect per-fold scores + out-of-fold predictions."""
+    """Fit every outer fold; collect per-fold scores and out-of-fold predictions."""
     folds = []
     for f, (train_idx, test_idx) in enumerate(
         tqdm(outer_cv.split(X, split_labels), total=outer_k, desc="Outer CV")
     ):
-        fold = _run_outer_fold(
+        fold = _fit_outer_fold(
             X.iloc[train_idx],
             y.iloc[train_idx],
             X.iloc[test_idx],
@@ -357,7 +357,7 @@ def fit_failure_regressor(
         else None
     )
 
-    oof = _run_nested_cv(
+    oof = _fit_nested_cv(
         X,
         y,
         outer_cv,

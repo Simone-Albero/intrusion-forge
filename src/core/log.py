@@ -6,9 +6,8 @@ from typing import Any
 
 from rich.logging import RichHandler
 
+from src.core.utils import save_to_json, save_to_pickle
 from src.domain.plot.base import Plot
-
-from .utils import save_to_json, save_to_pickle
 
 
 def setup_logger(log_file: str = "resources/logs.txt") -> logging.Logger:

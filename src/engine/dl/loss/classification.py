@@ -4,8 +4,8 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from . import LossFactory
-from .base import BaseLoss
+from src.engine.dl.loss.base import BaseLoss
+from src.engine.dl.loss.factory import LossFactory
 
 logger = logging.getLogger(__name__)
 

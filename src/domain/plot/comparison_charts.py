@@ -2,8 +2,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Patch
 
-from .base import Plot, _apply_labels, _fig_to_plot
-from .style import MUTED_COLOR
+from src.domain.plot.base import Plot, _apply_labels, _fig_to_plot
+from src.domain.plot.style import MUTED_COLOR
 
 
 def box_plot(

@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.axes import Axes
 
-from .base import (
+from src.domain.plot.base import (
     Plot,
     _apply_labels,
     _ensure_ax,
@@ -12,7 +12,7 @@ from .base import (
     _format_value,
     _smart_legend_loc,
 )
-from .style import (
+from src.domain.plot.style import (
     HIGHLIGHT_COLOR,
     MUTED_COLOR,
     NEUTRAL_COLOR,

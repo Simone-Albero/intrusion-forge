@@ -3,7 +3,7 @@ from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.svm import LinearSVC
 
-from . import MLClassifierFactory
+from src.engine.ml.model.factory import MLClassifierFactory
 
 
 class CalibratedLinearSVC(BaseEstimator, ClassifierMixin):

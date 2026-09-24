@@ -2,10 +2,9 @@ from collections.abc import Callable, Sequence
 
 from torch import nn
 
+from src.engine.dl.model.base import ComposableClassifier
+from src.engine.dl.model.factory import DLClassifierFactory
 from src.engine.dl.module.encoder import TabularEncoderModule
-
-from . import DLClassifierFactory
-from .base import ComposableClassifier
 
 
 @DLClassifierFactory.register("mlp")
