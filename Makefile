@@ -23,11 +23,11 @@
 #   CLUSTERING=<name>     fix the clustering strategy (kmeans/hdbscan/birch/spectral);
 #                         omit it in `run` to sweep all of CLUSTERING_ALGOS into NAME_<algo>
 #   ARGS="k=v ..."        extra Hydra overrides, passed last to every stage, so they win
-#                         (e.g. ARGS="n_samples=10000 kfold=false"); data, name, seed,
+#                         (e.g. ARGS="fit.n_samples=10000 fit.kfold=false"); data, name, seed,
 #                         classifier, clustering and distance keep their own variables, and
 #                         any other variable on the make line is an error
 #
-# k-fold note: k-fold evaluation (kfold=true) is disabled automatically for LARGE_DATASETS
+# k-fold note: k-fold evaluation (fit.kfold=true) is disabled automatically for LARGE_DATASETS
 #   (nb15_v2, bot_iot_v2, cic_2018_v2, ton_iot_v2) because millions of rows make it impractical.
 #   Override per-call: make classify DATA=cic_2018_v2 ... KFOLD=true
 # ──────────────────────────────────────────────────────────────────────────────
@@ -56,7 +56,7 @@ ifneq ($(UNKNOWN_VARS),)
 $(error Unknown make variable(s): $(UNKNOWN_VARS). Hydra overrides go through ARGS="key=value ...")
 endif
 
-# ARGS may override kfold and force, but not the keys make itself decides from — the k-fold
+# ARGS may override fit.kfold and force, but not the keys make itself decides from — the k-fold
 # default per dataset, the NAME_<algo> directories of `run`: those have their own variables.
 ARGS_CLASH := $(filter $(foreach k,data name seed classifier clustering distance,$(k)=% ++$(k)=%),$(ARGS))
 ifneq ($(ARGS_CLASH),)
@@ -94,14 +94,14 @@ DATASETS := \
     synthetic_test
 
 # Datasets too large for k-fold evaluation (millions of rows → hours per classifier).
-# kfold=false is injected automatically for these; override with KFOLD=true if needed.
+# fit.kfold=false is injected automatically for these; override with KFOLD=true if needed.
 LARGE_DATASETS := nb15_v2 bot_iot_v2 cic_2018_v2 ton_iot_v2
 
 KFOLD       ?= $(if $(filter $(DATA),$(LARGE_DATASETS)),false,true)
 # Every stage gets the same keys, so each stage's config_composed.json tells the same story.
 # Recipes put $(ARGS) last, so an explicit override wins.
 HYDRA       := data=$(DATA) name=$(NAME) seed=$(SEED) classifier=$(CLASSIFIER) \
-               clustering=$(CLUSTERING) distance=$(DISTANCE) kfold=$(KFOLD)
+               clustering=$(CLUSTERING) distance=$(DISTANCE) fit.kfold=$(KFOLD)
 FORCE_FLAG  := $(if $(FORCE),force=true,)
 
 # Cross-run paper comparisons: aggregate the full experiment tree under SWEEP_DIR into the
@@ -214,8 +214,8 @@ help:
 	@echo "Clustering strategies:  kmeans hdbscan birch spectral"
 	@echo ""
 	@echo "Datasets (smallest → largest, kfold auto-disabled for large):"
-	@echo "  small (kfold=true):   statlog_landsat_satellite  thyroid_disease  letter_recognition  bank_marketing  covertype"
-	@echo "  large (kfold=false):  nb15_v2  ton_iot_v2  cic_2018_v2  bot_iot_v2"
+	@echo "  small (fit.kfold=true):   statlog_landsat_satellite  thyroid_disease  letter_recognition  bank_marketing  covertype"
+	@echo "  large (fit.kfold=false):  nb15_v2  ton_iot_v2  cic_2018_v2  bot_iot_v2"
 	@echo ""
 	@echo "Run examples (omitted vars iterate; passed vars are fixed):"
 	@echo "  make run NAME=x                                      # all datasets × all classifiers × all clustering algos"

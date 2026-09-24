@@ -95,7 +95,7 @@ class ClassifyContext:
 
 
 def _eval_mode(cfg) -> str:
-    return "oof_kfold" if cfg.kfold else "single_split"
+    return "oof_kfold" if cfg.fit.kfold else "single_split"
 
 
 def build_folds(
@@ -104,22 +104,22 @@ def build_folds(
     """Eval frame (test, or train+test under k-fold) and the folds partitioning it."""
 
     def balanced(df: pd.DataFrame) -> pd.DataFrame:
-        if cfg.balance == "undersample":
+        if cfg.fit.balance == "undersample":
             df = random_undersample_df(df, label_col, random_state=cfg.seed)
-        if cfg.n_samples is not None:
+        if cfg.fit.n_samples is not None:
             df = subsample_df(
-                df, cfg.n_samples, random_state=cfg.seed, label_col=label_col
+                df, cfg.fit.n_samples, random_state=cfg.seed, label_col=label_col
             )
         return df
 
-    if not cfg.kfold:
+    if not cfg.fit.kfold:
         return test_df, [Fold("", balanced(train_df), np.arange(len(test_df)))]
 
     universe = pd.concat([train_df, test_df], ignore_index=True)
     folds = [
         Fold(f"fold_{k}", balanced(universe.iloc[train_idx]), eval_idx)
         for k, (train_idx, eval_idx) in enumerate(
-            oof_splits(universe, label_col, cfg.kfold_splits, random_state=cfg.seed)
+            oof_splits(universe, label_col, cfg.fit.kfold_splits, random_state=cfg.seed)
         )
     ]
     return universe, folds
@@ -160,9 +160,9 @@ def build_trainer(
             "Expected 'auto', null or a list with one weight per class."
         )
 
-    loops = cfg.loops
+    fit_cfg = cfg.fit
     return DLTrainer(
-        device=torch.device(cfg.device),
+        device=torch.device(fit_cfg.device),
         num_cols=num_cols,
         cat_cols=cat_cols,
         label_col=label_col,
@@ -172,18 +172,18 @@ def build_trainer(
         # would correct the same imbalance twice, over-shooting towards the rare classes.
         class_weights=(
             df_meta["class_weights"]
-            if cfg.balance == "none" and cfg.n_samples is None
+            if fit_cfg.balance == "none" and fit_cfg.n_samples is None
             else None
         ),
         loss=_component(cfg.loss),
         optimizer=_component(cfg.optimizer),
         scheduler=_component(cfg.scheduler),
-        epochs=loops.training.epochs,
-        max_grad_norm=loops.training.max_grad_norm,
-        patience=loops.training.early_stopping.patience,
-        min_delta=loops.training.early_stopping.min_delta,
-        train_loader_params=to_container(loops.training.dataloader),
-        val_loader_params=to_container(loops.validation.dataloader),
+        epochs=fit_cfg.training.epochs,
+        max_grad_norm=fit_cfg.training.max_grad_norm,
+        patience=fit_cfg.training.early_stopping.patience,
+        min_delta=fit_cfg.training.early_stopping.min_delta,
+        train_loader_params=to_container(fit_cfg.training.dataloader),
+        val_loader_params=to_container(fit_cfg.validation.dataloader),
     )
 
 
@@ -202,7 +202,7 @@ def _resolve_dl_params(
     return out
 
 
-def _resolve_fit_params(
+def _resolve_classifier_params(
     cfg, kind: str, num_cols: list[str], cat_cols: list[str], df_meta: dict
 ) -> dict:
     """Resolve the classifier `params` (DL shape injection / ML random_state)."""
@@ -250,10 +250,10 @@ def _fingerprint(
         "grid": to_container(cfg.classifier.grid) if "grid" in cfg.classifier else None,
         "grid_search": to_container(cfg.grid_search),
         "seed": cfg.seed,
-        "balance": cfg.balance,
-        "n_samples": cfg.n_samples,
-        "kfold": cfg.kfold,
-        "kfold_splits": cfg.kfold_splits,
+        "balance": cfg.fit.balance,
+        "n_samples": cfg.fit.n_samples,
+        "kfold": cfg.fit.kfold,
+        "kfold_splits": cfg.fit.kfold_splits,
         "dataset": cfg.data.file_name,
         "extension": cfg.data.extension,
         "num_cols": num_cols,
@@ -262,7 +262,7 @@ def _fingerprint(
         "data_meta": df_meta,
     }
     if cfg.classifier.kind == "dl":
-        training = cfg.loops.training
+        training = cfg.fit.training
         fingerprint["dl_training"] = {
             # Bumped when a value in here changes meaning: older records never match.
             "schema": 2,
@@ -273,7 +273,7 @@ def _fingerprint(
             "max_grad_norm": training.max_grad_norm,
             "early_stopping": to_container(training.early_stopping),
             "train_loader": _loader_fingerprint(training.dataloader),
-            "val_loader": _loader_fingerprint(cfg.loops.validation.dataloader),
+            "val_loader": _loader_fingerprint(cfg.fit.validation.dataloader),
         }
     return fingerprint
 
@@ -327,7 +327,7 @@ def _can_reuse(context: ClassifyContext, folds: list[Fold], fingerprint: dict) -
 
 def _grid_cv(cfg) -> int:
     """Inner CV of the grid search: smaller under k-fold, which already resamples."""
-    return cfg.grid_search.nested_cv if cfg.kfold else cfg.grid_search.cv
+    return cfg.grid_search.nested_cv if cfg.fit.kfold else cfg.grid_search.cv
 
 
 def _train_fold(
@@ -354,7 +354,7 @@ def _train_fold(
         logger.info(
             "Grid search for %s%s — scoring=%s, cv=%d",
             cfg.classifier.name,
-            f" (fold {index + 1}/{n_folds})" if cfg.kfold else "",
+            f" (fold {index + 1}/{n_folds})" if cfg.fit.kfold else "",
             cfg.grid_search.scoring,
             cv,
         )
@@ -432,11 +432,11 @@ def _publish_training_record(
             {
                 "json/training/folds": {
                     "mode": _eval_mode(cfg),
-                    "k_requested": cfg.kfold_splits if cfg.kfold else 1,
+                    "k_requested": cfg.fit.kfold_splits if cfg.fit.kfold else 1,
                     "k_effective": len(folds),
                     "seed": cfg.seed,
-                    "balance": cfg.balance,
-                    "n_samples": cfg.n_samples,
+                    "balance": cfg.fit.balance,
+                    "n_samples": cfg.fit.n_samples,
                     "scoring": cfg.grid_search.scoring if grid_rows else None,
                     "cv": _grid_cv(cfg) if grid_rows else None,
                     "fingerprint": fingerprint,
@@ -464,7 +464,7 @@ def train_folds(
     them, which describe them exactly.
     """
     cfg, trainer = context.cfg, context.trainer
-    params = _resolve_fit_params(
+    params = _resolve_classifier_params(
         cfg, cfg.classifier.kind, trainer.num_cols, trainer.cat_cols, context.df_meta
     )
     fingerprint = _fingerprint(
@@ -582,7 +582,7 @@ def publish_evaluation(
             }
         )
     )
-    if context.cfg.kfold:
+    if context.cfg.fit.kfold:
         logger.info(
             "k-fold OOF evaluation: %d samples over %d folds", len(eval_df), len(folds)
         )
@@ -591,9 +591,9 @@ def publish_evaluation(
 @timed
 def classify(cfg) -> None:
     """Run the supervised classification pipeline for a single classifier."""
-    if cfg.balance not in ("undersample", "none"):
+    if cfg.fit.balance not in ("undersample", "none"):
         raise ValueError(
-            f"Unknown balance: {cfg.balance!r}. Valid: 'undersample', 'none'."
+            f"Unknown balance: {cfg.fit.balance!r}. Valid: 'undersample', 'none'."
         )
 
     _seed_everything(cfg.seed)

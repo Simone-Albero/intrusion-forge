@@ -188,7 +188,7 @@ Each stage is a script under [pipelines/](pipelines/), wrapped by the [Makefile]
 
 **prepare** produces the splits and the regions. It removes NaNs, filters rare categories, log-scales and robust-scales the numerical columns, hashes high-cardinality categorical ones, splits the data stratified, then clusters each class and gives every sample a region id. The saved splits retain the original class balance; balancing takes place at training time.
 
-**classify** trains one classifier and records its per-class metrics and per-sample predictions. `balance=undersample`, the default, undersamples the training split; `balance=none` leaves it intact, and a deep classifier then weights its loss by the original class frequencies instead. The two are alternatives — applying both would correct the same imbalance twice. Setting `n_samples` also caps every class at the same size, so it takes the place of either. Evaluation is by default out-of-fold across train and test together: one model per fold, with both the metrics and the per-region error rates taken from predictions no model saw while training.
+**classify** trains one classifier and records its per-class metrics and per-sample predictions. `fit.balance=undersample`, the default, undersamples the training split; `fit.balance=none` leaves it intact, and a deep classifier then weights its loss by the original class frequencies instead. The two are alternatives — applying both would correct the same imbalance twice. Setting `fit.n_samples` also caps every class at the same size, so it takes the place of either. Evaluation is by default out-of-fold across train and test together: one model per fold, with both the metrics and the per-region error rates taken from predictions no model saw while training.
 
 **failure-regress** assembles the table — a region's descriptors, its class's descriptors and its observed error rate — and fits the estimator over five outer and five inner folds. It also compares the estimate against confidence-based baselines (MCP, ATC, and rank-averaged combinations of the two with the regressor).
 
@@ -207,14 +207,14 @@ Omit `CLUSTERING` and the sweep runs every algorithm into a separate `NAME_<algo
 
 ## Configuration
 
-The root configuration is [configs/config.yaml](configs/config.yaml), where every parameter is documented inline. Any key may be overridden on the command line, through `make` or by calling the script directly:
+The root configuration is [configs/config.yaml](configs/config.yaml); it and every group file under [configs/](configs/) document their parameters inline. Any key may be overridden on the command line, through `make` or by calling the script directly:
 
 ```bash
-make classify DATA=bot_iot_v2 NAME=my_exp SEED=123 CLASSIFIER=random_forest ARGS="n_samples=10000 grid_search.max_samples=5000"
-PYTHONPATH=. python pipelines/classify.py data=bot_iot_v2 name=my_exp seed=123 classifier=random_forest kfold=false n_samples=10000 grid_search.max_samples=5000
+make classify DATA=bot_iot_v2 NAME=my_exp SEED=123 CLASSIFIER=random_forest ARGS="fit.n_samples=10000 grid_search.max_samples=5000"
+PYTHONPATH=. python pipelines/classify.py data=bot_iot_v2 name=my_exp seed=123 classifier=random_forest fit.kfold=false fit.n_samples=10000 grid_search.max_samples=5000
 ```
 
-`make` turns `DATA`, `NAME`, `SEED`, `CLASSIFIER`, `CLUSTERING` and `DISTANCE` into their Hydra keys and gives every stage `kfold` too: `false` for the datasets in `LARGE_DATASETS`, `true` otherwise, or whatever `KFOLD` says. `ARGS` comes last on every stage, so its overrides win, `kfold` and `force` included. The six keys that have a variable of their own are refused there, while nested keys such as `data.label_col` are fine. A variable the Makefile does not recognise stops it with an error, so a mistyped override is never silently ignored.
+`make` turns `DATA`, `NAME`, `SEED`, `CLASSIFIER`, `CLUSTERING` and `DISTANCE` into their Hydra keys and gives every stage `fit.kfold` too: `false` for the datasets in `LARGE_DATASETS`, `true` otherwise, or whatever `KFOLD` says. `ARGS` comes last on every stage, so its overrides win, `fit.kfold` and `force` included. The six keys that have a variable of their own are refused there, while nested keys such as `data.label_col` are fine. A variable the Makefile does not recognise stops it with an error, so a mistyped override is never silently ignored.
 
 A shell reads `ARGS` before Hydra does, so single-quote an override whose value holds spaces or braces, as in `ARGS="'failure_regressor.param_grid.n_estimators=[100, 300]'"`. Pass a `${…}` interpolation by calling the script directly: make and the shell would both expand it first.
 
@@ -225,8 +225,9 @@ A shell reads `ARGS` before Hydra does, so single-quote an override whose value 
 | `clustering` | `kmeans`, `hdbscan`, `birch`, `spectral` |
 | `complexity` | `default` — descriptor graph parameters (`k`, cluster sample caps, silhouette subsample cap) |
 | `failure_regressor` | `random_forest` — nested-CV folds, hyperparameter grid and the draws sampled from it (`n_iter`) |
+| `fit` | `default` — how the classifier is trained and evaluated: training-split balancing (`balance`, `n_samples`), out-of-fold evaluation (`kfold`, `kfold_splits`) and, for deep classifiers, `device`, epochs, gradient clipping, early stopping and data loaders |
 | `grid_search` | `default` — scoring, CV folds and sample cap for classifier tuning |
-| `loss` / `optimizer` / `scheduler` / `loops` | deep learning only: `cross_entropy` \| `focal` / `adamw` / `one_cycle` / `default` |
+| `loss` / `optimizer` / `scheduler` | deep learning only: `cross_entropy` \| `focal` / `adamw` / `one_cycle` |
 | `path` | `default` |
 
 Results are written to:
