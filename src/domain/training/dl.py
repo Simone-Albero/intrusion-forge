@@ -144,8 +144,8 @@ class DLTrainer:
         models_path = Path(save_dir)
 
         loss_params = dict(self.loss.params)
-        # An explicit None means "use the trainer's weights"; a value overrides them.
-        if loss_params.get("class_weight") is None:
+        # "auto" takes the trainer's weights, None whenever the split was rebalanced.
+        if loss_params.get("class_weight") == "auto":
             loss_params["class_weight"] = self.class_weights
 
         model = _create_model(name, params, self.device)

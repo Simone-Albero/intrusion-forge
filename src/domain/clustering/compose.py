@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from inspect import signature
 
 import numpy as np
 
@@ -55,6 +56,24 @@ def build_cluster_fn(
     ((name, params),) = algorithms.items()
     fit_fn = ClusteringFactory.get(name)
     grid, fixed = _split_grid_fixed(params or {})
+    derives_n_clusters = name in _N_CLUSTERS_ALGOS and bool(grid_target_cluster_size)
+
+    # Checked here, before any fit: grid_search tolerates a failing candidate, so a bad
+    # key would otherwise surface only after the whole sweep had failed.
+    configured = grid.keys() | fixed.keys()
+    unknown = sorted(configured - signature(fit_fn).parameters.keys())
+    if unknown:
+        raise TypeError(f"Clustering algorithm {name!r} takes no parameter {unknown}.")
+    supplied = {"max_fit_samples", "random_state"} | (
+        {"n_clusters"} if derives_n_clusters else set()
+    )
+    clashing = sorted(configured & supplied)
+    if clashing:
+        raise ValueError(
+            f"Clustering algorithm {name!r}: {clashing} are set by the pipeline, "
+            "not in the algorithm's params (a fixed n_clusters needs "
+            "grid_target_cluster_size: null)."
+        )
 
     def _fn(X_num: np.ndarray) -> np.ndarray:
         common = {
@@ -63,7 +82,7 @@ def build_cluster_fn(
             **fixed,
         }
         algo_grid = dict(grid)
-        if name in _N_CLUSTERS_ALGOS and grid_target_cluster_size:
+        if derives_n_clusters:
             k_cap = max(2, max_fit_samples // 25)
             if max_clusters is not None:
                 k_cap = min(k_cap, max_clusters)

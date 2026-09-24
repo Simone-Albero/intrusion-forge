@@ -19,7 +19,6 @@ def fit_hdbscan(
     cluster_selection_epsilon: float = 0.0,
     max_fit_samples: int = 50_000,
     random_state: int = 0,
-    **fixed_params,
 ) -> np.ndarray:
     """Fit HDBSCAN (Euclidean) and return labels (n,), keeping noise as -1."""
     n = X_num.shape[0]
@@ -56,8 +55,10 @@ def fit_kmeans(
     X_num: np.ndarray,
     *,
     n_clusters: int = 8,
+    # Part of the signature every fit function shares; KMeans still fits every row,
+    # so the cap bounds only grid_search's sweep.
+    max_fit_samples: int = 50_000,
     random_state: int = 0,
-    **_,
 ) -> np.ndarray:
     """Fit K-means on X and return labels (n,)."""
     n_clusters = max(2, min(n_clusters, X_num.shape[0] - 1))
@@ -76,7 +77,6 @@ def fit_birch(
     branching_factor: int = 50,
     max_fit_samples: int = 50_000,
     random_state: int = 0,
-    **_,
 ) -> np.ndarray:
     """Fit BIRCH with `n_clusters` (AgglomerativeClustering on CF-tree leaves)."""
     n = X_num.shape[0]
@@ -107,7 +107,6 @@ def fit_spectral(
     n_neighbors: int = 10,
     max_fit_samples: int = 10_000,
     random_state: int = 0,
-    **_,
 ) -> np.ndarray:
     """Spectral clustering, with subsampling and 1-NN propagation above `max_fit_samples`."""
     n = X_num.shape[0]

@@ -218,6 +218,13 @@ def build_trainer(
     if kind != "dl":
         raise ValueError(f"Unknown classifier kind: {kind!r}. Expected 'ml' or 'dl'.")
 
+    class_weight = cfg.loss.params.class_weight
+    if not (class_weight in ("auto", None) or OmegaConf.is_list(class_weight)):
+        raise ValueError(
+            f"Unknown loss class_weight: {class_weight!r}. "
+            "Expected 'auto', null or a list with one weight per class."
+        )
+
     loops = cfg.loops
     return DLTrainer(
         device=torch.device(cfg.device),
@@ -291,14 +298,15 @@ def _fingerprint(
 
     `df_meta` stands in for the prepared data itself: its split sizes and per-class counts
     move whenever the data is regenerated or `prepare` is reconfigured, which the dataset
-    name alone would not catch. It also carries the `class_weights` the DL loss is built
-    from when the training split keeps its original distribution. `device` is left out on
-    purpose — it does change the weights, but reusing a model trained on another device is
-    the point, not an accident. Both dataloaders are fingerprinted wholesale via
-    `_loader_fingerprint`, minus `num_workers`/`pin_memory` — nothing in the dataset is
-    random, but every other key (`batch_size`, `shuffle`, `drop_last`, ...) can shift
-    training or the early-stopping metric Ignite computes as an average of per-batch means,
-    so enumerating fields by hand would leave the same hole open for the next key added.
+    name alone would not catch. It also carries the `class_weights` that a
+    `class_weight: auto` loss is built from when the training split keeps its original
+    distribution. `device` is left out on purpose — it does change the weights, but
+    reusing a model trained on another device is the point, not an accident. Both
+    dataloaders are fingerprinted wholesale via `_loader_fingerprint`, minus
+    `num_workers`/`pin_memory` — nothing in the dataset is random, but every other key
+    (`batch_size`, `shuffle`, `drop_last`, ...) can shift training or the early-stopping
+    metric Ignite computes as an average of per-batch means, so enumerating fields by
+    hand would leave the same hole open for the next key added.
     """
     fingerprint = {
         "classifier": cfg.classifier.name,
@@ -321,6 +329,8 @@ def _fingerprint(
     if cfg.classifier.kind == "dl":
         training = cfg.loops.training
         fingerprint["dl_training"] = {
+            # Bumped when a value in here changes meaning: older records never match.
+            "schema": 2,
             "loss": to_container(cfg.loss),
             "optimizer": to_container(cfg.optimizer),
             "scheduler": to_container(cfg.scheduler),

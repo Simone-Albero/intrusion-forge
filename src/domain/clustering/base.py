@@ -111,11 +111,8 @@ def grid_search(
     resolution_weight: float = 0.1,
     min_clusters: int | None = None,
     score_metric: str,
-    # Named score_metric, not metric: "metric" is a real per-algorithm parameter name
-    # (hdbscan's own distance metric, say) that a caller could legitimately put in
-    # **fixed_params — a same-named parameter here would collide with it instead of
-    # scoring silently under the wrong value, the same absorption failure already fixed
-    # once in this function for random_state/max_fit_samples.
+    # score_metric, not metric: a keyword named here is absorbed instead of reaching
+    # fit_fn through **fixed_params, so it must not shadow an algorithm's own parameter.
     **fixed_params,
 ) -> tuple[dict, np.ndarray | None]:
     """Grid search scored by silhouette − noise_penalty·noise_ratio + resolution tilt.
@@ -131,6 +128,7 @@ def grid_search(
 
     sweep: list[dict] = []
     sweep_labels: list[np.ndarray | None] = []
+    failures: list[tuple[dict, Exception]] = []
 
     for combo_values in tqdm(
         itertools.product(*values),
@@ -151,7 +149,8 @@ def grid_search(
                 random_state=random_state,
                 **fixed_params,
             )
-        except Exception:
+        except Exception as exc:
+            failures.append((combo, exc))
             sweep.append(
                 {
                     "combo": combo,
@@ -174,6 +173,16 @@ def grid_search(
         entry["silhouette"] = sil
         sweep.append(entry)
         sweep_labels.append(labels)
+
+    if failures:
+        first_combo, first_exc = failures[0]
+        logger.warning(
+            "grid_search: %d of %d candidates failed and were skipped (first: %s, %r)",
+            len(failures),
+            len(sweep),
+            first_combo,
+            first_exc,
+        )
 
     valid = [e for e in sweep if not e.get("error")]
     max_k = max((e["n_clusters"] for e in valid), default=0)

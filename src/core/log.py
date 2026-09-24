@@ -63,6 +63,11 @@ class LogBundle:
                 json_[key[len("json/") :]] = value
             elif key.startswith("pickle/"):
                 pickle_[key[len("pickle/") :]] = value
+            else:
+                raise ValueError(
+                    f"Artifact key {key!r} has no known prefix: "
+                    "expected 'figure/', 'json/' or 'pickle/'."
+                )
         return cls(figures=figures, json=json_, pickle=pickle_)
 
 
