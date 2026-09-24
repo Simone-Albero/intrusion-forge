@@ -2,12 +2,16 @@ import numpy as np
 import pandas as pd
 
 
-def get_df_info(df: pd.DataFrame, *, label_col: str | None = None) -> dict:
-    """Return basic information about a DataFrame."""
-    info = {"shape": list(df.shape)}
-    if label_col and label_col in df.columns:
-        info["label_distribution"] = df[label_col].value_counts().to_dict()
-    return info
+def get_df_info(df: pd.DataFrame, *, label_col: str) -> dict:
+    """Size of the raw frame, plus one row per class."""
+    return {
+        "n_rows": int(df.shape[0]),
+        "n_columns": int(df.shape[1]),
+        "classes": [
+            {"name": str(name), "n_rows": int(n)}
+            for name, n in df[label_col].value_counts().items()
+        ],
+    }
 
 
 def compute_df_metadata(
@@ -17,30 +21,29 @@ def compute_df_metadata(
     cat_cols: list[str],
     benign_tag: str,
     *,
-    label_mapping: dict | None = None,
+    label_mapping: dict[int, str],
 ) -> dict:
-    """Metadata for the named splits, with class weights taken from the train split."""
-    if not splits:
-        raise ValueError("splits must contain at least one DataFrame.")
-
-    ref_df = splits["train"] if "train" in splits else next(iter(splits.values()))
-
-    class_counts = ref_df[label_col].value_counts().sort_index()
-    class_weights = len(ref_df) / (len(class_counts) * class_counts)
-    log_weights = np.log1p(class_weights)
-    class_weights = log_weights / log_weights.max()
+    """Run scalars plus split and class tables, read from the encoded `label_col`."""
+    counts = {tag: df[label_col].value_counts() for tag, df in splits.items()}
+    train_counts = counts["train"]
+    weights = len(splits["train"]) / (len(train_counts) * train_counts)
+    weights = np.log1p(weights) / np.log1p(weights).max()
 
     return {
-        "label_mapping": label_mapping or {},
-        "dataset_sizes": {tag: len(df) for tag, df in splits.items()},
-        "samples_per_class": {
-            tag: df[label_col].value_counts().to_dict() for tag, df in splits.items()
-        },
+        "benign_tag": benign_tag,
+        "num_classes": int(splits["train"][label_col].nunique()),
         "numerical_columns": num_cols,
         "categorical_columns": cat_cols,
-        "benign_tag": benign_tag,
-        "num_classes": ref_df[label_col].nunique(),
-        "class_weights": class_weights.tolist(),
+        "splits": [{"split": tag, "n_rows": len(df)} for tag, df in splits.items()],
+        "classes": [
+            {
+                "class_id": int(class_id),
+                "name": name,
+                "weight": float(weights[class_id]),
+                **{f"n_{tag}": int(c.get(class_id, 0)) for tag, c in counts.items()},
+            }
+            for class_id, name in sorted(label_mapping.items())
+        ],
     }
 
 
@@ -50,14 +53,14 @@ def compute_clusters_metadata(
     test_df: pd.DataFrame,
     cluster_col: str,
     *,
-    noise_cluster_ids: list[int] | None = None,
+    noise_cluster_ids: list[int],
 ) -> dict:
-    """Aggregate cluster metadata across all splits."""
-    df_ = pd.concat([train_df, val_df, test_df], ignore_index=True)
-    clusters_distribution = {
-        str(k): v for k, v in df_[cluster_col].value_counts().to_dict().items()
-    }
+    """Noise cluster ids, plus one row per cluster with its size across all splits."""
+    sizes = pd.concat([train_df, val_df, test_df])[cluster_col].value_counts()
     return {
-        "clusters_distribution": clusters_distribution,
-        "noise_cluster_ids": sorted(noise_cluster_ids) if noise_cluster_ids else [],
+        "noise_cluster_ids": sorted(noise_cluster_ids),
+        "clusters": [
+            {"cluster_id": int(cid), "n_rows": int(n)}
+            for cid, n in sorted(sizes.items())
+        ],
     }

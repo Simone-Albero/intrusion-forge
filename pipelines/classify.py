@@ -10,7 +10,7 @@ import torch
 from omegaconf import OmegaConf
 from sklearn.metrics import confusion_matrix
 
-from pipelines import paths_from_cfg
+from pipelines import load_prepared_metadata, paths_from_cfg
 from src.core.config import load_config, save_config, to_container
 from src.core.io import load_listed_dfs, save_df
 from src.core.log import (
@@ -171,7 +171,10 @@ def build_trainer(
         # subsample_df caps every class at the same size — and weighting on top of either
         # would correct the same imbalance twice, over-shooting towards the rare classes.
         class_weights=(
-            df_meta["class_weights"]
+            [
+                c["weight"]
+                for c in sorted(df_meta["classes"], key=lambda c: c["class_id"])
+            ]
             if fit_cfg.balance == "none" and fit_cfg.n_samples is None
             else None
         ),
@@ -233,7 +236,7 @@ def _fingerprint(
 
     `df_meta` stands in for the prepared data itself: its split sizes and per-class counts
     move whenever the data is regenerated or `prepare` is reconfigured, which the dataset
-    name alone would not catch. It also carries the `class_weights` that a
+    name alone would not catch. It also carries the class weights that a
     `class_weight: auto` loss is built from when the training split keeps its original
     distribution. `device` is left out on purpose — it does change the weights, but
     reusing a model trained on another device is the point, not an accident. Both
@@ -528,14 +531,14 @@ def publish_evaluation(
 ) -> None:
     """Turn the merged predictions into metrics, figures and per-sample dumps."""
     label_col, df_meta = context.label_col, context.df_meta
-    label_mapping = df_meta["label_mapping"]
+    class_names = {c["class_id"]: c["name"] for c in df_meta["classes"]}
     mode = _eval_mode(context.cfg)
 
     y_true = eval_df[label_col].to_numpy()
     clusters = eval_df["cluster"].to_numpy() if "cluster" in eval_df.columns else None
 
     # Every class, not only the observed ones: a prediction into a class the evaluated
-    # rows never contain stays visible, and the rows line up with label_mapping.
+    # rows never contain stays visible, and row k is class id k.
     all_classes = np.arange(df_meta["num_classes"])
     cm = confusion_matrix(y_true, y_pred, labels=all_classes, normalize="true")
     mcp = mcp_risk(y_proba)
@@ -553,7 +556,7 @@ def publish_evaluation(
             y_pred=y_pred,
             cm=cm,
             cm_classes=all_classes,
-            label_mapping=label_mapping,
+            class_names=class_names,
         ),
         **latent_figures(
             [
@@ -562,7 +565,7 @@ def publish_evaluation(
             ],
             y_true=y_true,
             y_pred=y_pred,
-            label_mapping=label_mapping,
+            class_names=class_names,
         ),
     }
     figures = {f"figure/testing/{name}": plot for name, plot in raw_figures.items()}
@@ -603,7 +606,7 @@ def classify(cfg) -> None:
     df_meta_path = paths.shared / "metadata/df_meta.json"
     if not df_meta_path.exists():
         raise FileNotFoundError(f"Missing {df_meta_path}. Run `make prepare` first.")
-    df_meta = load_from_json(df_meta_path)
+    df_meta = load_prepared_metadata(df_meta_path)
     save_config(cfg, paths.configs / "config_composed.json")
 
     num_cols = list(cfg.data.num_cols) if cfg.data.num_cols else []

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
+from pipelines import load_prepared_metadata
 from src.core.log import (
     FilesystemFigureSubscriber,
     JSONSubscriber,
@@ -127,7 +128,6 @@ def _load_sweep_runs(root: Path) -> list[dict]:
                 continue
             composed = load_from_json(cfg_path)
             algorithm = next(iter(composed["clustering"]["algorithms"]), None)
-            dataset_size = _dataset_size(ds_dir / "shared/metadata/df_info.json")
             data_cfg = composed.get("data", {}) or {}
             n_features = len(data_cfg.get("num_cols") or []) + len(
                 data_cfg.get("cat_cols") or []
@@ -146,7 +146,6 @@ def _load_sweep_runs(root: Path) -> list[dict]:
                         "clf": clf_dir.name,
                         "distance": composed.get("distance"),
                         "algorithm": algorithm,
-                        "dataset_size": dataset_size,
                         "n_features": n_features,
                         "ds_dir": ds_dir,
                         "base": base,
@@ -155,13 +154,6 @@ def _load_sweep_runs(root: Path) -> list[dict]:
                     }
                 )
     return runs
-
-
-def _dataset_size(info_path: Path) -> int | None:
-    """Full training-set row count for x-axis ordering, from the shared df_info.json."""
-    if not info_path.exists():
-        return None
-    return int(load_from_json(info_path)["shape"][0])
 
 
 def _dataset_base(name: str) -> str:
@@ -495,14 +487,13 @@ def _table_datasets(runs: list[dict]) -> dict:
         info_path = r["ds_dir"] / "shared/metadata/df_info.json"
         if not info_path.exists():
             continue
-        info = load_from_json(info_path)
-        label_dist = info.get("label_distribution") or {}
-        counts = sorted(label_dist.values(), reverse=True)
+        info = load_prepared_metadata(info_path)
+        counts = sorted((c["n_rows"] for c in info["classes"]), reverse=True)
         seen[ds] = {
             "dataset": ds,
-            "n_instances": info["shape"][0],
+            "n_instances": info["n_rows"],
             "n_features": r.get("n_features"),
-            "n_classes": len(label_dist),
+            "n_classes": len(counts),
             "imbalance_ratio": (
                 counts[0] / counts[-1] if len(counts) >= 2 and counts[-1] else None
             ),

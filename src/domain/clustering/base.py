@@ -29,9 +29,7 @@ def cluster_size_balance(labels: np.ndarray) -> float:
     return h / float(np.log(k))
 
 
-def _measure(
-    labels: np.ndarray, score: float, combo: dict, duration_s: float, metric: str
-) -> dict:
+def _measure(labels: np.ndarray, score: float, combo: dict, duration_s: float) -> dict:
     """Sweep entry describing one fitted partition."""
     n = int(labels.shape[0])
     n_noise = int((labels == -1).sum())
@@ -44,7 +42,6 @@ def _measure(
         "noise_ratio": n_noise / n if n > 0 else 0.0,
         "size_balance": cluster_size_balance(labels),
         "duration_s": duration_s,
-        "metric": metric,
     }
 
 
@@ -117,9 +114,9 @@ def grid_search(
 ) -> tuple[dict, np.ndarray | None]:
     """Grid search scored by silhouette − noise_penalty·noise_ratio + resolution tilt.
 
-    Returns `(report, best_labels)`: `report` is `{"best", "sweep"}`, JSON-safe as-is;
-    `best_labels` is the winning candidate's labels when reusable without a refit (no
-    subsampling occurred), `None` otherwise.
+    Returns `(report, best_labels)`: `report` is `{"best", "sweep"}`, JSON-safe as-is,
+    with a `best` flag on every sweep entry; `best_labels` is the winning candidate's
+    labels when reusable without a refit (no subsampling occurred), `None` otherwise.
     """
     sub_num = subsample_features(X_num, max_fit_samples, random_state)
 
@@ -160,7 +157,6 @@ def grid_search(
                     "noise_ratio": 0.0,
                     "size_balance": 0.0,
                     "duration_s": time.perf_counter() - t0,
-                    "metric": score_metric,
                     "error": True,
                 }
             )
@@ -169,7 +165,7 @@ def grid_search(
 
         duration = time.perf_counter() - t0
         sil = _score_silhouette(sub_num, labels, metric=score_metric)
-        entry = _measure(labels, sil, combo, duration, score_metric)
+        entry = _measure(labels, sil, combo, duration)
         entry["silhouette"] = sil
         sweep.append(entry)
         sweep_labels.append(labels)
@@ -232,5 +228,7 @@ def grid_search(
     # on X_num are the same call on the same input, so its labels are reusable as-is.
     best_idx = next(i for i, e in enumerate(sweep) if e is best_entry)
     best_labels = sweep_labels[best_idx] if sub_num is X_num else None
+    for i, entry in enumerate(sweep):
+        entry["best"] = i == best_idx
 
     return {"best": best_entry, "sweep": sweep}, best_labels

@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
 
-from pipelines import paths_from_cfg
+from pipelines import load_prepared_metadata, paths_from_cfg
 from src.core.config import load_config, save_config
 from src.core.log import (
     FilesystemFigureSubscriber,
@@ -235,10 +235,8 @@ def assemble_analysis_figures(
     """Build every analysis figure and publish it on the log bus."""
     logger.info("Building summary visualizations ...")
     summary_df = pd.DataFrame(cluster_summary).set_index("cluster_id")
-    label_mapping = {str(k): v for k, v in df_meta["label_mapping"].items()}
-    summary_df["class_name"] = (
-        summary_df["cluster_class"].astype(str).map(label_mapping)
-    )
+    class_names = {c["class_id"]: c["name"] for c in df_meta["classes"]}
+    summary_df["class_name"] = summary_df["cluster_class"].map(class_names)
 
     if regressor_results.get("skipped"):
         logger.warning(
@@ -286,7 +284,7 @@ def main() -> None:
     if summary_path.exists() and results_path.exists():
         assemble_analysis_figures(
             cluster_summary=load_from_json(summary_path),
-            df_meta=load_from_json(paths.shared / "metadata/df_meta.json"),
+            df_meta=load_prepared_metadata(paths.shared / "metadata/df_meta.json"),
             regressor_results=load_from_json(results_path),
             analysis_bus=analysis_bus,
         )

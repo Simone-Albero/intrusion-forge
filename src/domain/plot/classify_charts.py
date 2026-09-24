@@ -22,7 +22,7 @@ _TSNE_MIN_POINTS = 6  # tsne_projection's perplexity floor (5) requires n_sample
 
 
 def _projection_selection(
-    y_true: np.ndarray, y_pred: np.ndarray, label_mapping: dict, n_samples: int
+    y_true: np.ndarray, y_pred: np.ndarray, class_names: dict[int, str], n_samples: int
 ) -> tuple[np.ndarray, dict] | tuple[None, None]:
     """Row positions to visualize (most-missed classes first, subsampled) and their names.
 
@@ -49,7 +49,7 @@ def _projection_selection(
     vis_idx = prob_pos[sub]
     if len(vis_idx) < _TSNE_MIN_POINTS:
         return None, None
-    return vis_idx, {c: label_mapping.get(str(c), str(c)) for c in keep_classes}
+    return vis_idx, {c: class_names.get(c, str(c)) for c in keep_classes}
 
 
 def _scatter_projection(
@@ -75,11 +75,11 @@ def build_test_figures(
     y_pred: np.ndarray,
     cm: np.ndarray,
     cm_classes: np.ndarray,
-    label_mapping: dict,
+    class_names: dict[int, str],
     n_samples: int = 2000,
 ) -> dict[str, Plot]:
     """Confusion matrix over `cm_classes`, F1 over the observed classes, raw t-SNE."""
-    cm_names = [label_mapping.get(str(int(c)), str(c)) for c in cm_classes]
+    cm_names = [class_names.get(int(c), str(c)) for c in cm_classes]
     figures: dict[str, Plot] = {
         "confusion_matrix": confusion_matrix_plot(cm, class_names=cm_names)
     }
@@ -89,7 +89,7 @@ def build_test_figures(
         y_true, y_pred, labels=observed, average=None, zero_division=0
     )
     f1_dict = {
-        label_mapping.get(str(int(c)), str(c)): float(v)
+        class_names.get(int(c), str(c)): float(v)
         for c, v in zip(observed, f1_per_class)
     }
     figures["f1_per_class"] = bar_plot(
@@ -101,7 +101,7 @@ def build_test_figures(
         ylim=(0, 1),
     )
 
-    vis_idx, names = _projection_selection(y_true, y_pred, label_mapping, n_samples)
+    vis_idx, names = _projection_selection(y_true, y_pred, class_names, n_samples)
     if vis_idx is not None:
         figures["raw"] = _scatter_projection(
             eval_df.iloc[vis_idx][feat_cols].to_numpy(),
@@ -117,7 +117,7 @@ def latent_figures(
     *,
     y_true: np.ndarray,
     y_pred: np.ndarray,
-    label_mapping: dict,
+    class_names: dict[int, str],
 ) -> dict[str, Plot]:
     """One t-SNE latent scatter per fold, keyed `{prefix}latent`.
 
@@ -132,7 +132,7 @@ def latent_figures(
         y_true_fold = y_true[eval_idx]
         y_pred_fold = y_pred[eval_idx]
         vis_idx, names = _projection_selection(
-            y_true_fold, y_pred_fold, label_mapping, 2000
+            y_true_fold, y_pred_fold, class_names, 2000
         )
         if vis_idx is not None:
             figures[f"{prefix}latent"] = _scatter_projection(

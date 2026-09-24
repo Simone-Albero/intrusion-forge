@@ -215,6 +215,45 @@ def preprocess_df(
     return train_df, val_df, test_df
 
 
+def _clustering_report_tables(
+    report: dict[str, dict], *, metric: str, algorithm: str
+) -> dict:
+    """The per-class clustering report as run scalars, a class and a sweep table."""
+    classes, sweep = [], []
+    for class_name, entry in report.items():
+        classes.append(
+            {
+                "class_name": class_name,
+                "n_samples": entry["n_samples"],
+                **entry["summary"],
+            }
+        )
+        for algo_report in entry["algorithms"].values():
+            for candidate in algo_report["sweep"]:
+                sweep.append(
+                    {
+                        "class_name": class_name,
+                        **{f"param_{k}": v for k, v in candidate["combo"].items()},
+                        "best": candidate["best"],
+                        "score": candidate["score"],
+                        "silhouette": candidate.get("silhouette"),
+                        "resolution_tilt": candidate.get("resolution_tilt"),
+                        "n_clusters": candidate["n_clusters"],
+                        "n_noise": candidate["n_noise"],
+                        "noise_ratio": candidate["noise_ratio"],
+                        "size_balance": candidate["size_balance"],
+                        "duration_s": candidate["duration_s"],
+                        "error": candidate.get("error", False),
+                    }
+                )
+    return {
+        "metric": metric,
+        "algorithm": algorithm,
+        "classes": classes,
+        "sweep": sweep,
+    }
+
+
 def _cluster_splits(
     cfg,
     train_df: pd.DataFrame,
@@ -233,9 +272,12 @@ def _cluster_splits(
     labels, centroids, noise_cluster_ids, clustering_report = _cluster_per_class(
         cfg, X_num, y_class, all_classes
     )
-    dispatcher.publish(
-        LogBundle.from_dict({"json/clustering_report": clustering_report})
+    report_tables = _clustering_report_tables(
+        clustering_report,
+        metric=cfg.clustering.distance,
+        algorithm=next(iter(cfg.clustering.algorithms)),
     )
+    dispatcher.publish(LogBundle.from_dict({"json/clustering_report": report_tables}))
 
     train_df = train_df.copy()
     train_df["cluster"] = labels
@@ -274,7 +316,7 @@ def _publish_metadata(
     test_df: pd.DataFrame,
     num_cols: list[str],
     cat_cols: list[str],
-    label_col: str,
+    encoded_label_col: str,
     label_mapping: dict,
     noise_cluster_ids: set[int],
     dispatcher: LogDispatcher,
@@ -283,7 +325,7 @@ def _publish_metadata(
     logger.info("Computing and saving metadata...")
     metadata = compute_df_metadata(
         {"train": train_df, "val": val_df, "test": test_df},
-        label_col,
+        encoded_label_col,
         num_cols,
         cat_cols,
         cfg.data.benign_tag,
@@ -332,8 +374,9 @@ def prepare(cfg) -> None:
         cfg, train_df, val_df, test_df, num_cols, label_col, dispatcher
     )
 
+    encoded_label_col = f"encoded_{label_col}"
     train_df, val_df, test_df, label_mapping = encode_labels(
-        train_df, val_df, test_df, label_col, dst_label_col=f"encoded_{label_col}"
+        train_df, val_df, test_df, label_col, dst_label_col=encoded_label_col
     )
 
     logger.info("Saving processed data...")
@@ -351,7 +394,7 @@ def prepare(cfg) -> None:
         test_df,
         num_cols,
         cat_cols,
-        label_col,
+        encoded_label_col,
         label_mapping,
         noise_cluster_ids,
         dispatcher,

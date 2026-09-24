@@ -93,7 +93,11 @@ class ExperimentDetail:
     confusion_matrix: np.ndarray | None = None
     grid_search: dict | None = None
     df_meta: dict = field(default_factory=dict)
-    df_info: dict = field(default_factory=dict)
+
+
+def _class_names(df_meta: dict) -> dict[str, str]:
+    """Class name by stringified class id, in id order; empty without a class table."""
+    return {str(c["class_id"]): c["name"] for c in df_meta.get("classes") or []}
 
 
 def _read_json(path: Path) -> dict | list | None:
@@ -246,7 +250,6 @@ def load_experiment_detail(record_root: str, record_shared: str) -> ExperimentDe
         ),
         grid_search=_read_json(root / "outputs" / "training" / "folds.json"),
         df_meta=_read_json(shared / "metadata/df_meta.json") or {},
-        df_info=_read_json(shared / "metadata/df_info.json") or {},
     )
     cs = _read_json(root / "outputs" / "analysis" / "cluster_summary.json")
     detail.cluster_summary = _cluster_summary_df(cs if isinstance(cs, list) else None)
@@ -279,11 +282,8 @@ def count_clusters(record_shared: str) -> int | None:
     meta = _read_json(Path(record_shared) / "metadata/clusters_meta.json")
     if not isinstance(meta, dict):
         return None
-    dist = meta.get("clusters_distribution")
-    if isinstance(dist, dict) and dist:
-        return len(dist)
-    centroids = meta.get("centroids")
-    return len(centroids) if isinstance(centroids, dict) and centroids else None
+    clusters = meta.get("clusters")
+    return len(clusters) if clusters else None
 
 
 @st.cache_data(show_spinner=False)
@@ -303,7 +303,9 @@ def count_failing_clusters(record_root: str) -> int | None:
 def _dataset_test_size(shared: str) -> int:
     """Test-set row count for a dataset, read from shared df_meta.json."""
     meta = _read_json(Path(shared) / "metadata/df_meta.json") or {}
-    return (meta.get("dataset_sizes") or {}).get("test", 0)
+    return next(
+        (s["n_rows"] for s in meta.get("splits") or [] if s["split"] == "test"), 0
+    )
 
 
 def records_to_df(records: list[ExperimentRecord]) -> pd.DataFrame:
@@ -795,7 +797,7 @@ def panel_confusion_matrix(
 ) -> None:
     """Panel: confusion matrix, from the pickled array or the rendered figure."""
     st.markdown("**Confusion matrix**")
-    labels = list((detail.df_meta.get("label_mapping") or {}).values())
+    labels = list(_class_names(detail.df_meta).values())
     if detail.confusion_matrix is not None:
         if not labels or len(labels) != detail.confusion_matrix.shape[0]:
             labels = [str(i) for i in range(detail.confusion_matrix.shape[0])]
@@ -910,7 +912,7 @@ def panel_failure_rate_distribution(
     if cdf is None or cdf.empty or "failure_rate" not in cdf.columns:
         st.caption("No cluster_summary with `failure_rate`.")
         return
-    label_map = detail.df_meta.get("label_mapping") or {}
+    label_map = _class_names(detail.df_meta)
     st.plotly_chart(
         failure_rate_strip(cdf, label_map),
         width="stretch",
@@ -930,7 +932,7 @@ def panel_per_class_breakdown(
     f1 = [row["f1"] for row in per_class]
     prec = [row["precision"] for row in per_class]
     rec = [row["recall"] for row in per_class]
-    label_map = detail.df_meta.get("label_mapping") or {}
+    label_map = _class_names(detail.df_meta)
     classes = [label_map.get(str(row["class"]), str(row["class"])) for row in per_class]
     st.plotly_chart(
         per_class_bar_fig(classes=classes, f1=f1, precision=prec, recall=rec),
@@ -948,7 +950,7 @@ def panel_cluster_table(
     if cdf is None or cdf.empty:
         st.caption("No cluster_summary.json.")
         return
-    label_map = detail.df_meta.get("label_mapping") or {}
+    label_map = _class_names(detail.df_meta)
     show_cols = ["cluster_id", "cluster_class", "failure_rate", "is_noise_cluster"]
     show_cols += [
         c
