@@ -22,15 +22,15 @@ class MLTrainer:
         self.num_cols = num_cols
         self.cat_cols = cat_cols
 
-    def features(self, df: pd.DataFrame, feat_cols: list[str]) -> pd.DataFrame:
+    def features(self, df: pd.DataFrame) -> pd.DataFrame:
         """The feature slice the sklearn pipeline consumes."""
-        return df[feat_cols]
+        return df[self.num_cols + self.cat_cols]
 
     def prepare(
-        self, df: pd.DataFrame, feat_cols: list[str], label_col: str
+        self, df: pd.DataFrame, label_col: str
     ) -> tuple[pd.DataFrame, np.ndarray]:
         """A feature slice plus the label array."""
-        return self.features(df, feat_cols), df[label_col].to_numpy()
+        return self.features(df), df[label_col].to_numpy()
 
     def fit(
         self,
@@ -118,9 +118,9 @@ class MLTrainer:
         self, model: Pipeline, X: pd.DataFrame, *, return_embedding: bool = False
     ) -> tuple:
         """Predict a DataFrame → (y_pred, y_proba); ML pipelines have no embedding, so z is None."""
-        # Every registered classifier's predict() is an argmax over the same scores
-        # predict_proba() normalises, so one pass answers both — and y_pred is then
-        # consistent by construction with the y_proba published beside it.
+        # One pass answers both, and y_pred always agrees with the y_proba published
+        # beside it. On a tie, exact or within rounding, argmax takes the lowest class
+        # id; knn's own predict() with distance weights can pick another.
         y_proba = model.predict_proba(X)
         y_pred = model.classes_[np.argmax(y_proba, axis=1)]
         if return_embedding:

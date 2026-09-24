@@ -1,7 +1,7 @@
 import logging
 import random
 import sys
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -59,91 +59,27 @@ def _seed_everything(seed: int) -> None:
     torch.manual_seed(seed)
 
 
-@dataclass
-class DataConfig:
-    """Shared data parameters across stages."""
-
-    processed_data_path: Path
-    extension: str
-    label_col: str
-    n_samples: int | None
-    balance: str = "undersample"
-
-
-def _balance_and_subsample(
-    df: pd.DataFrame,
-    *,
-    label_col: str,
-    balance: str,
-    n_samples: int | None,
-    random_state: int,
-) -> pd.DataFrame:
-    """Undersample when asked; cap every class at n_samples // n_classes when set."""
-    if balance == "undersample":
-        df = random_undersample_df(df, label_col, random_state=random_state)
-    if n_samples is not None:
-        df = subsample_df(df, n_samples, random_state=random_state, label_col=label_col)
-    return df
-
-
-def _load_data(
-    data: DataConfig, random_state: int
+def _load_splits(
+    processed_data: Path, extension: str
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Load train/val/test splits, balancing and subsampling the training set only."""
     train_df, val_df, test_df = load_listed_dfs(
-        data.processed_data_path,
-        [
-            f"train.{data.extension}",
-            f"val.{data.extension}",
-            f"test.{data.extension}",
-        ],
-    )
-    train_df = _balance_and_subsample(
-        train_df,
-        label_col=data.label_col,
-        balance=data.balance,
-        n_samples=data.n_samples,
-        random_state=random_state,
+        processed_data, [f"{split}.{extension}" for split in ("train", "val", "test")]
     )
     return train_df, val_df, test_df
 
 
 @dataclass
-class Split:
-    """One split: the training rows and the universe positions it evaluates."""
+class Fold:
+    """One model: the rows it trains on and the evaluation rows it predicts."""
 
+    name: str  # "" for the single split, "fold_<k>" under k-fold
     train_df: pd.DataFrame
-    fold_dir: Path
-    eval_idx: np.ndarray
-    fold_prefix: str = ""
-
-
-@dataclass
-class SplitPlan:
-    """The evaluation universe and the splits drawn from it."""
-
-    universe: pd.DataFrame
-    splits: list[Split]
+    eval_idx: np.ndarray  # positions in the evaluation frame
 
     @property
-    def is_kfold(self) -> bool:
-        """True when more than one split covers the universe out of fold."""
-        return len(self.splits) > 1
-
-    @property
-    def mode(self) -> str:
-        """Evaluation mode recorded in the published artifacts."""
-        return "oof_kfold" if self.is_kfold else "single_split"
-
-
-@dataclass
-class SplitPredictions:
-    """Out-of-fold predictions over the universe, plus each split's latent embedding."""
-
-    y_pred: np.ndarray
-    y_proba: np.ndarray
-    covered: np.ndarray
-    embeddings: list[np.ndarray | None]
+    def artifact_prefix(self) -> str:
+        """Prefix of the fold's figures, empty for the single split."""
+        return f"{self.name}/" if self.name else ""
 
 
 @dataclass
@@ -153,41 +89,40 @@ class ClassifyContext:
     cfg: object
     paths: OutputPaths
     trainer: Trainer
-    feat_cols: list[str]
     label_col: str
     df_meta: dict
     bus: LogDispatcher
 
 
-def build_splits(
-    cfg,
-    paths: OutputPaths,
-    train_df: pd.DataFrame,
-    test_df: pd.DataFrame,
-    label_col: str,
-) -> SplitPlan:
-    """Build the evaluation universe and its splits: the single test split, or k-fold OOF."""
-    universe = pd.concat([train_df, test_df], ignore_index=True)
+def _eval_mode(cfg) -> str:
+    return "oof_kfold" if cfg.kfold else "single_split"
+
+
+def build_folds(
+    cfg, train_df: pd.DataFrame, test_df: pd.DataFrame, *, label_col: str
+) -> tuple[pd.DataFrame, list[Fold]]:
+    """Eval frame (test, or train+test under k-fold) and the folds partitioning it."""
+
+    def balanced(df: pd.DataFrame) -> pd.DataFrame:
+        if cfg.balance == "undersample":
+            df = random_undersample_df(df, label_col, random_state=cfg.seed)
+        if cfg.n_samples is not None:
+            df = subsample_df(
+                df, cfg.n_samples, random_state=cfg.seed, label_col=label_col
+            )
+        return df
 
     if not cfg.kfold:
-        eval_idx = np.arange(len(train_df), len(universe))
-        return SplitPlan(universe, [Split(train_df, paths.models, eval_idx)])
+        return test_df, [Fold("", balanced(train_df), np.arange(len(test_df)))]
 
-    splits = []
-    for f, (tr_idx, te_idx) in enumerate(
-        oof_splits(universe, label_col, cfg.kfold_splits, random_state=cfg.seed)
-    ):
-        fold_train = _balance_and_subsample(
-            universe.iloc[tr_idx],
-            label_col=label_col,
-            balance=cfg.balance,
-            n_samples=cfg.n_samples,
-            random_state=cfg.seed,
+    universe = pd.concat([train_df, test_df], ignore_index=True)
+    folds = [
+        Fold(f"fold_{k}", balanced(universe.iloc[train_idx]), eval_idx)
+        for k, (train_idx, eval_idx) in enumerate(
+            oof_splits(universe, label_col, cfg.kfold_splits, random_state=cfg.seed)
         )
-        splits.append(
-            Split(fold_train, paths.models / f"fold_{f}", te_idx, f"fold_{f}/")
-        )
-    return SplitPlan(universe, splits)
+    ]
+    return universe, folds
 
 
 def _component(node) -> ComponentSpec:
@@ -351,15 +286,15 @@ def _training_record_path(paths: OutputPaths) -> Path:
 def _invalidate_training_record(paths: OutputPaths) -> None:
     """Drop the training record before retraining.
 
-    Models are overwritten one split at a time, so a run interrupted mid-loop leaves a
+    Models are overwritten one fold at a time, so a run interrupted mid-loop leaves a
     mix of old and new models on disk. Without this, the surviving record would still
     describe the old ones and the next run would reuse that mix.
     """
     _training_record_path(paths).unlink(missing_ok=True)
 
 
-def _can_reuse(context: ClassifyContext, plan: SplitPlan, fingerprint: dict) -> bool:
-    """True when every split already has a model trained for this exact configuration."""
+def _can_reuse(context: ClassifyContext, folds: list[Fold], fingerprint: dict) -> bool:
+    """True when every fold already has a model trained for this exact configuration."""
     trainer = context.trainer
     if context.cfg.force:
         return False
@@ -374,50 +309,52 @@ def _can_reuse(context: ClassifyContext, plan: SplitPlan, fingerprint: dict) -> 
         logger.info("[RETRAIN] training config changed (%s) — retraining.", changed)
         return False
 
-    missing = [s for s in plan.splits if not trainer.has_model(s.fold_dir)]
+    missing = [f for f in folds if not trainer.has_model(context.paths.models / f.name)]
     if missing:
         logger.info(
             "[RETRAIN] %d of %d model(s) missing on disk — retraining all.",
             len(missing),
-            len(plan.splits),
+            len(folds),
         )
         return False
 
     logger.info(
         "[STAGE-SKIP] Reusing %d trained model(s) — pass force=true to retrain.",
-        len(plan.splits),
+        len(folds),
     )
     return True
 
 
-def _grid_cv(cfg, plan: SplitPlan) -> int:
+def _grid_cv(cfg) -> int:
     """Inner CV of the grid search: smaller under k-fold, which already resamples."""
-    return cfg.grid_search.nested_cv if plan.is_kfold else cfg.grid_search.cv
+    return cfg.grid_search.nested_cv if cfg.kfold else cfg.grid_search.cv
 
 
-def _train_split(
+def _train_fold(
     context: ClassifyContext,
-    plan: SplitPlan,
-    split: Split,
-    fold: int,
+    fold: Fold,
+    *,
+    index: int,
+    n_folds: int,
     params: dict,
     X_val,
 ) -> tuple[object, dict, list]:
-    """Fit one split's model, returning it with its fold record and grid-search rows."""
+    """Fit one fold's model, returning it with its fold record and grid-search rows."""
     cfg, trainer, bus = context.cfg, context.trainer, context.bus
+    model_dir = context.paths.models / fold.name
     record = {
-        "fold": fold,
-        "n_train": len(split.train_df),
-        "n_eval": len(split.eval_idx),
+        "fold": index,
+        "n_train": len(fold.train_df),
+        "n_eval": len(fold.eval_idx),
     }
-    X, y = trainer.prepare(split.train_df, context.feat_cols, context.label_col)
+    X, y = trainer.prepare(fold.train_df, context.label_col)
 
     if "grid" in cfg.classifier and len(cfg.classifier.grid) > 0:
-        cv = _grid_cv(cfg, plan)
+        cv = _grid_cv(cfg)
         logger.info(
             "Grid search for %s%s — scoring=%s, cv=%d",
             cfg.classifier.name,
-            f" (fold {fold + 1}/{len(plan.splits)})" if plan.is_kfold else "",
+            f" (fold {index + 1}/{n_folds})" if cfg.kfold else "",
             cfg.grid_search.scoring,
             cv,
         )
@@ -444,7 +381,7 @@ def _train_split(
         # run, and the `param_` prefix keeps them from colliding with the score columns.
         grid_rows = [
             {
-                "fold": fold,
+                "fold": index,
                 **{f"param_{k}": v for k, v in combination["params"].items()},
                 "mean_test_score": combination["mean_test_score"],
                 "std_test_score": combination["std_test_score"],
@@ -454,31 +391,31 @@ def _train_split(
     else:
         logger.info("Training %s ...", cfg.classifier.name)
         model, summary = trainer.fit(
-            cfg.classifier.name, params, X, y, X_val=X_val, save_dir=split.fold_dir
+            cfg.classifier.name, params, X, y, X_val=X_val, save_dir=model_dir
         )
         history = summary.get("history", {})
         if history:
-            # Safe to publish before trainer.save() below: train_splits drops
+            # Safe to publish before trainer.save() below: train_folds drops
             # training/folds.json before any fold runs, and _can_reuse won't reuse
             # without that record, so a raise from either statement still forces every
             # fold to retrain on the next run.
             bus.publish(
                 LogBundle.from_dict(
                     {
-                        f"figure/training/{split.fold_prefix}{key}": plot
+                        f"figure/training/{fold.artifact_prefix}{key}": plot
                         for key, plot in training_history_figures(history).items()
                     }
                 )
             )
         grid_rows = []
 
-    trainer.save(model, split.fold_dir, name=cfg.classifier.name, params=params)
+    trainer.save(model, model_dir, name=cfg.classifier.name, params=params)
     return model, record, grid_rows
 
 
 def _publish_training_record(
     context: ClassifyContext,
-    plan: SplitPlan,
+    folds: list[Fold],
     fingerprint: dict,
     fold_records: list,
     grid_rows: list,
@@ -489,19 +426,19 @@ def _publish_training_record(
     produced it to read it.
     """
     cfg = context.cfg
-    logger.info("Trained %d model(s) under %s", len(plan.splits), context.paths.models)
+    logger.info("Trained %d model(s) under %s", len(folds), context.paths.models)
     context.bus.publish(
         LogBundle.from_dict(
             {
                 "json/training/folds": {
-                    "mode": plan.mode,
-                    "k_requested": cfg.kfold_splits if plan.is_kfold else 1,
-                    "k_effective": len(plan.splits),
+                    "mode": _eval_mode(cfg),
+                    "k_requested": cfg.kfold_splits if cfg.kfold else 1,
+                    "k_effective": len(folds),
                     "seed": cfg.seed,
                     "balance": cfg.balance,
                     "n_samples": cfg.n_samples,
                     "scoring": cfg.grid_search.scoring if grid_rows else None,
-                    "cv": _grid_cv(cfg, plan) if grid_rows else None,
+                    "cv": _grid_cv(cfg) if grid_rows else None,
                     "fingerprint": fingerprint,
                     "folds": fold_records,
                     "grid_search": grid_rows,
@@ -512,11 +449,15 @@ def _publish_training_record(
 
 
 @timed
-def train_splits(
-    context: ClassifyContext, plan: SplitPlan, val_df: pd.DataFrame
-) -> SplitPredictions:
-    """Obtain a model per split and predict the universe rows that split holds out.
+def train_folds(
+    context: ClassifyContext,
+    eval_df: pd.DataFrame,
+    folds: list[Fold],
+    val_df: pd.DataFrame,
+) -> tuple[np.ndarray, np.ndarray, list[np.ndarray | None]]:
+    """Predict every eval row with the model of the fold that holds it out.
 
+    Returns y_pred and y_proba over the eval frame, plus one latent embedding per fold.
     Each model is trained, or loaded when one already exists for this exact
     configuration, then used for prediction while still in memory and dropped: one model
     is held at a time. Reused models keep the training artifacts of the run that produced
@@ -534,101 +475,93 @@ def train_splits(
         context.label_col,
         context.df_meta,
     )
-    reuse = _can_reuse(context, plan, fingerprint)
+    reuse = _can_reuse(context, folds, fingerprint)
     if not reuse:
         _invalidate_training_record(context.paths)
-    X_val = None if reuse else trainer.features(val_df, context.feat_cols)
+    X_val = None if reuse else trainer.features(val_df)
 
-    universe = plan.universe
-    y_pred = np.empty(len(universe), dtype=universe[context.label_col].to_numpy().dtype)
-    y_proba = np.zeros((len(universe), context.df_meta["num_classes"]))
-    covered = np.zeros(len(universe), dtype=bool)
+    y_pred = np.empty(len(eval_df), dtype=eval_df[context.label_col].to_numpy().dtype)
+    y_proba = np.zeros((len(eval_df), context.df_meta["num_classes"]))
     embeddings: list[np.ndarray | None] = []
     fold_records: list[dict] = []
     grid_rows: list[dict] = []
 
-    for fold, split in enumerate(plan.splits):
+    for index, fold in enumerate(folds):
         if reuse:
-            model = trainer.load(split.fold_dir)
+            model = trainer.load(context.paths.models / fold.name)
         else:
-            model, record, fold_grid = _train_split(
-                context, plan, split, fold, params, X_val
+            model, record, fold_grid = _train_fold(
+                context,
+                fold,
+                index=index,
+                n_folds=len(folds),
+                params=params,
+                X_val=X_val,
             )
             fold_records.append(record)
             grid_rows.extend(fold_grid)
 
-        eval_df = universe.iloc[split.eval_idx]
         fold_pred, fold_proba, embedding = trainer.predict(
             model,
-            trainer.features(eval_df, context.feat_cols),
+            trainer.features(eval_df.iloc[fold.eval_idx]),
             return_embedding=True,
         )
-        y_pred[split.eval_idx] = fold_pred
-        y_proba[split.eval_idx] = fold_proba
-        covered[split.eval_idx] = True
+        y_pred[fold.eval_idx] = fold_pred
+        y_proba[fold.eval_idx] = fold_proba
         embeddings.append(embedding)
 
     if not reuse:
-        _publish_training_record(context, plan, fingerprint, fold_records, grid_rows)
+        _publish_training_record(context, folds, fingerprint, fold_records, grid_rows)
 
-    return SplitPredictions(y_pred, y_proba, covered, embeddings)
+    return y_pred, y_proba, embeddings
 
 
 @timed
 def publish_evaluation(
-    context: ClassifyContext, plan: SplitPlan, predictions: SplitPredictions
+    context: ClassifyContext,
+    eval_df: pd.DataFrame,
+    folds: list[Fold],
+    *,
+    y_pred: np.ndarray,
+    y_proba: np.ndarray,
+    embeddings: list[np.ndarray | None],
 ) -> None:
-    """Turn the merged out-of-fold predictions into metrics, figures and per-sample dumps.
-
-    A single split's `eval_idx` covers only the test rows, so the merged evaluation is
-    test-only; k-fold's `eval_idx` values partition the whole universe, so it is not.
-    """
+    """Turn the merged predictions into metrics, figures and per-sample dumps."""
     label_col, df_meta = context.label_col, context.df_meta
     label_mapping = df_meta["label_mapping"]
+    mode = _eval_mode(context.cfg)
 
-    eval_pos = np.flatnonzero(predictions.covered)
-    eval_universe = plan.universe.iloc[eval_pos]
-    y_true = eval_universe[label_col].to_numpy()
-    y_pred = predictions.y_pred[eval_pos]
-    y_proba = predictions.y_proba[eval_pos]
-    clusters = (
-        eval_universe["cluster"].to_numpy()
-        if "cluster" in eval_universe.columns
-        else None
-    )
+    y_true = eval_df[label_col].to_numpy()
+    clusters = eval_df["cluster"].to_numpy() if "cluster" in eval_df.columns else None
 
-    # np.unique(y_true), not unique_labels(y_true, y_pred): compute_classification_metrics
-    # uses the latter internally (it must, to include classes only ever predicted), so this
-    # stays under its own name to keep the two orderings from being reached for interchangeably.
-    observed_classes = np.unique(y_true)
-    cm = confusion_matrix(y_true, y_pred, labels=observed_classes, normalize="true")
+    # Every class, not only the observed ones: a prediction into a class the evaluated
+    # rows never contain stays visible, and the rows line up with label_mapping.
+    all_classes = np.arange(df_meta["num_classes"])
+    cm = confusion_matrix(y_true, y_pred, labels=all_classes, normalize="true")
     mcp = mcp_risk(y_proba)
 
-    full_metrics = {
-        **compute_classification_metrics(y_true, y_pred),
-        "eval_mode": plan.mode,
-    }
+    full_metrics = {**compute_classification_metrics(y_true, y_pred), "eval_mode": mode}
     pred_infos = {
         **evaluate_predictions(y_true, y_pred, mcp, clusters),
-        "eval_mode": plan.mode,
+        "eval_mode": mode,
     }
     raw_figures = {
         **build_test_figures(
-            eval_universe,
-            context.feat_cols,
+            eval_df,
+            context.trainer.num_cols + context.trainer.cat_cols,
             y_true=y_true,
             y_pred=y_pred,
             cm=cm,
-            classes=observed_classes,
+            cm_classes=all_classes,
             label_mapping=label_mapping,
         ),
         **latent_figures(
             [
-                (s.fold_prefix, s.eval_idx, e)
-                for s, e in zip(plan.splits, predictions.embeddings)
+                (fold.artifact_prefix, fold.eval_idx, embedding)
+                for fold, embedding in zip(folds, embeddings)
             ],
-            universe_labels=plan.universe[label_col].to_numpy(),
-            universe_y_pred=predictions.y_pred,
+            y_true=y_true,
+            y_pred=y_pred,
             label_mapping=label_mapping,
         ),
     }
@@ -649,11 +582,9 @@ def publish_evaluation(
             }
         )
     )
-    if plan.is_kfold:
+    if context.cfg.kfold:
         logger.info(
-            "k-fold OOF evaluation: %d samples over %d folds",
-            len(eval_pos),
-            len(plan.splits),
+            "k-fold OOF evaluation: %d samples over %d folds", len(eval_df), len(folds)
         )
 
 
@@ -678,19 +609,8 @@ def classify(cfg) -> None:
     num_cols = list(cfg.data.num_cols) if cfg.data.num_cols else []
     cat_cols = list(cfg.data.cat_cols) if cfg.data.cat_cols else []
     label_col = "encoded_" + cfg.data.label_col
-    feat_cols = num_cols + cat_cols
 
-    data = DataConfig(
-        processed_data_path=paths.processed_data,
-        extension=cfg.data.extension,
-        label_col=label_col,
-        n_samples=cfg.n_samples,
-        balance=cfg.balance,
-    )
-
-    use_kfold = cfg.kfold
-    load_cfg = replace(data, balance="none", n_samples=None) if use_kfold else data
-    train_df, val_df, test_df = _load_data(load_cfg, cfg.seed)
+    train_df, val_df, test_df = _load_splits(paths.processed_data, cfg.data.extension)
     logger.info(
         "Data loaded — train: %d, val: %d, test: %d samples",
         len(train_df),
@@ -708,14 +628,18 @@ def classify(cfg) -> None:
         cfg=cfg,
         paths=paths,
         trainer=build_trainer(cfg, df_meta, num_cols, cat_cols, label_col),
-        feat_cols=feat_cols,
         label_col=label_col,
         df_meta=df_meta,
         bus=bus,
     )
-    plan = build_splits(cfg, paths, train_df, test_df, label_col)
-    predictions = train_splits(context, plan, val_df)
-    publish_evaluation(context, plan, predictions)
+    eval_df, folds = build_folds(cfg, train_df, test_df, label_col=label_col)
+    # Only eval_df and the folds' balanced copies are needed from here: on a single
+    # split the full, unbalanced train frame would otherwise stay in memory throughout.
+    del train_df, test_df
+    y_pred, y_proba, embeddings = train_folds(context, eval_df, folds, val_df)
+    publish_evaluation(
+        context, eval_df, folds, y_pred=y_pred, y_proba=y_proba, embeddings=embeddings
+    )
 
     logger.info("All stages completed.")
 

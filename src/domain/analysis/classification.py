@@ -24,12 +24,11 @@ def compute_classification_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> di
                 fn(y_true, y_pred, average=avg, zero_division=0)
             )
 
-    # sklearn's per-class arrays are ordered by unique_labels(y_true, y_pred), which
-    # includes labels only ever predicted: enumerating np.unique(y_true) instead would
-    # shift every metric onto the wrong class.
+    # Every class observed or predicted, passed explicitly so the rows below line up
+    # with the arrays sklearn returns.
     labels = unique_labels(y_true, y_pred)
     per_class = {
-        name: fn(y_true, y_pred, average=None, zero_division=0).tolist()
+        name: fn(y_true, y_pred, labels=labels, average=None, zero_division=0).tolist()
         for name, fn in _METRIC_FNS
     }
     full["per_class"] = [

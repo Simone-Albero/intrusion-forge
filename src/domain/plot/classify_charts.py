@@ -74,26 +74,23 @@ def build_test_figures(
     y_true: np.ndarray,
     y_pred: np.ndarray,
     cm: np.ndarray,
-    classes: np.ndarray,
+    cm_classes: np.ndarray,
     label_mapping: dict,
     n_samples: int = 2000,
 ) -> dict[str, Plot]:
-    """Confusion matrix, per-class F1 bar and t-SNE scatter of raw features.
-
-    Takes `cm`/`classes` already computed rather than recomputing them, since the caller
-    needs the same confusion matrix for its own pickle dump.
-    """
-    class_names = [label_mapping.get(str(int(c)), str(c)) for c in classes]
+    """Confusion matrix over `cm_classes`, F1 over the observed classes, raw t-SNE."""
+    cm_names = [label_mapping.get(str(int(c)), str(c)) for c in cm_classes]
     figures: dict[str, Plot] = {
-        "confusion_matrix": confusion_matrix_plot(cm, class_names=class_names)
+        "confusion_matrix": confusion_matrix_plot(cm, class_names=cm_names)
     }
 
+    observed = np.unique(y_true)
     f1_per_class = f1_score(
-        y_true, y_pred, labels=classes, average=None, zero_division=0
+        y_true, y_pred, labels=observed, average=None, zero_division=0
     )
     f1_dict = {
         label_mapping.get(str(int(c)), str(c)): float(v)
-        for c, v in zip(classes, f1_per_class)
+        for c, v in zip(observed, f1_per_class)
     }
     figures["f1_per_class"] = bar_plot(
         list(f1_dict.keys()),
@@ -116,29 +113,29 @@ def build_test_figures(
 
 
 def latent_figures(
-    splits: list[tuple[str, np.ndarray, np.ndarray | None]],
+    folds: list[tuple[str, np.ndarray, np.ndarray | None]],
     *,
-    universe_labels: np.ndarray,
-    universe_y_pred: np.ndarray,
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
     label_mapping: dict,
 ) -> dict[str, Plot]:
-    """One t-SNE latent scatter per split, keyed `{fold_prefix}latent`.
+    """One t-SNE latent scatter per fold, keyed `{prefix}latent`.
 
-    `splits` is (fold_prefix, eval_idx, embedding) per split. The K latent spaces come
-    from K different models and are not mutually aligned, so they stay fold-scoped
-    instead of being merged into one figure.
+    `folds` is (prefix, eval_idx, embedding) per fold, with eval_idx indexing `y_true`
+    and `y_pred`. The K latent spaces come from K different models and are not mutually
+    aligned, so they stay fold-scoped instead of being merged into one figure.
     """
     figures: dict[str, Plot] = {}
-    for fold_prefix, eval_idx, embedding in splits:
+    for prefix, eval_idx, embedding in folds:
         if embedding is None:
             continue
-        y_true_split = universe_labels[eval_idx]
-        y_pred_split = universe_y_pred[eval_idx]
+        y_true_fold = y_true[eval_idx]
+        y_pred_fold = y_pred[eval_idx]
         vis_idx, names = _projection_selection(
-            y_true_split, y_pred_split, label_mapping, 2000
+            y_true_fold, y_pred_fold, label_mapping, 2000
         )
         if vis_idx is not None:
-            figures[f"{fold_prefix}latent"] = _scatter_projection(
-                embedding[vis_idx], y_true_split[vis_idx], y_pred_split[vis_idx], names
+            figures[f"{prefix}latent"] = _scatter_projection(
+                embedding[vis_idx], y_true_fold[vis_idx], y_pred_fold[vis_idx], names
             )
     return figures

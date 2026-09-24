@@ -107,13 +107,11 @@ class DLTrainer:
     train_loader_params: dict
     val_loader_params: dict
 
-    def features(self, df: pd.DataFrame, feat_cols: list[str]) -> pd.DataFrame:
+    def features(self, df: pd.DataFrame) -> pd.DataFrame:
         """The whole frame: the dataset selects its own feature columns."""
         return df
 
-    def prepare(
-        self, df: pd.DataFrame, feat_cols: list[str], label_col: str
-    ) -> tuple[pd.DataFrame, None]:
+    def prepare(self, df: pd.DataFrame, label_col: str) -> tuple[pd.DataFrame, None]:
         """The whole frame: the dataset selects its own feature and label columns."""
         return df, None
 

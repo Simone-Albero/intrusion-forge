@@ -19,12 +19,10 @@ class Trainer(Protocol):
     num_cols: list[str]
     cat_cols: list[str]
 
-    def features(self, df: pd.DataFrame, feat_cols: list[str]) -> Any:
+    def features(self, df: pd.DataFrame) -> Any:
         """Shape the feature side of `df` the way this trainer's predict expects it."""
 
-    def prepare(
-        self, df: pd.DataFrame, feat_cols: list[str], label_col: str
-    ) -> tuple[Any, Any]:
+    def prepare(self, df: pd.DataFrame, label_col: str) -> tuple[Any, Any]:
         """Shape (X, y) the way this trainer's fit expects them."""
 
     def fit(
