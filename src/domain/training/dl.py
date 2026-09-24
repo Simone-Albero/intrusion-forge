@@ -24,7 +24,6 @@ from src.engine.dl.engine import eval_step, train_step
 from src.engine.dl.ignite_builder import build_engine
 from src.engine.dl.infer import df_to_tensors, forward_eval
 from src.engine.dl.model import DLClassifierFactory
-from src.engine.dl.model.checkpoint import load_best_checkpoint
 
 logger = logging.getLogger(__name__)
 
@@ -58,9 +57,9 @@ def _build_train_engine(model, loss_fn, optimizer, scheduler, device, max_grad_n
 
 
 def _build_validation_engine(
-    model, loss_fn, device, trainer, patience, min_delta, models_path
+    model, loss_fn, device, trainer, patience, min_delta, checkpoint_dir
 ):
-    """Validator engine with early stopping + best-loss checkpointing."""
+    """Validator engine with early stopping, and the handler keeping its best epoch."""
     # Both score functions minimize loss: Ignite's handlers maximize by convention.
     early_stopping = EarlyStopping(
         patience=patience,
@@ -68,12 +67,8 @@ def _build_validation_engine(
         score_function=lambda engine: -engine.state.metrics["loss"],
         trainer=trainer,
     )
-
-    if models_path.exists():
-        shutil.rmtree(models_path)
-    models_path.mkdir(parents=True)
     checkpoint = ModelCheckpoint(
-        dirname=models_path,
+        dirname=checkpoint_dir,
         score_function=lambda engine: -engine.state.metrics["loss"],
         score_name="loss",
         n_saved=1,
@@ -81,7 +76,7 @@ def _build_validation_engine(
         require_empty=False,
     )
 
-    return build_engine(
+    validator = build_engine(
         eval_step,
         state={"model": model, "loss_fn": loss_fn, "device": device},
         metric=("loss", Average(output_transform=lambda x: x["loss"])),
@@ -90,6 +85,7 @@ def _build_validation_engine(
             (Events.COMPLETED, lambda engine: checkpoint(engine, {"model": model})),
         ],
     )
+    return validator, checkpoint
 
 
 @dataclass
@@ -141,7 +137,12 @@ class DLTrainer:
         save_dir: Path,
     ) -> tuple[nn.Module, dict]:
         """Train with early stopping and return the best checkpoint plus its loss history."""
-        models_path = Path(save_dir)
+        # Emptied first: the handler deletes only the files it saved itself, so each fit
+        # would otherwise leave one more checkpoint behind.
+        checkpoint_dir = Path(save_dir) / "checkpoints"
+        if checkpoint_dir.exists():
+            shutil.rmtree(checkpoint_dir)
+        checkpoint_dir.mkdir(parents=True)
 
         loss_params = dict(self.loss.params)
         # "auto" takes the trainer's weights, None whenever the split was rebalanced.
@@ -164,14 +165,14 @@ class DLTrainer:
         trainer, history = _build_train_engine(
             model, loss_fn, optimizer, scheduler, self.device, self.max_grad_norm
         )
-        validator = _build_validation_engine(
+        validator, checkpoint = _build_validation_engine(
             model,
             loss_fn,
             self.device,
             trainer,
             self.patience,
             self.min_delta,
-            models_path,
+            checkpoint_dir,
         )
 
         @trainer.on(Events.EPOCH_COMPLETED)
@@ -190,8 +191,16 @@ class DLTrainer:
 
         trainer.run(train_loader, max_epochs=self.epochs)
 
-        load_best_checkpoint(models_path, model, self.device)
-        logger.info("Best checkpoint reloaded after training.")
+        best = checkpoint.last_checkpoint
+        if best is None:
+            raise RuntimeError(
+                f"No checkpoint was saved in {checkpoint_dir}; "
+                "refusing to return untrained weights."
+            )
+        model.load_state_dict(
+            torch.load(best, map_location=self.device, weights_only=True)
+        )
+        logger.info("Best checkpoint %s reloaded after training.", best.name)
 
         return model, {"history": history}
 
