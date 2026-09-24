@@ -22,6 +22,10 @@
 #                         classifier even when models for this exact config already exist
 #   CLUSTERING=<name>     fix the clustering strategy (kmeans/hdbscan/birch/spectral);
 #                         omit it in `run` to sweep all of CLUSTERING_ALGOS into NAME_<algo>
+#   ARGS="k=v ..."        extra Hydra overrides, passed last to every stage, so they win
+#                         (e.g. ARGS="n_samples=10000 kfold=false"); data, name, seed,
+#                         classifier, clustering and distance keep their own variables, and
+#                         any other variable on the make line is an error
 #
 # k-fold note: k-fold evaluation (kfold=true) is disabled automatically for LARGE_DATASETS
 #   (nb15_v2, bot_iot_v2, cic_2018_v2, ton_iot_v2) because millions of rows make it impractical.
@@ -40,6 +44,24 @@ DISTANCE   ?= euclidean
 CLUSTERING ?= kmeans
 CLUSTERING_ALGOS ?= kmeans spectral birch hdbscan
 FORCE      ?=
+# := rather than ?=: an ARGS exported in the shell would otherwise reach every stage unseen.
+ARGS       :=
+
+# A variable make does not know is a Hydra override typed in the wrong place: stop, don't drop it.
+MAKE_VARS    := DATA NAME SEED CLASSIFIER DISTANCE CLUSTERING CLUSTERING_ALGOS FORCE KFOLD ARGS \
+                DATASETS ML_CLASSIFIERS DL_CLASSIFIERS LARGE_DATASETS \
+                PYTHON STREAMLIT SWEEP_DIR FIGURES_DIR ROWS
+UNKNOWN_VARS := $(filter-out $(MAKE_VARS),$(foreach v,$(.VARIABLES),$(if $(filter command line,$(origin $(v))),$(v))))
+ifneq ($(UNKNOWN_VARS),)
+$(error Unknown make variable(s): $(UNKNOWN_VARS). Hydra overrides go through ARGS="key=value ...")
+endif
+
+# ARGS may override kfold and force, but not the keys make itself decides from — the k-fold
+# default per dataset, the NAME_<algo> directories of `run`: those have their own variables.
+ARGS_CLASH := $(filter $(foreach k,data name seed classifier clustering distance,$(k)=% ++$(k)=%),$(ARGS))
+ifneq ($(ARGS_CLASH),)
+$(error ARGS cannot set $(ARGS_CLASH): use DATA, NAME, SEED, CLASSIFIER, CLUSTERING or DISTANCE)
+endif
 
 # `run` distinguishes "passed on the command line" from "default" via $(origin).
 DATA_GIVEN    := $(if $(filter command line,$(origin DATA)),1,)
@@ -75,11 +97,12 @@ DATASETS := \
 # kfold=false is injected automatically for these; override with KFOLD=true if needed.
 LARGE_DATASETS := nb15_v2 bot_iot_v2 cic_2018_v2 ton_iot_v2
 
-HYDRA       := data=$(DATA) name=$(NAME) seed=$(SEED) classifier=$(CLASSIFIER) \
-               clustering=$(CLUSTERING) distance=$(DISTANCE)
-FORCE_FLAG  := $(if $(FORCE),force=true,)
 KFOLD       ?= $(if $(filter $(DATA),$(LARGE_DATASETS)),false,true)
-KFOLD_FLAG  := kfold=$(KFOLD)
+# Every stage gets the same keys, so each stage's config_composed.json tells the same story.
+# Recipes put $(ARGS) last, so an explicit override wins.
+HYDRA       := data=$(DATA) name=$(NAME) seed=$(SEED) classifier=$(CLASSIFIER) \
+               clustering=$(CLUSTERING) distance=$(DISTANCE) kfold=$(KFOLD)
+FORCE_FLAG  := $(if $(FORCE),force=true,)
 
 # Cross-run paper comparisons: aggregate the full experiment tree under SWEEP_DIR into the
 # cross-run figures (rho by config / vs clusters, family importance, per-classifier and
@@ -92,23 +115,23 @@ FIGURES_DIR     ?= paper/figures
 
 ## prepare:            Step 1 — preprocess raw CSV → parquet splits           (DATA, NAME, SEED, FORCE)
 prepare:
-	PYTHONPATH=. $(PYTHON) pipelines/prepare_data.py $(HYDRA) $(FORCE_FLAG)
+	PYTHONPATH=. $(PYTHON) pipelines/prepare_data.py $(HYDRA) $(FORCE_FLAG) $(ARGS)
 
 ## classify:           Step 2 — train & evaluate one classifier (ML or DL)    (DATA, NAME, SEED, CLASSIFIER, FORCE)
 classify:
-	PYTHONPATH=. $(PYTHON) pipelines/classify.py $(HYDRA) $(KFOLD_FLAG) $(FORCE_FLAG)
+	PYTHONPATH=. $(PYTHON) pipelines/classify.py $(HYDRA) $(FORCE_FLAG) $(ARGS)
 
 ## complexity:         Step 3a — cluster + class complexity (shared, idempotent)  (DATA, NAME, SEED, FORCE)
 complexity:
-	PYTHONPATH=. $(PYTHON) pipelines/compute_complexity.py $(HYDRA) $(FORCE_FLAG)
+	PYTHONPATH=. $(PYTHON) pipelines/compute_complexity.py $(HYDRA) $(FORCE_FLAG) $(ARGS)
 
 ## failure-regress:    Step 3b — RF to detect problematic clusters            (DATA, NAME, SEED, CLASSIFIER)
-failure-regress: complexity
-	PYTHONPATH=. $(PYTHON) pipelines/fit_failure_regressor.py $(HYDRA)
+failure-regress:
+	PYTHONPATH=. $(PYTHON) pipelines/fit_failure_regressor.py $(HYDRA) $(ARGS)
 
 ## render:             Step 4 — render plots from analysis artifacts          (DATA, NAME, SEED, CLASSIFIER)
 render:
-	PYTHONPATH=. $(PYTHON) pipelines/render_plots.py $(HYDRA)
+	PYTHONPATH=. $(PYTHON) pipelines/render_plots.py $(HYDRA) $(ARGS)
 
 ## comparisons:        Aggregate the experiment tree into cross-run paper figures + result tables  (SWEEP_DIR, FIGURES_DIR)
 comparisons:
@@ -147,10 +170,10 @@ run:
 			echo "══════════════════════════════════════════════"; \
 			$(MAKE) --no-print-directory prepare \
 				DATA=$$ds NAME=$$name SEED=$(SEED) CLUSTERING=$$clu \
-				DISTANCE=$(DISTANCE) $(FORCE_FLAG) || exit 1; \
+				DISTANCE=$(DISTANCE) FORCE=$(FORCE) || exit 1; \
 			$(MAKE) --no-print-directory complexity \
 				DATA=$$ds NAME=$$name SEED=$(SEED) CLUSTERING=$$clu \
-				DISTANCE=$(DISTANCE) $(FORCE_FLAG) || exit 1; \
+				DISTANCE=$(DISTANCE) FORCE=$(FORCE) || exit 1; \
 			for clf in $$clf_list; do \
 				echo ""; \
 				echo "── classifier: $$clf ─────────────────────────────"; \
@@ -179,7 +202,7 @@ dashboard:
 
 ## help:               Show this help message
 help:
-	@echo "Usage: make <target> [DATA=<dataset>] [NAME=<name>] [SEED=<n>] [CLASSIFIER=<name>] [DISTANCE=<dist>]"
+	@echo "Usage: make <target> [DATA=<dataset>] [NAME=<name>] [SEED=<n>] [CLASSIFIER=<name>] [DISTANCE=<dist>] [ARGS=\"k=v ...\"]"
 	@echo ""
 	@echo "Targets:"
 	@grep -E '^## ' Makefile | sed 's/## /  /'

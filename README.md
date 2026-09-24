@@ -173,7 +173,7 @@ In the demo the estimator relies most on `cluster_f4_mean`, `cluster_f3_max` and
 
 ## Pipeline reference
 
-Each stage is a script under [pipelines/](pipelines/), wrapped by the [Makefile](Makefile). Every target takes `DATA`, `NAME`, `SEED`, `CLASSIFIER`, `CLUSTERING`, `DISTANCE`.
+Each stage is a script under [pipelines/](pipelines/), wrapped by the [Makefile](Makefile). Every stage target takes `DATA`, `NAME`, `SEED`, `CLASSIFIER`, `CLUSTERING`, `DISTANCE`, and `ARGS` for any other override ([Configuration](#configuration)).
 
 | Target | Script | Scope |
 |---|---|---|
@@ -207,12 +207,16 @@ Omit `CLUSTERING` and the sweep runs every algorithm into a separate `NAME_<algo
 
 ## Configuration
 
-The root configuration is [configs/config.yaml](configs/config.yaml), where every parameter is documented inline. Any key may be overridden on the command line:
+The root configuration is [configs/config.yaml](configs/config.yaml), where every parameter is documented inline. Any key may be overridden on the command line, through `make` or by calling the script directly:
 
 ```bash
-make classify DATA=bot_iot_v2 NAME=my_exp SEED=123 CLASSIFIER=random_forest
-PYTHONPATH=. python pipelines/classify.py data=bot_iot_v2 name=my_exp seed=123 classifier=random_forest
+make classify DATA=bot_iot_v2 NAME=my_exp SEED=123 CLASSIFIER=random_forest ARGS="n_samples=10000 grid_search.max_samples=5000"
+PYTHONPATH=. python pipelines/classify.py data=bot_iot_v2 name=my_exp seed=123 classifier=random_forest kfold=false n_samples=10000 grid_search.max_samples=5000
 ```
+
+`make` turns `DATA`, `NAME`, `SEED`, `CLASSIFIER`, `CLUSTERING` and `DISTANCE` into their Hydra keys and gives every stage `kfold` too: `false` for the datasets in `LARGE_DATASETS`, `true` otherwise, or whatever `KFOLD` says. `ARGS` comes last on every stage, so its overrides win, `kfold` and `force` included. The six keys that have a variable of their own are refused there, while nested keys such as `data.label_col` are fine. A variable the Makefile does not recognise stops it with an error, so a mistyped override is never silently ignored.
+
+A shell reads `ARGS` before Hydra does, so single-quote an override whose value holds spaces or braces, as in `ARGS="'failure_regressor.param_grid.n_estimators=[100, 300]'"`. Pass a `${…}` interpolation by calling the script directly: make and the shell would both expand it first.
 
 | Group | Options |
 |---|---|

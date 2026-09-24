@@ -4,7 +4,7 @@ training:
 
   dataloader:
     batch_size: 512
-    num_workers: 8
+    num_workers: 0         # the dataset is in-memory tensors; worker processes also segfault on macOS
     shuffle: true
     pin_memory: false
 
@@ -15,6 +15,6 @@ training:
 validation:
   dataloader:
     batch_size: 512
-    num_workers: 8
+    num_workers: 0
     shuffle: false
     pin_memory: false
