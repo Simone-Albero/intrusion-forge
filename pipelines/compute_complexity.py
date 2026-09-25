@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 
 from pipelines import paths_from_cfg
-from src.core.config import load_config
+from src.core.config import load_config, save_config
 from src.core.io import load_df
 from src.core.log import (
     JSONSubscriber,
@@ -125,6 +125,7 @@ def main() -> None:
     bus.subscribe(JSONSubscriber(paths.shared))
 
     clusters_meta = load_from_json(paths.shared / "metadata/clusters_meta.json")
+    save_config(cfg, paths.shared / "config_composed_complexity.json")
     noise_cluster_ids = clusters_meta.get("noise_cluster_ids", [])
 
     y_cluster = train_df["cluster"].to_numpy(dtype=np.int64)

@@ -227,13 +227,15 @@ Results are written to:
 ```
 resources/experiments/${name}/${data.file_name}_${seed}/
 ├── processed_data/         # train / val / test parquet, shared
-├── shared/                 # descriptors and metadata, shared
+├── shared/                 # descriptors, metadata, prepare and complexity configs, shared
 └── ${classifier.name}/
-    ├── configs/            # resolved configuration snapshot
+    ├── configs/            # classify, failure-regress and render configs
     ├── models/             # checkpoints or serialised estimators
     ├── outputs/            # training, testing and analysis JSON
     └── figures/            # rendered figures
 ```
+
+Each stage that runs saves the configuration it resolved, overrides included, as `config_composed_<stage>.json`, where `<stage>` is `prepare`, `complexity`, `classify`, `regress` or `render`. A stage skipped by its cache does not rewrite its file.
 
 ## Repository layout
 

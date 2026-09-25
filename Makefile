@@ -97,7 +97,8 @@ DATASETS := \
 LARGE_DATASETS := nb15_v2 bot_iot_v2 cic_2018_v2 ton_iot_v2
 
 KFOLD       ?= $(if $(filter $(DATA),$(LARGE_DATASETS)),false,true)
-# Every stage gets the same keys, so each stage's config_composed.json tells the same story.
+# Every stage gets $(HYDRA) and saves its resolved config as config_composed_<stage>.json;
+# FORCE_FLAG reaches only the cached stages.
 # Recipes put $(ARGS) last, so an explicit override wins.
 HYDRA       := data=$(DATA) name=$(NAME) seed=$(SEED) classifier=$(CLASSIFIER) \
                clustering=$(CLUSTERING) distance=$(DISTANCE) fit.kfold=$(KFOLD)

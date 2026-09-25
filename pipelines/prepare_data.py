@@ -416,7 +416,7 @@ def main() -> None:
     if skip_if_exists(markers, cfg.force, "prepare"):
         return
 
-    save_config(cfg, shared / "config_composed.json")
+    save_config(cfg, shared / "config_composed_prepare.json")
     prepare(cfg)
     flush_timing(shared / "timing.json")
 

@@ -121,8 +121,13 @@ def _load_sweep_runs(root: Path) -> list[dict]:
     runs: list[dict] = []
     for cfg_dir in sorted(p for p in root.iterdir() if p.is_dir()):
         for ds_dir in sorted(p for p in cfg_dir.iterdir() if p.is_dir()):
-            cfg_path = ds_dir / "shared/config_composed.json"
+            cfg_path = ds_dir / "shared/config_composed_prepare.json"
             if not cfg_path.exists():
+                if (ds_dir / "shared/config_composed.json").exists():
+                    raise ValueError(
+                        f"{ds_dir} predates the per-stage config snapshots: "
+                        "re-run `make prepare FORCE=1`."
+                    )
                 continue
             composed = load_from_json(cfg_path)
             algorithm = next(iter(composed["clustering"]["algorithms"]), None)

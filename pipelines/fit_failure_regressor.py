@@ -25,7 +25,7 @@ def main() -> None:
         overrides=sys.argv[1:],
     )
     paths = paths_from_cfg(cfg)
-    save_config(cfg, paths.configs / "config_composed.json")
+    save_config(cfg, paths.configs / "config_composed_regress.json")
 
     bus = LogDispatcher()
     bus.subscribe(JSONSubscriber(paths.outputs))

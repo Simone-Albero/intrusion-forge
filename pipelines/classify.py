@@ -586,7 +586,7 @@ def classify(cfg) -> None:
     if not df_meta_path.exists():
         raise FileNotFoundError(f"Missing {df_meta_path}. Run `make prepare` first.")
     df_meta = load_prepared_metadata(df_meta_path)
-    save_config(cfg, paths.configs / "config_composed.json")
+    save_config(cfg, paths.configs / "config_composed_classify.json")
 
     num_cols = list(cfg.data.num_cols) if cfg.data.num_cols else []
     cat_cols = list(cfg.data.cat_cols) if cfg.data.cat_cols else []
