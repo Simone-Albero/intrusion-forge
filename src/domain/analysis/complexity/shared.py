@@ -39,9 +39,8 @@ def hybrid_row_batch(
     """Gower-cosine hybrid distance: cosine on the numerics, Hamming on the categoricals."""
     dist = cdist(query_num_norm, X_num_norm, metric="sqeuclidean")
     dist *= d_num / 2.0
-    # Cap the cosine block at 1, scaled to d_num to match the line above: cosine
-    # distance reaches 2 for opposed vectors, and the Gower average must stay in
-    # [0, 1]. Change the scale factor above and this bound must move with it.
+    # Cosine distance reaches 2 for opposed vectors; the Gower average needs each
+    # numeric term in [0, 1], which is d_num after the scaling above.
     np.clip(dist, 0.0, d_num, out=dist)
 
     if X_cat is not None and d_cat > 0:
@@ -165,7 +164,7 @@ def _bridge_disconnected(
     metric: str = "cosine",
     feat_ranges: np.ndarray | None = None,
 ) -> scipy.sparse.csr_matrix:
-    """Add one bridge edge per disconnected component, which categoricals can create."""
+    """Add one bridge edge per disconnected component of the k-NN graph."""
     n_comp, comp_labels = scipy.sparse.csgraph.connected_components(mat, directed=False)
     if n_comp == 1:
         return mat

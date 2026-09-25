@@ -104,24 +104,24 @@ HYDRA       := data=$(DATA) name=$(NAME) seed=$(SEED) classifier=$(CLASSIFIER) \
                clustering=$(CLUSTERING) distance=$(DISTANCE) fit.kfold=$(KFOLD)
 FORCE_FLAG  := $(if $(FORCE),force=true,)
 
-# Cross-run paper comparisons: aggregate the full experiment tree under SWEEP_DIR into the
+# Cross-run comparisons: aggregate the full experiment tree under SWEEP_DIR into the
 # cross-run figures (rho by config / vs clusters, family importance, per-classifier and
-# per-dataset baseline comparisons) written to FIGURES_DIR, and the Results-section JSON
-# tables (perconfig, nclusters, datasets, variant comparisons), written back under SWEEP_DIR.
+# per-dataset baseline comparisons) written to FIGURES_DIR, and the JSON tables
+# (perconfig, nclusters, datasets, variant comparisons), written back under SWEEP_DIR.
 SWEEP_DIR       ?= resources/experiments
 FIGURES_DIR     ?= paper/figures
 
 .PHONY: prepare classify complexity failure-regress render comparisons run generate dashboard help
 
-## prepare:            Step 1 — preprocess raw CSV → parquet splits           (DATA, NAME, SEED, FORCE)
+## prepare:            Step 1 — preprocess + cluster raw CSV → parquet splits (DATA, NAME, SEED, CLUSTERING, DISTANCE, FORCE)
 prepare:
 	PYTHONPATH=. $(PYTHON) pipelines/prepare_data.py $(HYDRA) $(FORCE_FLAG) $(ARGS)
 
-## classify:           Step 2 — train & evaluate one classifier (ML or DL)    (DATA, NAME, SEED, CLASSIFIER, FORCE)
+## classify:           Step 2 — train & evaluate one classifier (ML or DL)    (DATA, NAME, SEED, CLASSIFIER, KFOLD, FORCE)
 classify:
 	PYTHONPATH=. $(PYTHON) pipelines/classify.py $(HYDRA) $(FORCE_FLAG) $(ARGS)
 
-## complexity:         Step 3a — cluster + class complexity (shared, idempotent)  (DATA, NAME, SEED, FORCE)
+## complexity:         Step 3a — cluster + class complexity (shared, idempotent)  (DATA, NAME, SEED, DISTANCE, FORCE)
 complexity:
 	PYTHONPATH=. $(PYTHON) pipelines/compute_complexity.py $(HYDRA) $(FORCE_FLAG) $(ARGS)
 
@@ -133,7 +133,7 @@ failure-regress:
 render:
 	PYTHONPATH=. $(PYTHON) pipelines/render_plots.py $(HYDRA) $(ARGS)
 
-## comparisons:        Aggregate the experiment tree into cross-run paper figures + result tables  (SWEEP_DIR, FIGURES_DIR)
+## comparisons:        Aggregate the experiment tree into cross-run figures + result tables  (SWEEP_DIR, FIGURES_DIR)
 comparisons:
 	PYTHONPATH=. $(PYTHON) pipelines/comparisons.py sweep=$(SWEEP_DIR) out=$(FIGURES_DIR)
 	@echo ""; echo "comparisons done -> $(FIGURES_DIR)/{rho_by_config,rho_vs_clusters,family_importance,spearman_by_classifier,mse_by_classifier,oracle_benefit_by_variant,spearman_by_dataset}.pdf + $(SWEEP_DIR)/{perconfig,nclusters,datasets,variant_spearman,variant_cluster_mse,variant_spearman_by_dataset}_table.json"

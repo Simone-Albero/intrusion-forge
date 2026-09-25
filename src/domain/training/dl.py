@@ -29,7 +29,6 @@ logger = logging.getLogger(__name__)
 
 
 def _create_model(name: str, params: dict, device: torch.device) -> nn.Module:
-    """Instantiate a registered DL classifier on `device`."""
     return DLClassifierFactory.create(name, params).to(device)
 
 
@@ -116,7 +115,6 @@ class DLTrainer:
         return df, None
 
     def _loader(self, df: pd.DataFrame, params: dict) -> DataLoader:
-        """Wrap a split in a DataLoader over the tabular dataset."""
         return create_dataloader(
             create_dataset(
                 df, self.num_cols, self.cat_cols, label_col=[self.label_col]
@@ -143,7 +141,7 @@ class DLTrainer:
         checkpoint_dir.mkdir(parents=True)
 
         loss_params = dict(self.loss.params)
-        # "auto" takes the trainer's weights, None whenever the split was rebalanced.
+        # The trainer's weights are None whenever the split was rebalanced.
         if loss_params.get("class_weight") == "auto":
             loss_params["class_weight"] = self.class_weights
 

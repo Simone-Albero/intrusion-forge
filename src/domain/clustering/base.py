@@ -135,10 +135,8 @@ def grid_search(
         combo = dict(zip(keys, combo_values))
         t0 = time.perf_counter()
         try:
-            # Explicit, not left to **fixed_params: both are named parameters of
-            # grid_search itself, so a caller's **common would never reach fit_fn through
-            # the catch-all — every candidate needs the run's real seed and cap passed
-            # this way, not fit_fn's own default.
+            # Passed by hand: as grid_search's own parameters they never reach fit_fn
+            # through **fixed_params.
             labels = fit_fn(
                 sub_num,
                 **combo,
@@ -200,9 +198,8 @@ def grid_search(
                 max_k,
             )
 
-    # Filtered, not a plain max(): when every candidate scores -inf (every combo in the
-    # grid degenerated — e.g. all-noise or a single cluster), max() would still return an
-    # arbitrary one of them instead of falling through to the sweep[0] fallback below.
+    # Filtered, so a sweep where every candidate scores -inf is reported below rather
+    # than passing silently.
     best_entry = max(
         (e for e in candidates if e["score"] > float("-inf")),
         key=lambda e: e["score"],

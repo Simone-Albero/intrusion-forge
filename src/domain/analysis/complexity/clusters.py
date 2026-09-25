@@ -23,15 +23,8 @@ def _approx_silhouette(
         idx = np.arange(n)
     else:
         rng = np.random.default_rng(random_state)
-        # max_samples is a hard cap, not a target: if every cluster's own floor would
-        # already add up past it, shrink the floor first rather than overshoot — actual
-        # per-cluster support is max_samples // n_labels, not min_per_cluster, whenever
-        # there are enough clusters to matter. max(1, ...) is the outer call, not the
-        # quotient: it also clamps a misconfigured min_per_cluster <= 0 instead of feeding
-        # rng.choice a non-positive size, and is what keeps this from going negative should
-        # n_labels ever exceed max_samples (today it can't — the caller's cluster count is
-        # itself capped at max_complexity_samples // min_subsample_per_cluster, comfortably
-        # under any max_samples this repo configures).
+        # The floor shrinks before the cap is exceeded, but never below one row per
+        # cluster: only more clusters than max_samples push the subsample past the cap.
         n_labels = len(unique_labels)
         floor = max(1, min(min_per_cluster, max_samples // n_labels))
         idx_parts: list[np.ndarray] = []

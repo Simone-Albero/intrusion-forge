@@ -321,7 +321,6 @@ def _publish_metadata(
     noise_cluster_ids: set[int],
     dispatcher: LogDispatcher,
 ) -> None:
-    """Compute and publish dataset + cluster metadata."""
     logger.info("Computing and saving metadata...")
     metadata = compute_df_metadata(
         {"train": train_df, "val": val_df, "test": test_df},

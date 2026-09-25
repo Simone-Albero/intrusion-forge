@@ -61,9 +61,6 @@ def _stratified_subsample(
             alloc[i] -= cut
             overflow -= cut
         if overflow > 0:
-            # Clusters smaller than min_per_cluster are pinned at their own size by the
-            # np.minimum above, so the true floor total is capped per cluster, not a flat
-            # len(unique_clusters) * min_per_cluster — that would overstate what is needed.
             floor_total = int(np.minimum(counts, min_per_cluster).sum())
             raise ValueError(
                 f"{len(unique_clusters)} clusters need {floor_total} points at their "

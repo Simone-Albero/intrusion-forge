@@ -49,10 +49,9 @@ def _fit_outer_fold(
             cv=inner_cv,
             scoring="r2",
             n_jobs=-1,
-            # Offset by fold, not the bare seed: RandomizedSearchCV draws the same n_iter
-            # combinations on every call at a fixed random_state regardless of the data it
-            # sees, so a single shared seed would sample the same 40-of-160 slice in every
-            # outer fold, forever. Varying it deterministically covers more of the grid.
+            # Offset by fold: at a fixed random_state RandomizedSearchCV draws the same
+            # combinations whatever the data, so every outer fold would search the same
+            # slice of the grid.
             random_state=random_state + fold,
             verbose=0,
         )
@@ -93,11 +92,7 @@ def build_cluster_summary(
     class_complexity: list[dict],
     predictions: dict,
 ) -> list[dict]:
-    """Merge per-cluster and class-level complexity with the observed failure rates.
-
-    Cluster and class share the same measure names, so each side keeps its prefix: they
-    are two different numbers about the same quantity, not a naming accident.
-    """
+    """Merge `cluster_`/`class_`-prefixed complexity with the observed failure rates."""
     by_class = {rec["class_id"]: rec for rec in class_complexity}
     errors = {rec["cluster_id"]: rec for rec in predictions.get("clusters", [])}
 
@@ -173,7 +168,6 @@ def _fit_nested_cv(
 
 
 def _aggregate_oof_results(oof: dict, feature_cols: list[str]) -> dict:
-    """Aggregate out-of-fold predictions into the published regression-metrics block."""
     y_true, y_pred = oof["y_true"], oof["y_pred"]
     folds = oof["folds"]
     mean_importances = np.mean([f["importances"] for f in folds], axis=0)
@@ -277,8 +271,8 @@ def fit_failure_regressor(
     }
     total_excluded = n_excluded_no_test + n_excluded_low_support + n_excluded_noise
     if total_excluded:
-        # Above one cluster in five gone, the target is thin enough to flag — routinely
-        # true on a single split, where the test rows alone starve per-cluster support.
+        # Losing more than a fifth of the clusters earns a warning: routine on a single
+        # split, whose test rows alone starve per-cluster support.
         excluded_frac = total_excluded / no_test.size if no_test.size else 0.0
         log = logger.warning if excluded_frac > 0.2 else logger.info
         log(

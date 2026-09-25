@@ -11,7 +11,6 @@ class BaseLoss(nn.Module):
         self.reduction = reduction
 
     def _reduce(self, loss: Tensor) -> Tensor:
-        """Apply the configured reduction."""
         if self.reduction == "mean":
             return loss.mean()
         if self.reduction == "sum":

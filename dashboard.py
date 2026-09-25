@@ -152,7 +152,6 @@ def _classifier_family(classifier_dir: Path) -> Literal["ml", "dl"]:
 
 
 def _extract_headline_metrics(classifier_dir: Path) -> dict[str, float | bool | None]:
-    """Headline test and failure-regressor metrics of one classifier run."""
     summary = _read_json(classifier_dir / "outputs" / "testing" / "summary.json") or {}
     results = (
         _read_json(
@@ -229,7 +228,6 @@ def discover_experiments(root: str) -> tuple[list[ExperimentRecord], int]:
 
 
 def _cluster_summary_df(data: list | None) -> pd.DataFrame | None:
-    """Cluster summary as a DataFrame sorted by failure rate."""
     if not data:
         return None
     df = pd.DataFrame(data)
@@ -301,7 +299,6 @@ def count_failing_clusters(record_root: str) -> int | None:
 
 @st.cache_data(show_spinner=False)
 def _dataset_test_size(shared: str) -> int:
-    """Test-set row count for a dataset, read from shared df_meta.json."""
     meta = _read_json(Path(shared) / "metadata/df_meta.json") or {}
     return next(
         (s["n_rows"] for s in meta.get("splits") or [] if s["split"] == "test"), 0
@@ -365,7 +362,6 @@ def find_record(records: list[ExperimentRecord], key: str) -> ExperimentRecord |
 
 
 def _show_figure(path: str | Path, caption: str | None = None) -> None:
-    """Display a figure file: st.image for raster formats, embedded viewer for PDF."""
     p = Path(path)
     if p.suffix.lower() == ".pdf":
         b64 = base64.b64encode(p.read_bytes()).decode()
@@ -408,7 +404,6 @@ def _apply_matrix_layout(
     xaxis_title: str,
     yaxis_title: str = "Dataset",
 ) -> None:
-    """Apply the shared matrix-figure layout."""
     fig.update_layout(
         title=title,
         xaxis_title=xaxis_title,
@@ -762,7 +757,6 @@ def _cluster_feature_candidates(cdf: pd.DataFrame) -> tuple[list[str], str]:
 def _filter_figures_by_category(
     figures: dict[str, str], category: str
 ) -> dict[str, str]:
-    """Figures whose relative path belongs to a category."""
     if category == "all":
         return figures
     return {
@@ -1381,7 +1375,6 @@ def render_gallery(records: list[ExperimentRecord], seed: int) -> None:
 
 
 def _render_gallery_single(rs_v: list[ExperimentRecord]) -> None:
-    """Gallery grid of every figure of one experiment."""
     col_d, col_c, col_cat = st.columns([1, 1, 1])
     datasets = sorted({r.file_name for r in rs_v})
     dataset = col_d.selectbox("Dataset", datasets, key="gal_dataset")

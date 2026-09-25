@@ -74,8 +74,7 @@ _CLF_LABEL = {
     "hist_gradient_boosting": "HistGB",
     "xgboost": "XGBoost",
 }
-# The 5 unified baseline variants from `instance_baselines` (see failure_regressor.py),
-# in the order the paper reports them.
+# The baseline variants of `instance_baselines`, in display order.
 _VARIANT_ORDER = [
     "mcp_cluster",
     "atc_cluster",
@@ -98,7 +97,7 @@ _VARIANT_COLOR = {
     "combo_atc_rankavg": PALETTE[4],
 }
 _RATE_VARIANT_ORDER = [v for v in _VARIANT_ORDER if v in RATE_BASELINE_NAMES]
-# Fig 10's top-to-bottom row order.
+# Top-to-bottom row order of the oracle-benefit figure.
 _ORACLE_BENEFIT_ORDER = [
     "combo_atc_rankavg",
     "combo_rankavg",
@@ -109,7 +108,6 @@ _ORACLE_BENEFIT_ORDER = [
 
 
 def _load_instance(base: Path) -> dict | None:
-    """Per-run instance-level baselines JSON, if the run produced one."""
     path = base / "instance_baselines.json"
     return load_from_json(path) if path.exists() else None
 
@@ -118,7 +116,7 @@ def _load_sweep_runs(root: Path) -> list[dict]:
     """Collect one record per `<config>/<dataset>/<classifier>` run under `root`.
 
     `clf` is the run directory name, taken verbatim: runs saved under a name a classifier
-    no longer uses are reported as a classifier of their own. Re-run them before comparing.
+    no longer uses are reported as a classifier of their own.
     """
     runs: list[dict] = []
     for cfg_dir in sorted(p for p in root.iterdir() if p.is_dir()):
@@ -163,7 +161,6 @@ def _dataset_base(name: str) -> str:
 
 
 def _dist_color(distance: str) -> str:
-    """Palette colour of a distance metric."""
     return _COS if distance == "cosine" else _EUC
 
 
@@ -228,7 +225,7 @@ def _variant_series(
 
 
 def _fig_rho_by_config(runs: list[dict]) -> Plot | None:
-    """Figure 7a: Spearman rho distribution per clustering configuration (full sweep)."""
+    """Spearman rho distribution per clustering configuration."""
 
     def sort_key(cfg: str) -> tuple[int, int]:
         meta = next(r for r in runs if r["config"] == cfg)
@@ -265,7 +262,7 @@ def _fig_rho_by_config(runs: list[dict]) -> Plot | None:
 
 
 def _fig_rho_vs_clusters(runs: list[dict]) -> Plot | None:
-    """Figure 7b: Spearman rho against the number of clusters per run (full sweep)."""
+    """Spearman rho against the number of clusters per run."""
     series: dict[str, tuple[np.ndarray, np.ndarray, str]] = {}
     for distance in ("cosine", "euclidean"):
         xs, ys = [], []
@@ -295,7 +292,7 @@ def _fig_rho_vs_clusters(runs: list[dict]) -> Plot | None:
 
 
 def _fig_family_importance(runs: list[dict]) -> Plot | None:
-    """Figure 11: feature-family importance, cluster- vs class-level (full sweep)."""
+    """Feature-family importance, cluster- vs class-level."""
     acc: dict[str, list[float]] = {}
     for r in runs:
         for row in r["results"].get("feature_importances", []):
@@ -333,8 +330,7 @@ def _fig_variant_by_group(
     variants: list[str] = _VARIANT_ORDER,
     y_lim: tuple[float, float] | None = None,
 ) -> Plot | None:
-    """Grouped bar of the baseline variants' median (+IQR) `field`, one bar per variant
-    within each group."""
+    """Grouped bar of each variant's median (+IQR) `field`, grouped by `group_key`."""
     groups = sorted({group_key(r) for r in runs})
     if not groups:
         return None
@@ -345,8 +341,7 @@ def _fig_variant_by_group(
 
 
 def _fig_spearman_by_classifier(runs: list[dict]) -> Plot | None:
-    """Figure 8: cluster-level Spearman rho (median, IQR) of the 5 variants, per classifier
-    (kmeans-euclidean subset, 90 runs)."""
+    """Cluster-level Spearman rho of the variants per classifier (median, IQR)."""
     return _fig_variant_by_group(
         runs,
         lambda r: r["clf"],
@@ -358,8 +353,7 @@ def _fig_spearman_by_classifier(runs: list[dict]) -> Plot | None:
 
 
 def _fig_mse_by_classifier(runs: list[dict]) -> Plot | None:
-    """Figure 9: cluster-rate MSE (median, IQR) of the 3 rate variants, per classifier
-    (kmeans-euclidean subset, 90 runs)."""
+    """Cluster-rate MSE of the rate variants per classifier (median, IQR)."""
     return _fig_variant_by_group(
         runs,
         lambda r: r["clf"],
@@ -371,8 +365,7 @@ def _fig_mse_by_classifier(runs: list[dict]) -> Plot | None:
 
 
 def _fig_spearman_by_dataset(runs: list[dict]) -> Plot | None:
-    """Figure 13: cluster-level Spearman rho (median, IQR) of the 5 variants, per dataset
-    (kmeans-euclidean subset)."""
+    """Cluster-level Spearman rho of the variants per dataset (median, IQR)."""
     return _fig_variant_by_group(
         runs,
         lambda r: _dataset_base(r["dataset"]),
@@ -384,8 +377,7 @@ def _fig_spearman_by_dataset(runs: list[dict]) -> Plot | None:
 
 
 def _fig_oracle_benefit_by_variant(runs: list[dict]) -> Plot | None:
-    """Figure 10: per-sample oracle benefit recovered (%) for the 5 baseline variants
-    (kmeans-euclidean subset)."""
+    """Per-sample oracle benefit recovered (%) of the variants."""
     acc: dict[str, list[float]] = {v: [] for v in _ORACLE_BENEFIT_ORDER}
     for r in runs:
         for variant in _ORACLE_BENEFIT_ORDER:
@@ -413,7 +405,7 @@ def _std(values: np.ndarray) -> float:
 
 
 def _table_perconfig(runs: list[dict]) -> dict:
-    """Table: Spearman rho by clustering configuration (tab:perconfig)."""
+    """Spearman rho by clustering configuration."""
     groups: dict[tuple[str, str], list[float]] = {}
     for r in runs:
         rho = r["results"].get("spearman")
@@ -440,7 +432,7 @@ def _table_perconfig(runs: list[dict]) -> dict:
 
 
 def _table_nclusters(runs: list[dict]) -> dict:
-    """Table 4: number of clusters per configuration, sorted by median within each distance."""
+    """Number of clusters per configuration, sorted by median within each distance."""
     groups: dict[tuple[str, str], list[int]] = {}
     for r in runs:
         if r["results"].get("spearman") is None:
@@ -470,7 +462,7 @@ def _table_nclusters(runs: list[dict]) -> dict:
 
 
 def _table_datasets(runs: list[dict]) -> dict:
-    """Table 3: per-dataset instance/feature/class/imbalance counts from the raw, pre-filter
+    """Per-dataset instance/feature/class/imbalance counts from the raw, pre-filter
     df_info.json (not the post-`rare_category_filter` metadata)."""
     seen: dict[str, dict] = {}
     for r in runs:
@@ -509,18 +501,17 @@ def _table_variant_field(
 
 
 def _table_variant_spearman(runs: list[dict]) -> dict:
-    """Table 5: cluster-level Spearman rho for the 5 baseline variants (kmeans-euclidean, 90 runs)."""
+    """Cluster-level Spearman rho of the variants."""
     return _table_variant_field(runs, "spearman")
 
 
 def _table_variant_cluster_mse(runs: list[dict]) -> dict:
-    """Table 6: cluster-rate MSE for the 3 rate-scale variants (kmeans-euclidean, 90 runs)."""
+    """Cluster-rate MSE of the rate variants."""
     return _table_variant_field(runs, "cluster_rate_mse", _RATE_VARIANT_ORDER)
 
 
 def _table_variant_spearman_by_dataset(runs: list[dict]) -> dict:
-    """Table 7: per-dataset median Spearman rho for the 5 variants (kmeans-euclidean, across
-    the 10 classifiers)."""
+    """Per-dataset median Spearman rho of the variants."""
     datasets = sorted({_dataset_base(r["dataset"]) for r in runs})
     rows = []
     for ds in datasets:
@@ -553,7 +544,6 @@ def _render_comparisons(root: Path, fmt: str = "pdf", out: Path | None = None) -
         n_hdb,
         root,
     )
-    # The paper reports RQ2-RQ5 on the k-means + Euclidean configuration only.
     kmeans_euclidean = [
         r for r in runs if r["algorithm"] == "kmeans" and r["distance"] == "euclidean"
     ]

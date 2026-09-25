@@ -6,7 +6,7 @@ def risk_coverage_curve(
     failure_rate: np.ndarray,
     support: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Support-weighted coverage vs accuracy, admitting clusters in ascending `score`."""
+    """Support-weighted coverage vs accuracy, admitting rows in ascending `score`."""
     score = np.asarray(score, dtype=float)
     failure_rate = np.asarray(failure_rate, dtype=float)
     support = np.asarray(support, dtype=float)

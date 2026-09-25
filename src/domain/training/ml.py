@@ -117,7 +117,7 @@ class MLTrainer:
     def predict(
         self, model: Pipeline, X: pd.DataFrame, *, return_embedding: bool = False
     ) -> tuple:
-        """Predict a DataFrame → (y_pred, y_proba); ML pipelines have no embedding, so z is None."""
+        """Predict a DataFrame → (y_pred, y_proba), plus a None embedding if asked."""
         # One pass answers both, and y_pred always agrees with the y_proba published
         # beside it. On a tie, exact or within rounding, argmax takes the lowest class
         # id; knn's own predict() with distance weights can pick another.

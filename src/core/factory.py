@@ -46,7 +46,6 @@ class Factory(Generic[T]):
 
 
 def _to_snake_case(name: str) -> str:
-    """Convert a PascalCase class name to snake_case."""
     return re.sub(
         r"([a-z0-9])([A-Z])", r"\1_\2", re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", name)
     ).lower()

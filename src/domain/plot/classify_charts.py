@@ -28,7 +28,7 @@ _TSNE_SAMPLES = 2000
 def _projection_selection(
     y_true: np.ndarray, y_pred: np.ndarray, class_names: dict[int, str]
 ) -> tuple[np.ndarray, dict] | tuple[None, None]:
-    """Row positions to visualize (most-missed classes first, subsampled) and their names.
+    """Sampled rows of the fewest classes (≥ 2) holding 90% of the errors, and names.
 
     (None, None) when fewer than TSNE_MIN_SAMPLES rows survive subsampling.
     """

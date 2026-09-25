@@ -29,7 +29,7 @@ train_frac: 0.8
 val_frac: 0.1
 test_frac: 0.1
 
-# All 26 classes have ~590-650 train instances
+# All 26 classes have 734–813 instances
 min_cat_count: 100
 top_n: 32
 hash_buckets: 64

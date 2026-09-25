@@ -13,7 +13,6 @@ logger = logging.getLogger(__name__)
 def _make_class_weight(
     class_weight: Tensor | list[float] | None, device: torch.device
 ) -> Tensor | None:
-    """Coerce the class weights into a tensor on `device`."""
     if class_weight is None:
         return None
     if not isinstance(class_weight, torch.Tensor):
@@ -60,7 +59,7 @@ class CrossEntropyLoss(BaseLoss):
 
 @LossFactory.register()
 class FocalLoss(BaseLoss):
-    """Focal loss: FL(p_t) = -alpha_t * (1 - p_t)^gamma * log(p_t)."""
+    """Focal loss alpha_t * (1 - p_t)^gamma * CE; CE is label-smoothed, p_t is not."""
 
     def __init__(
         self,

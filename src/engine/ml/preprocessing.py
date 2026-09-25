@@ -78,7 +78,6 @@ def _build_preprocess(
     num_cols: list[str],
     cat_cols: list[str],
 ) -> ColumnTransformer | str:
-    """Build the preprocessor a strategy calls for."""
     if strategy == "passthrough":
         return "passthrough"
     if strategy not in _CAT_ENCODERS:

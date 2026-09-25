@@ -53,7 +53,6 @@ logger = logging.getLogger(__name__)
 
 
 def _seed_everything(seed: int) -> None:
-    """Seed the random, numpy and torch generators."""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -166,10 +165,8 @@ def build_trainer(
         num_cols=num_cols,
         cat_cols=cat_cols,
         label_col=label_col,
-        # The weights come from the original, imbalanced distribution, so they only apply
-        # to a split that still has it. Both `balance` and `n_samples` flatten it —
-        # subsample_df caps every class at the same size — and weighting on top of either
-        # would correct the same imbalance twice, over-shooting towards the rare classes.
+        # The weights correct the original distribution; `balance` and `n_samples` both
+        # flatten it already, and weighting on top would correct the imbalance twice.
         class_weights=(
             [
                 c["weight"]
@@ -282,17 +279,11 @@ def _fingerprint(
 
 
 def _training_record_path(paths: OutputPaths) -> Path:
-    """Where the record of the models currently on disk lives."""
     return paths.outputs / "training/folds.json"
 
 
 def _invalidate_training_record(paths: OutputPaths) -> None:
-    """Drop the training record before retraining.
-
-    Models are overwritten one fold at a time, so a run interrupted mid-loop leaves a
-    mix of old and new models on disk. Without this, the surviving record would still
-    describe the old ones and the next run would reuse that mix.
-    """
+    """Drop the record first: an interrupted retrain leaves old and new models mixed."""
     _training_record_path(paths).unlink(missing_ok=True)
 
 
@@ -398,10 +389,6 @@ def _train_fold(
         )
         history = summary.get("history", {})
         if history:
-            # Safe to publish before trainer.save() below: train_folds drops
-            # training/folds.json before any fold runs, and _can_reuse won't reuse
-            # without that record, so a raise from either statement still forces every
-            # fold to retrain on the next run.
             bus.publish(
                 LogBundle.from_dict(
                     {
@@ -423,11 +410,7 @@ def _publish_training_record(
     fold_records: list,
     grid_rows: list,
 ) -> None:
-    """Publish the one record of what was trained: run scalars plus two tables.
-
-    Identical in shape whether or not k-fold ran, so nothing has to know which mode
-    produced it to read it.
-    """
+    """Publish the one record of what was trained: run scalars plus two tables."""
     cfg = context.cfg
     logger.info("Trained %d model(s) under %s", len(folds), context.paths.models)
     context.bus.publish(
@@ -461,10 +444,8 @@ def train_folds(
     """Predict every eval row with the model of the fold that holds it out.
 
     Returns y_pred and y_proba over the eval frame, plus one latent embedding per fold.
-    Each model is trained, or loaded when one already exists for this exact
-    configuration, then used for prediction while still in memory and dropped: one model
-    is held at a time. Reused models keep the training artifacts of the run that produced
-    them, which describe them exactly.
+    Every fold retrains unless all of them have a model for this exact configuration;
+    reused models keep the training artifacts of the run that produced them.
     """
     cfg, trainer = context.cfg, context.trainer
     params = _resolve_classifier_params(

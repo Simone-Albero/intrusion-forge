@@ -57,7 +57,6 @@ def _apply_labels(
     y_label: str = "",
     title: str = "",
 ) -> None:
-    """Set the non-empty axis labels and title."""
     if x_label:
         ax.set_xlabel(x_label)
     if y_label:
@@ -98,7 +97,6 @@ def _smart_legend_loc(ax: Axes, X: np.ndarray, max_points: int = 5000) -> str:
 
 
 def _format_value(v: float, *, kind: str = "auto") -> str:
-    """Adaptive numeric formatting for plot annotations."""
     if v is None or (isinstance(v, float) and not np.isfinite(v)):
         return "-"
     if kind == "score":

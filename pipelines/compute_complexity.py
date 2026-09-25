@@ -124,8 +124,6 @@ def main() -> None:
     bus = LogDispatcher()
     bus.subscribe(JSONSubscriber(paths.shared))
 
-    # Both markers were checked above and at least one is missing (else we'd already have
-    # returned), so the graph both stages share is always needed from here on.
     clusters_meta = load_from_json(paths.shared / "metadata/clusters_meta.json")
     noise_cluster_ids = clusters_meta.get("noise_cluster_ids", [])
 
