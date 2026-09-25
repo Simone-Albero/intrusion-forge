@@ -2,17 +2,12 @@ pandas
 numpy
 scikit-learn
 torch
-torchvision
 rich
 matplotlib
 hydra-core
 pyarrow
-seaborn
 hdbscan
 xgboost
 joblib
 pytorch-ignite
 tqdm
-umap-learn
-streamlit
-plotly

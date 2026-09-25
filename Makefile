@@ -34,8 +34,7 @@
 
 # Use venv if present; falls back to the active conda (or system) python otherwise.
 # Override explicitly: make <target> PYTHON=python
-PYTHON    ?= $(if $(wildcard venv/bin/python),venv/bin/python,python)
-STREAMLIT ?= $(if $(wildcard venv/bin/streamlit),venv/bin/streamlit,streamlit)
+PYTHON     ?= $(if $(wildcard venv/bin/python),venv/bin/python,python)
 DATA       ?= cic_2018_v2
 NAME       ?= exp_euc
 SEED       ?= 42
@@ -50,7 +49,7 @@ ARGS       :=
 # A variable make does not know is a Hydra override typed in the wrong place: stop, don't drop it.
 MAKE_VARS    := DATA NAME SEED CLASSIFIER DISTANCE CLUSTERING CLUSTERING_ALGOS FORCE KFOLD ARGS \
                 DATASETS ML_CLASSIFIERS DL_CLASSIFIERS LARGE_DATASETS \
-                PYTHON STREAMLIT SWEEP_DIR FIGURES_DIR ROWS
+                PYTHON SWEEP_DIR FIGURES_DIR ROWS
 UNKNOWN_VARS := $(filter-out $(MAKE_VARS),$(foreach v,$(.VARIABLES),$(if $(filter command line,$(origin $(v))),$(v))))
 ifneq ($(UNKNOWN_VARS),)
 $(error Unknown make variable(s): $(UNKNOWN_VARS). Hydra overrides go through ARGS="key=value ...")
@@ -111,7 +110,7 @@ FORCE_FLAG  := $(if $(FORCE),force=true,)
 SWEEP_DIR       ?= resources/experiments
 FIGURES_DIR     ?= paper/figures
 
-.PHONY: prepare classify complexity failure-regress render comparisons run generate dashboard help
+.PHONY: prepare classify complexity failure-regress render comparisons run generate help
 
 ## prepare:            Step 1 — preprocess + cluster raw CSV → parquet splits (DATA, NAME, SEED, CLUSTERING, DISTANCE, FORCE)
 prepare:
@@ -195,10 +194,6 @@ run:
 ## generate:           Generate synthetic test dataset                        (ROWS)
 generate:
 	$(PYTHON) generate_synthetic.py $(if $(ROWS),--rows $(ROWS),)
-
-## dashboard:          Open the experiment dashboard in browser
-dashboard:
-	$(STREAMLIT) run dashboard.py
 
 ## help:               Show this help message
 help:

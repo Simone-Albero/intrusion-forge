@@ -87,14 +87,6 @@ random_forest/
 
 The fold models account for ~980 MB of the ~1 GB the run occupies; delete `models/` once you have the metrics.
 
-### 5. Optional — browse in the dashboard
-
-```bash
-make dashboard
-```
-
-A Streamlit application over `resources/experiments/`: choose a dataset, classifier and seed, compare runs in a heatmap, then examine one in detail.
-
 ### Variations worth trying
 
 ```bash
@@ -256,7 +248,6 @@ intrusion-forge/
 │   ├── render_plots.py           #   figures
 │   └── comparisons.py            #   cross-run aggregation
 ├── generate_synthetic.py         # synthetic dataset generator
-├── dashboard.py                  # Streamlit experiment browser
 ├── Makefile                      # experiment runner
 ├── configs/                      # Hydra hierarchy
 ├── src/                          # pure library — no config, no I/O, no path building
