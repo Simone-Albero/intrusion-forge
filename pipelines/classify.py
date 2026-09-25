@@ -213,7 +213,7 @@ def _resolve_classifier_params(
     if kind == "dl":
         cardinality = cfg.data.top_n + cfg.data.hash_buckets
         params = _resolve_dl_params(
-            params, num_cols, cat_cols, df_meta["num_classes"], cardinality
+            params, num_cols, cat_cols, df_meta["n_classes"], cardinality
         )
     elif supports_random_state(MLClassifierFactory.get(cfg.classifier.name)):
         params.setdefault("random_state", cfg.seed)
@@ -464,7 +464,7 @@ def train_folds(
     X_val = None if reuse else trainer.features(val_df)
 
     y_pred = np.empty(len(eval_df), dtype=eval_df[context.label_col].to_numpy().dtype)
-    y_proba = np.zeros((len(eval_df), context.df_meta["num_classes"]))
+    y_proba = np.zeros((len(eval_df), context.df_meta["n_classes"]))
     embeddings: list[np.ndarray | None] = []
     fold_records: list[dict] = []
     grid_rows: list[dict] = []
@@ -511,7 +511,7 @@ def publish_evaluation(
 ) -> None:
     """Turn the merged predictions into metrics, figures and per-sample dumps."""
     label_col, df_meta = context.label_col, context.df_meta
-    class_names = {c["class_id"]: c["name"] for c in df_meta["classes"]}
+    class_names = {c["class_id"]: c["class_name"] for c in df_meta["classes"]}
     mode = _eval_mode(context.cfg)
 
     y_true = eval_df[label_col].to_numpy()
@@ -519,7 +519,7 @@ def publish_evaluation(
 
     # Every class, not only the observed ones: a prediction into a class the evaluated
     # rows never contain stays visible, and row k is class id k.
-    all_classes = np.arange(df_meta["num_classes"])
+    all_classes = np.arange(df_meta["n_classes"])
     cm = confusion_matrix(y_true, y_pred, labels=all_classes, normalize="true")
     mcp = mcp_risk(y_proba)
 

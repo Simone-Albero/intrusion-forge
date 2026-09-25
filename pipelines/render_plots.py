@@ -235,7 +235,7 @@ def assemble_analysis_figures(
     """Build every analysis figure and publish it on the log bus."""
     logger.info("Building summary visualizations ...")
     summary_df = pd.DataFrame(cluster_summary).set_index("cluster_id")
-    class_names = {c["class_id"]: c["name"] for c in df_meta["classes"]}
+    class_names = {c["class_id"]: c["class_name"] for c in df_meta["classes"]}
     summary_df["class_name"] = summary_df["cluster_class"].map(class_names)
 
     if regressor_results.get("skipped"):

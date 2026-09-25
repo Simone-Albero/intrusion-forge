@@ -476,7 +476,7 @@ def _table_datasets(runs: list[dict]) -> dict:
         counts = sorted((c["n_rows"] for c in info["classes"]), reverse=True)
         seen[ds] = {
             "dataset": ds,
-            "n_instances": info["n_rows"],
+            "n_rows": info["n_rows"],
             "n_features": r.get("n_features"),
             "n_classes": len(counts),
             "imbalance_ratio": (

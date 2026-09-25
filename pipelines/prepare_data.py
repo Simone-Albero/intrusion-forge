@@ -119,7 +119,7 @@ def _cluster_per_class(
         n_cls = int(raw_labels.shape[0])
         n_noise_cls = int((raw_labels == -1).sum())
         report[str(cls)] = {
-            "n_samples": n_cls,
+            "n_rows": n_cls,
             "algorithms": algo_reports,
             "summary": {
                 "n_clusters": n_clusters_cls,
@@ -224,7 +224,7 @@ def _clustering_report_tables(
         classes.append(
             {
                 "class_name": class_name,
-                "n_samples": entry["n_samples"],
+                "n_rows": entry["n_rows"],
                 **entry["summary"],
             }
         )

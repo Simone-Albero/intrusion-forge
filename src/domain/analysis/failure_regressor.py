@@ -94,7 +94,7 @@ def build_cluster_summary(
 ) -> list[dict]:
     """Merge `cluster_`/`class_`-prefixed complexity with the observed failure rates."""
     by_class = {rec["class_id"]: rec for rec in class_complexity}
-    errors = {rec["cluster_id"]: rec for rec in predictions.get("clusters", [])}
+    errors = {rec["cluster_id"]: rec for rec in predictions["clusters"]}
 
     summary = []
     for cluster_measures in complexity:
@@ -121,7 +121,7 @@ def build_cluster_summary(
                 "is_noise_cluster": int(
                     cluster_measures.get("is_noise_cluster", False)
                 ),
-                "n_test": error.get("n_total", 0),
+                "n_eval": error["n_rows"] if error else 0,
                 "failure_rate": error.get("error_rate"),
                 "mcp_risk": error.get("mcp_risk"),
             }
@@ -230,7 +230,7 @@ def fit_failure_regressor(
     n_inner_splits: int = 5,
     n_iter: int = 40,
     random_state: int = 42,
-    min_test_support: int = 5,
+    min_eval_support: int = 5,
 ) -> dict:
     """Fit a nested-CV Random Forest predicting each cluster's failure rate from its features."""
     logger.info("Running failure regressor ...")
@@ -241,57 +241,57 @@ def fit_failure_regressor(
         if "is_noise_cluster" in df
         else pd.Series(False, index=df.index)
     )
-    no_test = df["failure_rate"].isna()
-    low_support = ~no_test & (df["n_test"].fillna(0) < min_test_support)
-    n_excluded_no_test = int(no_test.sum())
+    no_eval = df["failure_rate"].isna()
+    low_support = ~no_eval & (df["n_eval"].fillna(0) < min_eval_support)
+    n_excluded_no_eval = int(no_eval.sum())
     n_excluded_low_support = int((low_support & ~is_noise).sum())
-    n_excluded_noise = int((is_noise & ~no_test).sum())
-    noise_test_share = (
-        float(df.loc[is_noise & ~no_test, "n_test"].fillna(0).sum())
-        / float(df.loc[~no_test, "n_test"].fillna(0).sum())
-        if df.loc[~no_test, "n_test"].fillna(0).sum()
+    n_excluded_noise = int((is_noise & ~no_eval).sum())
+    noise_eval_share = (
+        float(df.loc[is_noise & ~no_eval, "n_eval"].fillna(0).sum())
+        / float(df.loc[~no_eval, "n_eval"].fillna(0).sum())
+        if df.loc[~no_eval, "n_eval"].fillna(0).sum()
         else 0.0
     )
-    df = df[~no_test & ~low_support & ~is_noise]
+    df = df[~no_eval & ~low_support & ~is_noise]
 
     rates = df["failure_rate"].astype(float)
-    n_test = df["n_test"].astype(float)
+    n_eval = df["n_eval"].astype(float)
     global_error_rate = (
-        float((rates * n_test).sum() / n_test.sum()) if n_test.sum() else 0.0
+        float((rates * n_eval).sum() / n_eval.sum()) if n_eval.sum() else 0.0
     )
     exclusions = {
-        "n_clusters_total": int(no_test.size),
+        "n_clusters_total": int(no_eval.size),
         "n_clusters_used": int(len(df)),
-        "n_excluded_no_test": n_excluded_no_test,
+        "n_excluded_no_eval": n_excluded_no_eval,
         "n_excluded_low_support": n_excluded_low_support,
         "n_excluded_noise": n_excluded_noise,
-        "noise_test_share": noise_test_share,
-        "min_test_support": min_test_support,
+        "noise_eval_share": noise_eval_share,
+        "min_eval_support": min_eval_support,
         "global_error_rate": global_error_rate,
     }
-    total_excluded = n_excluded_no_test + n_excluded_low_support + n_excluded_noise
+    total_excluded = n_excluded_no_eval + n_excluded_low_support + n_excluded_noise
     if total_excluded:
         # Losing more than a fifth of the clusters earns a warning: routine on a single
         # split, whose test rows alone starve per-cluster support.
-        excluded_frac = total_excluded / no_test.size if no_test.size else 0.0
+        excluded_frac = total_excluded / no_eval.size if no_eval.size else 0.0
         log = logger.warning if excluded_frac > 0.2 else logger.info
         log(
-            "Excluded clusters — no test: %d, support < %d: %d, noise pseudo-clusters: %d "
-            "(%.1f%% of test support); %d/%d used",
-            n_excluded_no_test,
-            min_test_support,
+            "Excluded clusters — no evaluated rows: %d, support < %d: %d, noise "
+            "pseudo-clusters: %d (%.1f%% of evaluated rows); %d/%d used",
+            n_excluded_no_eval,
+            min_eval_support,
             n_excluded_low_support,
             n_excluded_noise,
-            100.0 * noise_test_share,
+            100.0 * noise_eval_share,
             len(df),
-            no_test.size,
+            no_eval.size,
         )
 
     if feature_cols is None:
         feature_cols = [
             c
             for c in df.select_dtypes("number").columns
-            if c not in ("failure_rate", "n_test", "is_noise_cluster", "mcp_risk")
+            if c not in ("failure_rate", "n_eval", "is_noise_cluster", "mcp_risk")
         ]
     X = df[feature_cols].copy()
     y = df["failure_rate"].astype(float)
@@ -452,7 +452,7 @@ def instance_baselines(samples: pd.DataFrame, predicted_rate: list[dict]) -> dic
         )
 
     return {
-        "n_test": int(len(samples)),
+        "n_eval": int(len(samples)),
         "n_clusters": int(clusters.size),
         "baselines": baselines,
     }

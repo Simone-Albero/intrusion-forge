@@ -39,7 +39,13 @@ def main() -> None:
             )
     complexity = load_from_json(complexity_path)
     class_complexity = load_from_json(class_complexity_path)
-    predictions = load_from_json(paths.outputs / "analysis/predictions/clusters.json")
+    predictions_path = paths.outputs / "analysis/predictions/clusters.json"
+    predictions = load_from_json(predictions_path)
+    if any("n_rows" not in row for row in predictions["clusters"]):
+        raise ValueError(
+            f"{predictions_path} predates the current artifact format: "
+            "re-run `make classify`."
+        )
 
     cluster_summary = build_cluster_summary(
         complexity,
@@ -55,7 +61,7 @@ def main() -> None:
         n_outer_splits=cfg.failure_regressor.n_outer_splits,
         n_inner_splits=cfg.failure_regressor.n_inner_splits,
         n_iter=cfg.failure_regressor.n_iter,
-        min_test_support=cfg.failure_regressor.min_test_support,
+        min_eval_support=cfg.failure_regressor.min_eval_support,
         random_state=cfg.seed,
     )
     bus.publish(
@@ -71,8 +77,8 @@ def main() -> None:
         instance = instance_baselines(load_df(dump_path), results["oof_predicted_rate"])
         bus.publish(LogBundle.from_dict({"json/analysis/instance_baselines": instance}))
         logger.info(
-            "Instance-level baselines published (%d test samples, %d clusters).",
-            instance["n_test"],
+            "Instance-level baselines published (%d evaluated rows, %d clusters).",
+            instance["n_eval"],
             instance["n_clusters"],
         )
     else:

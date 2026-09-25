@@ -8,7 +8,7 @@ def get_df_info(df: pd.DataFrame, *, label_col: str) -> dict:
         "n_rows": int(df.shape[0]),
         "n_columns": int(df.shape[1]),
         "classes": [
-            {"name": str(name), "n_rows": int(n)}
+            {"class_name": str(name), "n_rows": int(n)}
             for name, n in df[label_col].value_counts().items()
         ],
     }
@@ -31,14 +31,14 @@ def compute_df_metadata(
 
     return {
         "benign_tag": benign_tag,
-        "num_classes": int(splits["train"][label_col].nunique()),
+        "n_classes": int(splits["train"][label_col].nunique()),
         "numerical_columns": num_cols,
         "categorical_columns": cat_cols,
         "splits": [{"split": tag, "n_rows": len(df)} for tag, df in splits.items()],
         "classes": [
             {
                 "class_id": int(class_id),
-                "name": name,
+                "class_name": name,
                 "weight": float(weights[class_id]),
                 **{f"n_{tag}": int(c.get(class_id, 0)) for tag, c in counts.items()},
             }

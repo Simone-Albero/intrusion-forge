@@ -17,9 +17,10 @@ def paths_from_cfg(cfg) -> OutputPaths:
 
 
 def load_prepared_metadata(path: Path) -> dict:
-    """Load one of prepare's metadata files, refusing one without a `classes` table."""
+    """Load `df_meta.json` or `df_info.json`, refusing either in an older format."""
     metadata = load_from_json(path)
-    if "classes" not in metadata:
+    classes = metadata.get("classes")
+    if not classes or "class_name" not in classes[0]:
         raise ValueError(
             f"{path} predates the current artifact format: "
             "re-run `make prepare FORCE=1`."
