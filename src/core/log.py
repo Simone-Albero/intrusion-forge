@@ -74,17 +74,26 @@ class LogDispatcher:
         self._subscribers: list = []
 
     def subscribe(self, sub) -> None:
-        """Register a subscriber. sub must implement on_log(bundle: LogBundle)."""
+        """Register a subscriber: it names the bundle part it `consumes` and has `on_log`."""
         self._subscribers.append(sub)
 
     def publish(self, bundle: LogBundle) -> None:
-        """Send bundle to all registered subscribers."""
+        """Send bundle to all registered subscribers, refusing a part nobody writes."""
+        for part in ("figures", "json"):
+            names = getattr(bundle, part)
+            if names and not any(sub.consumes == part for sub in self._subscribers):
+                raise ValueError(
+                    f"No subscriber writes {part} on this bus: {sorted(names)} "
+                    "would be lost."
+                )
         for sub in self._subscribers:
             sub.on_log(bundle)
 
 
 class FilesystemFigureSubscriber:
     """Writes figures from LogBundle as image files under base_path / {name}.{format}."""
+
+    consumes = "figures"
 
     def __init__(self, base_path: Path) -> None:
         self._base_path = Path(base_path)
@@ -99,6 +108,8 @@ class FilesystemFigureSubscriber:
 
 class JSONSubscriber:
     """Saves json artifacts from LogBundle under base_path / f"{name}.json"."""
+
+    consumes = "json"
 
     def __init__(self, base_path: Path) -> None:
         self._base_path = Path(base_path)

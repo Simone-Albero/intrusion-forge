@@ -596,7 +596,17 @@ def _render_comparisons(root: Path, fmt: str = "pdf", out: Path | None = None) -
 
 def _parse_args(argv: list[str]) -> tuple[Path, str, Path | None]:
     """Parse `sweep=<path> [format=..] [out=..]` from argv."""
-    kv = dict(a.split("=", 1) for a in argv if "=" in a)
+    unknown = [
+        a
+        for a in argv
+        if "=" not in a or a.split("=", 1)[0] not in ("sweep", "format", "out")
+    ]
+    if unknown:
+        raise ValueError(
+            f"comparisons: unknown argument(s) {unknown}; "
+            "expected sweep=<path> [format=pdf|png] [out=<dir>]."
+        )
+    kv = dict(a.split("=", 1) for a in argv)
     if "sweep" not in kv:
         raise ValueError("comparisons requires sweep=<path>.")
     return (

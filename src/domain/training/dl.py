@@ -127,7 +127,7 @@ class DLTrainer:
         name: str,
         params: dict,
         X: pd.DataFrame,
-        y: object = None,
+        y: object,
         *,
         X_val: pd.DataFrame,
         save_dir: Path,
@@ -206,12 +206,12 @@ class DLTrainer:
         params: dict,
         grid: dict,
         X: pd.DataFrame,
-        y: object = None,
+        y: object,
         *,
-        scoring: str = "f1_macro",
-        cv: int = 5,
-        max_samples: int | None = None,
-        random_state: int = 42,
+        scoring: str,
+        cv: int,
+        max_samples: int | None,
+        random_state: int,
     ) -> tuple[nn.Module, dict]:
         """Not available: grid search is implemented for ML classifiers only."""
         raise NotImplementedError(
@@ -242,14 +242,14 @@ class DLTrainer:
         model: nn.Module,
         path: Path,
         *,
-        name: str = "",
-        params: dict | None = None,
+        name: str,
+        params: dict,
     ) -> None:
         """Save the state dict and its metadata to `path / model.pt`."""
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
         torch.save(
-            {"state_dict": model.state_dict(), "name": name, "params": params or {}},
+            {"state_dict": model.state_dict(), "name": name, "params": params},
             path / "model.pt",
         )
 

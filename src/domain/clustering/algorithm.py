@@ -17,8 +17,8 @@ def fit_hdbscan(
     min_samples: int | None = None,
     cluster_selection_method: str = "leaf",
     cluster_selection_epsilon: float = 0.0,
-    max_fit_samples: int = 50_000,
-    random_state: int = 0,
+    max_fit_samples: int,
+    random_state: int,
 ) -> np.ndarray:
     """Fit HDBSCAN (Euclidean) and return labels (n,), keeping noise as -1."""
     n = X_num.shape[0]
@@ -57,8 +57,8 @@ def fit_kmeans(
     n_clusters: int = 8,
     # Part of the signature every fit function shares; KMeans still fits every row,
     # so the cap bounds only grid_search's sweep.
-    max_fit_samples: int = 50_000,
-    random_state: int = 0,
+    max_fit_samples: int,
+    random_state: int,
 ) -> np.ndarray:
     """Fit K-means on X and return labels (n,)."""
     n_clusters = max(2, min(n_clusters, X_num.shape[0] - 1))
@@ -75,8 +75,8 @@ def fit_birch(
     n_clusters: int = 8,
     threshold: float = 0.5,
     branching_factor: int = 50,
-    max_fit_samples: int = 50_000,
-    random_state: int = 0,
+    max_fit_samples: int,
+    random_state: int,
 ) -> np.ndarray:
     """Fit BIRCH with `n_clusters` (AgglomerativeClustering on CF-tree leaves)."""
     n = X_num.shape[0]
@@ -104,11 +104,17 @@ def fit_spectral(
     n_clusters: int = 8,
     affinity: str = "rbf",
     gamma: float | None = None,
-    n_neighbors: int = 10,
-    max_fit_samples: int = 10_000,
-    random_state: int = 0,
+    n_neighbors: int | None = None,
+    max_fit_samples: int,
+    random_state: int,
 ) -> np.ndarray:
     """Spectral clustering, with subsampling and 1-NN propagation above `max_fit_samples`."""
+    if gamma is not None and affinity != "rbf":
+        raise TypeError(f"fit_spectral: gamma is ignored with affinity={affinity!r}.")
+    if n_neighbors is not None and affinity != "nearest_neighbors":
+        raise TypeError(
+            f"fit_spectral: n_neighbors is ignored with affinity={affinity!r}."
+        )
     n = X_num.shape[0]
     n_clusters = max(2, min(int(n_clusters), n - 1))
     X_num = np.ascontiguousarray(X_num, dtype=np.float64)
@@ -120,9 +126,9 @@ def fit_spectral(
         random_state=random_state,
         eigen_solver="arpack",
     )
-    if gamma is not None and affinity == "rbf":
+    if gamma is not None:
         spec_kwargs["gamma"] = float(gamma)
-    if affinity == "nearest_neighbors":
+    if n_neighbors is not None:
         spec_kwargs["n_neighbors"] = int(n_neighbors)
 
     if n <= max_fit_samples:

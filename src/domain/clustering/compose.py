@@ -41,10 +41,10 @@ def build_cluster_fn(
     max_fit_samples: int,
     random_state: int,
     reporter: Reporter | None = None,
-    max_clusters: int | None = None,
-    min_clusters: int | None = None,
-    grid_target_cluster_size: int | None = None,
-    resolution_weight: float = 0.1,
+    max_clusters: int | None,
+    min_clusters: int | None,
+    grid_target_cluster_size: int | None,
+    resolution_weight: float,
     metric: str,
 ) -> ClusterFn:
     """Build a ClusterFn from a single {algorithm_name: params} config entry."""
@@ -58,8 +58,7 @@ def build_cluster_fn(
     grid, fixed = _split_grid_fixed(params or {})
     derives_n_clusters = name in _N_CLUSTERS_ALGOS and bool(grid_target_cluster_size)
 
-    # Checked here, before any fit: grid_search tolerates a failing candidate, so a bad
-    # key would otherwise surface only after the whole sweep had failed.
+    # Checked here, before any fit, so the error names the algorithm and the key.
     configured = grid.keys() | fixed.keys()
     unknown = sorted(configured - signature(fit_fn).parameters.keys())
     if unknown:

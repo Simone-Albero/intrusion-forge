@@ -37,6 +37,9 @@ def main() -> None:
             raise FileNotFoundError(
                 f"Missing complexity artifact at {p}. Run `make complexity` first."
             )
+    dump_path = paths.outputs / "analysis/predictions/oof_samples.parquet"
+    if not dump_path.exists():
+        raise FileNotFoundError(f"Missing {dump_path}: re-run `make classify`.")
     complexity = load_from_json(complexity_path)
     class_complexity = load_from_json(class_complexity_path)
     predictions_path = paths.outputs / "analysis/predictions/clusters.json"
@@ -68,22 +71,15 @@ def main() -> None:
         LogBundle.from_dict({"json/analysis/failure_regressor_results": results})
     )
 
-    dump_path = paths.outputs / "analysis/predictions/oof_samples.parquet"
-    if (
-        not results.get("skipped")
-        and results.get("oof_predicted_rate")
-        and dump_path.exists()
-    ):
+    if results.get("skipped"):
+        logger.info("Instance-level baselines skipped: the failure regressor was.")
+    else:
         instance = instance_baselines(load_df(dump_path), results["oof_predicted_rate"])
         bus.publish(LogBundle.from_dict({"json/analysis/instance_baselines": instance}))
         logger.info(
             "Instance-level baselines published (%d evaluated rows, %d clusters).",
             instance["n_eval"],
             instance["n_clusters"],
-        )
-    else:
-        logger.info(
-            "Instance-level baselines skipped (no per-sample dump at %s).", dump_path
         )
 
     flush_timing(paths.outputs / "timing.json")

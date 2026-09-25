@@ -48,7 +48,7 @@ def _measure(labels: np.ndarray, score: float, combo: dict, duration_s: float) -
 def subsample_features(
     X_num: np.ndarray,
     max_samples: int,
-    random_state: int = 0,
+    random_state: int,
 ) -> np.ndarray:
     """Random subsample of X_num, unchanged when already small enough."""
     n = X_num.shape[0]
@@ -102,11 +102,11 @@ def grid_search(
     fit_fn: FitFn,
     param_grid: dict[str, list],
     *,
-    max_fit_samples: int = 50_000,
-    random_state: int = 0,
+    max_fit_samples: int,
+    random_state: int,
     noise_penalty: float = 3.0,
-    resolution_weight: float = 0.1,
-    min_clusters: int | None = None,
+    resolution_weight: float,
+    min_clusters: int | None,
     score_metric: str,
     # score_metric, not metric: a keyword named here is absorbed instead of reaching
     # fit_fn through **fixed_params, so it must not shadow an algorithm's own parameter.
@@ -144,6 +144,10 @@ def grid_search(
                 random_state=random_state,
                 **fixed_params,
             )
+        except TypeError:
+            # A call the algorithm cannot take is a configuration error, not a degenerate
+            # candidate: stop the sweep rather than let it pick among the survivors.
+            raise
         except Exception as exc:
             failures.append((combo, exc))
             sweep.append(

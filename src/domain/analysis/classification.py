@@ -42,7 +42,7 @@ def compute_classification_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> di
 def _cluster_error_rates(
     clusters: np.ndarray,
     error_mask: np.ndarray,
-    extra_scores: dict[str, np.ndarray] | None = None,
+    extra_scores: dict[str, np.ndarray],
 ) -> list[dict]:
     """One row per cluster: error counts, rate and mean extra scores, worst rate first."""
     failed = clusters[error_mask]
@@ -71,7 +71,7 @@ def evaluate_predictions(
     y_true: np.ndarray,
     y_pred: np.ndarray,
     mcp: np.ndarray,
-    clusters: np.ndarray | None = None,
+    clusters: np.ndarray,
 ) -> dict:
     """Two tables of observed failures: one row per class, one row per cluster."""
     confidences = 1.0 - mcp
@@ -98,10 +98,8 @@ def evaluate_predictions(
         "classes": sorted(
             class_rows, key=lambda r: r["error_rate"] or 0.0, reverse=True
         ),
-        "clusters": (
-            _cluster_error_rates(clusters, error_mask, extra_scores={"mcp_risk": mcp})
-            if clusters is not None
-            else []
+        "clusters": _cluster_error_rates(
+            clusters, error_mask, extra_scores={"mcp_risk": mcp}
         ),
     }
 

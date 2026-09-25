@@ -19,7 +19,13 @@ class Factory(Generic[T]):
         """Decorator to register a class under an optional name (defaults to snake_case)."""
 
         def decorator(cls: Type[T]) -> Type[T]:
-            self._registry[name or _to_snake_case(cls.__name__)] = cls
+            key = name or _to_snake_case(cls.__name__)
+            if self._registry.get(key, cls) is not cls:
+                raise ValueError(
+                    f"{self._component_type_name} {key!r} is already registered "
+                    f"to {self._registry[key]!r}."
+                )
+            self._registry[key] = cls
             return cls
 
         return decorator

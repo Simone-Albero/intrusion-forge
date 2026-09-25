@@ -55,10 +55,10 @@ class MLTrainer:
         X: pd.DataFrame,
         y: np.ndarray,
         *,
-        scoring: str = "f1_macro",
-        cv: int = 5,
-        max_samples: int | None = None,
-        random_state: int = 42,
+        scoring: str,
+        cv: int,
+        max_samples: int | None,
+        random_state: int,
     ) -> tuple[Pipeline, dict]:
         """Cross-validated grid search over the classifier step, refitting the winner on all data."""
         clf_grid = {f"clf__{k}": v for k, v in grid.items()}
@@ -132,8 +132,8 @@ class MLTrainer:
         model: Pipeline,
         path: Path,
         *,
-        name: str = "",
-        params: dict | None = None,
+        name: str,
+        params: dict,
     ) -> None:
         """Save the full sklearn Pipeline to `path / model.joblib`."""
         save_to_joblib(model, Path(path) / "model.joblib")

@@ -515,7 +515,7 @@ def publish_evaluation(
     mode = _eval_mode(context.cfg)
 
     y_true = eval_df[label_col].to_numpy()
-    clusters = eval_df["cluster"].to_numpy() if "cluster" in eval_df.columns else None
+    clusters = eval_df["cluster"].to_numpy()
 
     # Every class, not only the observed ones: a prediction into a class the evaluated
     # rows never contain stays visible, and row k is class id k.
@@ -549,11 +549,10 @@ def publish_evaluation(
         ),
     }
     figures = {f"figure/testing/{name}": plot for name, plot in raw_figures.items()}
-    if clusters is not None:
-        save_df(
-            per_sample_scores(y_true, y_pred, mcp, clusters),
-            context.paths.outputs / "analysis/predictions/oof_samples.parquet",
-        )
+    save_df(
+        per_sample_scores(y_true, y_pred, mcp, clusters),
+        context.paths.outputs / "analysis/predictions/oof_samples.parquet",
+    )
 
     context.bus.publish(
         LogBundle.from_dict(
@@ -593,6 +592,12 @@ def classify(cfg) -> None:
     label_col = "encoded_" + cfg.data.label_col
 
     train_df, val_df, test_df = _load_splits(paths.processed_data, cfg.data.extension)
+    for split, df in (("train", train_df), ("test", test_df)):
+        if "cluster" not in df.columns:
+            raise ValueError(
+                f"The {split} split has no `cluster` column: "
+                "re-run `make prepare FORCE=1`."
+            )
     logger.info(
         "Data loaded — train: %d, val: %d, test: %d samples",
         len(train_df),
