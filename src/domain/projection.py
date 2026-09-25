@@ -3,6 +3,8 @@ from sklearn.manifold import TSNE
 
 _TSNE_MIN_PERPLEXITY = 5
 _TSNE_MAX_PERPLEXITY = 30
+# t-SNE needs more samples than its perplexity.
+TSNE_MIN_SAMPLES = _TSNE_MIN_PERPLEXITY + 1
 
 
 def stratified_subsample(

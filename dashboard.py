@@ -21,9 +21,9 @@ HEATMAP_METRICS: dict[str, str] = {
     "accuracy": "Test accuracy",
     "precision_macro": "Test precision macro",
     "recall_macro": "Test recall macro",
-    "fc_spearman": "Failure-regressor Spearman ρ",
-    "fc_r2": "Failure-regressor R²",
-    "fc_mae": "Failure-regressor MAE",
+    "regressor_spearman": "Failure-regressor Spearman ρ",
+    "regressor_r2": "Failure-regressor R²",
+    "regressor_mae": "Failure-regressor MAE",
 }
 
 METRIC_COLORSCALE_BOUNDS: dict[str, tuple[float | None, float | None]] = {
@@ -32,9 +32,9 @@ METRIC_COLORSCALE_BOUNDS: dict[str, tuple[float | None, float | None]] = {
     "accuracy": (0.0, 1.0),
     "precision_macro": (0.0, 1.0),
     "recall_macro": (0.0, 1.0),
-    "fc_spearman": (-1.0, 1.0),
-    "fc_r2": (-1.0, 1.0),
-    "fc_mae": (None, None),
+    "regressor_spearman": (-1.0, 1.0),
+    "regressor_r2": (-1.0, 1.0),
+    "regressor_mae": (None, None),
 }
 
 GALLERY_CATEGORIES: list[str] = [
@@ -67,10 +67,10 @@ class ExperimentRecord:
     f1_weighted: float | None
     precision_macro: float | None
     recall_macro: float | None
-    fc_spearman: float | None
-    fc_r2: float | None
-    fc_mae: float | None
-    fc_skipped: bool = False
+    regressor_spearman: float | None
+    regressor_r2: float | None
+    regressor_mae: float | None
+    regressor_skipped: bool = False
 
     @property
     def key(self) -> str:
@@ -88,7 +88,7 @@ class ExperimentDetail:
     """All heavy artifacts for one experiment, loaded lazily."""
 
     testing: dict | None = None
-    classifier_results: dict | None = None
+    regressor_results: dict | None = None
     cluster_summary: pd.DataFrame | None = None
     confusion_matrix: np.ndarray | None = None
     grid_search: dict | None = None
@@ -154,7 +154,7 @@ def _classifier_family(classifier_dir: Path) -> Literal["ml", "dl"]:
 def _extract_headline_metrics(classifier_dir: Path) -> dict[str, float | bool | None]:
     """Headline test and failure-regressor metrics of one classifier run."""
     summary = _read_json(classifier_dir / "outputs" / "testing" / "summary.json") or {}
-    fc = (
+    results = (
         _read_json(
             classifier_dir / "outputs" / "analysis" / "failure_regressor_results.json"
         )
@@ -166,10 +166,10 @@ def _extract_headline_metrics(classifier_dir: Path) -> dict[str, float | bool | 
         "f1_weighted": _safe_float(summary.get("f1_weighted")),
         "precision_macro": _safe_float(summary.get("precision_macro")),
         "recall_macro": _safe_float(summary.get("recall_macro")),
-        "fc_spearman": _safe_float(fc.get("spearman")),
-        "fc_r2": _safe_float(fc.get("r2")),
-        "fc_mae": _safe_float(fc.get("mae")),
-        "fc_skipped": bool(fc.get("skipped", False)),
+        "regressor_spearman": _safe_float(results.get("spearman")),
+        "regressor_r2": _safe_float(results.get("r2")),
+        "regressor_mae": _safe_float(results.get("mae")),
+        "regressor_skipped": bool(results.get("skipped", False)),
     }
 
 
@@ -245,7 +245,7 @@ def load_experiment_detail(record_root: str, record_shared: str) -> ExperimentDe
     shared = Path(record_shared)
     detail = ExperimentDetail(
         testing=_read_json(root / "outputs" / "testing" / "summary.json"),
-        classifier_results=_read_json(
+        regressor_results=_read_json(
             root / "outputs" / "analysis" / "failure_regressor_results.json"
         ),
         grid_search=_read_json(root / "outputs" / "training" / "folds.json"),
@@ -325,9 +325,9 @@ def records_to_df(records: list[ExperimentRecord]) -> pd.DataFrame:
                 "f1_weighted": r.f1_weighted,
                 "precision_macro": r.precision_macro,
                 "recall_macro": r.recall_macro,
-                "fc_spearman": r.fc_spearman,
-                "fc_r2": r.fc_r2,
-                "fc_mae": r.fc_mae,
+                "regressor_spearman": r.regressor_spearman,
+                "regressor_r2": r.regressor_r2,
+                "regressor_mae": r.regressor_mae,
                 "key": r.key,
             }
             for r in records
@@ -687,10 +687,11 @@ def feature_importance_bar(importances: list, *, top_k: int = 20) -> go.Figure:
     return fig
 
 
-def pred_vs_actual_fig(fc: dict, cluster_df: pd.DataFrame) -> go.Figure:
+def pred_vs_actual_fig(results: dict, cluster_df: pd.DataFrame) -> go.Figure:
     """Scatter of predicted against observed per-cluster failure rate."""
     predicted = {
-        r["cluster_id"]: r["predicted_rate"] for r in fc.get("oof_predicted_rate", [])
+        r["cluster_id"]: r["predicted_rate"]
+        for r in results.get("oof_predicted_rate", [])
     }
     df = cluster_df[["cluster_id", "cluster_class", "failure_rate"]].copy()
     df["predicted"] = df["cluster_id"].map(predicted)
@@ -813,35 +814,37 @@ def panel_confusion_matrix(
         st.caption("No confusion matrix available.")
 
 
-def panel_failure_classifier(
+def panel_failure_regressor(
     record: ExperimentRecord, detail: ExperimentDetail, key_prefix: str = "drill"
 ) -> None:
     """Panel: failure-regressor scores and predicted-vs-actual plot."""
     st.markdown("**Failure regressor (RF on cluster complexity)**")
-    fc = detail.classifier_results
-    if fc is None:
+    results = detail.regressor_results
+    if results is None:
         st.caption("⚠️ Not computed — run `make failure-regress` to generate.")
         return
-    if fc.get("skipped"):
+    if results.get("skipped"):
         st.warning(
-            f"🚫 **Stage skipped** — {fc.get('message', fc.get('reason'))}\n\n"
-            f"Clusters used: {fc.get('n_clusters_used', '?')}"
+            f"🚫 **Stage skipped** — {results.get('message', results.get('reason'))}\n\n"
+            f"Clusters used: {results.get('n_clusters_used', '?')}"
         )
         return
     cols = st.columns(4)
-    cols[0].metric("Spearman ρ", f"{fc.get('spearman', float('nan')):.4f}")
+    cols[0].metric("Spearman ρ", f"{results.get('spearman', float('nan')):.4f}")
     cols[1].metric(
-        "R²", f"{fc.get('r2', float('nan')):.4f}", delta=f"± {fc.get('r2_std', 0):.3f}"
+        "R²",
+        f"{results.get('r2', float('nan')):.4f}",
+        delta=f"± {results.get('r2_std', 0):.3f}",
     )
     cols[2].metric(
         "MAE",
-        f"{fc.get('mae', float('nan')):.4f}",
-        delta=f"± {fc.get('mae_std', 0):.3f}",
+        f"{results.get('mae', float('nan')):.4f}",
+        delta=f"± {results.get('mae_std', 0):.3f}",
     )
-    cols[3].metric("CV folds", f"{len(fc.get('per_fold', []))}")
-    if fc.get("oof_predicted_rate") and detail.cluster_summary is not None:
+    cols[3].metric("CV folds", f"{len(results.get('per_fold', []))}")
+    if results.get("oof_predicted_rate") and detail.cluster_summary is not None:
         st.plotly_chart(
-            pred_vs_actual_fig(fc, detail.cluster_summary),
+            pred_vs_actual_fig(results, detail.cluster_summary),
             width="stretch",
             key=_wkey(key_prefix, "pred_vs_actual", record),
         )
@@ -852,14 +855,14 @@ def panel_feature_importances(
 ) -> None:
     """Panel: top-K feature importances of the failure regressor."""
     st.markdown("**Feature importances (failure regressor)**")
-    fc = detail.classifier_results
-    if fc is None:
+    results = detail.regressor_results
+    if results is None:
         st.caption("⚠️ Not computed — run `make failure-regress` to generate.")
         return
-    if fc.get("skipped"):
-        st.warning(f"🚫 Skipped — {fc.get('message', fc.get('reason'))}")
+    if results.get("skipped"):
+        st.warning(f"🚫 Skipped — {results.get('message', results.get('reason'))}")
         return
-    if "feature_importances" not in fc:
+    if "feature_importances" not in results:
         st.caption(
             "Malformed `failure_regressor_results.json` (no feature_importances)."
         )
@@ -868,7 +871,7 @@ def panel_feature_importances(
         "Top-K features", 5, 50, 20, key=_wkey(key_prefix, "fi_topk", record)
     )
     st.plotly_chart(
-        feature_importance_bar(fc["feature_importances"], top_k=top_k),
+        feature_importance_bar(results["feature_importances"], top_k=top_k),
         width="stretch",
         key=_wkey(key_prefix, "fi_chart", record),
     )
@@ -1001,15 +1004,21 @@ def panel_sibling_classifiers(
         "f1_weighted",
         "precision_macro",
         "recall_macro",
-        "fc_spearman",
-        "fc_r2",
-        "fc_mae",
+        "regressor_spearman",
+        "regressor_r2",
+        "regressor_mae",
     ]
     view = df[view_cols].sort_values("f1_macro", ascending=False, na_position="last")
     styled = view.style.highlight_max(
         subset=[
             c
-            for c in ["accuracy", "f1_macro", "f1_weighted", "fc_spearman", "fc_r2"]
+            for c in [
+                "accuracy",
+                "f1_macro",
+                "f1_weighted",
+                "regressor_spearman",
+                "regressor_r2",
+            ]
             if c in view.columns
         ],
         color="rgba(46, 160, 67, 0.25)",
@@ -1050,8 +1059,8 @@ def _render_hypothesis_scoreboard(
 ) -> None:
     """Aggregate Spearman ρ across all selected experiments as a hypothesis check."""
     rs = filter_records(records, variants=selected_variants, seed=seed)
-    rho_vals = [r.fc_spearman for r in rs if r.fc_spearman is not None]
-    n_skipped = sum(1 for r in rs if r.fc_skipped)
+    rho_vals = [r.regressor_spearman for r in rs if r.regressor_spearman is not None]
+    n_skipped = sum(1 for r in rs if r.regressor_skipped)
 
     st.subheader("Hypothesis validation — failure-rate predictability")
     c1, c2, c3, c4 = st.columns(4)
@@ -1059,7 +1068,7 @@ def _render_hypothesis_scoreboard(
     c2.metric("Mean ρ", f"{float(np.mean(rho_vals)):.3f}" if rho_vals else "—")
     pct = sum(v >= 0.6 for v in rho_vals) / len(rho_vals) if rho_vals else None
     c3.metric("ρ ≥ 0.6", f"{pct:.0%}" if pct is not None else "—")
-    c4.metric("FC skipped", n_skipped)
+    c4.metric("Regressor skipped", n_skipped)
 
     if rho_vals:
         hist_fig = px.histogram(
@@ -1278,7 +1287,7 @@ def render_drilldown(records: list[ExperimentRecord], seed: int) -> None:
 
     row_pairs = [
         (panel_test_performance, panel_confusion_matrix),
-        (panel_failure_classifier, panel_feature_importances),
+        (panel_failure_regressor, panel_feature_importances),
         (panel_failure_rate_distribution, panel_per_class_breakdown),
     ]
     for left_panel, right_panel in row_pairs:
@@ -1341,7 +1350,7 @@ def render_side_by_side(records: list[ExperimentRecord], seed: int) -> None:
             st.caption(f"family `{record.family}` · seed `{record.seed}`")
             panel_test_performance(record, detail, key_prefix=prefix)
             panel_confusion_matrix(record, detail, key_prefix=prefix)
-            panel_failure_classifier(record, detail, key_prefix=prefix)
+            panel_failure_regressor(record, detail, key_prefix=prefix)
             panel_per_class_breakdown(record, detail, key_prefix=prefix)
             st.divider()
             panel_cluster_table(record, detail, key_prefix=prefix)
@@ -1514,7 +1523,7 @@ def render_sidebar(
 
     with st.sidebar.expander("Debug", expanded=False):
         st.write(f"Valid records: **{len(records)}**")
-        st.write(f"Legacy folders skipped: **{n_skipped}**")
+        st.write(f"Folders without df_meta.json skipped: **{n_skipped}**")
         st.write(
             f"Variants: {len(variants)} · Datasets: {len({r.file_name for r in records})}"
         )

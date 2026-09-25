@@ -12,10 +12,7 @@ from tqdm import tqdm
 from src.core.utils import timed
 from src.domain.analysis.confidence import atc_cluster_risk
 from src.domain.analysis.failure import is_failure
-from src.domain.analysis.risk_coverage import (
-    oracle_benefit_recovered,
-    risk_coverage_curve,
-)
+from src.domain.analysis.risk_coverage import oracle_benefit_recovered
 
 logger = logging.getLogger(__name__)
 
@@ -384,7 +381,7 @@ def fit_failure_regressor(
     return results
 
 
-_RATE_BASELINE_NAMES = ("region", "mcp_cluster", "atc_cluster")
+RATE_BASELINE_NAMES = ("region", "mcp_cluster", "atc_cluster")
 
 
 def instance_baselines(samples: pd.DataFrame, predicted_rate: list[dict]) -> dict:
@@ -425,9 +422,6 @@ def instance_baselines(samples: pd.DataFrame, predicted_rate: list[dict]) -> dic
         "combo_atc_rankavg": combo_atc_rankavg,
     }
 
-    support = np.ones(failure.size)
-    oracle_curve = risk_coverage_curve(failure, failure, support)
-
     # Not a pandas groupby: its Cython mean accumulates in a different order from
     # numpy's pairwise sum, so the two disagree in the last ulp on any cluster with
     # enough rows — enough to move the published spearman in its fifth decimal.
@@ -437,6 +431,7 @@ def instance_baselines(samples: pd.DataFrame, predicted_rate: list[dict]) -> dic
         for name, sc in scores.items():
             predicted_by_name[name][i] = sc[m].mean()
 
+    support = np.ones(failure.size)
     baselines = []
     for name, sc in scores.items():
         predicted = predicted_by_name[name]
@@ -450,13 +445,13 @@ def instance_baselines(samples: pd.DataFrame, predicted_rate: list[dict]) -> dic
                 "variant": name,
                 "spearman": rho,
                 "oracle_benefit_recovered": oracle_benefit_recovered(
-                    sc, failure, support, oracle_curve
+                    sc, failure, support
                 ),
                 # Null rather than absent: the rank-average variants have no rate to
                 # compare, and a uniform row shape is what makes this a table.
                 "cluster_rate_mse": (
                     float(np.mean((predicted - observed) ** 2))
-                    if name in _RATE_BASELINE_NAMES
+                    if name in RATE_BASELINE_NAMES
                     else None
                 ),
             }

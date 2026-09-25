@@ -222,12 +222,10 @@ def grid_search(
             "grid_search: no valid clustering found across all parameter combinations."
         )
 
-    # The sweep already fit the winner on sub_num with the real random_state — when
-    # sub_num is X_num (no subsampling occurred, `is` not `==`: subsample_features
-    # returns X_num itself, unchanged, exactly in that case), that fit and a fresh refit
-    # on X_num are the same call on the same input, so its labels are reusable as-is.
+    # Without subsampling, the sweep's fit of the winner is the refit itself.
     best_idx = next(i for i, e in enumerate(sweep) if e is best_entry)
-    best_labels = sweep_labels[best_idx] if sub_num is X_num else None
+    subsampled = len(X_num) > max_fit_samples
+    best_labels = None if subsampled else sweep_labels[best_idx]
     for i, entry in enumerate(sweep):
         entry["best"] = i == best_idx
 

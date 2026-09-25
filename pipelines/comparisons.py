@@ -13,6 +13,7 @@ from src.core.log import (
     setup_logger,
 )
 from src.core.utils import load_from_json
+from src.domain.analysis.failure_regressor import RATE_BASELINE_NAMES
 from src.domain.plot.base import Plot, set_figure_format
 from src.domain.plot.comparison_charts import (
     box_plot,
@@ -96,8 +97,7 @@ _VARIANT_COLOR = {
     "combo_rankavg": PALETTE[3],
     "combo_atc_rankavg": PALETTE[4],
 }
-# The 3 variants on the failure-rate scale (the only ones with a cluster_rate_mse).
-_RATE_VARIANT_ORDER = ["mcp_cluster", "atc_cluster", "region"]
+_RATE_VARIANT_ORDER = [v for v in _VARIANT_ORDER if v in RATE_BASELINE_NAMES]
 # Fig 10's top-to-bottom row order.
 _ORACLE_BENEFIT_ORDER = [
     "combo_atc_rankavg",
@@ -165,11 +165,6 @@ def _dataset_base(name: str) -> str:
 def _dist_color(distance: str) -> str:
     """Palette colour of a distance metric."""
     return _COS if distance == "cosine" else _EUC
-
-
-def _is_kmeans_euclidean(run: dict) -> bool:
-    """True for the k-means + Euclidean configuration the paper restricts RQ2-RQ5 to."""
-    return run["algorithm"] == "kmeans" and run["distance"] == "euclidean"
 
 
 def _median_iqr(values: list[float]) -> dict:
@@ -340,11 +335,10 @@ def _fig_variant_by_group(
 ) -> Plot | None:
     """Grouped bar of the baseline variants' median (+IQR) `field`, one bar per variant
     within each group."""
-    subset = [r for r in runs if _is_kmeans_euclidean(r)]
-    groups = sorted({group_key(r) for r in subset})
+    groups = sorted({group_key(r) for r in runs})
     if not groups:
         return None
-    series = _variant_series(subset, groups, group_key, field, variants)
+    series = _variant_series(runs, groups, group_key, field, variants)
     return grouped_bar_plot(
         [label_map.get(g, g) for g in groups], series, y_label=y_label, y_lim=y_lim
     )
@@ -392,9 +386,8 @@ def _fig_spearman_by_dataset(runs: list[dict]) -> Plot | None:
 def _fig_oracle_benefit_by_variant(runs: list[dict]) -> Plot | None:
     """Figure 10: per-sample oracle benefit recovered (%) for the 5 baseline variants
     (kmeans-euclidean subset)."""
-    subset = [r for r in runs if _is_kmeans_euclidean(r)]
     acc: dict[str, list[float]] = {v: [] for v in _ORACLE_BENEFIT_ORDER}
-    for r in subset:
+    for r in runs:
         for variant in _ORACLE_BENEFIT_ORDER:
             v = _variant_value(r, variant, "oracle_benefit_recovered")
             if v is not None:
@@ -504,16 +497,15 @@ def _table_datasets(runs: list[dict]) -> dict:
 def _table_variant_field(
     runs: list[dict], field: str, variants: list[str] = _VARIANT_ORDER
 ) -> dict:
-    """Median (+IQR) of `field` per baseline variant (kmeans-euclidean subset)."""
-    subset = [r for r in runs if _is_kmeans_euclidean(r)]
+    """Median (+IQR) of `field` per baseline variant."""
     rows = [
         {
             "variant": variant,
-            **_median_iqr([_variant_value(r, variant, field) for r in subset]),
+            **_median_iqr([_variant_value(r, variant, field) for r in runs]),
         }
         for variant in variants
     ]
-    return {"n_runs": len(subset), "rows": rows}
+    return {"n_runs": len(runs), "rows": rows}
 
 
 def _table_variant_spearman(runs: list[dict]) -> dict:
@@ -529,11 +521,10 @@ def _table_variant_cluster_mse(runs: list[dict]) -> dict:
 def _table_variant_spearman_by_dataset(runs: list[dict]) -> dict:
     """Table 7: per-dataset median Spearman rho for the 5 variants (kmeans-euclidean, across
     the 10 classifiers)."""
-    subset = [r for r in runs if _is_kmeans_euclidean(r)]
-    datasets = sorted({_dataset_base(r["dataset"]) for r in subset})
+    datasets = sorted({_dataset_base(r["dataset"]) for r in runs})
     rows = []
     for ds in datasets:
-        ds_runs = [r for r in subset if _dataset_base(r["dataset"]) == ds]
+        ds_runs = [r for r in runs if _dataset_base(r["dataset"]) == ds]
         row: dict = {"dataset": ds}
         for variant in _VARIANT_ORDER:
             vals = [
@@ -562,15 +553,21 @@ def _render_comparisons(root: Path, fmt: str = "pdf", out: Path | None = None) -
         n_hdb,
         root,
     )
+    # The paper reports RQ2-RQ5 on the k-means + Euclidean configuration only.
+    kmeans_euclidean = [
+        r for r in runs if r["algorithm"] == "kmeans" and r["distance"] == "euclidean"
+    ]
 
     figures = {
         "figure/rho_by_config": _fig_rho_by_config(runs),
         "figure/rho_vs_clusters": _fig_rho_vs_clusters(runs),
         "figure/family_importance": _fig_family_importance(runs),
-        "figure/spearman_by_classifier": _fig_spearman_by_classifier(runs),
-        "figure/mse_by_classifier": _fig_mse_by_classifier(runs),
-        "figure/oracle_benefit_by_variant": _fig_oracle_benefit_by_variant(runs),
-        "figure/spearman_by_dataset": _fig_spearman_by_dataset(runs),
+        "figure/spearman_by_classifier": _fig_spearman_by_classifier(kmeans_euclidean),
+        "figure/mse_by_classifier": _fig_mse_by_classifier(kmeans_euclidean),
+        "figure/oracle_benefit_by_variant": _fig_oracle_benefit_by_variant(
+            kmeans_euclidean
+        ),
+        "figure/spearman_by_dataset": _fig_spearman_by_dataset(kmeans_euclidean),
     }
     figures = {k: v for k, v in figures.items() if v is not None}
 
@@ -578,10 +575,10 @@ def _render_comparisons(root: Path, fmt: str = "pdf", out: Path | None = None) -
         "json/perconfig_table": _table_perconfig(runs),
         "json/nclusters_table": _table_nclusters(runs),
         "json/datasets_table": _table_datasets(runs),
-        "json/variant_spearman_table": _table_variant_spearman(runs),
-        "json/variant_cluster_mse_table": _table_variant_cluster_mse(runs),
+        "json/variant_spearman_table": _table_variant_spearman(kmeans_euclidean),
+        "json/variant_cluster_mse_table": _table_variant_cluster_mse(kmeans_euclidean),
         "json/variant_spearman_by_dataset_table": _table_variant_spearman_by_dataset(
-            runs
+            kmeans_euclidean
         ),
     }
 

@@ -6,7 +6,11 @@ from src.domain.plot.base import Plot
 from src.domain.plot.metrics import confusion_matrix_plot
 from src.domain.plot.primitives import bar_plot, line_plot, scatter_plot
 from src.domain.plot.style import extended_palette
-from src.domain.projection import stratified_subsample, tsne_projection
+from src.domain.projection import (
+    TSNE_MIN_SAMPLES,
+    stratified_subsample,
+    tsne_projection,
+)
 
 
 def training_history_figures(history: dict[str, list[float]]) -> dict[str, Plot]:
@@ -18,15 +22,15 @@ def training_history_figures(history: dict[str, list[float]]) -> dict[str, Plot]
     }
 
 
-_TSNE_MIN_POINTS = 6  # tsne_projection's perplexity floor (5) requires n_samples > 5
+_TSNE_SAMPLES = 2000
 
 
 def _projection_selection(
-    y_true: np.ndarray, y_pred: np.ndarray, class_names: dict[int, str], n_samples: int
+    y_true: np.ndarray, y_pred: np.ndarray, class_names: dict[int, str]
 ) -> tuple[np.ndarray, dict] | tuple[None, None]:
     """Row positions to visualize (most-missed classes first, subsampled) and their names.
 
-    (None, None) when fewer than _TSNE_MIN_POINTS rows survive subsampling.
+    (None, None) when fewer than TSNE_MIN_SAMPLES rows survive subsampling.
     """
     classes = np.unique(y_true)
     mis = y_pred != y_true
@@ -43,11 +47,13 @@ def _projection_selection(
         keep_classes = [int(c) for c in classes]
 
     prob_pos = np.flatnonzero(np.isin(y_true, keep_classes))
-    # Fixed seed (matching tsne_projection's own default) so "raw" and "latent" draw
-    # the same visualized rows on a single split, where y_true/y_pred are identical.
-    sub = stratified_subsample(y_true[prob_pos], n_samples=n_samples, random_state=42)
+    # Fixed seed so "raw" and "latent" draw the same rows on a single split, where
+    # y_true/y_pred are identical.
+    sub = stratified_subsample(
+        y_true[prob_pos], n_samples=_TSNE_SAMPLES, random_state=42
+    )
     vis_idx = prob_pos[sub]
-    if len(vis_idx) < _TSNE_MIN_POINTS:
+    if len(vis_idx) < TSNE_MIN_SAMPLES:
         return None, None
     return vis_idx, {c: class_names.get(c, str(c)) for c in keep_classes}
 
@@ -76,7 +82,6 @@ def build_test_figures(
     cm: np.ndarray,
     cm_classes: np.ndarray,
     class_names: dict[int, str],
-    n_samples: int = 2000,
 ) -> dict[str, Plot]:
     """Confusion matrix over `cm_classes`, F1 over the observed classes, raw t-SNE."""
     cm_names = [class_names.get(int(c), str(c)) for c in cm_classes]
@@ -101,7 +106,7 @@ def build_test_figures(
         ylim=(0, 1),
     )
 
-    vis_idx, names = _projection_selection(y_true, y_pred, class_names, n_samples)
+    vis_idx, names = _projection_selection(y_true, y_pred, class_names)
     if vis_idx is not None:
         figures["raw"] = _scatter_projection(
             eval_df.iloc[vis_idx][feat_cols].to_numpy(),
@@ -131,9 +136,7 @@ def latent_figures(
             continue
         y_true_fold = y_true[eval_idx]
         y_pred_fold = y_pred[eval_idx]
-        vis_idx, names = _projection_selection(
-            y_true_fold, y_pred_fold, class_names, 2000
-        )
+        vis_idx, names = _projection_selection(y_true_fold, y_pred_fold, class_names)
         if vis_idx is not None:
             figures[f"{prefix}latent"] = _scatter_projection(
                 embedding[vis_idx], y_true_fold[vis_idx], y_pred_fold[vis_idx], names
