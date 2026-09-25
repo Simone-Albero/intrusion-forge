@@ -42,7 +42,7 @@ def _fit_outer_fold(
     if inner_cv is None:
         best = RandomForestRegressor(random_state=random_state)
         best.fit(X_train, y_train)
-        best_params = {}
+        best_params = {k: best.get_params()[k] for k in param_grid}
         best_score = None
     else:
         search = RandomizedSearchCV(
@@ -196,7 +196,7 @@ def _aggregate_oof_results(oof: dict, feature_cols: list[str]) -> dict:
                 "spearman": f["spearman"],
                 "r2": f["r2"],
                 "mae": f["mae"],
-                "best_params": f["best_params"],
+                **{f"param_{k}": v for k, v in f["best_params"].items()},
                 "best_score": f["best_score"],
             }
             for f in folds

@@ -78,7 +78,7 @@ random_forest/
 ├── outputs/testing/summary.json      # accuracy, macro F1, per-class metrics
 ├── outputs/analysis/
 │   ├── cluster_summary.json          #   descriptors + observed error rate, per region
-│   ├── failure_regressor_results.json #  ρ, R², MAE, MSE, importances, best_params per fold
+│   ├── failure_regressor_results.json #  ρ, R², MAE, MSE, importances, best parameters per fold
 │   ├── instance_baselines.json       #   ρ and oracle-benefit recovered, regressor vs confidence baselines
 │   └── predictions/                  #   per-sample predictions
 ├── models/fold_0 … fold_4/           # one model per fold (~1 GB total)

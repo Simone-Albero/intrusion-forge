@@ -378,10 +378,10 @@ def _train_fold(
             summary["scoring"],
             summary["best_score"],
         )
-        record["best_params"] = summary["best_params"]
-        record["best_score"] = summary["best_score"]
         # Flat rows: the grid's parameter names are the same for every combination in a
         # run, and the `param_` prefix keeps them from colliding with the score columns.
+        record.update({f"param_{k}": v for k, v in summary["best_params"].items()})
+        record["best_score"] = summary["best_score"]
         grid_rows = [
             {
                 "fold": index,
