@@ -184,7 +184,7 @@ Each stage is a script under [pipelines/](pipelines/), wrapped by the [Makefile]
 
 **failure-regress** assembles the table — a region's descriptors, its class's descriptors and its observed error rate — and fits the estimator over five outer and five inner folds. It also compares the estimate against confidence-based baselines (MCP, ATC, and rank-averaged combinations of the two with the regressor).
 
-**render** turns the saved JSON and pickle artefacts into figures. `figure_format` selects `pdf`, the default, or `png`.
+**render** turns the saved JSON artefacts into figures. `figure_format` selects `pdf`, the default, or `png`.
 
 ### Sweeps
 
@@ -232,7 +232,6 @@ resources/experiments/${name}/${data.file_name}_${seed}/
     ├── configs/            # resolved configuration snapshot
     ├── models/             # checkpoints or serialised estimators
     ├── outputs/            # training, testing and analysis JSON
-    ├── pickle/             # binary side artefacts
     └── figures/            # rendered figures
 ```
 
@@ -269,5 +268,5 @@ intrusion-forge/
 Three conventions to know before editing:
 
 - `src/` is input to output. Configuration loading, file I/O and path building belong to `pipelines/` and `src/core` alone.
-- Every write, whether JSON, pickle or figure, goes through `LogDispatcher.publish(LogBundle)` and a subscriber — except model persistence (the `Trainer`'s saved models and training checkpoints), the resolved config (`save_config`), parquet DataFrames (`save_df`) and timing records (`flush_timing`).
+- Every write, whether JSON or figure, goes through `LogDispatcher.publish(LogBundle)` and a subscriber — except model persistence (the `Trainer`'s saved models and training checkpoints), the resolved config (`save_config`), parquet DataFrames (`save_df`) and timing records (`flush_timing`).
 - Classifiers and losses register themselves with a factory (`@DLClassifierFactory.register()`, `@LossFactory.register()`, or `MLClassifierFactory.register("name")(SklearnClass)`) and are discovered automatically at import. Each factory is defined in the `factory.py` of the package that holds its components (`src/engine/ml/model/`, `src/engine/dl/model/`, `src/engine/dl/loss/`, `src/domain/clustering/`), and a new module imports it from there.

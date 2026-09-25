@@ -6,7 +6,7 @@ from typing import Any
 
 from rich.logging import RichHandler
 
-from src.core.utils import save_to_json, save_to_pickle
+from src.core.utils import save_to_json
 from src.domain.plot.base import Plot
 
 
@@ -48,27 +48,23 @@ class LogBundle:
 
     figures: dict[str, Plot] = field(default_factory=dict)
     json: dict[str, Any] = field(default_factory=dict)
-    pickle: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, d: dict) -> "LogBundle":
-        """Build a LogBundle from a flat dict keyed by 'figure/', 'json/' or 'pickle/' paths."""
+        """Build a LogBundle from a flat dict keyed by 'figure/' or 'json/' paths."""
         figures: dict[str, Plot] = {}
         json_: dict[str, Any] = {}
-        pickle_: dict[str, Any] = {}
         for key, value in d.items():
             if key.startswith("figure/"):
                 figures[key[len("figure/") :]] = value
             elif key.startswith("json/"):
                 json_[key[len("json/") :]] = value
-            elif key.startswith("pickle/"):
-                pickle_[key[len("pickle/") :]] = value
             else:
                 raise ValueError(
                     f"Artifact key {key!r} has no known prefix: "
-                    "expected 'figure/', 'json/' or 'pickle/'."
+                    "expected 'figure/' or 'json/'."
                 )
-        return cls(figures=figures, json=json_, pickle=pickle_)
+        return cls(figures=figures, json=json_)
 
 
 class LogDispatcher:
@@ -111,15 +107,3 @@ class JSONSubscriber:
         """Write every JSON artifact in the bundle."""
         for name, value in bundle.json.items():
             save_to_json(value, self._base_path / f"{name}.json")
-
-
-class PickleSubscriber:
-    """Saves pickle artifacts from LogBundle under base_path / f"{name}.pkl"."""
-
-    def __init__(self, base_path: Path) -> None:
-        self._base_path = Path(base_path)
-
-    def on_log(self, bundle: LogBundle) -> None:
-        """Write every pickle artifact in the bundle."""
-        for name, value in bundle.pickle.items():
-            save_to_pickle(value, self._base_path / f"{name}.pkl")

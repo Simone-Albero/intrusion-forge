@@ -18,7 +18,6 @@ from src.core.log import (
     JSONSubscriber,
     LogBundle,
     LogDispatcher,
-    PickleSubscriber,
     setup_logger,
 )
 from src.core.paths import OutputPaths
@@ -562,7 +561,6 @@ def publish_evaluation(
                 **figures,
                 "json/testing/summary": full_metrics,
                 "json/analysis/predictions/clusters": pred_infos,
-                "pickle/analysis/confusion_matrices/testing": cm,
             }
         )
     )
@@ -605,7 +603,6 @@ def classify(cfg) -> None:
 
     bus = LogDispatcher()
     bus.subscribe(JSONSubscriber(paths.outputs))
-    bus.subscribe(PickleSubscriber(paths.pickle))
     bus.subscribe(FilesystemFigureSubscriber(paths.figures))
 
     context = ClassifyContext(

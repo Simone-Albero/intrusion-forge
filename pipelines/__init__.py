@@ -11,7 +11,6 @@ def paths_from_cfg(cfg) -> OutputPaths:
         shared=Path(cfg.path.shared),
         configs=Path(cfg.path.configs),
         outputs=Path(cfg.path.outputs),
-        pickle=Path(cfg.path.pickle),
         models=Path(cfg.path.models),
         figures=Path(cfg.path.figures),
     )

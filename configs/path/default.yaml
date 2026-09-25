@@ -10,6 +10,5 @@ shared:         ${path.out_base_path}/shared
 # Per-classifier (resolved against ${classifier.name})
 models:   ${path.out_base_path}/${classifier.name}/models
 outputs:  ${path.out_base_path}/${classifier.name}/outputs
-pickle:   ${path.out_base_path}/${classifier.name}/pickle
 configs:  ${path.out_base_path}/${classifier.name}/configs
 figures:  ${path.out_base_path}/${classifier.name}/figures

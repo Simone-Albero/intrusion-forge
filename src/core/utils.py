@@ -2,7 +2,6 @@ import functools
 import json
 import logging
 import math
-import pickle
 import time
 from collections.abc import Callable, Iterable
 from pathlib import Path
@@ -36,15 +35,6 @@ def load_from_json(file_path: str | Path) -> object:
     with open(file_path, "r") as f:
         data = json.load(f)
     return data
-
-
-def save_to_pickle(data: object, file_path: str | Path) -> None:
-    """Save data to a pickle file."""
-    file_path = Path(file_path)
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-
-    with open(file_path, "wb") as f:
-        pickle.dump(data, f)
 
 
 def save_to_joblib(data: object, file_path: str | Path) -> None:

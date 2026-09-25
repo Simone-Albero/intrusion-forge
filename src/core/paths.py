@@ -10,6 +10,5 @@ class OutputPaths:
     shared: Path
     configs: Path
     outputs: Path
-    pickle: Path
     models: Path
     figures: Path
