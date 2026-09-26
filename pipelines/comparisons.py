@@ -13,7 +13,10 @@ from src.core.log import (
     setup_logger,
 )
 from src.core.utils import load_from_json
-from src.domain.analysis.failure_regressor import RATE_BASELINE_NAMES
+from src.domain.analysis.failure_regressor import (
+    BASELINE_VARIANTS,
+    RATE_BASELINE_VARIANTS,
+)
 from src.domain.plot.base import Plot, set_figure_format
 from src.domain.plot.comparison_charts import (
     box_plot,
@@ -74,14 +77,7 @@ _CLF_LABEL = {
     "hist_gradient_boosting": "HistGB",
     "xgboost": "XGBoost",
 }
-# The baseline variants of `instance_baselines`, in display order.
-_VARIANT_ORDER = [
-    "mcp_cluster",
-    "atc_cluster",
-    "region",
-    "combo_rankavg",
-    "combo_atc_rankavg",
-]
+_VARIANT_ORDER = list(BASELINE_VARIANTS)
 _VARIANT_LABEL = {
     "mcp_cluster": "MCP",
     "atc_cluster": "ATC",
@@ -89,22 +85,10 @@ _VARIANT_LABEL = {
     "combo_rankavg": "regressor + MCP",
     "combo_atc_rankavg": "regressor + ATC",
 }
-_VARIANT_COLOR = {
-    "mcp_cluster": PALETTE[0],
-    "atc_cluster": PALETTE[1],
-    "region": PALETTE[2],
-    "combo_rankavg": PALETTE[3],
-    "combo_atc_rankavg": PALETTE[4],
-}
-_RATE_VARIANT_ORDER = [v for v in _VARIANT_ORDER if v in RATE_BASELINE_NAMES]
+_VARIANT_COLOR = {v: PALETTE[i] for i, v in enumerate(_VARIANT_ORDER)}
+_RATE_VARIANT_ORDER = [v for v in _VARIANT_ORDER if v in RATE_BASELINE_VARIANTS]
 # Top-to-bottom row order of the oracle-benefit figure.
-_ORACLE_BENEFIT_ORDER = [
-    "combo_atc_rankavg",
-    "combo_rankavg",
-    "region",
-    "atc_cluster",
-    "mcp_cluster",
-]
+_ORACLE_BENEFIT_ORDER = _VARIANT_ORDER[::-1]
 
 
 def _load_instance(base: Path) -> dict | None:
@@ -201,6 +185,7 @@ def _variant_value(run: dict, variant: str, field: str) -> float | None:
 
 def _variant_series(
     runs: list[dict],
+    *,
     groups: list[str],
     group_key,
     field: str,
@@ -327,11 +312,11 @@ def _fig_family_importance(runs: list[dict]) -> Plot | None:
 
 def _fig_variant_by_group(
     runs: list[dict],
+    *,
     group_key,
     label_map: dict[str, str],
     field: str,
     y_label: str,
-    *,
     variants: list[str] = _VARIANT_ORDER,
     y_lim: tuple[float, float] | None = None,
 ) -> Plot | None:
@@ -339,45 +324,11 @@ def _fig_variant_by_group(
     groups = sorted({group_key(r) for r in runs})
     if not groups:
         return None
-    series = _variant_series(runs, groups, group_key, field, variants)
+    series = _variant_series(
+        runs, groups=groups, group_key=group_key, field=field, variants=variants
+    )
     return grouped_bar_plot(
         [label_map.get(g, g) for g in groups], series, y_label=y_label, y_lim=y_lim
-    )
-
-
-def _fig_spearman_by_classifier(runs: list[dict]) -> Plot | None:
-    """Cluster-level Spearman rho of the variants per classifier (median, IQR)."""
-    return _fig_variant_by_group(
-        runs,
-        lambda r: r["clf"],
-        _CLF_LABEL,
-        "spearman",
-        r"Spearman $\rho$ (median, IQR)",
-        y_lim=(-0.05, 1.05),
-    )
-
-
-def _fig_mse_by_classifier(runs: list[dict]) -> Plot | None:
-    """Cluster-rate MSE of the rate variants per classifier (median, IQR)."""
-    return _fig_variant_by_group(
-        runs,
-        lambda r: r["clf"],
-        _CLF_LABEL,
-        "cluster_rate_mse",
-        "MSE (median, IQR)",
-        variants=_RATE_VARIANT_ORDER,
-    )
-
-
-def _fig_spearman_by_dataset(runs: list[dict]) -> Plot | None:
-    """Cluster-level Spearman rho of the variants per dataset (median, IQR)."""
-    return _fig_variant_by_group(
-        runs,
-        lambda r: _dataset_base(r["dataset"]),
-        _DATASET_LABEL,
-        "spearman",
-        r"Spearman $\rho$ (median, IQR)",
-        y_lim=(-0.05, 1.05),
     )
 
 
@@ -492,7 +443,7 @@ def _table_datasets(runs: list[dict]) -> dict:
 
 
 def _table_variant_field(
-    runs: list[dict], field: str, variants: list[str] = _VARIANT_ORDER
+    runs: list[dict], *, field: str, variants: list[str] = _VARIANT_ORDER
 ) -> dict:
     """Median (+IQR) of `field` per baseline variant."""
     rows = [
@@ -503,16 +454,6 @@ def _table_variant_field(
         for variant in variants
     ]
     return {"n_runs": len(runs), "rows": rows}
-
-
-def _table_variant_spearman(runs: list[dict]) -> dict:
-    """Cluster-level Spearman rho of the variants."""
-    return _table_variant_field(runs, "spearman")
-
-
-def _table_variant_cluster_mse(runs: list[dict]) -> dict:
-    """Cluster-rate MSE of the rate variants."""
-    return _table_variant_field(runs, "cluster_rate_mse", _RATE_VARIANT_ORDER)
 
 
 def _table_variant_spearman_by_dataset(runs: list[dict]) -> dict:
@@ -557,12 +498,33 @@ def _render_comparisons(root: Path, fmt: str = "pdf", out: Path | None = None) -
         "figure/rho_by_config": _fig_rho_by_config(runs),
         "figure/rho_vs_clusters": _fig_rho_vs_clusters(runs),
         "figure/family_importance": _fig_family_importance(runs),
-        "figure/spearman_by_classifier": _fig_spearman_by_classifier(kmeans_euclidean),
-        "figure/mse_by_classifier": _fig_mse_by_classifier(kmeans_euclidean),
+        "figure/spearman_by_classifier": _fig_variant_by_group(
+            kmeans_euclidean,
+            group_key=lambda r: r["clf"],
+            label_map=_CLF_LABEL,
+            field="spearman",
+            y_label=r"Spearman $\rho$ (median, IQR)",
+            y_lim=(-0.05, 1.05),
+        ),
+        "figure/mse_by_classifier": _fig_variant_by_group(
+            kmeans_euclidean,
+            group_key=lambda r: r["clf"],
+            label_map=_CLF_LABEL,
+            field="cluster_rate_mse",
+            y_label="MSE (median, IQR)",
+            variants=_RATE_VARIANT_ORDER,
+        ),
         "figure/oracle_benefit_by_variant": _fig_oracle_benefit_by_variant(
             kmeans_euclidean
         ),
-        "figure/spearman_by_dataset": _fig_spearman_by_dataset(kmeans_euclidean),
+        "figure/spearman_by_dataset": _fig_variant_by_group(
+            kmeans_euclidean,
+            group_key=lambda r: _dataset_base(r["dataset"]),
+            label_map=_DATASET_LABEL,
+            field="spearman",
+            y_label=r"Spearman $\rho$ (median, IQR)",
+            y_lim=(-0.05, 1.05),
+        ),
     }
     figures = {k: v for k, v in figures.items() if v is not None}
 
@@ -570,8 +532,12 @@ def _render_comparisons(root: Path, fmt: str = "pdf", out: Path | None = None) -
         "json/perconfig_table": _table_perconfig(runs),
         "json/nclusters_table": _table_nclusters(runs),
         "json/datasets_table": _table_datasets(runs),
-        "json/variant_spearman_table": _table_variant_spearman(kmeans_euclidean),
-        "json/variant_cluster_mse_table": _table_variant_cluster_mse(kmeans_euclidean),
+        "json/variant_spearman_table": _table_variant_field(
+            kmeans_euclidean, field="spearman"
+        ),
+        "json/variant_cluster_mse_table": _table_variant_field(
+            kmeans_euclidean, field="cluster_rate_mse", variants=_RATE_VARIANT_ORDER
+        ),
         "json/variant_spearman_by_dataset_table": _table_variant_spearman_by_dataset(
             kmeans_euclidean
         ),

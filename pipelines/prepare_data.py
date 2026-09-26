@@ -57,7 +57,7 @@ def _cluster_per_class(
     X_num: np.ndarray,
     y_class: np.ndarray,
     classes: list,
-) -> tuple[np.ndarray, dict[int, np.ndarray], set[int], dict[str, dict]]:
+) -> tuple[np.ndarray, dict[int, np.ndarray], set[int], dict[str, list]]:
     """Cluster each class separately, folding noise into per-class pseudo-clusters."""
     n = X_num.shape[0]
     clustering = cfg.clustering
@@ -70,7 +70,7 @@ def _cluster_per_class(
     labels = np.full(n, -1, dtype=np.int64)
     centroids: dict[int, np.ndarray] = {}
     offset = 0
-    report: dict[str, dict] = {}
+    report: dict[str, list] = {"classes": [], "sweep": []}
 
     for cls in tqdm(classes, desc="Clustering classes"):
         mask = y_class == cls
@@ -118,10 +118,10 @@ def _cluster_per_class(
 
         n_cls = int(raw_labels.shape[0])
         n_noise_cls = int((raw_labels == -1).sum())
-        report[str(cls)] = {
-            "n_rows": n_cls,
-            "algorithms": algo_reports,
-            "summary": {
+        report["classes"].append(
+            {
+                "class_name": str(cls),
+                "n_rows": n_cls,
                 "n_clusters": n_clusters_cls,
                 "n_noise": n_noise_cls,
                 "noise_ratio": n_noise_cls / n_cls if n_cls > 0 else 0.0,
@@ -129,8 +129,26 @@ def _cluster_per_class(
                 "floor_used": effective_floor,
                 "floor_absorbed_clusters": n_floor_clusters,
                 "floor_absorbed_points": n_floor_points,
-            },
-        }
+            }
+        )
+        for algo_report in algo_reports.values():
+            report["sweep"].extend(
+                {
+                    "class_name": str(cls),
+                    **{f"param_{k}": v for k, v in candidate["combo"].items()},
+                    "best": candidate["best"],
+                    "score": candidate["score"],
+                    "silhouette": candidate.get("silhouette"),
+                    "resolution_tilt": candidate.get("resolution_tilt"),
+                    "n_clusters": candidate["n_clusters"],
+                    "n_noise": candidate["n_noise"],
+                    "noise_ratio": candidate["noise_ratio"],
+                    "size_balance": candidate["size_balance"],
+                    "duration_s": candidate["duration_s"],
+                    "error": candidate.get("error", False),
+                }
+                for candidate in algo_report["sweep"]
+            )
 
         cluster_ids = np.unique(raw_labels[raw_labels != -1])
         labels[mask] = np.where(raw_labels == -1, -1, raw_labels + offset)
@@ -160,6 +178,7 @@ def _cluster_per_class(
 def preprocess_df(
     cfg,
     df: pd.DataFrame,
+    *,
     num_cols: list[str],
     cat_cols: list[str],
     label_col: str,
@@ -215,50 +234,12 @@ def preprocess_df(
     return train_df, val_df, test_df
 
 
-def _clustering_report_tables(
-    report: dict[str, dict], *, metric: str, algorithm: str
-) -> dict:
-    """The per-class clustering report as run scalars, a class and a sweep table."""
-    classes, sweep = [], []
-    for class_name, entry in report.items():
-        classes.append(
-            {
-                "class_name": class_name,
-                "n_rows": entry["n_rows"],
-                **entry["summary"],
-            }
-        )
-        for algo_report in entry["algorithms"].values():
-            for candidate in algo_report["sweep"]:
-                sweep.append(
-                    {
-                        "class_name": class_name,
-                        **{f"param_{k}": v for k, v in candidate["combo"].items()},
-                        "best": candidate["best"],
-                        "score": candidate["score"],
-                        "silhouette": candidate.get("silhouette"),
-                        "resolution_tilt": candidate.get("resolution_tilt"),
-                        "n_clusters": candidate["n_clusters"],
-                        "n_noise": candidate["n_noise"],
-                        "noise_ratio": candidate["noise_ratio"],
-                        "size_balance": candidate["size_balance"],
-                        "duration_s": candidate["duration_s"],
-                        "error": candidate.get("error", False),
-                    }
-                )
-    return {
-        "metric": metric,
-        "algorithm": algorithm,
-        "classes": classes,
-        "sweep": sweep,
-    }
-
-
 def _cluster_splits(
     cfg,
     train_df: pd.DataFrame,
     val_df: pd.DataFrame,
     test_df: pd.DataFrame,
+    *,
     num_cols: list[str],
     label_col: str,
     dispatcher: LogDispatcher,
@@ -272,11 +253,11 @@ def _cluster_splits(
     labels, centroids, noise_cluster_ids, clustering_report = _cluster_per_class(
         cfg, X_num, y_class, all_classes
     )
-    report_tables = _clustering_report_tables(
-        clustering_report,
-        metric=cfg.clustering.distance,
-        algorithm=next(iter(cfg.clustering.algorithms)),
-    )
+    report_tables = {
+        "metric": cfg.clustering.distance,
+        "algorithm": next(iter(cfg.clustering.algorithms)),
+        **clustering_report,
+    }
     dispatcher.publish(LogBundle.from_dict({"json/clustering_report": report_tables}))
 
     train_df = train_df.copy()
@@ -311,6 +292,7 @@ def _cluster_splits(
 
 def _publish_metadata(
     cfg,
+    *,
     train_df: pd.DataFrame,
     val_df: pd.DataFrame,
     test_df: pd.DataFrame,
@@ -324,10 +306,10 @@ def _publish_metadata(
     logger.info("Computing and saving metadata...")
     metadata = compute_df_metadata(
         {"train": train_df, "val": val_df, "test": test_df},
-        encoded_label_col,
-        num_cols,
-        cat_cols,
-        cfg.data.benign_tag,
+        label_col=encoded_label_col,
+        num_cols=num_cols,
+        cat_cols=cat_cols,
+        benign_tag=cfg.data.benign_tag,
         label_mapping=label_mapping,
     )
     dispatcher.publish(LogBundle.from_dict({"json/df_meta": metadata}))
@@ -364,18 +346,30 @@ def prepare(cfg) -> None:
     df_info = get_df_info(df, label_col=label_col)
     dispatcher.publish(LogBundle.from_dict({"json/df_info": df_info}))
 
-    train_df, val_df, test_df = preprocess_df(cfg, df, num_cols, cat_cols, label_col)
+    train_df, val_df, test_df = preprocess_df(
+        cfg, df, num_cols=num_cols, cat_cols=cat_cols, label_col=label_col
+    )
     train_df, val_df, test_df = (
         df.reset_index(drop=True) for df in [train_df, val_df, test_df]
     )
 
     train_df, val_df, test_df, noise_cluster_ids = _cluster_splits(
-        cfg, train_df, val_df, test_df, num_cols, label_col, dispatcher
+        cfg,
+        train_df,
+        val_df,
+        test_df,
+        num_cols=num_cols,
+        label_col=label_col,
+        dispatcher=dispatcher,
     )
 
     encoded_label_col = f"encoded_{label_col}"
     train_df, val_df, test_df, label_mapping = encode_labels(
-        train_df, val_df, test_df, label_col, dst_label_col=encoded_label_col
+        train_df,
+        val_df,
+        test_df,
+        src_label_col=label_col,
+        dst_label_col=encoded_label_col,
     )
 
     logger.info("Saving processed data...")
@@ -388,15 +382,15 @@ def prepare(cfg) -> None:
 
     _publish_metadata(
         cfg,
-        train_df,
-        val_df,
-        test_df,
-        num_cols,
-        cat_cols,
-        encoded_label_col,
-        label_mapping,
-        noise_cluster_ids,
-        dispatcher,
+        train_df=train_df,
+        val_df=val_df,
+        test_df=test_df,
+        num_cols=num_cols,
+        cat_cols=cat_cols,
+        encoded_label_col=encoded_label_col,
+        label_mapping=label_mapping,
+        noise_cluster_ids=noise_cluster_ids,
+        dispatcher=dispatcher,
     )
 
 

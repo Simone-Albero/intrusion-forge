@@ -124,13 +124,9 @@ def latent_figures(
     y_pred: np.ndarray,
     class_names: dict[int, str],
 ) -> dict[str, Plot]:
-    """One t-SNE latent scatter per fold, keyed `{prefix}latent`.
-
-    `folds` is (prefix, eval_idx, embedding) per fold, with eval_idx indexing `y_true`
-    and `y_pred`. The K latent spaces come from K different models and are not mutually
-    aligned, so they stay fold-scoped instead of being merged into one figure.
-    """
+    """One t-SNE latent scatter per fold, keyed `{prefix}latent`."""
     figures: dict[str, Plot] = {}
+    # K models give K unaligned latent spaces, so each keeps its own figure.
     for prefix, eval_idx, embedding in folds:
         if embedding is None:
             continue

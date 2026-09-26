@@ -12,7 +12,7 @@ from sklearn.metrics import confusion_matrix
 
 from pipelines import load_prepared_metadata, paths_from_cfg
 from src.core.config import load_config, save_config, to_container
-from src.core.io import load_listed_dfs, save_df
+from src.core.io import load_df, save_df
 from src.core.log import (
     FilesystemFigureSubscriber,
     JSONSubscriber,
@@ -55,15 +55,6 @@ def _seed_everything(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-
-
-def _load_splits(
-    processed_data: Path, extension: str
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    train_df, val_df, test_df = load_listed_dfs(
-        processed_data, [f"{split}.{extension}" for split in ("train", "val", "test")]
-    )
-    return train_df, val_df, test_df
 
 
 @dataclass
@@ -139,6 +130,7 @@ def _loader_fingerprint(node) -> dict:
 
 def build_trainer(
     cfg,
+    *,
     df_meta: dict,
     num_cols: list[str],
     cat_cols: list[str],
@@ -202,7 +194,7 @@ def _resolve_dl_params(
 
 
 def _resolve_classifier_params(
-    cfg, kind: str, num_cols: list[str], cat_cols: list[str], df_meta: dict
+    cfg, *, kind: str, num_cols: list[str], cat_cols: list[str], df_meta: dict
 ) -> dict:
     """Resolve the classifier `params` (DL shape injection / ML random_state)."""
     params = (
@@ -222,6 +214,7 @@ def _resolve_classifier_params(
 
 def _fingerprint(
     cfg,
+    *,
     params: dict,
     num_cols: list[str],
     cat_cols: list[str],
@@ -404,6 +397,7 @@ def _train_fold(
 
 def _publish_training_record(
     context: ClassifyContext,
+    *,
     folds: list[Fold],
     fingerprint: dict,
     fold_records: list,
@@ -440,24 +434,24 @@ def train_folds(
     folds: list[Fold],
     val_df: pd.DataFrame,
 ) -> tuple[np.ndarray, np.ndarray, list[np.ndarray | None]]:
-    """Predict every eval row with the model of the fold that holds it out.
-
-    Returns y_pred and y_proba over the eval frame, plus one latent embedding per fold.
-    Every fold retrains unless all of them have a model for this exact configuration;
-    reused models keep the training artifacts of the run that produced them.
-    """
+    """Predict every eval row with the model of the fold that holds it out."""
     cfg, trainer = context.cfg, context.trainer
     params = _resolve_classifier_params(
-        cfg, cfg.classifier.kind, trainer.num_cols, trainer.cat_cols, context.df_meta
+        cfg,
+        kind=cfg.classifier.kind,
+        num_cols=trainer.num_cols,
+        cat_cols=trainer.cat_cols,
+        df_meta=context.df_meta,
     )
     fingerprint = _fingerprint(
         cfg,
-        params,
-        trainer.num_cols,
-        trainer.cat_cols,
-        context.label_col,
-        context.df_meta,
+        params=params,
+        num_cols=trainer.num_cols,
+        cat_cols=trainer.cat_cols,
+        label_col=context.label_col,
+        df_meta=context.df_meta,
     )
+    # All or nothing: reused models keep the training artifacts of their own run.
     reuse = _can_reuse(context, folds, fingerprint)
     if not reuse:
         _invalidate_training_record(context.paths)
@@ -494,7 +488,13 @@ def train_folds(
         embeddings.append(embedding)
 
     if not reuse:
-        _publish_training_record(context, folds, fingerprint, fold_records, grid_rows)
+        _publish_training_record(
+            context,
+            folds=folds,
+            fingerprint=fingerprint,
+            fold_records=fold_records,
+            grid_rows=grid_rows,
+        )
 
     return y_pred, y_proba, embeddings
 
@@ -591,7 +591,10 @@ def classify(cfg) -> None:
     cat_cols = list(cfg.data.cat_cols) if cfg.data.cat_cols else []
     label_col = "encoded_" + cfg.data.label_col
 
-    train_df, val_df, test_df = _load_splits(paths.processed_data, cfg.data.extension)
+    train_df, val_df, test_df = (
+        load_df(paths.processed_data / f"{split}.{cfg.data.extension}")
+        for split in ("train", "val", "test")
+    )
     for split, df in (("train", train_df), ("test", test_df)):
         if "cluster" not in df.columns:
             raise ValueError(
@@ -613,7 +616,13 @@ def classify(cfg) -> None:
     context = ClassifyContext(
         cfg=cfg,
         paths=paths,
-        trainer=build_trainer(cfg, df_meta, num_cols, cat_cols, label_col),
+        trainer=build_trainer(
+            cfg,
+            df_meta=df_meta,
+            num_cols=num_cols,
+            cat_cols=cat_cols,
+            label_col=label_col,
+        ),
         label_col=label_col,
         df_meta=df_meta,
         bus=bus,

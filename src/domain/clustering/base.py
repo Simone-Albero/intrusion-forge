@@ -112,12 +112,7 @@ def grid_search(
     # fit_fn through **fixed_params, so it must not shadow an algorithm's own parameter.
     **fixed_params,
 ) -> tuple[dict, np.ndarray | None]:
-    """Grid search scored by silhouette − noise_penalty·noise_ratio + resolution tilt.
-
-    Returns `(report, best_labels)`: `report` is `{"best", "sweep"}`, JSON-safe as-is,
-    with a `best` flag on every sweep entry; `best_labels` is the winning candidate's
-    labels when reusable without a refit (no subsampling occurred), `None` otherwise.
-    """
+    """Grid search scored by silhouette − noise penalty + resolution tilt."""
     sub_num = subsample_features(X_num, max_fit_samples, random_state)
 
     keys = list(param_grid.keys())

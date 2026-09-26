@@ -194,8 +194,8 @@ def encode_labels(
     train_df: pd.DataFrame,
     val_df: pd.DataFrame,
     test_df: pd.DataFrame,
-    src_label_col: str,
     *,
+    src_label_col: str,
     dst_label_col: str | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict]:
     """Encode string labels to integers using a LabelEncoder fitted on train."""

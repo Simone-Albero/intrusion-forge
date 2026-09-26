@@ -11,11 +11,7 @@ def build_engine(
     metric: tuple[str, Metric],
     handlers: list[tuple[Events, Callable[[Engine], None]]],
 ) -> Engine:
-    """Build an Ignite engine: inject `state` on start, attach `metric`, attach `handlers`.
-
-    State is injected on Events.STARTED rather than set directly, because `Engine.run()`
-    replaces `engine.state` with a fresh one at the start of every run.
-    """
+    """Build an Ignite engine with `state` set on start, `metric` and `handlers`."""
     engine = Engine(step_fn)
 
     def _inject_state(engine: Engine) -> None:

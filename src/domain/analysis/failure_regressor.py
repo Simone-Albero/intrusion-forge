@@ -375,12 +375,18 @@ def fit_failure_regressor(
     return results
 
 
-RATE_BASELINE_NAMES = ("region", "mcp_cluster", "atc_cluster")
+BASELINE_VARIANTS = (
+    "mcp_cluster",
+    "atc_cluster",
+    "region",
+    "combo_rankavg",
+    "combo_atc_rankavg",
+)
+RATE_BASELINE_VARIANTS = ("region", "mcp_cluster", "atc_cluster")
 
 
 def instance_baselines(samples: pd.DataFrame, predicted_rate: list[dict]) -> dict:
-    """Compare the 5 baseline variants against observed failure: cluster rho, cluster-rate MSE
-    (rate variants only) and per-sample oracle benefit recovered."""
+    """Cluster rho, cluster-rate MSE and oracle benefit of every baseline variant."""
     rate_by_cluster = {r["cluster_id"]: r["predicted_rate"] for r in predicted_rate}
     cluster = samples["cluster"].to_numpy()
     failure = is_failure(
@@ -415,6 +421,10 @@ def instance_baselines(samples: pd.DataFrame, predicted_rate: list[dict]) -> dic
         "combo_rankavg": combo_rankavg,
         "combo_atc_rankavg": combo_atc_rankavg,
     }
+    if tuple(scores) != BASELINE_VARIANTS:
+        raise ValueError(
+            f"instance_baselines scores {tuple(scores)} do not match BASELINE_VARIANTS."
+        )
 
     # Not a pandas groupby: its Cython mean accumulates in a different order from
     # numpy's pairwise sum, so the two disagree in the last ulp on any cluster with
@@ -445,7 +455,7 @@ def instance_baselines(samples: pd.DataFrame, predicted_rate: list[dict]) -> dic
                 # compare, and a uniform row shape is what makes this a table.
                 "cluster_rate_mse": (
                     float(np.mean((predicted - observed) ** 2))
-                    if name in RATE_BASELINE_NAMES
+                    if name in RATE_BASELINE_VARIANTS
                     else None
                 ),
             }

@@ -53,9 +53,3 @@ def save_df(
     if saver is None:
         raise ValueError(f"Unsupported file extension: {ext!r}. Supported: {_ALL_EXTS}")
     saver(df, file_path, index=index, **kwargs)
-
-
-def load_listed_dfs(base_dir: str | Path, file_names: list[str]) -> list[pd.DataFrame]:
-    """Load each `file_names` entry from `base_dir`, preserving order."""
-    base_dir = Path(base_dir)
-    return [load_df(base_dir / name) for name in file_names]

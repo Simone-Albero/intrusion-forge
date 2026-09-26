@@ -204,10 +204,7 @@ def grouped_bar_plot(
     hline: float | None = None,
     figsize: tuple[float, float] | None = None,
 ) -> Plot:
-    """Vertical grouped bars with asymmetric error bars, one colour per series.
-
-    Each `series` entry is `(name, values, err_low, err_high, color)`, one value per group.
-    """
+    """Vertical grouped bars with asymmetric error bars, one colour per series."""
     n_groups = len(group_labels)
     n_series = len(series)
     if figsize is None:
