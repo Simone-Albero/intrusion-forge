@@ -37,7 +37,7 @@ def _build_train_engine(
     *,
     loss_fn: nn.Module,
     optimizer: torch.optim.Optimizer,
-    scheduler: torch.optim.lr_scheduler._LRScheduler | None,
+    scheduler: torch.optim.lr_scheduler.LRScheduler | None,
     device: torch.device,
     max_grad_norm: float,
 ) -> tuple[Engine, dict[str, list[float]]]:

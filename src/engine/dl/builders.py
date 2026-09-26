@@ -48,7 +48,7 @@ def create_scheduler(
     params: dict,
     optimizer: torch.optim.Optimizer,
     dataloader: DataLoader,
-) -> torch.optim.lr_scheduler._LRScheduler | None:
+) -> torch.optim.lr_scheduler.LRScheduler | None:
     """Build a torch LR scheduler, resolving an "auto" steps_per_epoch from the loader."""
     if name is None:
         return None

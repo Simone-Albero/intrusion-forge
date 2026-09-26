@@ -13,7 +13,10 @@ from src.core.log import (
     setup_logger,
 )
 from src.core.utils import load_from_json
-from src.domain.analysis.failure_regressor import RATE_BASELINE_VARIANTS
+from src.domain.analysis.failure_regressor import (
+    BASELINE_VARIANTS,
+    RATE_BASELINE_VARIANTS,
+)
 from src.domain.plot.base import Plot, set_figure_format
 from src.domain.plot.comparison_charts import (
     box_plot,
@@ -74,14 +77,7 @@ _CLF_LABEL = {
     "hist_gradient_boosting": "HistGB",
     "xgboost": "XGBoost",
 }
-# Display order of the baseline variants `instance_baselines` publishes.
-_VARIANT_ORDER = [
-    "mcp_cluster",
-    "atc_cluster",
-    "region",
-    "combo_rankavg",
-    "combo_atc_rankavg",
-]
+_VARIANT_ORDER = list(BASELINE_VARIANTS)
 _VARIANT_LABEL = {
     "mcp_cluster": "MCP",
     "atc_cluster": "ATC",
@@ -111,13 +107,16 @@ def _load_sweep_runs(root: Path) -> list[dict]:
                         f"{ds_dir} predates the per-stage config snapshots: "
                         "re-run `make prepare FORCE=1`."
                     )
+                if (ds_dir / "shared/metadata/clusters_meta.json").exists():
+                    raise ValueError(
+                        f"{ds_dir} has prepare's outputs but no config snapshot: "
+                        "prepare did not finish, re-run `make prepare FORCE=1`."
+                    )
                 continue
             composed = load_from_json(cfg_path)
             algorithm = next(iter(composed["clustering"]["algorithms"]), None)
             data_cfg = composed["data"]
-            n_features = len(data_cfg["num_cols"] or []) + len(
-                data_cfg["cat_cols"] or []
-            )
+            n_features = len(data_cfg["num_cols"]) + len(data_cfg["cat_cols"])
             for clf_dir in sorted(
                 p for p in ds_dir.iterdir() if p.is_dir() and p.name != "shared"
             ):
@@ -195,7 +194,7 @@ def _variant_series(
     groups: list[str],
     group_key,
     field: str,
-    variants: list[str] = _VARIANT_ORDER,
+    variants: list[str],
 ) -> list[tuple[str, list[float], list[float], list[float], str]]:
     """Median (+ IQR error bars) of `field`, per variant, aggregated within each group."""
     series = []
@@ -265,10 +264,9 @@ def _fig_rho_vs_clusters(runs: list[dict]) -> Plot | None:
         for r in runs:
             if r["distance"] != distance:
                 continue
-            n = r["results"].get("n_clusters_used")
             rho = r["results"].get("spearman")
-            if n and rho is not None:
-                xs.append(n)
+            if rho is not None:
+                xs.append(r["results"]["n_clusters_used"])
                 ys.append(rho)
         series[distance] = (
             np.asarray(xs, float),
@@ -394,10 +392,9 @@ def _table_nclusters(runs: list[dict]) -> dict:
     for r in runs:
         if r["results"].get("spearman") is None:
             continue
-        n = r["results"].get("n_clusters_used")
-        if n is None:
-            continue
-        groups.setdefault((r["distance"], r["algorithm"]), []).append(n)
+        groups.setdefault((r["distance"], r["algorithm"]), []).append(
+            r["results"]["n_clusters_used"]
+        )
 
     rows = []
     for distance in sorted({d for d, _ in groups}):

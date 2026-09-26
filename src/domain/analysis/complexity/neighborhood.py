@@ -10,7 +10,7 @@ _N_KEYS = ("n1", "n2", "n3", "n4")
 def _n1_vec(c_mask: np.ndarray, j_mask: np.ndarray, edges_uv: np.ndarray) -> float:
     """N1: fraction of cluster-c samples sharing an MST edge with the j population."""
     n_c = int(c_mask.sum())
-    if n_c == 0 or edges_uv.shape[0] == 0:
+    if edges_uv.shape[0] == 0:
         return 0.0
     u, v = edges_uv[:, 0], edges_uv[:, 1]
     boundary_u = u[c_mask[u] & j_mask[v]]
@@ -89,8 +89,6 @@ def _aggregate_pairs(
     """N1-N4 of cluster c against every adversarial population."""
     out: dict[str, list[float]] = {k: [] for k in _N_KEYS}
     for j_mask in population_masks:
-        if not j_mask.any():
-            continue
         n1, n2, n3, n4 = _pair_metrics(nbs, nb_dists, c_mask, j_mask, edges_uv)
         out["n1"].append(n1)
         out["n2"].append(n2)
@@ -114,16 +112,9 @@ def compute_n_measures(
     ):
         row = make_null_row(_N_KEYS)
         c_full_idx = np.where(c_mask)[0]
-        if c_full_idx.size == 0:
-            result[cid_str] = row
-            continue
-
         nbs = knn_idx[c_full_idx]
         nb_dists = knn_dist[c_full_idx]
-
-        cluster_pops = [
-            cluster_mask[ac] for ac in top_k_map.get(cid_str, []) if ac in cluster_mask
-        ]
+        cluster_pops = [cluster_mask[ac] for ac in top_k_map[cid_str]]
 
         agg = _aggregate_pairs(nbs, nb_dists, c_mask, cluster_pops, mst_edges)
         for nk in _N_KEYS:

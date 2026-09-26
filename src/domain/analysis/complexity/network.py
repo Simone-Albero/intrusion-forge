@@ -13,9 +13,6 @@ def compute_cls_coef(
     result: dict[str, float] = {}
     for cid, c_mask in cluster_mask.items():
         c_idx = np.where(c_mask)[0]
-        if c_idx.size == 0:
-            result[cid] = 0.0
-            continue
         nbs = knn_idx[c_idx]
         in_c = c_mask[nbs]
         coefs = np.zeros(c_idx.size, dtype=np.float64)
@@ -37,14 +34,9 @@ def compute_hub(
     n = knn_idx.shape[0]
     in_degree = np.bincount(knn_idx.ravel(), minlength=n)
     return {
-        cid: float(in_degree[np.where(c_mask)[0]].mean()) if c_mask.any() else 0.0
+        cid: float(in_degree[np.where(c_mask)[0]].mean())
         for cid, c_mask in cluster_mask.items()
     }
-
-
-def _density(nbs: np.ndarray, j_mask: np.ndarray, k: int) -> float:
-    """Share of the neighbours in `nbs` that belong to population j."""
-    return float(j_mask[nbs].sum()) / (nbs.shape[0] * k)
 
 
 def compute_network_density(
@@ -61,17 +53,10 @@ def compute_network_density(
         cluster_mask.items(), desc="ND measures", unit="cluster", leave=False
     ):
         row = dict(null_row)
-        c_idx = np.where(c_mask)[0]
-        if c_idx.size == 0:
-            result[cid] = row
-            continue
-
-        nbs = knn_idx[c_idx]
-
+        nbs = knn_idx[np.where(c_mask)[0]]
         cluster_vals = [
-            _density(nbs, cluster_mask[ac], k)
-            for ac in top_k_map.get(cid, [])
-            if ac in cluster_mask and cluster_mask[ac].any()
+            float(cluster_mask[ac][nbs].sum()) / (nbs.shape[0] * k)
+            for ac in top_k_map[cid]
         ]
 
         mn, me, mx = aggregate_min_mean_max(cluster_vals)
@@ -97,10 +82,5 @@ def compute_network_measures(
 
     result: dict[str, dict[str, float | None]] = {}
     for cid, row in density_out.items():
-        merged: dict[str, float | None] = dict(row)
-        if cid in cls_coef_out:
-            merged["cls_coef"] = cls_coef_out[cid]
-        if cid in hub_out:
-            merged["hub"] = hub_out[cid]
-        result[cid] = merged
+        result[cid] = {**row, "cls_coef": cls_coef_out[cid], "hub": hub_out[cid]}
     return result

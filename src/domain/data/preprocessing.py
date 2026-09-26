@@ -15,17 +15,15 @@ def drop_nans(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
     return df.replace([np.inf, -np.inf], np.nan).dropna(subset=cols)
 
 
-def query_filter(df: pd.DataFrame, *, query: str | None = None) -> pd.DataFrame:
+def query_filter(df: pd.DataFrame, *, query: str | None) -> pd.DataFrame:
     """Filter DataFrame using a query string."""
     return df.query(query) if query else df
 
 
 def rare_category_filter(
-    df: pd.DataFrame, cat_cols: list[str], *, min_count: int = 3000
+    df: pd.DataFrame, cat_cols: list[str], *, min_count: int
 ) -> pd.DataFrame:
     """Remove rows with rare categories in specified categorical columns."""
-    if not min_count or min_count <= 0:
-        return df
     df = df.copy()
     for col in cat_cols:
         counts = df[col].value_counts()
@@ -38,7 +36,7 @@ def _stratified_sample(
     label_col: str,
     per_group: int,
     *,
-    random_state: int | None = None,
+    random_state: int,
 ) -> pd.DataFrame:
     """Sample up to `per_group` rows from every label group."""
     return (
@@ -49,21 +47,15 @@ def _stratified_sample(
 
 
 def subsample_df(
-    df: pd.DataFrame,
-    n_samples: int,
-    *,
-    random_state: int | None = None,
-    label_col: str | None = None,
+    df: pd.DataFrame, n_samples: int, *, random_state: int, label_col: str
 ) -> pd.DataFrame:
-    """Subsample a DataFrame with optional stratification by label column."""
-    if label_col is None:
-        return df.sample(n=min(n_samples, len(df)), random_state=random_state)
+    """Up to `n_samples // n_classes` rows from every class."""
     per_class = n_samples // df[label_col].nunique()
     return _stratified_sample(df, label_col, per_class, random_state=random_state)
 
 
 def random_undersample_df(
-    df: pd.DataFrame, label_col: str, *, random_state: int | None = None
+    df: pd.DataFrame, label_col: str, *, random_state: int
 ) -> pd.DataFrame:
     """Undersample to balance classes."""
     min_count = df[label_col].value_counts().min()
@@ -86,27 +78,24 @@ def oof_splits(df: pd.DataFrame, label_col: str, k: int, *, random_state: int) -
 def ml_split(
     df: pd.DataFrame,
     *,
-    train_frac: float = 0.7,
-    val_frac: float = 0.15,
-    test_frac: float = 0.15,
-    random_state: int | None = None,
-    label_col: str | None = None,
+    train_frac: float,
+    val_frac: float,
+    test_frac: float,
+    random_state: int,
+    label_col: str,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Split a DataFrame into train, validation and test sets, optionally stratified."""
+    """Split a DataFrame into train, validation and test sets, stratified by label."""
     if not np.isclose(train_frac + val_frac + test_frac, 1.0):
         raise ValueError("train_frac, val_frac, and test_frac must sum to 1.0.")
 
-    stratify = df[label_col] if label_col else None
     train_df, rest = train_test_split(
-        df, train_size=train_frac, random_state=random_state, stratify=stratify
+        df, train_size=train_frac, random_state=random_state, stratify=df[label_col]
     )
-
-    stratify_rest = rest[label_col] if label_col else None
     val_df, test_df = train_test_split(
         rest,
         train_size=val_frac / (val_frac + test_frac),
         random_state=random_state,
-        stratify=stratify_rest,
+        stratify=rest[label_col],
     )
     return train_df, val_df, test_df
 

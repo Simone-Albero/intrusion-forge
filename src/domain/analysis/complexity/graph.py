@@ -88,17 +88,13 @@ def _stratified_subsample(
 def _build_population_masks(
     y_class: np.ndarray, y_cluster: np.ndarray
 ) -> tuple[dict[str, np.ndarray], dict[str, int]]:
-    """Boolean mask and class of every non-noise cluster."""
-    mask_valid = y_cluster != -1
-    yc_v = y_class[mask_valid]
-    yk_v = y_cluster[mask_valid]
-
+    """Boolean mask and class of every cluster."""
     cluster_mask: dict[str, np.ndarray] = {}
     cluster_to_class: dict[str, int] = {}
-    for cid in np.unique(yk_v):
+    for cid in np.unique(y_cluster):
         cid_str = str(int(cid))
         cluster_mask[cid_str] = y_cluster == int(cid)
-        cluster_to_class[cid_str] = int(yc_v[yk_v == cid][0])
+        cluster_to_class[cid_str] = int(y_class[cluster_mask[cid_str]][0])
     return cluster_mask, cluster_to_class
 
 
@@ -110,32 +106,30 @@ def _build_topk_map(
     metric: str,
 ) -> dict[str, list[str]]:
     """Map each cluster to its K nearest adversarial clusters by centroid distance."""
-    present_ids = [cid for cid in cluster_to_class if cid in centroids]
-    if not present_ids:
-        return {}
+    cluster_ids = list(cluster_to_class)
     centroid_matrix = np.stack(
-        [np.asarray(centroids[cid], dtype=np.float64) for cid in present_ids]
+        [np.asarray(centroids[cid], dtype=np.float64) for cid in cluster_ids]
     )
-    id_to_class = {cid: cluster_to_class[cid] for cid in present_ids}
     return topk_adversarial_clusters(
-        centroid_matrix, present_ids, id_to_class, top_k=top_k_clusters, metric=metric
+        centroid_matrix,
+        cluster_ids,
+        cluster_to_class,
+        top_k=top_k_clusters,
+        metric=metric,
     )
 
 
 def _compute_analysis_centroids(
     X_num: np.ndarray,
     y_cluster: np.ndarray,
+    *,
     metric: str,
     eps: float = 1e-8,
 ) -> dict[str, list[float]]:
     """Per-cluster centroids: spherical mean for cosine, arithmetic mean otherwise."""
     result: dict[str, list[float]] = {}
     for cid in np.unique(y_cluster):
-        if int(cid) == -1:
-            continue
         X_c = X_num[y_cluster == int(cid)]
-        if len(X_c) == 0:
-            continue
         if metric == "cosine":
             norms = np.linalg.norm(X_c, axis=1, keepdims=True)
             X_c_norm = X_c / np.maximum(norms, eps)
@@ -155,13 +149,13 @@ def prepare_complexity_graph(
     y_cluster: np.ndarray,
     *,
     k: int,
-    max_samples: int | None,
+    max_samples: int,
     min_per_cluster: int,
     metric: str,
     random_state: int,
 ) -> ComplexityGraph:
     """Build the subsample, k-NN graph and MST that both complexity passes share."""
-    if max_samples is not None and len(y_cluster) > max_samples:
+    if len(y_cluster) > max_samples:
         n_orig = len(y_cluster)
         X_num, X_cat, y_class, y_cluster = _stratified_subsample(
             X_num,
@@ -249,18 +243,16 @@ def compute_complexity_from_graph(
         )
         pbar.update(1)
 
-    all_ids = set(f_out) | set(n_out) | set(nd_out) | set(t_out) | set(g_out)
-
     result: dict[str, dict[str, float | None]] = {}
-    for cid in sorted(all_ids, key=int):
-        row: dict[str, float | None] = {}
-        row.update(f_out.get(cid, {}))
-        row.update(n_out.get(cid, {}))
-        row.update(nd_out.get(cid, {}))
-        row.update(t_out.get(cid, {}))
-        row.update(g_out.get(cid, {}))
-        row["is_noise_cluster"] = False
-        result[cid] = row
+    for cid in sorted(cluster_mask, key=int):
+        result[cid] = {
+            **f_out[cid],
+            **n_out[cid],
+            **nd_out[cid],
+            **t_out[cid],
+            **g_out[cid],
+            "is_noise_cluster": False,
+        }
 
     for nid in sorted(noise_cluster_ids or set()):
         result[str(nid)] = {"is_noise_cluster": True}

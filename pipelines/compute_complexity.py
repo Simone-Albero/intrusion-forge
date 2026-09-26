@@ -26,17 +26,15 @@ logger = logging.getLogger(__name__)
 
 def cluster_class_map(y_cluster: np.ndarray, y_class: np.ndarray) -> dict[str, int]:
     """Full cluster_id → class_id map from unfiltered train labels (noise included)."""
-    return {
-        str(c): int(y_class[y_cluster == c][0]) for c in np.unique(y_cluster) if c != -1
-    }
+    return {str(c): int(y_class[y_cluster == c][0]) for c in np.unique(y_cluster)}
 
 
 @timed
 def compute_cluster_complexity(
     graph: ComplexityGraph,
+    *,
     noise_cluster_ids: list[int],
     cluster_to_class: dict[str, int],
-    *,
     top_k_clusters: int,
     metric: str,
     silhouette_max_samples: int,
@@ -60,7 +58,7 @@ def compute_cluster_complexity(
         {
             "cluster_id": int(cid),
             **measures,
-            "cluster_class": cluster_to_class.get(str(cid)),
+            "cluster_class": cluster_to_class[str(cid)],
         }
         for cid, measures in complexity.items()
     ]
@@ -117,8 +115,8 @@ def main() -> None:
     if not (run_cluster or run_class):
         return
 
-    num_cols = list(cfg.data.num_cols) if cfg.data.num_cols else []
-    cat_cols = list(cfg.data.cat_cols) if cfg.data.cat_cols else []
+    num_cols = list(cfg.data.num_cols)
+    cat_cols = list(cfg.data.cat_cols)
     ext = cfg.data.extension
 
     train_df = load_df(str(paths.processed_data / f"train.{ext}"))
@@ -136,7 +134,6 @@ def main() -> None:
 
     clusters_meta = load_from_json(paths.shared / "metadata/clusters_meta.json")
     noise_cluster_ids = clusters_meta["noise_cluster_ids"]
-    save_config(cfg, paths.shared / "config_composed_complexity.json")
 
     y_cluster = train_df["cluster"].to_numpy(dtype=np.int64)
     if noise_cluster_ids:
@@ -164,8 +161,8 @@ def main() -> None:
         cluster_to_class = cluster_class_map(y_cluster, y_class)
         cluster_complexity = compute_cluster_complexity(
             graph,
-            noise_cluster_ids,
-            cluster_to_class,
+            noise_cluster_ids=noise_cluster_ids,
+            cluster_to_class=cluster_to_class,
             top_k_clusters=cfg.complexity.top_k_clusters,
             metric=cfg.complexity.distance,
             silhouette_max_samples=cfg.complexity.silhouette_max_samples,
@@ -188,6 +185,7 @@ def main() -> None:
         logger.info("Class complexity published to %s.", class_marker)
 
     flush_timing(paths.shared / "timing.json")
+    save_config(cfg, paths.shared / "config_composed_complexity.json")
 
 
 if __name__ == "__main__":

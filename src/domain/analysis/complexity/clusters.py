@@ -52,11 +52,9 @@ def _approx_silhouette(
 
 
 def _dispersion(
-    samples: np.ndarray, centroid: np.ndarray, metric: str
-) -> tuple[float | None, float | None]:
+    samples: np.ndarray, centroid: np.ndarray, *, metric: str
+) -> tuple[float, float]:
     """Max and 95th-percentile distance of a cluster's samples from its centroid."""
-    if len(samples) == 0:
-        return None, None
     dists = pairwise_distances(samples, centroid.reshape(1, -1), metric=metric).ravel()
     return float(np.max(dists)), float(np.percentile(dists, 95))
 
@@ -81,26 +79,17 @@ def compute_cluster_geometry(
     random_state: int,
 ) -> dict[str, dict[str, float | None]]:
     """Per-cluster geometry: dispersion, centroid separation and silhouette tail."""
-    mask_valid = y_cluster != -1
-    X_v = X_num[mask_valid]
-    yk_v = y_cluster[mask_valid]
-
-    present_ids = [str(cid) for cid in np.unique(yk_v) if str(cid) in centroids]
-    if not present_ids:
-        return {}
-
+    cluster_ids = [str(cid) for cid in np.unique(y_cluster)]
     centroid_matrix = np.stack(
-        [np.asarray(centroids[cid], dtype=np.float64) for cid in present_ids]
+        [np.asarray(centroids[cid], dtype=np.float64) for cid in cluster_ids]
     )
-
-    id_to_idx = {cid: i for i, cid in enumerate(present_ids)}
 
     pw = pairwise_distances(centroid_matrix, metric=metric)
     np.fill_diagonal(pw, np.inf)
 
     sil = _approx_silhouette(
-        X_v,
-        yk_v,
+        X_num,
+        y_cluster,
         metric=metric,
         max_samples=silhouette_max_samples,
         min_per_cluster=silhouette_min_per_cluster,
@@ -109,13 +98,11 @@ def compute_cluster_geometry(
 
     result: dict[str, dict[str, float | None]] = {}
 
-    for cid in present_ids:
-        idx_c = id_to_idx[cid]
-        mask_cid = yk_v == int(cid)
-        samples = X_v[mask_cid]
-        centroid = centroid_matrix[idx_c]
-
-        max_disp, p95_disp = _dispersion(samples, centroid, metric)
+    for idx_c, cid in enumerate(cluster_ids):
+        mask_cid = y_cluster == int(cid)
+        max_disp, p95_disp = _dispersion(
+            X_num[mask_cid], centroid_matrix[idx_c], metric=metric
+        )
         dist_nearest = _nearest_other(pw[idx_c])
 
         if sil is None:

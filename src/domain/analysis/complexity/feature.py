@@ -83,13 +83,9 @@ def compute_f_measures(
     metric: str,
 ) -> dict[str, dict[str, float | None]]:
     """F1-F4 per cluster against its top-K adversarial clusters, as min/mean/max."""
-    mask_valid = y_cluster != -1
-    X_raw = X_num[mask_valid]
-    X_v = l2_normalize(X_raw) if metric == "cosine" else X_raw
-    yk_v = y_cluster[mask_valid]
-
+    X_v = l2_normalize(X_num) if metric == "cosine" else X_num
     cluster_block: dict[str, np.ndarray] = {
-        str(int(cid)): X_v[yk_v == cid] for cid in np.unique(yk_v)
+        str(int(cid)): X_v[y_cluster == cid] for cid in np.unique(y_cluster)
     }
 
     result: dict[str, dict[str, float | None]] = {}
@@ -101,13 +97,7 @@ def compute_f_measures(
             result[cid_str] = row
             continue
 
-        cluster_blocks = [
-            cluster_block[ac]
-            for ac in top_k_map.get(cid_str, [])
-            if ac in cluster_block
-        ]
-
-        vals = _pair_block(X_c, cluster_blocks)
+        vals = _pair_block(X_c, [cluster_block[ac] for ac in top_k_map[cid_str]])
         for fk in _F_KEYS:
             mn, me, mx = aggregate_min_mean_max(vals[fk])
             row[f"{fk}_min"] = mn

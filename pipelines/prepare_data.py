@@ -329,8 +329,8 @@ def _publish_metadata(
 @timed
 def prepare(cfg) -> None:
     """Preprocess, cluster and persist the train/val/test splits."""
-    num_cols = list(cfg.data.num_cols) if cfg.data.num_cols else []
-    cat_cols = list(cfg.data.cat_cols) if cfg.data.cat_cols else []
+    num_cols = list(cfg.data.num_cols)
+    cat_cols = list(cfg.data.cat_cols)
     label_col = cfg.data.label_col
 
     raw_data_path = Path(cfg.path.raw_data)
@@ -416,9 +416,9 @@ def main() -> None:
     if skip_if_exists(markers, cfg.force, "prepare"):
         return
 
-    save_config(cfg, shared / "config_composed_prepare.json")
     prepare(cfg)
     flush_timing(shared / "timing.json")
+    save_config(cfg, shared / "config_composed_prepare.json")
 
 
 if __name__ == "__main__":

@@ -238,7 +238,7 @@ def assemble_analysis_figures(
     if regressor_results.get("skipped"):
         logger.warning(
             "[STAGE-SKIP] Skipping failure-regressor plots: %s",
-            regressor_results.get("message", regressor_results.get("reason")),
+            regressor_results["message"],
         )
         return
 
@@ -252,7 +252,7 @@ def assemble_analysis_figures(
 
     figures: dict[str, Plot] = {}
     figures.update(
-        _plot_failure_strips(summary_df, regressor_results.get("oof_predicted_rate"))
+        _plot_failure_strips(summary_df, regressor_results["oof_predicted_rate"])
     )
     figures.update(_plot_feature_vs_failure(summary_df, scatter_features))
     figures.update(_plot_feature_violin_by_rate_bin(summary_df, scatter_features))
@@ -278,7 +278,6 @@ def main() -> None:
             raise FileNotFoundError(
                 f"Missing {path}: run `make failure-regress` first."
             )
-    save_config(cfg, paths.configs / "config_composed_render.json")
 
     analysis_bus = LogDispatcher()
     analysis_bus.subscribe(FilesystemFigureSubscriber(paths.figures))
@@ -290,6 +289,7 @@ def main() -> None:
     )
 
     flush_timing(paths.outputs / "timing.json")
+    save_config(cfg, paths.configs / "config_composed_render.json")
 
 
 if __name__ == "__main__":

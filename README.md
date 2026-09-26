@@ -178,7 +178,7 @@ Each stage is a script under [pipelines/](pipelines/), wrapped by the [Makefile]
 | `make comparisons` | `comparisons.py` | reduces a whole sweep to cross-run figures and tables |
 | `make help` | — | every target, with defaults |
 
-**prepare** produces the splits and the regions. It removes NaNs, filters rare categories, log-scales and robust-scales the numerical columns, hashes high-cardinality categorical ones, splits the data stratified, then clusters each class and gives every sample a region id. The saved splits retain the original class balance; balancing takes place at training time.
+**prepare** produces the splits and the regions. It removes NaNs, drops the classes with fewer rows than `data.min_cat_count`, log-scales and robust-scales the numerical columns, hashes high-cardinality categorical ones, splits the data stratified, then clusters each class and gives every sample a region id. The saved splits retain the original class balance; balancing takes place at training time.
 
 **classify** trains one classifier and records its per-class metrics and per-sample predictions. `fit.balance=undersample`, the default, undersamples the training split; `fit.balance=none` leaves it intact, and a deep classifier then weights its loss by the original class frequencies instead. The two are alternatives — applying both would correct the same imbalance twice. Setting `fit.n_samples` also caps every class at the same size, so it takes the place of either. Evaluation is by default out-of-fold across train and test together: one model per fold, with both the metrics and the per-region error rates taken from predictions no model saw while training.
 
@@ -235,7 +235,7 @@ resources/experiments/${name}/${data.file_name}_${seed}/
     └── figures/            # rendered figures
 ```
 
-Each stage that runs saves the configuration it resolved, overrides included, as `config_composed_<stage>.json`, where `<stage>` is `prepare`, `complexity`, `classify`, `regress` or `render`. A stage skipped by its cache does not rewrite its file.
+Each stage saves the configuration it resolved, overrides included, as `config_composed_<stage>.json`, where `<stage>` is `prepare`, `complexity`, `classify`, `regress` or `render`. It writes that file last, once its outputs are on disk, so a stage that fails or is skipped by its cache leaves the previous file in place.
 
 ## Repository layout
 

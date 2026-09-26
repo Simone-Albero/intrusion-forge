@@ -47,7 +47,6 @@ def main() -> None:
             f"{predictions_path} predates the current artifact format: "
             "re-run `make classify`."
         )
-    save_config(cfg, paths.configs / "config_composed_regress.json")
 
     cluster_summary = build_cluster_summary(
         complexity,
@@ -84,6 +83,7 @@ def main() -> None:
         )
 
     flush_timing(paths.outputs / "timing.json")
+    save_config(cfg, paths.configs / "config_composed_regress.json")
 
 
 if __name__ == "__main__":

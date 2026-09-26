@@ -7,7 +7,7 @@ from src.core.utils import timed
 
 def t2(n: int, d_num: int, d_cat: int) -> float:
     """Feature-to-sample ratio: (d_num + d_cat) / n."""
-    return (d_num + d_cat) / n if n > 0 else 0.0
+    return (d_num + d_cat) / n
 
 
 def _t3_t4(X_num: np.ndarray) -> tuple[float | None, float | None]:
@@ -33,7 +33,7 @@ def compute_t_measures(
 ) -> dict[str, dict[str, float | None]]:
     """Per-cluster dimensionality measures T2, T3 and T4."""
     result: dict[str, dict[str, float | None]] = {}
-    cluster_ids = [int(cid) for cid in np.unique(y_cluster) if int(cid) != -1]
+    cluster_ids = [int(cid) for cid in np.unique(y_cluster)]
     d_cat = X_cat.shape[1] if X_cat is not None else 0
     for cid in tqdm(cluster_ids, desc="T measures", unit="cluster", leave=False):
         Xn = X_num[y_cluster == cid]

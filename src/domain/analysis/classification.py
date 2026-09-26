@@ -40,10 +40,7 @@ def compute_classification_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> di
 
 
 def _cluster_error_rates(
-    clusters: np.ndarray,
-    error_mask: np.ndarray,
-    *,
-    mcp: np.ndarray,
+    clusters: np.ndarray, error_mask: np.ndarray, mcp: np.ndarray
 ) -> list[dict]:
     """One row per cluster: error counts, rate and mean MCP risk, worst rate first."""
     failed = clusters[error_mask]
@@ -57,11 +54,11 @@ def _cluster_error_rates(
                 "cluster_id": int(c),
                 "n_error": n_error,
                 "n_eval": n_eval,
-                "error_rate": (n_error / n_eval) if n_eval > 0 else None,
-                "mcp_risk": float(mcp[mask].mean()) if n_eval > 0 else None,
+                "error_rate": n_error / n_eval,
+                "mcp_risk": float(mcp[mask].mean()),
             }
         )
-    return sorted(rows, key=lambda r: r["error_rate"] or 0.0, reverse=True)
+    return sorted(rows, key=lambda r: r["error_rate"], reverse=True)
 
 
 def evaluate_predictions(
@@ -84,18 +81,14 @@ def evaluate_predictions(
                 "class_id": int(label),
                 "n_error": n_error,
                 "n_eval": n_eval,
-                "error_rate": n_error / n_eval if n_eval > 0 else None,
-                "mean_confidence": (
-                    float(confidences[mask].mean()) if n_eval > 0 else None
-                ),
+                "error_rate": n_error / n_eval,
+                "mean_confidence": float(confidences[mask].mean()),
             }
         )
 
     return {
-        "classes": sorted(
-            class_rows, key=lambda r: r["error_rate"] or 0.0, reverse=True
-        ),
-        "clusters": _cluster_error_rates(clusters, error_mask, mcp=mcp),
+        "classes": sorted(class_rows, key=lambda r: r["error_rate"], reverse=True),
+        "clusters": _cluster_error_rates(clusters, error_mask, mcp),
     }
 
 

@@ -78,10 +78,7 @@ def _fit_outer_fold(
 
 def _quantile_strata(y: pd.Series, q: int) -> pd.Series | None:
     """Quantile-bin codes of the continuous target, or None if it yields fewer than two bins."""
-    try:
-        bins = pd.qcut(y, q=min(q, len(y)), duplicates="drop")
-    except (ValueError, IndexError):
-        return None
+    bins = pd.qcut(y, q=min(q, len(y)), duplicates="drop")
     if bins.nunique() < 2:
         return None
     return bins.cat.codes
@@ -369,6 +366,13 @@ def fit_failure_regressor(
     return results
 
 
+BASELINE_VARIANTS = (
+    "mcp_cluster",
+    "atc_cluster",
+    "region",
+    "combo_rankavg",
+    "combo_atc_rankavg",
+)
 RATE_BASELINE_VARIANTS = ("region", "mcp_cluster", "atc_cluster")
 
 
@@ -412,15 +416,16 @@ def instance_baselines(samples: pd.DataFrame, predicted_rate: list[dict]) -> dic
     # Not a pandas groupby: its Cython mean accumulates in a different order from
     # numpy's pairwise sum, so the two disagree in the last ulp on any cluster with
     # enough rows — enough to move the published spearman in its fifth decimal.
-    predicted_by_name = {name: np.empty(clusters.size) for name in scores}
+    predicted_by_name = {name: np.empty(clusters.size) for name in BASELINE_VARIANTS}
     for i, c in enumerate(clusters):
         m = cluster == c
-        for name, sc in scores.items():
-            predicted_by_name[name][i] = sc[m].mean()
+        for name in BASELINE_VARIANTS:
+            predicted_by_name[name][i] = scores[name][m].mean()
 
     support = np.ones(failure.size)
     baselines = []
-    for name, sc in scores.items():
+    for name in BASELINE_VARIANTS:
+        sc = scores[name]
         predicted = predicted_by_name[name]
         rho = (
             float(spearmanr(predicted, observed).statistic)

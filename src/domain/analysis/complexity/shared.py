@@ -163,7 +163,6 @@ def _bridge_disconnected(
     d_cat: int,
     *,
     metric: str,
-    feat_ranges: np.ndarray | None = None,
 ) -> scipy.sparse.csr_matrix:
     """Add one bridge edge per disconnected component of the k-NN graph."""
     n_comp, comp_labels = scipy.sparse.csgraph.connected_components(mat, directed=False)
@@ -181,8 +180,7 @@ def _bridge_disconnected(
             X_num_norm, X_cat, q_num_prep, q_cat, d_num, d_cat
         )[0]
     else:
-        if feat_ranges is None:
-            feat_ranges = X_num.max(axis=0) - X_num.min(axis=0)
+        feat_ranges = X_num.max(axis=0) - X_num.min(axis=0)
         q_num = X_num[ref : ref + 1]
         q_cat = X_cat[ref : ref + 1] if X_cat is not None else None
         dists_row = hybrid_row_batch_euclidean(
@@ -211,14 +209,8 @@ def build_approx_mst(
     n, d_num = X_num.shape
     d_cat = X_cat.shape[1] if X_cat is not None else 0
 
-    feat_ranges = (
-        X_num.max(axis=0) - X_num.min(axis=0) if metric == "euclidean" else None
-    )
-
     graph = _to_sparse_csr(knn_indices, knn_distances, n)
-    graph = _bridge_disconnected(
-        graph, X_num, X_cat, d_num, d_cat, metric=metric, feat_ranges=feat_ranges
-    )
+    graph = _bridge_disconnected(graph, X_num, X_cat, d_num, d_cat, metric=metric)
     mst = scipy.sparse.csgraph.minimum_spanning_tree(graph).tocoo()
     if mst.nnz == 0:
         return np.empty((0, 2), dtype=np.int64)
@@ -234,25 +226,12 @@ def topk_adversarial_clusters(
     metric: str,
 ) -> dict[str, list[str]]:
     """Top-K nearest cluster ids of a different class, by ascending centroid distance."""
-    if centroid_matrix.shape[0] == 0:
-        return {}
     pw = cdist(centroid_matrix, centroid_matrix, metric=metric)
     np.fill_diagonal(pw, np.inf)
-    classes = np.array(
-        [id_to_class.get(cid, -1) for cid in cluster_ids], dtype=np.int64
-    )
-    known = np.array([cid in id_to_class for cid in cluster_ids])
+    classes = np.array([id_to_class[cid] for cid in cluster_ids], dtype=np.int64)
     out: dict[str, list[str]] = {}
     for i, cid in enumerate(cluster_ids):
-        cls_c = id_to_class.get(cid)
-        if cls_c is None:
-            out[cid] = []
-            continue
-        adv_idx = np.where((classes != cls_c) & known)[0]
-        if adv_idx.size == 0:
-            out[cid] = []
-            continue
+        adv_idx = np.where(classes != classes[i])[0]
         order = np.argsort(pw[i, adv_idx])
-        take = min(top_k, adv_idx.size)
-        out[cid] = [cluster_ids[int(adv_idx[j])] for j in order[:take]]
+        out[cid] = [cluster_ids[int(adv_idx[j])] for j in order[:top_k]]
     return out

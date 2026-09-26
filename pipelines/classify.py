@@ -564,10 +564,9 @@ def classify(cfg) -> None:
     if not df_meta_path.exists():
         raise FileNotFoundError(f"Missing {df_meta_path}. Run `make prepare` first.")
     df_meta = load_prepared_metadata(df_meta_path)
-    save_config(cfg, paths.configs / "config_composed_classify.json")
 
-    num_cols = list(cfg.data.num_cols) if cfg.data.num_cols else []
-    cat_cols = list(cfg.data.cat_cols) if cfg.data.cat_cols else []
+    num_cols = list(cfg.data.num_cols)
+    cat_cols = list(cfg.data.cat_cols)
     label_col = "encoded_" + cfg.data.label_col
 
     train_df, val_df, test_df = (
@@ -627,6 +626,7 @@ def main() -> None:
     )
     classify(cfg)
     flush_timing(Path(cfg.path.outputs) / "timing.json")
+    save_config(cfg, Path(cfg.path.configs) / "config_composed_classify.json")
 
 
 if __name__ == "__main__":
