@@ -361,11 +361,6 @@ def _fig_oracle_benefit_by_variant(runs: list[dict]) -> Plot | None:
     )
 
 
-def _std(values: np.ndarray) -> float:
-    """Sample standard deviation, 0 for fewer than two values."""
-    return float(values.std(ddof=1)) if len(values) > 1 else 0.0
-
-
 def _table_perconfig(runs: list[dict]) -> dict:
     """Spearman rho by clustering configuration."""
     groups: dict[tuple[str, str], list[float]] = {}
@@ -384,7 +379,7 @@ def _table_perconfig(runs: list[dict]) -> dict:
                 "algorithm": algorithm,
                 "mean": float(arr.mean()),
                 "median": float(np.median(arr)),
-                "std": _std(arr),
+                "std": float(arr.std(ddof=1)) if len(arr) > 1 else 0.0,
                 "pct_gt_0_7": 100.0 * float((arr > 0.7).mean()),
                 "pct_lt_0": 100.0 * float((arr < 0.0).mean()),
                 "n_runs": len(arr),
@@ -424,8 +419,7 @@ def _table_nclusters(runs: list[dict]) -> dict:
 
 
 def _table_datasets(runs: list[dict]) -> dict:
-    """Per-dataset instance/feature/class/imbalance counts from the raw, pre-filter
-    df_info.json (not the post-`rare_category_filter` metadata)."""
+    """Per-dataset row and class counts and imbalance, from the raw df_info.json."""
     seen: dict[str, dict] = {}
     for r in runs:
         ds = _dataset_base(r["dataset"])
@@ -436,7 +430,7 @@ def _table_datasets(runs: list[dict]) -> dict:
         seen[ds] = {
             "dataset": ds,
             "n_rows": info["n_rows"],
-            "n_features": r.get("n_features"),
+            "n_features": r["n_features"],
             "n_classes": len(counts),
             "imbalance_ratio": (
                 counts[0] / counts[-1] if len(counts) >= 2 and counts[-1] else None
@@ -478,7 +472,7 @@ def _table_variant_spearman_by_dataset(runs: list[dict]) -> dict:
     return {"rows": rows}
 
 
-def _render_comparisons(root: Path, fmt: str = "pdf", out: Path | None = None) -> None:
+def _render_comparisons(root: Path, *, fmt: str, out: Path | None) -> None:
     """Aggregate the sweep under `root` into the cross-run figures and result tables."""
     set_figure_format(fmt)
     runs = _load_sweep_runs(root)

@@ -40,7 +40,7 @@ def build_cluster_fn(
     *,
     max_fit_samples: int,
     random_state: int,
-    reporter: Reporter | None = None,
+    reporter: Reporter,
     max_clusters: int | None,
     min_clusters: int | None,
     grid_target_cluster_size: int | None,
@@ -103,8 +103,7 @@ def build_cluster_fn(
                 score_metric=metric,
                 **common,
             )
-            if reporter is not None:
-                reporter(name, report)
+            reporter(name, report)
             if best_labels is not None:
                 return best_labels
             return fit_fn(X_num, **report["best"]["combo"], **common)

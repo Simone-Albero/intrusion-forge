@@ -33,7 +33,9 @@ def fit_hdbscan(
     )
 
     if n > max_fit_samples:
-        sub_num = subsample_features(X_num, max_fit_samples, random_state)
+        sub_num = subsample_features(
+            X_num, max_samples=max_fit_samples, random_state=random_state
+        )
         clf.fit(sub_num)
         labels = np.concatenate(
             [
@@ -88,7 +90,9 @@ def fit_birch(
         n_clusters=n_clusters,
     )
     if n > max_fit_samples:
-        sub_num = subsample_features(X_num, max_fit_samples, random_state)
+        sub_num = subsample_features(
+            X_num, max_samples=max_fit_samples, random_state=random_state
+        )
         clf.fit(sub_num)
         labels = clf.predict(X_num)
     else:
@@ -134,7 +138,9 @@ def fit_spectral(
     if n <= max_fit_samples:
         return SpectralClustering(**spec_kwargs).fit_predict(X_num)
 
-    sub_num = subsample_features(X_num, max_fit_samples, random_state)
+    sub_num = subsample_features(
+        X_num, max_samples=max_fit_samples, random_state=random_state
+    )
     sub_labels = SpectralClustering(**spec_kwargs).fit_predict(sub_num)
     nn = NearestNeighbors(n_neighbors=1, algorithm="auto").fit(sub_num)
     _, idx = nn.kneighbors(X_num, n_neighbors=1, return_distance=True)

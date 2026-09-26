@@ -78,8 +78,8 @@ def hybrid_row_batch_euclidean(
 def build_knn_graph(
     X_num: np.ndarray,
     X_cat: np.ndarray | None,
-    k: int,
     *,
+    k: int,
     metric: str,
     batch_size: int = 1024,
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -161,6 +161,7 @@ def _bridge_disconnected(
     X_cat: np.ndarray | None,
     d_num: int,
     d_cat: int,
+    *,
     metric: str,
     feat_ranges: np.ndarray | None = None,
 ) -> scipy.sparse.csr_matrix:
@@ -228,8 +229,8 @@ def topk_adversarial_clusters(
     centroid_matrix: np.ndarray,
     cluster_ids: list[str],
     id_to_class: dict[str, int],
-    top_k: int,
     *,
+    top_k: int,
     metric: str,
 ) -> dict[str, list[str]]:
     """Top-K nearest cluster ids of a different class, by ascending centroid distance."""

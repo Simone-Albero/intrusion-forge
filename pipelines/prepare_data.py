@@ -56,6 +56,7 @@ def _cluster_per_class(
     cfg,
     X_num: np.ndarray,
     y_class: np.ndarray,
+    *,
     classes: list,
 ) -> tuple[np.ndarray, dict[int, np.ndarray], set[int], dict[str, list]]:
     """Cluster each class separately, folding noise into per-class pseudo-clusters."""
@@ -251,7 +252,7 @@ def _cluster_splits(
 
     logger.info("Running per-class clustering on train (n=%d)...", len(train_df))
     labels, centroids, noise_cluster_ids, clustering_report = _cluster_per_class(
-        cfg, X_num, y_class, all_classes
+        cfg, X_num, y_class, classes=all_classes
     )
     report_tables = {
         "metric": cfg.clustering.distance,

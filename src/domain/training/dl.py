@@ -7,7 +7,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from ignite.engine import Events
+from ignite.engine import Engine, Events
 from ignite.handlers import EarlyStopping, ModelCheckpoint
 from ignite.metrics import Average
 from torch.utils.data import DataLoader
@@ -32,7 +32,15 @@ def _create_model(name: str, params: dict, device: torch.device) -> nn.Module:
     return DLClassifierFactory.create(name, params).to(device)
 
 
-def _build_train_engine(model, loss_fn, optimizer, scheduler, device, max_grad_norm):
+def _build_train_engine(
+    model: nn.Module,
+    *,
+    loss_fn: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler._LRScheduler | None,
+    device: torch.device,
+    max_grad_norm: float,
+) -> tuple[Engine, dict[str, list[float]]]:
     """Engine that trains for one epoch and collects per-step loss into history."""
     history: dict[str, list[float]] = {"loss": []}
 
@@ -56,8 +64,15 @@ def _build_train_engine(model, loss_fn, optimizer, scheduler, device, max_grad_n
 
 
 def _build_validation_engine(
-    model, loss_fn, device, trainer, patience, min_delta, checkpoint_dir
-):
+    model: nn.Module,
+    *,
+    loss_fn: nn.Module,
+    device: torch.device,
+    trainer: Engine,
+    patience: int,
+    min_delta: float,
+    checkpoint_dir: Path,
+) -> tuple[Engine, ModelCheckpoint]:
     """Validator engine with early stopping, and the handler keeping its best epoch."""
     # Both score functions minimize loss: Ignite's handlers maximize by convention.
     early_stopping = EarlyStopping(
@@ -159,16 +174,21 @@ class DLTrainer:
         )
 
         trainer, history = _build_train_engine(
-            model, loss_fn, optimizer, scheduler, self.device, self.max_grad_norm
+            model,
+            loss_fn=loss_fn,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            device=self.device,
+            max_grad_norm=self.max_grad_norm,
         )
         validator, checkpoint = _build_validation_engine(
             model,
-            loss_fn,
-            self.device,
-            trainer,
-            self.patience,
-            self.min_delta,
-            checkpoint_dir,
+            loss_fn=loss_fn,
+            device=self.device,
+            trainer=trainer,
+            patience=self.patience,
+            min_delta=self.min_delta,
+            checkpoint_dir=checkpoint_dir,
         )
 
         @trainer.on(Events.EPOCH_COMPLETED)

@@ -28,9 +28,9 @@ def _fit_outer_fold(
     y_train: pd.Series,
     X_test: pd.DataFrame,
     y_test: pd.Series,
+    *,
     inner_cv: KFold | None,
     param_grid: dict,
-    *,
     random_state: int,
     n_iter: int,
     fold: int,
@@ -132,12 +132,12 @@ def build_cluster_summary(
 def _fit_nested_cv(
     X: pd.DataFrame,
     y: pd.Series,
+    *,
     outer_cv: StratifiedKFold | KFold,
     outer_k: int,
     split_labels: pd.Series | None,
     inner_cv: KFold | None,
     param_grid: dict,
-    *,
     random_state: int,
     n_iter: int,
 ) -> dict:
@@ -151,8 +151,8 @@ def _fit_nested_cv(
             y.iloc[train_idx],
             X.iloc[test_idx],
             y.iloc[test_idx],
-            inner_cv,
-            param_grid,
+            inner_cv=inner_cv,
+            param_grid=param_grid,
             random_state=random_state,
             n_iter=n_iter,
             fold=f,
@@ -222,9 +222,9 @@ def _failure_rate_distribution(rates: pd.Series) -> dict:
 
 @timed
 def fit_failure_regressor(
-    cluster_stats: dict,
-    param_grid: dict,
+    cluster_stats: list[dict],
     *,
+    param_grid: dict,
     n_outer_splits: int,
     n_inner_splits: int,
     n_iter: int,
@@ -235,20 +235,16 @@ def fit_failure_regressor(
     logger.info("Running failure regressor ...")
     df = pd.DataFrame(cluster_stats).set_index("cluster_id")
 
-    is_noise = (
-        df["is_noise_cluster"].fillna(0).astype(bool)
-        if "is_noise_cluster" in df
-        else pd.Series(False, index=df.index)
-    )
+    is_noise = df["is_noise_cluster"].astype(bool)
     no_eval = df["failure_rate"].isna()
-    low_support = ~no_eval & (df["n_eval"].fillna(0) < min_eval_support)
+    low_support = ~no_eval & (df["n_eval"] < min_eval_support)
     n_excluded_no_eval = int(no_eval.sum())
     n_excluded_low_support = int((low_support & ~is_noise).sum())
     n_excluded_noise = int((is_noise & ~no_eval).sum())
+    n_eval_total = df.loc[~no_eval, "n_eval"].sum()
     noise_eval_share = (
-        float(df.loc[is_noise & ~no_eval, "n_eval"].fillna(0).sum())
-        / float(df.loc[~no_eval, "n_eval"].fillna(0).sum())
-        if df.loc[~no_eval, "n_eval"].fillna(0).sum()
+        float(df.loc[is_noise & ~no_eval, "n_eval"].sum()) / float(n_eval_total)
+        if n_eval_total
         else 0.0
     )
     df = df[~no_eval & ~low_support & ~is_noise]
@@ -349,11 +345,11 @@ def fit_failure_regressor(
     oof = _fit_nested_cv(
         X,
         y,
-        outer_cv,
-        outer_k,
-        split_labels,
-        inner_cv,
-        param_grid,
+        outer_cv=outer_cv,
+        outer_k=outer_k,
+        split_labels=split_labels,
+        inner_cv=inner_cv,
+        param_grid=param_grid,
         random_state=random_state,
         n_iter=n_iter,
     )

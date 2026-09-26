@@ -47,6 +47,7 @@ def _measure(labels: np.ndarray, score: float, combo: dict, duration_s: float) -
 
 def subsample_features(
     X_num: np.ndarray,
+    *,
     max_samples: int,
     random_state: int,
 ) -> np.ndarray:
@@ -62,6 +63,7 @@ def subsample_features(
 def _score_silhouette(
     X_num: np.ndarray,
     labels: np.ndarray,
+    *,
     metric: str,
 ) -> float:
     """Silhouette on non-noise points only. Returns -inf on failure or < 2 clusters."""
@@ -113,7 +115,9 @@ def grid_search(
     **fixed_params,
 ) -> tuple[dict, np.ndarray | None]:
     """Grid search scored by silhouette − noise penalty + resolution tilt."""
-    sub_num = subsample_features(X_num, max_fit_samples, random_state)
+    sub_num = subsample_features(
+        X_num, max_samples=max_fit_samples, random_state=random_state
+    )
 
     keys = list(param_grid.keys())
     values = list(param_grid.values())

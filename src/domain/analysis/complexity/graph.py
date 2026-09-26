@@ -37,6 +37,7 @@ def _stratified_subsample(
     X_cat: np.ndarray | None,
     y_class: np.ndarray,
     y_cluster: np.ndarray,
+    *,
     max_samples: int,
     min_per_cluster: int,
     random_state: int,
@@ -104,6 +105,7 @@ def _build_population_masks(
 def _build_topk_map(
     cluster_to_class: dict[str, int],
     centroids: dict[str, list[float]],
+    *,
     top_k_clusters: int,
     metric: str,
 ) -> dict[str, list[str]]:
@@ -116,7 +118,7 @@ def _build_topk_map(
     )
     id_to_class = {cid: cluster_to_class[cid] for cid in present_ids}
     return topk_adversarial_clusters(
-        centroid_matrix, present_ids, id_to_class, top_k_clusters, metric=metric
+        centroid_matrix, present_ids, id_to_class, top_k=top_k_clusters, metric=metric
     )
 
 
@@ -166,8 +168,8 @@ def prepare_complexity_graph(
             X_cat,
             y_class,
             y_cluster,
-            max_samples,
-            min_per_cluster,
+            max_samples=max_samples,
+            min_per_cluster=min_per_cluster,
             random_state=random_state,
         )
         logger.info(
@@ -206,7 +208,10 @@ def compute_complexity_from_graph(
     analysis_centroids = _compute_analysis_centroids(X_num, y_partition, metric=metric)
 
     top_k_map = _build_topk_map(
-        cluster_to_class, analysis_centroids, top_k_clusters, metric=metric
+        cluster_to_class,
+        analysis_centroids,
+        top_k_clusters=top_k_clusters,
+        metric=metric,
     )
 
     with tqdm(total=5, desc="complexity families", unit="family") as pbar:

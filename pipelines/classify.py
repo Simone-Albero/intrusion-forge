@@ -51,12 +51,6 @@ apply_plot_style()
 logger = logging.getLogger(__name__)
 
 
-def _seed_everything(seed: int) -> None:
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-
-
 @dataclass
 class Fold:
     """One model: the rows it trains on and the evaluation rows it predicts."""
@@ -178,23 +172,8 @@ def build_trainer(
     )
 
 
-def _resolve_dl_params(
-    params: dict,
-    num_cols: list[str],
-    cat_cols: list[str],
-    num_classes: int,
-    cardinality: int,
-) -> dict:
-    """Inject the data-shape params the DL classifier needs, keeping them out of the YAML."""
-    out = dict(params)
-    out["num_classes"] = num_classes
-    out["num_numerical_features"] = len(num_cols)
-    out["cardinalities"] = [cardinality] * len(cat_cols)
-    return out
-
-
 def _resolve_classifier_params(
-    cfg, *, kind: str, num_cols: list[str], cat_cols: list[str], df_meta: dict
+    cfg, *, num_cols: list[str], cat_cols: list[str], df_meta: dict
 ) -> dict:
     """Resolve the classifier `params` (DL shape injection / ML random_state)."""
     params = (
@@ -202,10 +181,12 @@ def _resolve_classifier_params(
         if cfg.classifier.params is not None
         else {}
     )
-    if kind == "dl":
-        cardinality = cfg.data.top_n + cfg.data.hash_buckets
-        params = _resolve_dl_params(
-            params, num_cols, cat_cols, df_meta["n_classes"], cardinality
+    if cfg.classifier.kind == "dl":
+        # The data shape, derived here rather than written in the YAML.
+        params["num_classes"] = df_meta["n_classes"]
+        params["num_numerical_features"] = len(num_cols)
+        params["cardinalities"] = [cfg.data.top_n + cfg.data.hash_buckets] * len(
+            cat_cols
         )
     elif supports_random_state(MLClassifierFactory.get(cfg.classifier.name)):
         params.setdefault("random_state", cfg.seed)
@@ -272,11 +253,6 @@ def _fingerprint(
 
 def _training_record_path(paths: OutputPaths) -> Path:
     return paths.outputs / "training/folds.json"
-
-
-def _invalidate_training_record(paths: OutputPaths) -> None:
-    """Drop the record first: an interrupted retrain leaves old and new models mixed."""
-    _training_record_path(paths).unlink(missing_ok=True)
 
 
 def _can_reuse(context: ClassifyContext, folds: list[Fold], fingerprint: dict) -> bool:
@@ -432,13 +408,13 @@ def train_folds(
     context: ClassifyContext,
     eval_df: pd.DataFrame,
     folds: list[Fold],
+    *,
     val_df: pd.DataFrame,
 ) -> tuple[np.ndarray, np.ndarray, list[np.ndarray | None]]:
     """Predict every eval row with the model of the fold that holds it out."""
     cfg, trainer = context.cfg, context.trainer
     params = _resolve_classifier_params(
         cfg,
-        kind=cfg.classifier.kind,
         num_cols=trainer.num_cols,
         cat_cols=trainer.cat_cols,
         df_meta=context.df_meta,
@@ -454,7 +430,8 @@ def train_folds(
     # All or nothing: reused models keep the training artifacts of their own run.
     reuse = _can_reuse(context, folds, fingerprint)
     if not reuse:
-        _invalidate_training_record(context.paths)
+        # Dropped first: an interrupted retrain leaves old and new models mixed.
+        _training_record_path(context.paths).unlink(missing_ok=True)
     X_val = None if reuse else trainer.features(val_df)
 
     y_pred = np.empty(len(eval_df), dtype=eval_df[context.label_col].to_numpy().dtype)
@@ -577,7 +554,9 @@ def classify(cfg) -> None:
             f"Unknown balance: {cfg.fit.balance!r}. Valid: 'undersample', 'none'."
         )
 
-    _seed_everything(cfg.seed)
+    random.seed(cfg.seed)
+    np.random.seed(cfg.seed)
+    torch.manual_seed(cfg.seed)
     set_figure_format(cfg.figure_format)
     paths = paths_from_cfg(cfg)
 
@@ -631,7 +610,7 @@ def classify(cfg) -> None:
     # Only eval_df and the folds' balanced copies are needed from here: on a single
     # split the full, unbalanced train frame would otherwise stay in memory throughout.
     del train_df, test_df
-    y_pred, y_proba, embeddings = train_folds(context, eval_df, folds, val_df)
+    y_pred, y_proba, embeddings = train_folds(context, eval_df, folds, val_df=val_df)
     publish_evaluation(
         context, eval_df, folds, y_pred=y_pred, y_proba=y_proba, embeddings=embeddings
     )

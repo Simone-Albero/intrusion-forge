@@ -59,7 +59,7 @@ def main() -> None:
 
     results = fit_failure_regressor(
         cluster_summary,
-        to_container(cfg.failure_regressor.param_grid),
+        param_grid=to_container(cfg.failure_regressor.param_grid),
         n_outer_splits=cfg.failure_regressor.n_outer_splits,
         n_inner_splits=cfg.failure_regressor.n_inner_splits,
         n_iter=cfg.failure_regressor.n_iter,
