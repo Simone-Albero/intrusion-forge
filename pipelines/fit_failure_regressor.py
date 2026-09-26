@@ -44,7 +44,7 @@ def main() -> None:
     class_complexity = load_from_json(class_complexity_path)
     predictions_path = paths.outputs / "analysis/predictions/clusters.json"
     predictions = load_from_json(predictions_path)
-    if any("n_rows" not in row for row in predictions["clusters"]):
+    if any("n_eval" not in row for row in predictions["clusters"]):
         raise ValueError(
             f"{predictions_path} predates the current artifact format: "
             "re-run `make classify`."

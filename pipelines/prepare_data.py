@@ -121,7 +121,7 @@ def _cluster_per_class(
         report["classes"].append(
             {
                 "class_name": str(cls),
-                "n_rows": n_cls,
+                "n_train": n_cls,
                 "n_clusters": n_clusters_cls,
                 "n_noise": n_noise_cls,
                 "noise_ratio": n_noise_cls / n_cls if n_cls > 0 else 0.0,

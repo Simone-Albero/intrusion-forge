@@ -121,7 +121,7 @@ def build_cluster_summary(
                 "is_noise_cluster": int(
                     cluster_measures.get("is_noise_cluster", False)
                 ),
-                "n_eval": error["n_rows"] if error else 0,
+                "n_eval": error["n_eval"] if error else 0,
                 "failure_rate": error.get("error_rate"),
                 "mcp_risk": error.get("mcp_risk"),
             }

@@ -50,16 +50,16 @@ def _cluster_error_rates(
     rows = []
     for c in np.unique(clusters):
         mask = clusters == c
-        n_rows = int(mask.sum())
+        n_eval = int(mask.sum())
         n_error = int((failed == c).sum())
         rows.append(
             {
                 "cluster_id": int(c),
                 "n_error": n_error,
-                "n_rows": n_rows,
-                "error_rate": (n_error / n_rows) if n_rows > 0 else None,
+                "n_eval": n_eval,
+                "error_rate": (n_error / n_eval) if n_eval > 0 else None,
                 **{
-                    name: float(scores[mask].mean()) if n_rows > 0 else None
+                    name: float(scores[mask].mean()) if n_eval > 0 else None
                     for name, scores in extra_scores.items()
                 },
             }
@@ -80,16 +80,16 @@ def evaluate_predictions(
     class_rows = []
     for label in np.unique(y_true):
         mask = y_true == label
-        n_rows = int(mask.sum())
+        n_eval = int(mask.sum())
         n_error = int(error_mask[mask].sum())
         class_rows.append(
             {
                 "class_id": int(label),
                 "n_error": n_error,
-                "n_rows": n_rows,
-                "error_rate": n_error / n_rows if n_rows > 0 else None,
+                "n_eval": n_eval,
+                "error_rate": n_error / n_eval if n_eval > 0 else None,
                 "mean_confidence": (
-                    float(confidences[mask].mean()) if n_rows > 0 else None
+                    float(confidences[mask].mean()) if n_eval > 0 else None
                 ),
             }
         )
