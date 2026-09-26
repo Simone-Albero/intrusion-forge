@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import random
 import sys
@@ -74,6 +75,7 @@ class ClassifyContext:
     trainer: Trainer
     label_col: str
     df_meta: dict
+    data_digest: str
     bus: LogDispatcher
 
 
@@ -112,14 +114,6 @@ def _component(node) -> ComponentSpec:
     """Resolve a `{name, params}` config node into plain Python values."""
     params = to_container(node.params) if node.params is not None else {}
     return ComponentSpec(name=node.name, params=params)
-
-
-_INERT_LOADER_KEYS = ("num_workers", "pin_memory")
-
-
-def _loader_fingerprint(node) -> dict:
-    """A dataloader config, minus the keys that can't change what it produces."""
-    return {k: v for k, v in to_container(node).items() if k not in _INERT_LOADER_KEYS}
 
 
 def build_trainer(
@@ -193,62 +187,37 @@ def _resolve_classifier_params(
     return params
 
 
-def _fingerprint(
-    cfg,
-    *,
-    params: dict,
-    num_cols: list[str],
-    cat_cols: list[str],
-    label_col: str,
-    df_meta: dict,
-) -> dict:
-    """Everything that determines the trained models, so a mismatch rules out reuse.
+# Config the models cannot depend on: this stage's switches and outputs, and the groups
+# only other stages read. Every other key is in, so a key added later retrains rather
+# than reuses wrongly.
+_NOT_TRAINING = (
+    "force",
+    "figure_format",
+    "path",
+    "name",
+    "distance",
+    "clustering",
+    "complexity",
+    "failure_regressor",
+)
+_INERT_LOADER_KEYS = ("num_workers", "pin_memory")
 
-    `df_meta` stands in for the prepared data itself: its split sizes and per-class counts
-    move whenever the data is regenerated or `prepare` is reconfigured, which the dataset
-    name alone would not catch. It also carries the class weights that a
-    `class_weight: auto` loss is built from when the training split keeps its original
-    distribution. `device` is left out on purpose — it does change the weights, but
-    reusing a model trained on another device is the point, not an accident. Both
-    dataloaders are fingerprinted wholesale via `_loader_fingerprint`, minus
-    `num_workers`/`pin_memory` — nothing in the dataset is random, but every other key
-    (`batch_size`, `shuffle`, `drop_last`, ...) can shift training or the early-stopping
-    metric Ignite computes as an average of per-batch means, so enumerating fields by
-    hand would leave the same hole open for the next key added.
-    """
-    fingerprint = {
-        "classifier": cfg.classifier.name,
-        "kind": cfg.classifier.kind,
-        "params": params,
-        "grid": to_container(cfg.classifier.grid) if "grid" in cfg.classifier else None,
-        "grid_search": to_container(cfg.grid_search),
-        "seed": cfg.seed,
-        "balance": cfg.fit.balance,
-        "n_samples": cfg.fit.n_samples,
-        "kfold": cfg.fit.kfold,
-        "kfold_splits": cfg.fit.kfold_splits,
-        "dataset": cfg.data.file_name,
-        "extension": cfg.data.extension,
-        "num_cols": num_cols,
-        "cat_cols": cat_cols,
-        "label_col": label_col,
-        "data_meta": df_meta,
-    }
-    if cfg.classifier.kind == "dl":
-        training = cfg.fit.training
-        fingerprint["dl_training"] = {
-            # Bumped when a value in here changes meaning: older records never match.
-            "schema": 2,
-            "loss": to_container(cfg.loss),
-            "optimizer": to_container(cfg.optimizer),
-            "scheduler": to_container(cfg.scheduler),
-            "epochs": training.epochs,
-            "max_grad_norm": training.max_grad_norm,
-            "early_stopping": to_container(training.early_stopping),
-            "train_loader": _loader_fingerprint(training.dataloader),
-            "val_loader": _loader_fingerprint(cfg.fit.validation.dataloader),
-        }
-    return fingerprint
+
+def _fingerprint(cfg, *, data_digest: str) -> dict:
+    """The config the models are trained under, plus the digest of the data they see."""
+    config = to_container(cfg)
+    for key in _NOT_TRAINING:
+        del config[key]
+    # Where and how fast a model trains, not on what: reusing a model trained on another
+    # device or with other parallelism is the point, even where float rounding differs.
+    del config["fit"]["device"]
+    if config["classifier"]["params"] is not None:
+        config["classifier"]["params"].pop("n_jobs", None)
+    for loop in ("training", "validation"):
+        for key in _INERT_LOADER_KEYS:
+            del config["fit"][loop]["dataloader"][key]
+    # Bumped when the code changes what a config trains: older records then never match.
+    return {"schema": 1, **config, "data_digest": data_digest}
 
 
 def _training_record_path(paths: OutputPaths) -> Path:
@@ -266,7 +235,11 @@ def _can_reuse(context: ClassifyContext, folds: list[Fold], fingerprint: dict) -
         return False
 
     previous = load_from_json(previous_path).get("fingerprint", {})
-    changed = first_difference(previous, fingerprint)
+    # Another schema differs everywhere: its first key would name the wrong cause.
+    if previous.get("schema") != fingerprint["schema"]:
+        changed = "schema"
+    else:
+        changed = first_difference(previous, fingerprint)
     if changed is not None:
         logger.info("[RETRAIN] training config changed (%s) — retraining.", changed)
         return False
@@ -419,14 +392,7 @@ def train_folds(
         cat_cols=trainer.cat_cols,
         df_meta=context.df_meta,
     )
-    fingerprint = _fingerprint(
-        cfg,
-        params=params,
-        num_cols=trainer.num_cols,
-        cat_cols=trainer.cat_cols,
-        label_col=context.label_col,
-        df_meta=context.df_meta,
-    )
+    fingerprint = _fingerprint(cfg, data_digest=context.data_digest)
     # All or nothing: reused models keep the training artifacts of their own run.
     reuse = _can_reuse(context, folds, fingerprint)
     if not reuse:
@@ -579,6 +545,15 @@ def classify(cfg) -> None:
                 f"The {split} split has no `cluster` column: "
                 "re-run `make prepare FORCE=1`."
             )
+    # The splits as loaded, feature and label columns only: `cluster` stays out, so
+    # re-clustering a dataset reuses its trained models.
+    digest = hashlib.blake2b(digest_size=16)
+    for split, df in (("train", train_df), ("val", val_df), ("test", test_df)):
+        rows = pd.util.hash_pandas_object(
+            df[num_cols + cat_cols + [label_col]], index=False
+        )
+        digest.update(f"{split}:{len(df)}".encode())
+        digest.update(rows.to_numpy().tobytes())
     logger.info(
         "Data loaded — train: %d, val: %d, test: %d samples",
         len(train_df),
@@ -603,6 +578,7 @@ def classify(cfg) -> None:
         ),
         label_col=label_col,
         df_meta=df_meta,
+        data_digest=digest.hexdigest(),
         bus=bus,
     )
     eval_df, folds = build_folds(cfg, train_df, test_df, label_col=label_col)
