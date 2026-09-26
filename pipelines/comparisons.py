@@ -13,10 +13,7 @@ from src.core.log import (
     setup_logger,
 )
 from src.core.utils import load_from_json
-from src.domain.analysis.failure_regressor import (
-    BASELINE_VARIANTS,
-    RATE_BASELINE_VARIANTS,
-)
+from src.domain.analysis.failure_regressor import RATE_BASELINE_VARIANTS
 from src.domain.plot.base import Plot, set_figure_format
 from src.domain.plot.comparison_charts import (
     box_plot,
@@ -77,7 +74,14 @@ _CLF_LABEL = {
     "hist_gradient_boosting": "HistGB",
     "xgboost": "XGBoost",
 }
-_VARIANT_ORDER = list(BASELINE_VARIANTS)
+# Display order of the baseline variants `instance_baselines` publishes.
+_VARIANT_ORDER = [
+    "mcp_cluster",
+    "atc_cluster",
+    "region",
+    "combo_rankavg",
+    "combo_atc_rankavg",
+]
 _VARIANT_LABEL = {
     "mcp_cluster": "MCP",
     "atc_cluster": "ATC",
@@ -89,11 +93,6 @@ _VARIANT_COLOR = {v: PALETTE[i] for i, v in enumerate(_VARIANT_ORDER)}
 _RATE_VARIANT_ORDER = [v for v in _VARIANT_ORDER if v in RATE_BASELINE_VARIANTS]
 # Top-to-bottom row order of the oracle-benefit figure.
 _ORACLE_BENEFIT_ORDER = _VARIANT_ORDER[::-1]
-
-
-def _load_instance(base: Path) -> dict | None:
-    path = base / "instance_baselines.json"
-    return load_from_json(path) if path.exists() else None
 
 
 def _load_sweep_runs(root: Path) -> list[dict]:
@@ -115,9 +114,9 @@ def _load_sweep_runs(root: Path) -> list[dict]:
                 continue
             composed = load_from_json(cfg_path)
             algorithm = next(iter(composed["clustering"]["algorithms"]), None)
-            data_cfg = composed.get("data", {}) or {}
-            n_features = len(data_cfg.get("num_cols") or []) + len(
-                data_cfg.get("cat_cols") or []
+            data_cfg = composed["data"]
+            n_features = len(data_cfg["num_cols"] or []) + len(
+                data_cfg["cat_cols"] or []
             )
             for clf_dir in sorted(
                 p for p in ds_dir.iterdir() if p.is_dir() and p.name != "shared"
@@ -126,18 +125,30 @@ def _load_sweep_runs(root: Path) -> list[dict]:
                 results_path = base / "failure_regressor_results.json"
                 if not results_path.exists():
                     continue
+                # Absent when the failure regressor skipped a degenerate target.
+                instance_path = base / "instance_baselines.json"
+                instance = (
+                    load_from_json(instance_path) if instance_path.exists() else None
+                )
+                if instance is not None:
+                    variants = {r["variant"] for r in instance["baselines"]}
+                    if variants != set(_VARIANT_ORDER):
+                        raise ValueError(
+                            f"{instance_path} has variants {sorted(variants)}; "
+                            f"comparisons displays {_VARIANT_ORDER}."
+                        )
                 runs.append(
                     {
                         "config": cfg_dir.name,
                         "dataset": ds_dir.name,
                         "clf": clf_dir.name,
-                        "distance": composed.get("distance"),
+                        "distance": composed["distance"],
                         "algorithm": algorithm,
                         "n_features": n_features,
                         "ds_dir": ds_dir,
                         "base": base,
                         "results": load_from_json(results_path),
-                        "instance": _load_instance(base),
+                        "instance": instance,
                     }
                 )
     return runs
@@ -169,15 +180,10 @@ def _median_iqr(values: list[float]) -> dict:
 
 def _variant_value(run: dict, variant: str, field: str) -> float | None:
     """One scalar field of one baseline variant from a run's instance-baselines table, if valid."""
-    inst = run.get("instance")
-    if not inst:
+    if run["instance"] is None:
         return None
-    entry = next(
-        (r for r in inst.get("baselines", []) if r["variant"] == variant), None
-    )
-    if not entry:
-        return None
-    v = entry.get(field)
+    entry = next(r for r in run["instance"]["baselines"] if r["variant"] == variant)
+    v = entry[field]
     if v is None or (isinstance(v, float) and np.isnan(v)):
         return None
     return float(v)
@@ -425,10 +431,7 @@ def _table_datasets(runs: list[dict]) -> dict:
         ds = _dataset_base(r["dataset"])
         if ds in seen:
             continue
-        info_path = r["ds_dir"] / "shared/metadata/df_info.json"
-        if not info_path.exists():
-            continue
-        info = load_prepared_metadata(info_path)
+        info = load_prepared_metadata(r["ds_dir"] / "shared/metadata/df_info.json")
         counts = sorted((c["n_rows"] for c in info["classes"]), reverse=True)
         seen[ds] = {
             "dataset": ds,
@@ -480,8 +483,7 @@ def _render_comparisons(root: Path, fmt: str = "pdf", out: Path | None = None) -
     set_figure_format(fmt)
     runs = _load_sweep_runs(root)
     if not runs:
-        logger.warning("No sweep runs found under %s; nothing to render.", root)
-        return
+        raise FileNotFoundError(f"No sweep runs found under {root}.")
     n_hdb = sum(1 for r in runs if r["algorithm"] == "hdbscan")
     logger.info(
         "Sweep results from %d runs (%d main, %d hdbscan) under %s",

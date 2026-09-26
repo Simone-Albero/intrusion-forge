@@ -38,8 +38,8 @@ def _stratified_subsample(
     y_class: np.ndarray,
     y_cluster: np.ndarray,
     max_samples: int,
-    min_per_cluster: int = 50,
-    random_state: int = 42,
+    min_per_cluster: int,
+    random_state: int,
 ) -> tuple[np.ndarray, np.ndarray | None, np.ndarray, np.ndarray]:
     """Subsample proportionally to cluster size, with a floor of `min_per_cluster` each."""
     rng = np.random.default_rng(random_state)
@@ -105,7 +105,7 @@ def _build_topk_map(
     cluster_to_class: dict[str, int],
     centroids: dict[str, list[float]],
     top_k_clusters: int,
-    metric: str = "cosine",
+    metric: str,
 ) -> dict[str, list[str]]:
     """Map each cluster to its K nearest adversarial clusters by centroid distance."""
     present_ids = [cid for cid in cluster_to_class if cid in centroids]
@@ -152,11 +152,11 @@ def prepare_complexity_graph(
     y_class: np.ndarray,
     y_cluster: np.ndarray,
     *,
-    k: int = 30,
-    max_samples: int | None = None,
-    min_per_cluster: int = 50,
-    metric: str = "cosine",
-    random_state: int = 42,
+    k: int,
+    max_samples: int | None,
+    min_per_cluster: int,
+    metric: str,
+    random_state: int,
 ) -> ComplexityGraph:
     """Build the subsample, k-NN graph and MST that both complexity passes share."""
     if max_samples is not None and len(y_cluster) > max_samples:
@@ -191,12 +191,12 @@ def compute_complexity_from_graph(
     graph: ComplexityGraph,
     y_partition: np.ndarray,
     *,
-    top_k_clusters: int = 10,
-    metric: str = "cosine",
-    noise_cluster_ids: set[int] | None = None,
+    top_k_clusters: int,
+    metric: str,
+    noise_cluster_ids: set[int] | None,
     silhouette_max_samples: int,
     silhouette_min_per_cluster: int,
-    random_state: int = 42,
+    random_state: int,
 ) -> dict[str, dict[str, float | None]]:
     """Compute every complexity-measure family for one partition of `graph`."""
     X_num, X_cat, y_class = graph.X_num, graph.X_cat, graph.y_class

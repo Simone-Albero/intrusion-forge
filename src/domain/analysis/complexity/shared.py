@@ -80,7 +80,7 @@ def build_knn_graph(
     X_cat: np.ndarray | None,
     k: int,
     *,
-    metric: str = "cosine",
+    metric: str,
     batch_size: int = 1024,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Build a k-NN graph with batched Gower-hybrid distances, never materialising n×n."""
@@ -161,7 +161,7 @@ def _bridge_disconnected(
     X_cat: np.ndarray | None,
     d_num: int,
     d_cat: int,
-    metric: str = "cosine",
+    metric: str,
     feat_ranges: np.ndarray | None = None,
 ) -> scipy.sparse.csr_matrix:
     """Add one bridge edge per disconnected component of the k-NN graph."""
@@ -204,7 +204,7 @@ def build_approx_mst(
     X_num: np.ndarray,
     X_cat: np.ndarray | None,
     *,
-    metric: str = "cosine",
+    metric: str,
 ) -> np.ndarray:
     """Approximate MST on the sparse k-NN graph, bridging disconnected components first."""
     n, d_num = X_num.shape
@@ -230,7 +230,7 @@ def topk_adversarial_clusters(
     id_to_class: dict[str, int],
     top_k: int,
     *,
-    metric: str = "euclidean",
+    metric: str,
 ) -> dict[str, list[str]]:
     """Top-K nearest cluster ids of a different class, by ascending centroid distance."""
     if centroid_matrix.shape[0] == 0:

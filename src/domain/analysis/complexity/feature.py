@@ -80,7 +80,7 @@ def compute_f_measures(
     y_cluster: np.ndarray,
     top_k_map: dict[str, list[str]],
     *,
-    metric: str = "cosine",
+    metric: str,
 ) -> dict[str, dict[str, float | None]]:
     """F1-F4 per cluster against its top-K adversarial clusters, as min/mean/max."""
     mask_valid = y_cluster != -1

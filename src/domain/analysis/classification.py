@@ -46,7 +46,6 @@ def _cluster_error_rates(
 ) -> list[dict]:
     """One row per cluster: error counts, rate and mean extra scores, worst rate first."""
     failed = clusters[error_mask]
-    extra_scores = extra_scores or {}
     rows = []
     for c in np.unique(clusters):
         mask = clusters == c

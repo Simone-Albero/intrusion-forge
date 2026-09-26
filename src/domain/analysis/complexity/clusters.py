@@ -8,10 +8,10 @@ def _approx_silhouette(
     X: np.ndarray,
     labels: np.ndarray,
     *,
-    metric: str = "euclidean",
+    metric: str,
     max_samples: int,
     min_per_cluster: int,
-    random_state: int = 42,
+    random_state: int,
 ) -> np.ndarray | None:
     """Silhouette scores on a stratified subsample, NaN elsewhere, None below two labels."""
     unique_labels = np.unique(labels)
@@ -75,10 +75,10 @@ def compute_cluster_geometry(
     y_cluster: np.ndarray,
     centroids: dict[str, list[float]],
     *,
-    metric: str = "cosine",
+    metric: str,
     silhouette_max_samples: int,
     silhouette_min_per_cluster: int,
-    random_state: int = 42,
+    random_state: int,
 ) -> dict[str, dict[str, float | None]]:
     """Per-cluster geometry: dispersion, centroid separation and silhouette tail."""
     mask_valid = y_cluster != -1

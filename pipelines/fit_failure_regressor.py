@@ -25,8 +25,6 @@ def main() -> None:
         overrides=sys.argv[1:],
     )
     paths = paths_from_cfg(cfg)
-    save_config(cfg, paths.configs / "config_composed_regress.json")
-
     bus = LogDispatcher()
     bus.subscribe(JSONSubscriber(paths.outputs))
 
@@ -49,6 +47,7 @@ def main() -> None:
             f"{predictions_path} predates the current artifact format: "
             "re-run `make classify`."
         )
+    save_config(cfg, paths.configs / "config_composed_regress.json")
 
     cluster_summary = build_cluster_summary(
         complexity,
@@ -72,6 +71,8 @@ def main() -> None:
     )
 
     if results.get("skipped"):
+        # An earlier run's baselines would otherwise pair with these skipped results.
+        (paths.outputs / "analysis/instance_baselines.json").unlink(missing_ok=True)
         logger.info("Instance-level baselines skipped: the failure regressor was.")
     else:
         instance = instance_baselines(load_df(dump_path), results["oof_predicted_rate"])

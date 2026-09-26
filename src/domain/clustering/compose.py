@@ -63,6 +63,11 @@ def build_cluster_fn(
     unknown = sorted(configured - signature(fit_fn).parameters.keys())
     if unknown:
         raise TypeError(f"Clustering algorithm {name!r} takes no parameter {unknown}.")
+    if min_clusters is not None and not ("n_clusters" in grid or derives_n_clusters):
+        raise TypeError(
+            f"Clustering algorithm {name!r} takes no min_clusters here: it floors the "
+            "n_clusters of a sweep, and this configuration sweeps none."
+        )
     supplied = {"max_fit_samples", "random_state"} | (
         {"n_clusters"} if derives_n_clusters else set()
     )
@@ -89,13 +94,12 @@ def build_cluster_fn(
                 X_num.shape[0], grid_target_cluster_size, k_cap
             )
         if algo_grid:
-            effective_min_clusters = min_clusters if name in _N_CLUSTERS_ALGOS else None
             report, best_labels = grid_search(
                 X_num,
                 fit_fn,
                 algo_grid,
                 resolution_weight=resolution_weight,
-                min_clusters=effective_min_clusters,
+                min_clusters=min_clusters,
                 score_metric=metric,
                 **common,
             )

@@ -1,4 +1,3 @@
-import pickle
 from pathlib import Path
 
 import pandas as pd
@@ -13,19 +12,13 @@ _SAVERS = {
     ".csv": lambda df, p, **kw: df.to_csv(p, **kw),
 }
 
-_PICKLE_EXTS = {".pkl", ".pickle"}
-_ALL_EXTS = sorted({*_LOADERS, *_PICKLE_EXTS})
+_ALL_EXTS = sorted(_LOADERS)
 
 
 def load_df(file_path: str | Path, **kwargs) -> pd.DataFrame:
     """Load a DataFrame from a file based on its extension."""
     file_path = Path(file_path)
     ext = file_path.suffix.lower()
-
-    if ext in _PICKLE_EXTS:
-        with open(file_path, "rb") as f:
-            return pickle.load(f)
-
     loader = _LOADERS.get(ext)
     if loader is None:
         raise ValueError(f"Unsupported file extension: {ext!r}. Supported: {_ALL_EXTS}")
@@ -43,12 +36,6 @@ def save_df(
     file_path = Path(file_path)
     file_path.parent.mkdir(parents=True, exist_ok=True)
     ext = file_path.suffix.lower()
-
-    if ext in _PICKLE_EXTS:
-        with open(file_path, "wb") as f:
-            pickle.dump(df, f)
-        return
-
     saver = _SAVERS.get(ext)
     if saver is None:
         raise ValueError(f"Unsupported file extension: {ext!r}. Supported: {_ALL_EXTS}")

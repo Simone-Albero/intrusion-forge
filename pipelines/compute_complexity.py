@@ -99,6 +99,16 @@ def main() -> None:
         overrides=sys.argv[1:],
     )
     paths = paths_from_cfg(cfg)
+    if cfg.complexity.distance not in ("euclidean", "cosine"):
+        raise ValueError(
+            f"Unknown complexity.distance: {cfg.complexity.distance!r}. "
+            "Valid: 'euclidean', 'cosine'."
+        )
+    if cfg.complexity.distance != cfg.clustering.distance:
+        raise ValueError(
+            f"complexity.distance {cfg.complexity.distance!r} must match "
+            f"clustering.distance {cfg.clustering.distance!r}."
+        )
 
     cluster_marker = paths.shared / "complexity.json"
     class_marker = paths.shared / "class_complexity.json"
@@ -125,8 +135,8 @@ def main() -> None:
     bus.subscribe(JSONSubscriber(paths.shared))
 
     clusters_meta = load_from_json(paths.shared / "metadata/clusters_meta.json")
+    noise_cluster_ids = clusters_meta["noise_cluster_ids"]
     save_config(cfg, paths.shared / "config_composed_complexity.json")
-    noise_cluster_ids = clusters_meta.get("noise_cluster_ids", [])
 
     y_cluster = train_df["cluster"].to_numpy(dtype=np.int64)
     if noise_cluster_ids:

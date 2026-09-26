@@ -225,12 +225,11 @@ def fit_failure_regressor(
     cluster_stats: dict,
     param_grid: dict,
     *,
-    feature_cols: list[str] | None = None,
-    n_outer_splits: int = 5,
-    n_inner_splits: int = 5,
-    n_iter: int = 40,
-    random_state: int = 42,
-    min_eval_support: int = 5,
+    n_outer_splits: int,
+    n_inner_splits: int,
+    n_iter: int,
+    random_state: int,
+    min_eval_support: int,
 ) -> dict:
     """Fit a nested-CV Random Forest predicting each cluster's failure rate from its features."""
     logger.info("Running failure regressor ...")
@@ -287,12 +286,11 @@ def fit_failure_regressor(
             no_eval.size,
         )
 
-    if feature_cols is None:
-        feature_cols = [
-            c
-            for c in df.select_dtypes("number").columns
-            if c not in ("failure_rate", "n_eval", "is_noise_cluster", "mcp_risk")
-        ]
+    feature_cols = [
+        c
+        for c in df.select_dtypes("number").columns
+        if c not in ("failure_rate", "n_eval", "is_noise_cluster", "mcp_risk")
+    ]
     X = df[feature_cols].copy()
     y = df["failure_rate"].astype(float)
 
@@ -375,13 +373,6 @@ def fit_failure_regressor(
     return results
 
 
-BASELINE_VARIANTS = (
-    "mcp_cluster",
-    "atc_cluster",
-    "region",
-    "combo_rankavg",
-    "combo_atc_rankavg",
-)
 RATE_BASELINE_VARIANTS = ("region", "mcp_cluster", "atc_cluster")
 
 
@@ -421,10 +412,6 @@ def instance_baselines(samples: pd.DataFrame, predicted_rate: list[dict]) -> dic
         "combo_rankavg": combo_rankavg,
         "combo_atc_rankavg": combo_atc_rankavg,
     }
-    if tuple(scores) != BASELINE_VARIANTS:
-        raise ValueError(
-            f"instance_baselines scores {tuple(scores)} do not match BASELINE_VARIANTS."
-        )
 
     # Not a pandas groupby: its Cython mean accumulates in a different order from
     # numpy's pairwise sum, so the two disagree in the last ulp on any cluster with

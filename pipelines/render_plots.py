@@ -128,10 +128,7 @@ def _plot_feature_violin_by_rate_bin(
 ) -> dict[str, Plot]:
     """Violin distribution of each complexity feature split by failure-rate quartile bins."""
     rate = summary_df["failure_rate"]
-    try:
-        bins = pd.qcut(rate, q=n_bins, duplicates="drop")
-    except Exception:
-        return {}
+    bins = pd.qcut(rate, q=n_bins, duplicates="drop")
     if bins.nunique() < 2:
         return {}
 
@@ -274,26 +271,23 @@ def main() -> None:
     )
     set_figure_format(cfg.figure_format)
     paths = paths_from_cfg(cfg)
+    summary_path = paths.outputs / "analysis/cluster_summary.json"
+    results_path = paths.outputs / "analysis/failure_regressor_results.json"
+    for path in (summary_path, results_path):
+        if not path.exists():
+            raise FileNotFoundError(
+                f"Missing {path}: run `make failure-regress` first."
+            )
     save_config(cfg, paths.configs / "config_composed_render.json")
 
     analysis_bus = LogDispatcher()
     analysis_bus.subscribe(FilesystemFigureSubscriber(paths.figures))
-
-    summary_path = paths.outputs / "analysis/cluster_summary.json"
-    results_path = paths.outputs / "analysis/failure_regressor_results.json"
-    if summary_path.exists() and results_path.exists():
-        assemble_analysis_figures(
-            cluster_summary=load_from_json(summary_path),
-            df_meta=load_prepared_metadata(paths.shared / "metadata/df_meta.json"),
-            regressor_results=load_from_json(results_path),
-            analysis_bus=analysis_bus,
-        )
-    else:
-        logger.warning(
-            "[STAGE-SKIP] Missing failure-analysis artifacts in %s; "
-            "run `make failure-regress` first. Skipping summary figures.",
-            paths.outputs / "analysis",
-        )
+    assemble_analysis_figures(
+        cluster_summary=load_from_json(summary_path),
+        df_meta=load_prepared_metadata(paths.shared / "metadata/df_meta.json"),
+        regressor_results=load_from_json(results_path),
+        analysis_bus=analysis_bus,
+    )
 
     flush_timing(paths.outputs / "timing.json")
 

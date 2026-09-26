@@ -402,6 +402,11 @@ def main() -> None:
         overrides=sys.argv[1:],
     )
 
+    if cfg.clustering.distance not in ("euclidean", "cosine"):
+        raise ValueError(
+            f"Unknown clustering.distance: {cfg.clustering.distance!r}. "
+            "Valid: 'euclidean', 'cosine'."
+        )
     ext = cfg.data.extension
     processed = Path(cfg.path.processed_data)
     shared = Path(cfg.path.shared)
