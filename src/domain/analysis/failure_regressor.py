@@ -232,19 +232,12 @@ def fit_failure_regressor(
     logger.info("Running failure regressor ...")
     df = pd.DataFrame(cluster_stats).set_index("cluster_id")
 
-    is_noise = df["is_noise_cluster"].astype(bool)
+    # No row is routed into a noise pseudo-cluster: noise leaves with the unevaluated.
     no_eval = df["failure_rate"].isna()
     low_support = ~no_eval & (df["n_eval"] < min_eval_support)
     n_excluded_no_eval = int(no_eval.sum())
-    n_excluded_low_support = int((low_support & ~is_noise).sum())
-    n_excluded_noise = int((is_noise & ~no_eval).sum())
-    n_eval_total = df.loc[~no_eval, "n_eval"].sum()
-    noise_eval_share = (
-        float(df.loc[is_noise & ~no_eval, "n_eval"].sum()) / float(n_eval_total)
-        if n_eval_total
-        else 0.0
-    )
-    df = df[~no_eval & ~low_support & ~is_noise]
+    n_excluded_low_support = int(low_support.sum())
+    df = df[~no_eval & ~low_support]
 
     rates = df["failure_rate"].astype(float)
     n_eval = df["n_eval"].astype(float)
@@ -256,25 +249,20 @@ def fit_failure_regressor(
         "n_clusters_used": int(len(df)),
         "n_excluded_no_eval": n_excluded_no_eval,
         "n_excluded_low_support": n_excluded_low_support,
-        "n_excluded_noise": n_excluded_noise,
-        "noise_eval_share": noise_eval_share,
         "min_eval_support": min_eval_support,
         "global_error_rate": global_error_rate,
     }
-    total_excluded = n_excluded_no_eval + n_excluded_low_support + n_excluded_noise
+    total_excluded = n_excluded_no_eval + n_excluded_low_support
     if total_excluded:
         # Losing more than a fifth of the clusters earns a warning: routine on a single
         # split, whose test rows alone starve per-cluster support.
         excluded_frac = total_excluded / no_eval.size if no_eval.size else 0.0
         log = logger.warning if excluded_frac > 0.2 else logger.info
         log(
-            "Excluded clusters — no evaluated rows: %d, support < %d: %d, noise "
-            "pseudo-clusters: %d (%.1f%% of evaluated rows); %d/%d used",
+            "Excluded clusters — no evaluated rows: %d, support < %d: %d; %d/%d used",
             n_excluded_no_eval,
             min_eval_support,
             n_excluded_low_support,
-            n_excluded_noise,
-            100.0 * noise_eval_share,
             len(df),
             no_eval.size,
         )

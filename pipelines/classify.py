@@ -28,7 +28,7 @@ from src.domain.analysis.classification import (
     per_sample_scores,
 )
 from src.domain.analysis.confidence import mcp_risk
-from src.domain.data.digest import digest_frames, digest_regions
+from src.domain.data.digest import digest_frames
 from src.domain.data.preprocessing import (
     oof_splits,
     random_undersample_df,
@@ -76,7 +76,7 @@ class ClassifyContext:
     label_col: str
     df_meta: dict
     data_digest: str
-    regions_digest: str
+    routed_digest: str
     bus: LogDispatcher
 
 
@@ -456,7 +456,7 @@ def publish_evaluation(
     mode = _eval_mode(context.cfg)
 
     y_true = eval_df[label_col].to_numpy()
-    clusters = eval_df["cluster"].to_numpy()
+    clusters = eval_df["routed_cluster"].to_numpy()
 
     # Every class, not only the observed ones: a prediction into a class the evaluated
     # rows never contain stays visible, and row k is class id k.
@@ -471,7 +471,7 @@ def publish_evaluation(
         # What these rates were measured on: the regressor checks both against the data
         # prepare holds when it runs.
         "data_digest": context.data_digest,
-        "regions_digest": context.regions_digest,
+        "routed_digest": context.routed_digest,
     }
     raw_figures = {
         **build_test_figures(
@@ -533,9 +533,6 @@ def classify(cfg) -> None:
     if not prepared_path.exists():
         raise FileNotFoundError(f"Missing {prepared_path}: run `make prepare` first.")
     df_meta = load_prepared_metadata(paths.shared / "metadata/df_meta.json")
-    noise_cluster_ids = load_from_json(paths.shared / "metadata/clusters_meta.json")[
-        "noise_cluster_ids"
-    ]
 
     num_cols = list(cfg.data.num_cols)
     cat_cols = list(cfg.data.cat_cols)
@@ -546,9 +543,9 @@ def classify(cfg) -> None:
         for split in ("train", "val", "test")
     )
     for split, df in (("train", train_df), ("test", test_df)):
-        if "cluster" not in df.columns:
+        if "routed_cluster" not in df.columns:
             raise ValueError(
-                f"The {split} split has no `cluster` column: re-run `make prepare`."
+                f"The {split} split has no `routed_cluster`: re-run `make prepare`."
             )
     logger.info(
         "Data loaded — train: %d, val: %d, test: %d samples",
@@ -580,7 +577,10 @@ def classify(cfg) -> None:
             {"train": train_df, "val": val_df, "test": test_df},
             num_cols + cat_cols + [label_col],
         ),
-        regions_digest=digest_regions(train_df, noise_cluster_ids),
+        # The regions every rate here is counted on, which the label never chose.
+        routed_digest=digest_frames(
+            {"train": train_df, "val": val_df, "test": test_df}, ["routed_cluster"]
+        ),
         bus=bus,
     )
     eval_df, folds = build_folds(cfg, train_df, test_df, label_col=label_col)

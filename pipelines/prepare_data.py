@@ -153,10 +153,13 @@ def _cluster_per_class(
 
         cluster_ids = np.unique(raw_labels[raw_labels != -1])
         labels[mask] = np.where(raw_labels == -1, -1, raw_labels + offset)
-        X_raw_cls = X_num[mask]
         for cid in cluster_ids:
-            centroids[int(cid + offset)] = X_raw_cls[raw_labels == cid].mean(axis=0)
-        del X_raw_cls
+            centroid = X_num_cls[raw_labels == cid].mean(axis=0)
+            # Under cosine a region's centre is a direction: the mean of the unit
+            # vectors it was clustered on, renormalized.
+            if clustering.distance == "cosine":
+                centroid = l2_normalize(centroid[np.newaxis])[0]
+            centroids[int(cid + offset)] = centroid
         if len(cluster_ids) > 0:
             offset += int(cluster_ids.max()) + 1
 
@@ -168,7 +171,6 @@ def _cluster_per_class(
             noise_mask = (y_class == noise_cls) & (labels == -1)
             if noise_mask.any():
                 labels[noise_mask] = next_id
-                centroids[next_id] = X_num[noise_mask].mean(axis=0)
                 noise_cluster_ids.add(next_id)
                 next_id += 1
 
@@ -245,7 +247,7 @@ def _cluster_splits(
     label_col: str,
     dispatcher: LogDispatcher,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, set[int]]:
-    """Cluster train per class, then attach the `cluster` column to every split."""
+    """Cluster train per class, then give every split `cluster` and `routed_cluster`."""
     X_num = train_df[num_cols].to_numpy(dtype=np.float64)
     y_class = train_df[label_col].to_numpy()
     all_classes = sorted(train_df[label_col].unique().tolist())
@@ -261,18 +263,26 @@ def _cluster_splits(
     }
     dispatcher.publish(LogBundle.from_dict({"json/clustering_report": report_tables}))
 
-    train_df = train_df.copy()
-    train_df["cluster"] = labels
-    assigned: dict[str, pd.DataFrame] = {}
-    for name, split_df in (("val", val_df), ("test", test_df)):
+    # Routing never reads the label: a region drawn inside one class holds only rows of
+    # that class, and its error rate would count only the mistakes made on it.
+    # The noise pseudo-clusters have no centroid, so no row is routed into one.
+    if not centroids:
+        raise ValueError(
+            "Every class came out as noise: no region to route rows into. Loosen the "
+            "clustering grid so that some class keeps a region."
+        )
+    routed: dict[str, pd.DataFrame] = {}
+    for name, split_df in (("train", train_df), ("val", val_df), ("test", test_df)):
         split_df = split_df.copy()
-        split_df["cluster"] = assign_nearest_centroid(
+        split_df["routed_cluster"] = assign_nearest_centroid(
             split_df[num_cols].to_numpy(dtype=np.float64),
             centroids,
             metric=cfg.clustering.distance,
         )
-        assigned[name] = split_df
-    val_df, test_df = assigned["val"], assigned["test"]
+        # Only train rows were clustered; the others belong where they are routed.
+        split_df["cluster"] = labels if name == "train" else split_df["routed_cluster"]
+        routed[name] = split_df
+    train_df, val_df, test_df = routed["train"], routed["val"], routed["test"]
 
     noise_ids = sorted(noise_cluster_ids)
     noise_count = (
@@ -285,7 +295,7 @@ def _cluster_splits(
     )
     logger.info(
         "Clustering complete — %d clusters (noise reassigned: %d points into pseudo-clusters)",
-        len(centroids),
+        len(centroids) + len(noise_cluster_ids),
         noise_count,
     )
     return train_df, val_df, test_df, noise_cluster_ids
@@ -399,7 +409,7 @@ def _fingerprint(cfg) -> dict:
     """The config the splits and regions are built from."""
     return {
         # Bumped when the code changes what a config builds: older records never match.
-        "schema": 1,
+        "schema": 2,
         "data": to_container(cfg.data),
         "clustering": to_container(cfg.clustering),
         "seed": cfg.seed,

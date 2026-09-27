@@ -57,6 +57,10 @@ def main() -> None:
         split: load_df(paths.processed_data / f"{split}.{cfg.data.extension}")
         for split in ("train", "val", "test")
     }
+    if any("routed_cluster" not in df.columns for df in splits.values()):
+        raise ValueError(
+            f"{paths.processed_data} predates `routed_cluster`: re-run `make prepare`."
+        )
     columns = (
         list(cfg.data.num_cols)
         + list(cfg.data.cat_cols)
@@ -70,7 +74,10 @@ def main() -> None:
     )
     current = {
         "complexity": (digest_frames({"train": splits["train"]}, columns), regions),
-        "classify": (digest_frames(splits, columns), regions),
+        "classify": (
+            digest_frames(splits, columns),
+            digest_frames(splits, ["routed_cluster"]),
+        ),
     }
     complexity_record = load_from_json(paths.shared / "complexity_fingerprint.json")
     recorded = {
@@ -78,7 +85,7 @@ def main() -> None:
             complexity_record.get("data_digest"),
             complexity_record.get("regions_digest"),
         ),
-        "classify": (predictions.get("data_digest"), predictions.get("regions_digest")),
+        "classify": (predictions.get("data_digest"), predictions.get("routed_digest")),
     }
     stale = [stage for stage in current if recorded[stage] != current[stage]]
     if stale:
