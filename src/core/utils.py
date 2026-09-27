@@ -77,19 +77,36 @@ def flush_timing(path: str | Path) -> None:
     _TIMING_RECORDS.clear()
 
 
-def skip_if_exists(
-    markers: Path | Iterable[Path], force: bool, stage_name: str
+def skip_if_unchanged(
+    outputs: Iterable[Path],
+    record: Path,
+    fingerprint: dict,
+    *,
+    force: bool,
+    stage_name: str,
 ) -> bool:
-    """Return True (and log) when all marker paths exist and force is False."""
-    if force:
+    """True (and log) when every output exists and `record` holds this `fingerprint`."""
+    if force or not all(Path(p).exists() for p in outputs):
         return False
-    paths = [markers] if isinstance(markers, Path) else list(markers)
-    if paths and all(Path(p).exists() for p in paths):
-        logging.getLogger(__name__).info(
-            "Skipping %s — outputs present (force=true to recompute).", stage_name
-        )
-        return True
-    return False
+    log = logging.getLogger(__name__)
+    if not record.exists():
+        log.info("[RECOMPUTE] %s: no record of the inputs of its outputs.", stage_name)
+        return False
+    previous = load_from_json(record)
+    # Another schema differs everywhere: its first key would name the wrong cause.
+    if previous.get("schema") != fingerprint["schema"]:
+        changed = "schema"
+    else:
+        changed = first_difference(previous, fingerprint)
+    if changed is not None:
+        log.info("[RECOMPUTE] %s: its inputs changed (%s).", stage_name, changed)
+        return False
+    log.info(
+        "[STAGE-SKIP] Skipping %s — outputs present and unchanged "
+        "(force=true to recompute).",
+        stage_name,
+    )
+    return True
 
 
 def first_difference(previous: dict, current: dict) -> str | None:

@@ -8,7 +8,7 @@ from omegaconf import OmegaConf
 from sklearn.preprocessing import RobustScaler
 from tqdm import tqdm
 
-from src.core.config import load_config, save_config
+from src.core.config import load_config, save_config, to_container
 from src.core.io import load_df, save_df
 from src.core.log import (
     JSONSubscriber,
@@ -16,7 +16,7 @@ from src.core.log import (
     LogDispatcher,
     setup_logger,
 )
-from src.core.utils import flush_timing, skip_if_exists, timed
+from src.core.utils import flush_timing, load_from_json, skip_if_unchanged, timed
 from src.domain.analysis.complexity.shared import l2_normalize
 from src.domain.analysis.metadata import (
     compute_clusters_metadata,
@@ -395,6 +395,22 @@ def prepare(cfg) -> None:
     )
 
 
+def _fingerprint(cfg) -> dict:
+    """The config the splits and regions are built from."""
+    return {
+        # Bumped when the code changes what a config builds: older records never match.
+        "schema": 1,
+        "data": to_container(cfg.data),
+        "clustering": to_container(cfg.clustering),
+        "seed": cfg.seed,
+        # The per-class region budget is derived from the complexity sample cap.
+        "complexity": {
+            key: cfg.complexity[key]
+            for key in ("max_complexity_samples", "min_subsample_per_cluster")
+        },
+    }
+
+
 def main() -> None:
     """Entry point for the data preparation stage."""
     cfg = load_config(
@@ -411,12 +427,37 @@ def main() -> None:
     ext = cfg.data.extension
     processed = Path(cfg.path.processed_data)
     shared = Path(cfg.path.shared)
-    markers = [processed / f"{s}.{ext}" for s in ("train", "val", "test")]
-    markers.append(shared / "metadata/clusters_meta.json")
-    if skip_if_exists(markers, cfg.force, "prepare"):
+    outputs = [processed / f"{s}.{ext}" for s in ("train", "val", "test")]
+    outputs.append(shared / "metadata/clusters_meta.json")
+    record = shared / "prepare_fingerprint.json"
+    raw_data = Path(cfg.path.raw_data)
+    fingerprint = _fingerprint(cfg)
+    # Size and mtime, not a digest: re-reading a CSV of several GB only to decide
+    # whether to read it would cost what the cache saves.
+    if raw_data.exists():
+        stat = raw_data.stat()
+        fingerprint["raw_data"] = {"size": stat.st_size, "mtime": stat.st_mtime}
+    elif record.exists():
+        # Outputs copied without their raw CSV: only the config can still be checked.
+        fingerprint["raw_data"] = load_from_json(record)["raw_data"]
+        logger.warning(
+            "Missing %s: the prepare cache checks the config alone.", raw_data
+        )
+    if skip_if_unchanged(
+        outputs, record, fingerprint, force=cfg.force, stage_name="prepare"
+    ):
         return
+    if not raw_data.exists():
+        raise FileNotFoundError(
+            f"Missing {raw_data}: prepare must recompute and cannot without it."
+        )
 
+    # Dropped first: an interrupted recompute leaves new outputs under an old record.
+    record.unlink(missing_ok=True)
     prepare(cfg)
+    bus = LogDispatcher()
+    bus.subscribe(JSONSubscriber(shared))
+    bus.publish(LogBundle.from_dict({"json/prepare_fingerprint": fingerprint}))
     flush_timing(shared / "timing.json")
     save_config(cfg, shared / "config_composed_prepare.json")
 
