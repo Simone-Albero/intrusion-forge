@@ -12,6 +12,7 @@ from src.domain.analysis.failure_regressor import (
     fit_failure_regressor,
     instance_baselines,
 )
+from src.domain.data.digest import digest_frames, digest_regions
 
 setup_logger()
 logger = logging.getLogger(__name__)
@@ -28,13 +29,15 @@ def main() -> None:
     bus = LogDispatcher()
     bus.subscribe(JSONSubscriber(paths.outputs))
 
+    # Each upstream stage writes its record last: without one, its outputs may disagree.
+    for stage, record in (
+        ("prepare", paths.shared / "prepare_fingerprint.json"),
+        ("complexity", paths.shared / "complexity_fingerprint.json"),
+    ):
+        if not record.exists():
+            raise FileNotFoundError(f"Missing {record}: run `make {stage}` first.")
     complexity_path = paths.shared / "complexity.json"
     class_complexity_path = paths.shared / "class_complexity.json"
-    for p in (complexity_path, class_complexity_path):
-        if not p.exists():
-            raise FileNotFoundError(
-                f"Missing complexity artifact at {p}. Run `make complexity` first."
-            )
     dump_path = paths.outputs / "analysis/predictions/oof_samples.parquet"
     if not dump_path.exists():
         raise FileNotFoundError(f"Missing {dump_path}: re-run `make classify`.")
@@ -46,6 +49,43 @@ def main() -> None:
         raise ValueError(
             f"{predictions_path} predates the current artifact format: "
             "re-run `make classify`."
+        )
+    # Descriptors and failure rates are joined by cluster id, so both must come from the
+    # data prepare holds now: recompute the digests each stage recorded of what it read.
+    # A digest a stage never recorded counts as stale.
+    splits = {
+        split: load_df(paths.processed_data / f"{split}.{cfg.data.extension}")
+        for split in ("train", "val", "test")
+    }
+    columns = (
+        list(cfg.data.num_cols)
+        + list(cfg.data.cat_cols)
+        + [f"encoded_{cfg.data.label_col}"]
+    )
+    regions = digest_regions(
+        splits["train"],
+        load_from_json(paths.shared / "metadata/clusters_meta.json")[
+            "noise_cluster_ids"
+        ],
+    )
+    current = {
+        "complexity": (digest_frames({"train": splits["train"]}, columns), regions),
+        "classify": (digest_frames(splits, columns), regions),
+    }
+    complexity_record = load_from_json(paths.shared / "complexity_fingerprint.json")
+    recorded = {
+        "complexity": (
+            complexity_record.get("data_digest"),
+            complexity_record.get("regions_digest"),
+        ),
+        "classify": (predictions.get("data_digest"), predictions.get("regions_digest")),
+    }
+    stale = [stage for stage in current if recorded[stage] != current[stage]]
+    if stale:
+        raise ValueError(
+            f"The prepared data changed since {' and '.join(stale)} last ran: re-run "
+            + " and ".join(f"`make {stage}`" for stage in stale)
+            + "."
         )
 
     cluster_summary = build_cluster_summary(

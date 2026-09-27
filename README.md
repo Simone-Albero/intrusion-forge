@@ -100,7 +100,7 @@ make run DATA=synthetic_test NAME=demo_cos CLASSIFIER=random_forest CLUSTERING=k
 make run DATA=synthetic_test NAME=demo_birch CLASSIFIER=random_forest CLUSTERING=birch
 ```
 
-`prepare` and `complexity` are cached per `(NAME, dataset, seed)`, so changing classifier reuses them. Each recomputes by itself, naming what changed, when a setting it depends on changes or its input does: the raw CSV for `prepare`, judged by size and modification time (without the file, `prepare` checks its settings alone and stops with an error if they changed); the training split and its regions for `complexity`, so re-clustering recomputes the descriptors as well. `classify` is cached too: re-running it under the same `NAME` reuses the models already on disk when they were trained on the same data under the same training configuration, whatever the device or parallelism, and retrains by itself — naming the top-level key that differs — when they were not. The classifier depends on neither the clustering nor the descriptors, so re-deriving results after changing those costs an evaluation rather than a retrain. `FORCE=1` recomputes everything.
+`prepare` and `complexity` are cached per `(NAME, dataset, seed)`, so changing classifier reuses them. Each recomputes by itself, naming what changed, when a setting it depends on changes or its input does: the raw CSV for `prepare`, judged by size and modification time (without the file, `prepare` checks its settings alone and stops with an error if they changed; a tree holding no record of them, such as one prepared by an earlier version of the code, is recomputed once, so it needs the file too); the training split and its regions for `complexity`, so re-clustering recomputes the descriptors as well. `classify` is cached too: re-running it under the same `NAME` reuses the models already on disk when they were trained on the same data under the same settings, and retrains by itself — naming the top-level key that differs — when they were not. Every setting counts except the device, the parallelism, the figure format and those only the other stages read, so even one the classifier ignores retrains it: changing the loss, which only deep classifiers use, retrains a Random Forest as well. The classifier depends on neither the clustering nor the descriptors, so re-deriving results after changing those costs an evaluation rather than a retrain. `failure-regress` refuses to run unless `complexity` and `classify` last ran on the splits and regions `prepare` holds now, down to a re-drawn validation or test split, and names what to re-run. `FORCE=1` recomputes everything.
 
 How the data is divided into regions matters more than which classifier you use. `kmeans` and `birch` both find about a thousand regions here; `hdbscan` finds thirty and consigns a quarter of the points to leftover buckets, because this dataset's difficulty gradient is continuous rather than broken by real gaps. Count-based algorithms suit data of this kind, density-based ones suit data with genuine separation.
 
@@ -235,7 +235,7 @@ resources/experiments/${name}/${data.file_name}_${seed}/
     └── figures/            # rendered figures
 ```
 
-Each stage saves the configuration it resolved, overrides included, as `config_composed_<stage>.json`, where `<stage>` is `prepare`, `complexity`, `classify`, `regress` or `render`. It writes that file last, once its outputs are on disk, so a stage that fails or is skipped by its cache leaves the previous file in place.
+Each stage saves the configuration it resolved, overrides included, as `config_composed_<stage>.json`, where `<stage>` is `prepare`, `complexity`, `classify`, `regress` or `render`. It writes that file once its outputs are on disk, so a stage that fails or is skipped by its cache leaves the previous file in place. `prepare` and `complexity` then write the record their cache checks, `shared/{prepare,complexity}_fingerprint.json`, last of all, so that a run interrupted before the end is recomputed rather than trusted.
 
 ## Repository layout
 
@@ -254,7 +254,7 @@ intrusion-forge/
 ├── src/                          # pure library — no config, no I/O, no path building
 │   ├── core/                     # config, Factory, LogDispatcher, DataFrame I/O, OutputPaths
 │   ├── domain/
-│   │   ├── data/                 # cleaning, splitting, scaling, encoding
+│   │   ├── data/                 # cleaning, splitting, scaling, encoding, the digests the caches compare
 │   │   ├── clustering/           # the four algorithms + grid search
 │   │   ├── analysis/complexity/  # the F / N / ND / T / G families
 │   │   ├── analysis/             # metadata, classification metrics, confidence & risk-coverage scores, the failure regressor

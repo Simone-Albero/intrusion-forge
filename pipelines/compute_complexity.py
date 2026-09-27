@@ -1,5 +1,3 @@
-import hashlib
-import json
 import logging
 import sys
 from pathlib import Path
@@ -22,6 +20,7 @@ from src.domain.analysis.complexity import (
     compute_complexity_from_graph,
     prepare_complexity_graph,
 )
+from src.domain.data.digest import digest_frames, digest_regions
 
 setup_logger()
 logger = logging.getLogger(__name__)
@@ -95,18 +94,11 @@ def compute_class_complexity(
 def _fingerprint(
     cfg, train_df: pd.DataFrame, *, columns: list[str], noise_cluster_ids: list[int]
 ) -> dict:
-    """The config complexity runs under, plus a digest of the rows and regions."""
-    # Hashed as loaded, `cluster` included: the measures describe the regions, which
-    # prepare's record identifies only by their inputs.
-    digest = hashlib.blake2b(digest_size=16)
-    digest.update(
-        pd.util.hash_pandas_object(train_df[columns], index=False).to_numpy().tobytes()
-    )
-    digest.update(json.dumps(sorted(noise_cluster_ids)).encode())
+    """The config complexity runs under, plus digests of its rows and regions."""
     return {
         # Bumped when the code changes what a config computes: old records never match.
-        "schema": 1,
-        # The data keys complexity reads; the rest reach it only through the digest.
+        "schema": 2,
+        # The data keys complexity reads; the rest reach it only through the digests.
         "data": {
             "num_cols": list(cfg.data.num_cols),
             "cat_cols": list(cfg.data.cat_cols),
@@ -114,7 +106,11 @@ def _fingerprint(
         },
         "complexity": to_container(cfg.complexity),
         "seed": cfg.seed,
-        "data_digest": digest.hexdigest(),
+        # Hashed as loaded: prepare's record names the inputs of these rows and regions,
+        # not the rows and regions themselves. The regressor recomputes both digests
+        # from the data prepare holds when it runs.
+        "data_digest": digest_frames({"train": train_df}, columns),
+        "regions_digest": digest_regions(train_df, noise_cluster_ids),
     }
 
 
@@ -149,12 +145,13 @@ def main() -> None:
     fingerprint = _fingerprint(
         cfg,
         train_df,
-        columns=num_cols + cat_cols + [label_col, "cluster"],
+        columns=num_cols + cat_cols + [label_col],
         noise_cluster_ids=noise_cluster_ids,
     )
+    snapshot = paths.shared / "config_composed_complexity.json"
     # One record for both outputs: they share the graph, which costs most of the stage.
     if skip_if_unchanged(
-        [cluster_output, class_output],
+        [cluster_output, class_output, snapshot],
         record,
         fingerprint,
         force=cfg.force,
@@ -222,9 +219,10 @@ def main() -> None:
     bus.publish(LogBundle.from_dict({"json/class_complexity": class_complexity}))
     logger.info("Class complexity published to %s.", class_output)
 
-    bus.publish(LogBundle.from_dict({"json/complexity_fingerprint": fingerprint}))
     flush_timing(paths.shared / "timing.json")
-    save_config(cfg, paths.shared / "config_composed_complexity.json")
+    save_config(cfg, snapshot)
+    # Last: the record vouches for everything above, the snapshot included.
+    bus.publish(LogBundle.from_dict({"json/complexity_fingerprint": fingerprint}))
 
 
 if __name__ == "__main__":

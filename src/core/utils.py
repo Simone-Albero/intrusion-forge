@@ -3,7 +3,7 @@ import json
 import logging
 import math
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from pathlib import Path
 
 import joblib
@@ -78,7 +78,7 @@ def flush_timing(path: str | Path) -> None:
 
 
 def skip_if_unchanged(
-    outputs: Iterable[Path],
+    outputs: list[Path],
     record: Path,
     fingerprint: dict,
     *,
@@ -86,31 +86,37 @@ def skip_if_unchanged(
     stage_name: str,
 ) -> bool:
     """True (and log) when every output exists and `record` holds this `fingerprint`."""
-    if force or not all(Path(p).exists() for p in outputs):
+    missing = [p for p in outputs if not Path(p).exists()]
+    if force or len(missing) == len(outputs):
         return False
     log = logging.getLogger(__name__)
+    if missing:
+        log.info(
+            "[RECOMPUTE] %s: %d of %d outputs missing.",
+            stage_name,
+            len(missing),
+            len(outputs),
+        )
+        return False
     if not record.exists():
         log.info("[RECOMPUTE] %s: no record of the inputs of its outputs.", stage_name)
         return False
-    previous = load_from_json(record)
-    # Another schema differs everywhere: its first key would name the wrong cause.
-    if previous.get("schema") != fingerprint["schema"]:
-        changed = "schema"
-    else:
-        changed = first_difference(previous, fingerprint)
+    changed = first_difference(load_from_json(record), fingerprint)
     if changed is not None:
         log.info("[RECOMPUTE] %s: its inputs changed (%s).", stage_name, changed)
         return False
     log.info(
-        "[STAGE-SKIP] Skipping %s — outputs present and unchanged "
-        "(force=true to recompute).",
+        "[CACHED] %s: outputs present and unchanged (force=true to recompute).",
         stage_name,
     )
     return True
 
 
 def first_difference(previous: dict, current: dict) -> str | None:
-    """Name a key whose value differs (missing counts as None); None if all match."""
+    """Name a key whose value differs, `schema` first (missing counts as None)."""
+    # Another schema differs everywhere: its first key would name the wrong cause.
+    if previous.get("schema") != current.get("schema"):
+        return "schema"
     for key in sorted(set(previous) | set(current)):
         if previous.get(key) != current.get(key):
             return key

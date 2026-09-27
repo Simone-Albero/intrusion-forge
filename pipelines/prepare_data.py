@@ -427,8 +427,13 @@ def main() -> None:
     ext = cfg.data.extension
     processed = Path(cfg.path.processed_data)
     shared = Path(cfg.path.shared)
+    snapshot = shared / "config_composed_prepare.json"
     outputs = [processed / f"{s}.{ext}" for s in ("train", "val", "test")]
-    outputs.append(shared / "metadata/clusters_meta.json")
+    outputs += [
+        shared / f"metadata/{name}.json"
+        for name in ("df_info", "df_meta", "clusters_meta", "clustering_report")
+    ]
+    outputs.append(snapshot)
     record = shared / "prepare_fingerprint.json"
     raw_data = Path(cfg.path.raw_data)
     fingerprint = _fingerprint(cfg)
@@ -455,11 +460,12 @@ def main() -> None:
     # Dropped first: an interrupted recompute leaves new outputs under an old record.
     record.unlink(missing_ok=True)
     prepare(cfg)
+    flush_timing(shared / "timing.json")
+    save_config(cfg, snapshot)
+    # Last: the record vouches for everything above, the snapshot included.
     bus = LogDispatcher()
     bus.subscribe(JSONSubscriber(shared))
     bus.publish(LogBundle.from_dict({"json/prepare_fingerprint": fingerprint}))
-    flush_timing(shared / "timing.json")
-    save_config(cfg, shared / "config_composed_prepare.json")
 
 
 if __name__ == "__main__":

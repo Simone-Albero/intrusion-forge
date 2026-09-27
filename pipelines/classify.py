@@ -1,4 +1,3 @@
-import hashlib
 import logging
 import random
 import sys
@@ -29,6 +28,7 @@ from src.domain.analysis.classification import (
     per_sample_scores,
 )
 from src.domain.analysis.confidence import mcp_risk
+from src.domain.data.digest import digest_frames, digest_regions
 from src.domain.data.preprocessing import (
     oof_splits,
     random_undersample_df,
@@ -76,6 +76,7 @@ class ClassifyContext:
     label_col: str
     df_meta: dict
     data_digest: str
+    regions_digest: str
     bus: LogDispatcher
 
 
@@ -226,25 +227,23 @@ def _training_record_path(paths: OutputPaths) -> Path:
 
 def _can_reuse(context: ClassifyContext, folds: list[Fold], fingerprint: dict) -> bool:
     """True when every fold already has a model trained for this exact configuration."""
-    trainer = context.trainer
     if context.cfg.force:
         return False
-
-    previous_path = _training_record_path(context.paths)
-    if not previous_path.exists():
+    models = context.paths.models
+    # The record first: the folds themselves depend on the config, so a changed config
+    # is the cause and missing fold models only its symptom.
+    record_path = _training_record_path(context.paths)
+    if not record_path.exists():
+        if any(context.trainer.has_model(models / f.name) for f in folds):
+            logger.info(
+                "[RETRAIN] no record of what the models on disk were trained on."
+            )
         return False
-
-    previous = load_from_json(previous_path).get("fingerprint", {})
-    # Another schema differs everywhere: its first key would name the wrong cause.
-    if previous.get("schema") != fingerprint["schema"]:
-        changed = "schema"
-    else:
-        changed = first_difference(previous, fingerprint)
+    changed = first_difference(load_from_json(record_path)["fingerprint"], fingerprint)
     if changed is not None:
-        logger.info("[RETRAIN] training config changed (%s) — retraining.", changed)
+        logger.info("[RETRAIN] training inputs changed (%s) — retraining.", changed)
         return False
-
-    missing = [f for f in folds if not trainer.has_model(context.paths.models / f.name)]
+    missing = [f for f in folds if not context.trainer.has_model(models / f.name)]
     if missing:
         logger.info(
             "[RETRAIN] %d of %d model(s) missing on disk — retraining all.",
@@ -254,8 +253,7 @@ def _can_reuse(context: ClassifyContext, folds: list[Fold], fingerprint: dict) -
         return False
 
     logger.info(
-        "[STAGE-SKIP] Reusing %d trained model(s) — pass force=true to retrain.",
-        len(folds),
+        "[CACHED] Reusing %d trained model(s) — pass force=true to retrain.", len(folds)
     )
     return True
 
@@ -274,10 +272,10 @@ def _train_fold(
     params: dict,
     X_val,
 ) -> tuple[object, dict, list]:
-    """Fit one fold's model, returning it with its fold record and grid-search rows."""
+    """Fit one fold's model, returning it with its fold row and grid-search rows."""
     cfg, trainer, bus = context.cfg, context.trainer, context.bus
     model_dir = context.paths.models / fold.name
-    record = {
+    row = {
         "fold": index,
         "n_train": len(fold.train_df),
         "n_eval": len(fold.eval_idx),
@@ -312,8 +310,8 @@ def _train_fold(
         )
         # Flat rows: the grid's parameter names are the same for every combination in a
         # run, and the `param_` prefix keeps them from colliding with the score columns.
-        record.update({f"param_{k}": v for k, v in summary["best_params"].items()})
-        record["best_score"] = summary["best_score"]
+        row.update({f"param_{k}": v for k, v in summary["best_params"].items()})
+        row["best_score"] = summary["best_score"]
         grid_rows = [
             {
                 "fold": index,
@@ -341,7 +339,7 @@ def _train_fold(
         grid_rows = []
 
     trainer.save(model, model_dir, name=cfg.classifier.name, params=params)
-    return model, record, grid_rows
+    return model, row, grid_rows
 
 
 def _publish_training_record(
@@ -349,7 +347,7 @@ def _publish_training_record(
     *,
     folds: list[Fold],
     fingerprint: dict,
-    fold_records: list,
+    fold_rows: list,
     grid_rows: list,
 ) -> None:
     """Publish the one record of what was trained: run scalars plus two tables."""
@@ -368,7 +366,7 @@ def _publish_training_record(
                     "scoring": cfg.grid_search.scoring if grid_rows else None,
                     "cv": _grid_cv(cfg) if grid_rows else None,
                     "fingerprint": fingerprint,
-                    "folds": fold_records,
+                    "folds": fold_rows,
                     "grid_search": grid_rows,
                 }
             }
@@ -403,14 +401,14 @@ def train_folds(
     y_pred = np.empty(len(eval_df), dtype=eval_df[context.label_col].to_numpy().dtype)
     y_proba = np.zeros((len(eval_df), context.df_meta["n_classes"]))
     embeddings: list[np.ndarray | None] = []
-    fold_records: list[dict] = []
+    fold_rows: list[dict] = []
     grid_rows: list[dict] = []
 
     for index, fold in enumerate(folds):
         if reuse:
             model = trainer.load(context.paths.models / fold.name)
         else:
-            model, record, fold_grid = _train_fold(
+            model, row, fold_grid = _train_fold(
                 context,
                 fold,
                 index=index,
@@ -418,7 +416,7 @@ def train_folds(
                 params=params,
                 X_val=X_val,
             )
-            fold_records.append(record)
+            fold_rows.append(row)
             grid_rows.extend(fold_grid)
 
         fold_pred, fold_proba, embedding = trainer.predict(
@@ -435,7 +433,7 @@ def train_folds(
             context,
             folds=folds,
             fingerprint=fingerprint,
-            fold_records=fold_records,
+            fold_rows=fold_rows,
             grid_rows=grid_rows,
         )
 
@@ -470,6 +468,10 @@ def publish_evaluation(
     pred_infos = {
         **evaluate_predictions(y_true, y_pred, mcp, clusters),
         "eval_mode": mode,
+        # What these rates were measured on: the regressor checks both against the data
+        # prepare holds when it runs.
+        "data_digest": context.data_digest,
+        "regions_digest": context.regions_digest,
     }
     raw_figures = {
         **build_test_figures(
@@ -526,10 +528,14 @@ def classify(cfg) -> None:
     set_figure_format(cfg.figure_format)
     paths = paths_from_cfg(cfg)
 
-    df_meta_path = paths.shared / "metadata/df_meta.json"
-    if not df_meta_path.exists():
-        raise FileNotFoundError(f"Missing {df_meta_path}. Run `make prepare` first.")
-    df_meta = load_prepared_metadata(df_meta_path)
+    # prepare writes its record last: without it, the splits and df_meta may disagree.
+    prepared_path = paths.shared / "prepare_fingerprint.json"
+    if not prepared_path.exists():
+        raise FileNotFoundError(f"Missing {prepared_path}: run `make prepare` first.")
+    df_meta = load_prepared_metadata(paths.shared / "metadata/df_meta.json")
+    noise_cluster_ids = load_from_json(paths.shared / "metadata/clusters_meta.json")[
+        "noise_cluster_ids"
+    ]
 
     num_cols = list(cfg.data.num_cols)
     cat_cols = list(cfg.data.cat_cols)
@@ -542,18 +548,8 @@ def classify(cfg) -> None:
     for split, df in (("train", train_df), ("test", test_df)):
         if "cluster" not in df.columns:
             raise ValueError(
-                f"The {split} split has no `cluster` column: "
-                "re-run `make prepare FORCE=1`."
+                f"The {split} split has no `cluster` column: re-run `make prepare`."
             )
-    # The splits as loaded, feature and label columns only: `cluster` stays out, so
-    # re-clustering a dataset reuses its trained models.
-    digest = hashlib.blake2b(digest_size=16)
-    for split, df in (("train", train_df), ("val", val_df), ("test", test_df)):
-        rows = pd.util.hash_pandas_object(
-            df[num_cols + cat_cols + [label_col]], index=False
-        )
-        digest.update(f"{split}:{len(df)}".encode())
-        digest.update(rows.to_numpy().tobytes())
     logger.info(
         "Data loaded — train: %d, val: %d, test: %d samples",
         len(train_df),
@@ -578,7 +574,13 @@ def classify(cfg) -> None:
         ),
         label_col=label_col,
         df_meta=df_meta,
-        data_digest=digest.hexdigest(),
+        # The splits as loaded, feature and label columns only: `cluster` stays out, so
+        # re-clustering a dataset reuses its trained models.
+        data_digest=digest_frames(
+            {"train": train_df, "val": val_df, "test": test_df},
+            num_cols + cat_cols + [label_col],
+        ),
+        regions_digest=digest_regions(train_df, noise_cluster_ids),
         bus=bus,
     )
     eval_df, folds = build_folds(cfg, train_df, test_df, label_col=label_col)

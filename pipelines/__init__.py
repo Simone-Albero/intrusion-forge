@@ -22,7 +22,6 @@ def load_prepared_metadata(path: Path) -> dict:
     classes = metadata.get("classes")
     if not classes or "class_name" not in classes[0]:
         raise ValueError(
-            f"{path} predates the current artifact format: "
-            "re-run `make prepare FORCE=1`."
+            f"{path} predates the current artifact format: re-run `make prepare`."
         )
     return metadata

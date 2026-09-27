@@ -105,12 +105,12 @@ def _load_sweep_runs(root: Path) -> list[dict]:
                 if (ds_dir / "shared/config_composed.json").exists():
                     raise ValueError(
                         f"{ds_dir} predates the per-stage config snapshots: "
-                        "re-run `make prepare FORCE=1`."
+                        "re-run `make prepare`."
                     )
                 if (ds_dir / "shared/metadata/clusters_meta.json").exists():
                     raise ValueError(
                         f"{ds_dir} has prepare's outputs but no config snapshot: "
-                        "prepare did not finish, re-run `make prepare FORCE=1`."
+                        "prepare did not finish, re-run `make prepare`."
                     )
                 continue
             composed = load_from_json(cfg_path)
