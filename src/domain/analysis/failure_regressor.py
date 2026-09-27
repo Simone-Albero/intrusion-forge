@@ -367,6 +367,8 @@ RATE_BASELINE_VARIANTS = ("region", "mcp_cluster", "atc_cluster")
 def instance_baselines(samples: pd.DataFrame, predicted_rate: list[dict]) -> dict:
     """Cluster rho, cluster-rate MSE and oracle benefit of every baseline variant."""
     rate_by_cluster = {r["cluster_id"]: r["predicted_rate"] for r in predicted_rate}
+    # Only the clusters the regressor scored, so every variant ranks the same regions.
+    samples = samples[samples["cluster"].isin(rate_by_cluster)]
     cluster = samples["cluster"].to_numpy()
     failure = is_failure(
         samples["y_true"].to_numpy(), samples["y_pred"].to_numpy()
@@ -374,10 +376,7 @@ def instance_baselines(samples: pd.DataFrame, predicted_rate: list[dict]) -> dic
     correct = 1.0 - failure
     mcp = samples["mcp_risk"].to_numpy(dtype=float)
     confidence = 1.0 - mcp
-    fallback = (
-        float(np.mean(list(rate_by_cluster.values()))) if rate_by_cluster else 0.0
-    )
-    region = np.array([rate_by_cluster.get(c, fallback) for c in cluster], dtype=float)
+    region = np.array([rate_by_cluster[c] for c in cluster], dtype=float)
 
     clusters = np.unique(cluster)
     mcp_cluster = np.empty_like(mcp)
@@ -401,14 +400,17 @@ def instance_baselines(samples: pd.DataFrame, predicted_rate: list[dict]) -> dic
         "combo_atc_rankavg": combo_atc_rankavg,
     }
 
-    # Not a pandas groupby: its Cython mean accumulates in a different order from
-    # numpy's pairwise sum, so the two disagree in the last ulp on any cluster with
-    # enough rows — enough to move the published spearman in its fifth decimal.
+    # A rate variant holds one value per cluster, so that value is the prediction:
+    # averaging its copies moves the last ulp and breaks ties, and `region` would drift
+    # from the regressor's own rho. The rank averages differ row to row and are averaged
+    # with numpy, whose pairwise sum a pandas groupby would not reproduce to the ulp.
     predicted_by_name = {name: np.empty(clusters.size) for name in BASELINE_VARIANTS}
     for i, c in enumerate(clusters):
         m = cluster == c
         for name in BASELINE_VARIANTS:
-            predicted_by_name[name][i] = scores[name][m].mean()
+            values = scores[name][m]
+            is_rate = name in RATE_BASELINE_VARIANTS
+            predicted_by_name[name][i] = values[0] if is_rate else values.mean()
 
     support = np.ones(failure.size)
     baselines = []

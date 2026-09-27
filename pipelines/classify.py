@@ -588,6 +588,11 @@ def classify(cfg) -> None:
     # split the full, unbalanced train frame would otherwise stay in memory throughout.
     del train_df, test_df
     y_pred, y_proba, embeddings = train_folds(context, eval_df, folds, val_df=val_df)
+    if not np.isfinite(y_proba).all():
+        raise ValueError(
+            "The model predicted non-finite probabilities: every confidence-based "
+            "score downstream would be NaN."
+        )
     publish_evaluation(
         context, eval_df, folds, y_pred=y_pred, y_proba=y_proba, embeddings=embeddings
     )

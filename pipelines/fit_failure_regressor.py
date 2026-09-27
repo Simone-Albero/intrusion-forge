@@ -124,7 +124,7 @@ def main() -> None:
         instance = instance_baselines(load_df(dump_path), results["oof_predicted_rate"])
         bus.publish(LogBundle.from_dict({"json/analysis/instance_baselines": instance}))
         logger.info(
-            "Instance-level baselines published (%d evaluated rows, %d clusters).",
+            "Instance-level baselines published (%d rows in %d scored clusters).",
             instance["n_eval"],
             instance["n_clusters"],
         )
