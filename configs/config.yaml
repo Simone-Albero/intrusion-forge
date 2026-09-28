@@ -15,6 +15,7 @@ defaults:
 seed: 42
 name: exp_euc
 distance: euclidean                  # euclidean | cosine — metric for clustering and complexity analysis
+kfold: true                          # true: k-fold out-of-fold over train+test; false: one model evaluated on test — prepare sizes regions for it, classify must match
 force: false                         # recompute every cached stage: prepare, complexity and classify's models
 figure_format: pdf                   # figure file format: pdf (vector, lighter) | png
 

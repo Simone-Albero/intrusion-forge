@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 
 def cluster_class_map(y_cluster: np.ndarray, y_class: np.ndarray) -> dict[str, int]:
-    """Full cluster_id → class_id map from unfiltered train labels (noise included)."""
+    """Full cluster_id → class_id map from train labels."""
     return {str(c): int(y_class[y_cluster == c][0]) for c in np.unique(y_cluster)}
 
 
@@ -35,7 +35,6 @@ def cluster_class_map(y_cluster: np.ndarray, y_class: np.ndarray) -> dict[str, i
 def compute_cluster_complexity(
     graph: ComplexityGraph,
     *,
-    noise_cluster_ids: list[int],
     cluster_to_class: dict[str, int],
     top_k_clusters: int,
     metric: str,
@@ -50,7 +49,6 @@ def compute_cluster_complexity(
         graph.y_cluster,
         top_k_clusters=top_k_clusters,
         metric=metric,
-        noise_cluster_ids=set(noise_cluster_ids),
         silhouette_max_samples=silhouette_max_samples,
         silhouette_min_per_cluster=silhouette_min_per_cluster,
         random_state=random_state,
@@ -83,7 +81,6 @@ def compute_class_complexity(
         graph.y_class,
         top_k_clusters=top_k_clusters,
         metric=metric,
-        noise_cluster_ids=None,
         silhouette_max_samples=silhouette_max_samples,
         silhouette_min_per_cluster=silhouette_min_per_cluster,
         random_state=random_state,
@@ -91,13 +88,11 @@ def compute_class_complexity(
     return [{"class_id": int(cid), **measures} for cid, measures in complexity.items()]
 
 
-def _fingerprint(
-    cfg, train_df: pd.DataFrame, *, columns: list[str], noise_cluster_ids: list[int]
-) -> dict:
+def _fingerprint(cfg, train_df: pd.DataFrame, *, columns: list[str]) -> dict:
     """The config complexity runs under, plus digests of its rows and regions."""
     return {
         # Bumped when the code changes what a config computes: old records never match.
-        "schema": 4,
+        "schema": 5,
         # The data keys complexity reads; the rest reach it only through the digests.
         "data": {
             "num_cols": list(cfg.data.num_cols),
@@ -110,7 +105,7 @@ def _fingerprint(
         # not the rows and regions themselves. The regressor recomputes both digests
         # from the data prepare holds when it runs.
         "data_digest": digest_frames({"train": train_df}, columns),
-        "regions_digest": digest_regions(train_df, noise_cluster_ids),
+        "regions_digest": digest_regions(train_df),
     }
 
 
@@ -136,18 +131,11 @@ def main() -> None:
     cat_cols = list(cfg.data.cat_cols)
     label_col = f"encoded_{cfg.data.label_col}"
     train_df = load_df(str(paths.processed_data / f"train.{cfg.data.extension}"))
-    clusters_meta = load_from_json(paths.shared / "metadata/clusters_meta.json")
-    noise_cluster_ids = clusters_meta["noise_cluster_ids"]
 
     cluster_output = paths.shared / "complexity.json"
     class_output = paths.shared / "class_complexity.json"
     record = paths.shared / "complexity_fingerprint.json"
-    fingerprint = _fingerprint(
-        cfg,
-        train_df,
-        columns=num_cols + cat_cols + [label_col],
-        noise_cluster_ids=noise_cluster_ids,
-    )
+    fingerprint = _fingerprint(cfg, train_df, columns=num_cols + cat_cols + [label_col])
     snapshot = paths.shared / "config_composed_complexity.json"
     # One record for both outputs: they share the graph, which costs most of the stage.
     if skip_if_unchanged(
@@ -173,20 +161,12 @@ def main() -> None:
     bus.subscribe(JSONSubscriber(paths.shared))
 
     y_cluster = train_df["cluster"].to_numpy(dtype=np.int64)
-    if noise_cluster_ids:
-        genuine = ~np.isin(y_cluster, noise_cluster_ids)
-        X_num_g = X_num[genuine]
-        X_cat_g = X_cat[genuine] if X_cat is not None else None
-        y_class_g = y_class[genuine]
-        y_cluster_g = y_cluster[genuine]
-    else:
-        X_num_g, X_cat_g, y_class_g, y_cluster_g = X_num, X_cat, y_class, y_cluster
 
     graph = prepare_complexity_graph(
-        X_num_g,
-        X_cat_g,
-        y_class_g,
-        y_cluster_g,
+        X_num,
+        X_cat,
+        y_class,
+        y_cluster,
         k=cfg.complexity.k,
         max_samples=cfg.complexity.max_complexity_samples,
         min_per_cluster=cfg.complexity.min_subsample_per_cluster,
@@ -197,7 +177,6 @@ def main() -> None:
     cluster_to_class = cluster_class_map(y_cluster, y_class)
     cluster_complexity = compute_cluster_complexity(
         graph,
-        noise_cluster_ids=noise_cluster_ids,
         cluster_to_class=cluster_to_class,
         top_k_clusters=cfg.complexity.top_k_clusters,
         metric=cfg.complexity.distance,

@@ -101,12 +101,10 @@ def build_cluster_summary(
         cluster_feats = {
             f"cluster_{k}": v
             for k, v in cluster_measures.items()
-            if k not in ("cluster_id", "class_id", "is_noise_cluster")
+            if k not in ("cluster_id", "class_id")
         }
         class_feats = {
-            f"class_{k}": v
-            for k, v in class_measures.items()
-            if k not in ("class_id", "is_noise_cluster")
+            f"class_{k}": v for k, v in class_measures.items() if k != "class_id"
         }
         error = errors.get(cluster_id, {})
         summary.append(
@@ -115,7 +113,6 @@ def build_cluster_summary(
                 **cluster_feats,
                 **class_feats,
                 "class_id": class_id,
-                "is_noise_cluster": int(cluster_measures["is_noise_cluster"]),
                 "n_eval": error["n_eval"] if error else 0,
                 "failure_rate": error.get("error_rate"),
                 "mcp_risk": error.get("mcp_risk"),
@@ -218,7 +215,7 @@ def _failure_rate_distribution(rates: pd.Series) -> dict:
 # Numeric summary columns that are not descriptors: the target and its support, the
 # classifier's own risk (a baseline, not a descriptor), and `class_id`, which names a
 # class and measures nothing.
-_NOT_FEATURES = ("failure_rate", "n_eval", "is_noise_cluster", "mcp_risk", "class_id")
+_NOT_FEATURES = ("failure_rate", "n_eval", "mcp_risk", "class_id")
 
 
 @timed
@@ -236,7 +233,7 @@ def fit_failure_regressor(
     logger.info("Running failure regressor ...")
     df = pd.DataFrame(cluster_stats).set_index("cluster_id")
 
-    # No row is routed into a noise pseudo-cluster: noise leaves with the unevaluated.
+    # A region can still end up with no routed row, e.g. a small one in a single split.
     no_eval = df["failure_rate"].isna()
     low_support = ~no_eval & (df["n_eval"] < min_eval_support)
     n_excluded_no_eval = int(no_eval.sum())

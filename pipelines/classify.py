@@ -44,6 +44,7 @@ from src.domain.plot.style import apply_plot_style
 from src.domain.training.base import ComponentSpec, Trainer
 from src.domain.training.dl import DLTrainer
 from src.domain.training.ml import MLTrainer
+from src.domain.training.weighting import compute_class_weights
 from src.engine.ml.model import MLClassifierFactory
 from src.engine.ml.preprocessing import supports_random_state
 
@@ -81,7 +82,7 @@ class ClassifyContext:
 
 
 def _eval_mode(cfg) -> str:
-    return "oof_kfold" if cfg.fit.kfold else "single_split"
+    return "oof_kfold" if cfg.kfold else "single_split"
 
 
 def build_folds(
@@ -98,7 +99,7 @@ def build_folds(
             )
         return df
 
-    if not cfg.fit.kfold:
+    if not cfg.kfold:
         return test_df, [Fold("", balanced(train_df), np.arange(len(test_df)))]
 
     universe = pd.concat([train_df, test_df], ignore_index=True)
@@ -121,6 +122,7 @@ def build_trainer(
     cfg,
     *,
     df_meta: dict,
+    train_df: pd.DataFrame,
     num_cols: list[str],
     cat_cols: list[str],
     label_col: str,
@@ -140,6 +142,8 @@ def build_trainer(
         )
 
     fit_cfg = cfg.fit
+    class_ids = sorted(c["class_id"] for c in df_meta["classes"])
+    weight_by_class = compute_class_weights(train_df[label_col])
     return DLTrainer(
         device=torch.device(fit_cfg.device),
         num_cols=num_cols,
@@ -148,10 +152,7 @@ def build_trainer(
         # The weights correct the original distribution; `balance` and `n_samples` both
         # flatten it already, and weighting on top would correct the imbalance twice.
         class_weights=(
-            [
-                c["weight"]
-                for c in sorted(df_meta["classes"], key=lambda c: c["class_id"])
-            ]
+            [weight_by_class[cid] for cid in class_ids]
             if fit_cfg.balance == "none" and fit_cfg.n_samples is None
             else None
         ),
@@ -261,7 +262,7 @@ def _can_reuse(context: ClassifyContext, folds: list[Fold], fingerprint: dict) -
 
 def _grid_cv(cfg) -> int:
     """Inner CV of the grid search: smaller under k-fold, which already resamples."""
-    return cfg.grid_search.nested_cv if cfg.fit.kfold else cfg.grid_search.cv
+    return cfg.grid_search.nested_cv if cfg.kfold else cfg.grid_search.cv
 
 
 def _train_fold(
@@ -288,7 +289,7 @@ def _train_fold(
         logger.info(
             "Grid search for %s%s — scoring=%s, cv=%d",
             cfg.classifier.name,
-            f" (fold {index + 1}/{n_folds})" if cfg.fit.kfold else "",
+            f" (fold {index + 1}/{n_folds})" if cfg.kfold else "",
             cfg.grid_search.scoring,
             cv,
         )
@@ -359,7 +360,7 @@ def _publish_training_record(
             {
                 "json/training/folds": {
                     "mode": _eval_mode(cfg),
-                    "k_requested": cfg.fit.kfold_splits if cfg.fit.kfold else 1,
+                    "k_requested": cfg.fit.kfold_splits if cfg.kfold else 1,
                     "k_effective": len(folds),
                     "seed": cfg.seed,
                     "balance": cfg.fit.balance,
@@ -509,7 +510,7 @@ def publish_evaluation(
             }
         )
     )
-    if context.cfg.fit.kfold:
+    if context.cfg.kfold:
         logger.info(
             "k-fold OOF evaluation: %d samples over %d folds", len(eval_df), len(folds)
         )
@@ -532,6 +533,12 @@ def classify(cfg) -> None:
     prepared_path = paths.shared / "prepare_fingerprint.json"
     if not prepared_path.exists():
         raise FileNotFoundError(f"Missing {prepared_path}: run `make prepare` first.")
+    prepared_kfold = load_from_json(prepared_path).get("kfold")
+    if cfg.kfold != prepared_kfold:
+        raise ValueError(
+            f"kfold={cfg.kfold} differs from the kfold={prepared_kfold} the regions "
+            f"were sized for: re-run `make prepare` with kfold={cfg.kfold}."
+        )
     df_meta = load_prepared_metadata(paths.shared / "metadata/df_meta.json")
 
     num_cols = list(cfg.data.num_cols)
@@ -565,6 +572,7 @@ def classify(cfg) -> None:
         trainer=build_trainer(
             cfg,
             df_meta=df_meta,
+            train_df=train_df,
             num_cols=num_cols,
             cat_cols=cat_cols,
             label_col=label_col,

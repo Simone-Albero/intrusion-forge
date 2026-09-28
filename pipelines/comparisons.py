@@ -107,7 +107,7 @@ def _load_sweep_runs(root: Path) -> list[dict]:
                         f"{ds_dir} predates the per-stage config snapshots: "
                         "re-run `make prepare`."
                     )
-                if (ds_dir / "shared/metadata/clusters_meta.json").exists():
+                if (ds_dir / "shared/metadata/df_meta.json").exists():
                     raise ValueError(
                         f"{ds_dir} has prepare's outputs but no config snapshot: "
                         "prepare did not finish, re-run `make prepare`."

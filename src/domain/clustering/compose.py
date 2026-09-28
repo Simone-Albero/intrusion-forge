@@ -3,8 +3,9 @@ from inspect import signature
 
 import numpy as np
 
-from src.domain.clustering.base import ClusterFn, grid_search
+from src.domain.clustering.base import ClusterFn, grid_search, merge_small_clusters
 from src.domain.clustering.factory import ClusteringFactory
+from src.domain.clustering.hardness import KdnReference
 
 Reporter = Callable[[str, dict], None]
 
@@ -28,23 +29,18 @@ def _n_clusters_grid(
     return sorted(ks)
 
 
-def resolution_aware_floor(n_class: int, target_size: int, floor_cap: int) -> int:
-    """Absorption floor tied to the finest candidate's average size, capped at `floor_cap`."""
-    finest_k = max(2, round(n_class / target_size))
-    finest_avg_size = n_class / finest_k
-    return min(floor_cap, max(5, round(0.5 * finest_avg_size)))
-
-
 def build_cluster_fn(
     algorithms: dict[str, dict],
     *,
     max_fit_samples: int,
     random_state: int,
     reporter: Reporter,
-    max_clusters: int | None,
-    min_clusters: int | None,
-    grid_target_cluster_size: int | None,
-    resolution_weight: float,
+    max_clusters: int,
+    min_cluster_floor: int,
+    hardness_k: int,
+    reliability_target: float,
+    eval_rows_per_train_row: float,
+    reference: KdnReference,
     metric: str,
 ) -> ClusterFn:
     """Build a ClusterFn from a single {algorithm_name: params} config entry."""
@@ -56,18 +52,13 @@ def build_cluster_fn(
     ((name, params),) = algorithms.items()
     fit_fn = ClusteringFactory.get(name)
     grid, fixed = _split_grid_fixed(params or {})
-    derives_n_clusters = name in _N_CLUSTERS_ALGOS and bool(grid_target_cluster_size)
+    derives_n_clusters = name in _N_CLUSTERS_ALGOS
 
     # Checked here, before any fit, so the error names the algorithm and the key.
     configured = grid.keys() | fixed.keys()
     unknown = sorted(configured - signature(fit_fn).parameters.keys())
     if unknown:
         raise TypeError(f"Clustering algorithm {name!r} takes no parameter {unknown}.")
-    if min_clusters is not None and not ("n_clusters" in grid or derives_n_clusters):
-        raise TypeError(
-            f"Clustering algorithm {name!r} takes no min_clusters here: it floors the "
-            "n_clusters of a sweep, and this configuration sweeps none."
-        )
     supplied = {"max_fit_samples", "random_state"} | (
         {"n_clusters"} if derives_n_clusters else set()
     )
@@ -75,11 +66,12 @@ def build_cluster_fn(
     if clashing:
         raise ValueError(
             f"Clustering algorithm {name!r}: {clashing} are set by the pipeline, "
-            "not in the algorithm's params (a fixed n_clusters needs "
-            "grid_target_cluster_size: null)."
+            "not in the algorithm's params."
         )
 
-    def _fn(X_num: np.ndarray) -> np.ndarray:
+    def _fn(
+        X_num: np.ndarray, *, ids: np.ndarray, label: object
+    ) -> tuple[np.ndarray, int, int]:
         common = {
             "max_fit_samples": max_fit_samples,
             "random_state": random_state,
@@ -87,26 +79,35 @@ def build_cluster_fn(
         }
         algo_grid = dict(grid)
         if derives_n_clusters:
-            k_cap = max(2, max_fit_samples // 25)
-            if max_clusters is not None:
-                k_cap = min(k_cap, max_clusters)
+            k_cap = max(2, min(max_fit_samples // min_cluster_floor, max_clusters))
             algo_grid["n_clusters"] = _n_clusters_grid(
-                X_num.shape[0], grid_target_cluster_size, k_cap
+                X_num.shape[0], min_cluster_floor, k_cap
             )
-        if algo_grid:
-            report, best_labels = grid_search(
-                X_num,
-                fit_fn,
-                algo_grid,
-                resolution_weight=resolution_weight,
-                min_clusters=min_clusters,
-                score_metric=metric,
-                **common,
-            )
-            reporter(name, report)
-            if best_labels is not None:
-                return best_labels
-            return fit_fn(X_num, **report["best"]["combo"], **common)
-        return fit_fn(X_num, **common)
+        report, best_labels = grid_search(
+            X_num,
+            fit_fn,
+            algo_grid,
+            ids=ids,
+            label=label,
+            reference=reference,
+            hardness_k=hardness_k,
+            eval_rows_per_train_row=eval_rows_per_train_row,
+            reliability_target=reliability_target,
+            min_cluster_floor=min_cluster_floor,
+            max_clusters=max_clusters,
+            merge_metric=metric,
+            **common,
+        )
+        reporter(name, report)
+        if best_labels is not None:
+            best = report["best"]
+            return best_labels, best["n_merged_clusters"], best["n_merged"]
+        raw = fit_fn(X_num, **report["best"]["combo"], **common)
+        # Refit on the full class: the sweep's merge counts described the scored
+        # subsample, at a floor scaled down to match it, so they don't describe this.
+        final_labels, n_merged_clusters, n_merged = merge_small_clusters(
+            X_num, raw, min_size=min_cluster_floor, metric=metric
+        )
+        return final_labels, n_merged_clusters, n_merged
 
     return _fn

@@ -206,7 +206,6 @@ def build_preprocessor(
     cat_cols: list[str] | None = None,
     num_steps: list[tuple[str, BaseEstimator]] | None = None,
     cat_steps: list[tuple[str, BaseEstimator]] | None = None,
-    remainder: str = "passthrough",
 ) -> ColumnTransformer:
     """Assemble a ColumnTransformer from per-type (name, transformer) steps."""
     set_config(transform_output="pandas")
@@ -217,6 +216,6 @@ def build_preprocessor(
         transformers.append(("cat", Pipeline(cat_steps), cat_cols))
     return ColumnTransformer(
         transformers=transformers,
-        remainder=remainder,
+        remainder="drop",
         verbose_feature_names_out=False,
     )

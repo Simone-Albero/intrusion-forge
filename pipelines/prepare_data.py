@@ -18,13 +18,15 @@ from src.core.log import (
 )
 from src.core.utils import flush_timing, load_from_json, skip_if_unchanged, timed
 from src.domain.analysis.complexity.shared import l2_normalize
-from src.domain.analysis.metadata import (
-    compute_clusters_metadata,
-    compute_df_metadata,
-    get_df_info,
+from src.domain.analysis.metadata import compute_df_metadata, get_df_info
+from src.domain.clustering import build_cluster_fn
+from src.domain.clustering.base import (
+    assign_nearest_centroid,
+    cluster_size_balance,
+    compute_centroids,
+    subsample_indices,
 )
-from src.domain.clustering import build_cluster_fn, resolution_aware_floor
-from src.domain.clustering.base import assign_nearest_centroid, cluster_size_balance
+from src.domain.clustering.hardness import KdnReference
 from src.domain.data.preprocessing import (
     LogTransformer,
     TopNHashEncoder,
@@ -40,26 +42,16 @@ setup_logger()
 logger = logging.getLogger(__name__)
 
 
-def _absorb_small_clusters(
-    labels: np.ndarray, floor: int
-) -> tuple[np.ndarray, int, int]:
-    """Turn clusters smaller than `floor` back into noise."""
-    ids, counts = np.unique(labels[labels != -1], return_counts=True)
-    small = ids[counts < floor]
-    if small.size == 0:
-        return labels, 0, 0
-    mask = np.isin(labels, small)
-    return np.where(mask, -1, labels), int(small.size), int(mask.sum())
-
-
 def _cluster_per_class(
     cfg,
     X_num: np.ndarray,
     y_class: np.ndarray,
     *,
     classes: list,
-) -> tuple[np.ndarray, dict[int, np.ndarray], set[int], dict[str, list]]:
-    """Cluster each class separately, folding noise into per-class pseudo-clusters."""
+    eval_rows_per_train_row: float,
+) -> tuple[np.ndarray, dict[int, np.ndarray], dict[str, list]]:
+    """Cluster each class at the finest granularity its region error rates would stay
+    reliable at, merging any undersized cluster into a survivor."""
     n = X_num.shape[0]
     clustering = cfg.clustering
     algorithms = OmegaConf.to_container(clustering.algorithms, resolve=True)
@@ -73,14 +65,18 @@ def _cluster_per_class(
     offset = 0
     report: dict[str, list] = {"classes": [], "sweep": []}
 
+    X_num_space = l2_normalize(X_num) if clustering.distance == "cosine" else X_num
+    ref_idx = subsample_indices(
+        n, max_samples=cfg.complexity.max_complexity_samples, random_state=cfg.seed
+    )
+    reference = KdnReference(X=X_num_space[ref_idx], y=y_class[ref_idx], ids=ref_idx)
+
     for cls in tqdm(classes, desc="Clustering classes"):
         mask = y_class == cls
         if not mask.any():
             continue
-        X_num_cls = X_num[mask]
-        X_num_cls = (
-            l2_normalize(X_num_cls) if clustering.distance == "cosine" else X_num_cls
-        )
+        X_num_cls = X_num_space[mask]
+        ids_cls = np.flatnonzero(mask)
 
         algo_reports: dict[str, dict] = {}
         cluster_fn = build_cluster_fn(
@@ -89,92 +85,70 @@ def _cluster_per_class(
             random_state=cfg.seed,
             reporter=algo_reports.__setitem__,
             max_clusters=max_clusters_per_class,
-            min_clusters=clustering.min_clusters,
-            grid_target_cluster_size=clustering.grid_target_cluster_size,
-            resolution_weight=clustering.resolution_weight,
+            min_cluster_floor=clustering.min_cluster_floor,
+            hardness_k=clustering.hardness_k,
+            reliability_target=clustering.reliability_target,
+            eval_rows_per_train_row=eval_rows_per_train_row,
+            reference=reference,
             metric=clustering.distance,
         )
-        raw_labels = cluster_fn(X_num_cls)
-        effective_floor = (
-            resolution_aware_floor(
-                X_num_cls.shape[0],
-                clustering.grid_target_cluster_size,
-                clustering.min_cluster_floor,
-            )
-            if clustering.grid_target_cluster_size
-            else clustering.min_cluster_floor
+        raw_labels, n_merged_clusters, n_merged = cluster_fn(
+            X_num_cls, ids=ids_cls, label=cls
         )
-        raw_labels, n_floor_clusters, n_floor_points = _absorb_small_clusters(
-            raw_labels, effective_floor
-        )
-        n_clusters_cls = int(np.unique(raw_labels[raw_labels != -1]).size)
+        n_clusters_cls = int(np.unique(raw_labels).size)
         if n_clusters_cls > max_clusters_per_class:
             raise ValueError(
-                f"class {cls!r}: {n_clusters_cls} clusters survive absorption, over "
+                f"class {cls!r}: {n_clusters_cls} clusters survive merging, over "
                 f"max_clusters={max_clusters_per_class} for this class — the complexity "
                 "stage's point budget cannot subsample this many. Raise "
                 "max_complexity_samples, lower min_subsample_per_cluster, or tighten "
                 "the clustering grid."
             )
 
-        n_cls = int(raw_labels.shape[0])
-        n_noise_cls = int((raw_labels == -1).sum())
+        [algo_report] = algo_reports.values()
+        # The winning candidate's own reliability, predicted on the scored subsample;
+        # n_merged_clusters/n_merged above are the full class's, from the final merge.
+        best = algo_report["best"]
         report["classes"].append(
             {
                 "class_name": str(cls),
-                "n_train": n_cls,
+                "n_train": int(raw_labels.shape[0]),
                 "n_clusters": n_clusters_cls,
-                "n_noise": n_noise_cls,
-                "noise_ratio": n_noise_cls / n_cls if n_cls > 0 else 0.0,
+                "reliability": best["reliability"],
                 "size_balance": cluster_size_balance(raw_labels),
-                "floor_used": effective_floor,
-                "floor_absorbed_clusters": n_floor_clusters,
-                "floor_absorbed_points": n_floor_points,
+                "n_merged_clusters": n_merged_clusters,
+                "n_merged": n_merged,
             }
         )
-        for algo_report in algo_reports.values():
-            report["sweep"].extend(
-                {
-                    "class_name": str(cls),
-                    **{f"param_{k}": v for k, v in candidate["combo"].items()},
-                    "best": candidate["best"],
-                    "score": candidate["score"],
-                    "silhouette": candidate.get("silhouette"),
-                    "resolution_tilt": candidate.get("resolution_tilt"),
-                    "n_clusters": candidate["n_clusters"],
-                    "n_noise": candidate["n_noise"],
-                    "noise_ratio": candidate["noise_ratio"],
-                    "size_balance": candidate["size_balance"],
-                    "duration_s": candidate["duration_s"],
-                    "error": candidate.get("error", False),
-                }
-                for candidate in algo_report["sweep"]
-            )
+        report["sweep"].extend(
+            {
+                "class_name": str(cls),
+                **{f"param_{k}": v for k, v in candidate["combo"].items()},
+                "best": candidate["best"],
+                "n_clusters": candidate["n_clusters"],
+                "n_merged_clusters": candidate["n_merged_clusters"],
+                "n_merged": candidate["n_merged"],
+                "size_balance": candidate["size_balance"],
+                "var_between": candidate["var_between"],
+                "var_sampling": candidate["var_sampling"],
+                "reliability": candidate["reliability"],
+                "duration_s": candidate["duration_s"],
+                "error": candidate.get("error", False),
+            }
+            for candidate in algo_report["sweep"]
+        )
 
-        cluster_ids = np.unique(raw_labels[raw_labels != -1])
-        labels[mask] = np.where(raw_labels == -1, -1, raw_labels + offset)
-        for cid in cluster_ids:
-            centroid = X_num_cls[raw_labels == cid].mean(axis=0)
-            # Under cosine a region's centre is a direction: the mean of the unit
-            # vectors it was clustered on, renormalized.
-            if clustering.distance == "cosine":
-                centroid = l2_normalize(centroid[np.newaxis])[0]
-            centroids[int(cid + offset)] = centroid
-        if len(cluster_ids) > 0:
-            offset += int(cluster_ids.max()) + 1
+        cluster_ids = np.unique(raw_labels)
+        labels[mask] = raw_labels + offset
+        class_centroids = compute_centroids(
+            X_num_cls, raw_labels, metric=clustering.distance
+        )
+        centroids.update(
+            {int(cid) + offset: centroid for cid, centroid in class_centroids.items()}
+        )
+        offset += int(cluster_ids.max()) + 1
 
-    noise_cluster_ids: set[int] = set()
-    noise_count = int((labels == -1).sum())
-    if noise_count > 0:
-        next_id = max(centroids.keys(), default=-1) + 1
-        for noise_cls in sorted(np.unique(y_class)):
-            noise_mask = (y_class == noise_cls) & (labels == -1)
-            if noise_mask.any():
-                labels[noise_mask] = next_id
-                noise_cluster_ids.add(next_id)
-                next_id += 1
-
-    return labels, centroids, noise_cluster_ids, report
+    return labels, centroids, report
 
 
 @timed
@@ -230,8 +204,11 @@ def preprocess_df(
     )
     logger.info("Preprocessor: %s", preprocessor)
     preprocessor.fit(train_df)
+    # Only num_cols, cat_cols and the label travel past this point: no raw column the
+    # pipeline never reads (IPs, ports, DNS ids, ...) survives into the parquet.
     train_df, val_df, test_df = (
-        preprocessor.transform(split) for split in [train_df, val_df, test_df]
+        preprocessor.transform(split).assign(**{label_col: split[label_col].to_numpy()})
+        for split in [train_df, val_df, test_df]
     )
 
     return train_df, val_df, test_df
@@ -246,31 +223,42 @@ def _cluster_splits(
     num_cols: list[str],
     label_col: str,
     dispatcher: LogDispatcher,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, set[int]]:
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Cluster train per class, then give every split `cluster` and `routed_cluster`."""
     X_num = train_df[num_cols].to_numpy(dtype=np.float64)
     y_class = train_df[label_col].to_numpy()
     all_classes = sorted(train_df[label_col].unique().tolist())
 
+    # How many rows classify's evaluation will measure each region on, per train row it
+    # holds: k-fold evaluates train+test out-of-fold, a single split only the test rows.
+    n_train, n_test = len(train_df), len(test_df)
+    eval_rows_per_train_row = (
+        (n_train + n_test) / n_train if cfg.kfold else n_test / n_train
+    )
+    if eval_rows_per_train_row <= 0:
+        raise ValueError(
+            f"eval_rows_per_train_row={eval_rows_per_train_row}: classify would "
+            "evaluate every region on zero rows."
+        )
+
     logger.info("Running per-class clustering on train (n=%d)...", len(train_df))
-    labels, centroids, noise_cluster_ids, clustering_report = _cluster_per_class(
-        cfg, X_num, y_class, classes=all_classes
+    labels, centroids, clustering_report = _cluster_per_class(
+        cfg,
+        X_num,
+        y_class,
+        classes=all_classes,
+        eval_rows_per_train_row=eval_rows_per_train_row,
     )
     report_tables = {
         "metric": cfg.clustering.distance,
         "algorithm": next(iter(cfg.clustering.algorithms)),
+        "eval_rows_per_train_row": eval_rows_per_train_row,
         **clustering_report,
     }
     dispatcher.publish(LogBundle.from_dict({"json/clustering_report": report_tables}))
 
     # Routing never reads the label: a region drawn inside one class holds only rows of
     # that class, and its error rate would count only the mistakes made on it.
-    # The noise pseudo-clusters have no centroid, so no row is routed into one.
-    if not centroids:
-        raise ValueError(
-            "Every class came out as noise: no region to route rows into. Loosen the "
-            "clustering grid so that some class keeps a region."
-        )
     routed: dict[str, pd.DataFrame] = {}
     for name, split_df in (("train", train_df), ("val", val_df), ("test", test_df)):
         split_df = split_df.copy()
@@ -284,14 +272,8 @@ def _cluster_splits(
         routed[name] = split_df
     train_df, val_df, test_df = routed["train"], routed["val"], routed["test"]
 
-    # Only train rows can be noise: the other splits are routed, never into noise.
-    noise_count = int(np.isin(train_df["cluster"], sorted(noise_cluster_ids)).sum())
-    logger.info(
-        "Clustering complete — %d clusters (%d train points folded into noise ones)",
-        len(centroids) + len(noise_cluster_ids),
-        noise_count,
-    )
-    return train_df, val_df, test_df, noise_cluster_ids
+    logger.info("Clustering complete — %d clusters", len(centroids))
+    return train_df, val_df, test_df
 
 
 def _publish_metadata(
@@ -304,7 +286,6 @@ def _publish_metadata(
     cat_cols: list[str],
     encoded_label_col: str,
     label_mapping: dict,
-    noise_cluster_ids: set[int],
     dispatcher: LogDispatcher,
 ) -> None:
     logger.info("Computing and saving metadata...")
@@ -317,16 +298,6 @@ def _publish_metadata(
         label_mapping=label_mapping,
     )
     dispatcher.publish(LogBundle.from_dict({"json/df_meta": metadata}))
-
-    clusters_metadata = compute_clusters_metadata(
-        train_df,
-        val_df,
-        test_df,
-        cluster_col="cluster",
-        noise_cluster_ids=sorted(noise_cluster_ids),
-    )
-    dispatcher.publish(LogBundle.from_dict({"json/clusters_meta": clusters_metadata}))
-    logger.info("Cluster metadata saved.")
 
 
 @timed
@@ -357,7 +328,7 @@ def prepare(cfg) -> None:
         df.reset_index(drop=True) for df in [train_df, val_df, test_df]
     )
 
-    train_df, val_df, test_df, noise_cluster_ids = _cluster_splits(
+    train_df, val_df, test_df = _cluster_splits(
         cfg,
         train_df,
         val_df,
@@ -393,7 +364,6 @@ def prepare(cfg) -> None:
         cat_cols=cat_cols,
         encoded_label_col=encoded_label_col,
         label_mapping=label_mapping,
-        noise_cluster_ids=noise_cluster_ids,
         dispatcher=dispatcher,
     )
 
@@ -402,10 +372,11 @@ def _fingerprint(cfg) -> dict:
     """The config the splits and regions are built from."""
     return {
         # Bumped when the code changes what a config builds: older records never match.
-        "schema": 3,
+        "schema": 6,
         "data": to_container(cfg.data),
         "clustering": to_container(cfg.clustering),
         "seed": cfg.seed,
+        "kfold": cfg.kfold,
         # The per-class region budget is derived from the complexity sample cap.
         "complexity": {
             key: cfg.complexity[key]
@@ -434,7 +405,7 @@ def main() -> None:
     outputs = [processed / f"{s}.{ext}" for s in ("train", "val", "test")]
     outputs += [
         shared / f"metadata/{name}.json"
-        for name in ("df_info", "df_meta", "clusters_meta", "clustering_report")
+        for name in ("df_info", "df_meta", "clustering_report")
     ]
     outputs.append(snapshot)
     record = shared / "prepare_fingerprint.json"

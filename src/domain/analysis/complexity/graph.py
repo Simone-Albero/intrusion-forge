@@ -189,7 +189,6 @@ def compute_complexity_from_graph(
     *,
     top_k_clusters: int,
     metric: str,
-    noise_cluster_ids: set[int] | None,
     silhouette_max_samples: int,
     silhouette_min_per_cluster: int,
     random_state: int,
@@ -251,10 +250,6 @@ def compute_complexity_from_graph(
             **nd_out[cid],
             **t_out[cid],
             **g_out[cid],
-            "is_noise_cluster": False,
         }
-
-    for nid in sorted(noise_cluster_ids or set()):
-        result[str(nid)] = {"is_noise_cluster": True}
 
     return result

@@ -1,6 +1,5 @@
 balance: undersample     # training-split class balancing: undersample | none
 n_samples: null          # when set, caps every class of the training split at n_samples // n_classes
-kfold: true              # true: k-fold out-of-fold over train+test; false: one model evaluated on test
 kfold_splits: 5          # folds when kfold=true, capped by the rarest class
 device: cpu              # DL classifiers only
 

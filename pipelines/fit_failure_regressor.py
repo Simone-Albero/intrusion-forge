@@ -71,12 +71,7 @@ def main() -> None:
         + list(cfg.data.cat_cols)
         + [f"encoded_{cfg.data.label_col}"]
     )
-    regions = digest_regions(
-        splits["train"],
-        load_from_json(paths.shared / "metadata/clusters_meta.json")[
-            "noise_cluster_ids"
-        ],
-    )
+    regions = digest_regions(splits["train"])
     current = {
         "complexity": (digest_frames({"train": splits["train"]}, columns), regions),
         "classify": (
