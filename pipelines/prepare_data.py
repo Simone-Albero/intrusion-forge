@@ -284,17 +284,10 @@ def _cluster_splits(
         routed[name] = split_df
     train_df, val_df, test_df = routed["train"], routed["val"], routed["test"]
 
-    noise_ids = sorted(noise_cluster_ids)
-    noise_count = (
-        sum(
-            int(np.isin(df["cluster"], noise_ids).sum())
-            for df in (train_df, val_df, test_df)
-        )
-        if noise_ids
-        else 0
-    )
+    # Only train rows can be noise: the other splits are routed, never into noise.
+    noise_count = int(np.isin(train_df["cluster"], sorted(noise_cluster_ids)).sum())
     logger.info(
-        "Clustering complete — %d clusters (noise reassigned: %d points into pseudo-clusters)",
+        "Clustering complete — %d clusters (%d train points folded into noise ones)",
         len(centroids) + len(noise_cluster_ids),
         noise_count,
     )

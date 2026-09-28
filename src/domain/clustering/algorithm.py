@@ -125,7 +125,7 @@ def fit_spectral(
             f"fit_spectral: n_neighbors is ignored with affinity={affinity!r}."
         )
     n = X_num.shape[0]
-    n_clusters = max(2, min(int(n_clusters), n - 1))
+    n_clusters = max(2, min(int(n_clusters), min(n, max_fit_samples) - 1))
     X_num = np.ascontiguousarray(X_num, dtype=np.float64)
 
     spec_kwargs = dict(

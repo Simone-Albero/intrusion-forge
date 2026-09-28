@@ -525,7 +525,6 @@ def classify(cfg) -> None:
 
     random.seed(cfg.seed)
     np.random.seed(cfg.seed)
-    torch.manual_seed(cfg.seed)
     set_figure_format(cfg.figure_format)
     paths = paths_from_cfg(cfg)
 

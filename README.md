@@ -6,7 +6,7 @@ It divides a dataset into regions, describes each region by how it sits relative
 
 The estimate belongs to the model you point it at. It is fitted on that model's own errors, so it describes how *that* classifier copes with the shape of your data rather than how difficult the data is in the abstract. This makes it useful for identifying unreliable regions before you have the labels to prove they are unreliable, for deciding where to gather more data or review labels, and for monitoring a model after deployment.
 
-Everything is tabular and everything is driven by configuration: a dozen classifiers (scikit-learn, XGBoost, PyTorch), four ways of dividing the data into regions, configurations for the public network-security datasets, and a synthetic dataset that exercises the whole pipeline in about eighteen minutes.
+Everything is tabular and everything is driven by configuration: a dozen classifiers (scikit-learn, XGBoost, PyTorch), four ways of dividing the data into regions, configurations for the public network-security datasets, and a synthetic dataset that exercises the whole pipeline in about twenty-two minutes.
 
 ## Quickstart — the synthetic demo
 
@@ -44,10 +44,10 @@ One command, five stages:
 
 | Stage | What it does | Time |
 |---|---|---|
-| prepare | preprocess, split, divide each class into regions (1021 of them) | 18 s |
-| complexity | describe every region | ~105 s |
-| classify | train and evaluate the Random Forest, 5-fold out-of-fold | ~15 min |
-| failure-regress | fit the region → error-rate estimator | ~80 s |
+| prepare | preprocess, split, divide each class into regions (1019 of them, plus two leftover buckets) | 20 s |
+| complexity | describe every region | ~130 s |
+| classify | train and evaluate the Random Forest, 5-fold out-of-fold | ~18 min |
+| failure-regress | fit the region → error-rate estimator | ~105 s |
 | render | 26 figures | 5 s |
 
 `classify` dominates: each fold re-runs the classifier's hyperparameter search on its own held-out-safe
@@ -57,12 +57,12 @@ quick.
 The result appears at the end of `failure-regress`:
 
 ```
-Failure regressor results — Spearman: 0.9378, R²: 0.9168, MAE: 0.0343, MSE: 0.0031
+Failure regressor results — Spearman: 0.9083, R²: 0.8800, MAE: 0.0302, MSE: 0.0021
 ```
 
-**Spearman ρ ≈ 0.94.** Across 1019 regions the estimated and observed error rates rank almost identically, measured on regions held back from the fitting. Expect a little drift in the third decimal between runs.
+**Spearman ρ ≈ 0.91.** The estimated and observed error rates put the 1019 regions in much the same order, measured on regions held back from the fitting. Expect a little drift in the third decimal between runs.
 
-`instance_baselines.json` is a check on that signal rather than the purpose of the framework: it compares the regressor's per-sample ranking against confidence-based baselines (MCP, ATC, and rank-averaged combinations of each with the regressor) using *oracle benefit recovered* — the share of a perfect oracle's accuracy gain that abstaining on the riskiest samples actually captures. The regressor recovers about 61% here, ahead of MCP and ATC alone (~59% each). Were the estimate merely tracking some general notion of difficult data rather than this model's own errors, it would not consistently beat scores derived from the model's own confidence.
+`instance_baselines.json` is a check on that signal rather than the purpose of the framework: it compares the regressor's per-sample ranking against confidence-based baselines (MCP, ATC, and rank-averaged combinations of each with the regressor) using *oracle benefit recovered* — the share of a perfect oracle's accuracy gain that abstaining on the riskiest samples actually captures. The regressor recovers about 31% here, a little more than MCP and ATC averaged over each region (about 29% each): at the same granularity, one score per region, an estimate built from the data's geometry ranks this model's errors slightly better than the model's own confidence does. Rank-averaged with each sample's own MCP it recovers the most of the five, about 40%, as the only variant that tells apart the samples within a region.
 
 ### 4. Read the results
 
@@ -85,7 +85,7 @@ random_forest/
 └── figures/                          # 26 PDFs
 ```
 
-The fold models account for ~980 MB of the ~1 GB the run occupies; delete `models/` once you have the metrics.
+The fold models account for all but ~25 MB of the ~1 GB the run occupies; delete `models/` once you have the metrics.
 
 ### Variations worth trying
 
@@ -161,7 +161,7 @@ Five families, all built on a single shared nearest-neighbour graph over mixed n
 | **T** — dimensionality | `t2`–`t4` | how many features there are relative to samples, and how many of them matter |
 | **G** — geometry | `max_dispersion`, `p95_dispersion`, `dist_to_nearest_centroid`, `p5_silhouette`, `frac_at_risk` | how widely the region is spread, and how close the nearest rival lies |
 
-In the demo the estimator relies most on `cluster_f4_mean`, `cluster_f3_max` and `cluster_network_density_mean`.
+In the demo the estimator relies most on `cluster_f1_max`, `cluster_f4_max` and `cluster_n1_mean`.
 
 ## Pipeline reference
 
