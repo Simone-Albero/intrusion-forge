@@ -60,7 +60,7 @@ def compute_cluster_complexity(
         {
             "cluster_id": int(cid),
             **measures,
-            "cluster_class": cluster_to_class[str(cid)],
+            "class_id": cluster_to_class[str(cid)],
         }
         for cid, measures in complexity.items()
     ]
@@ -97,7 +97,7 @@ def _fingerprint(
     """The config complexity runs under, plus digests of its rows and regions."""
     return {
         # Bumped when the code changes what a config computes: old records never match.
-        "schema": 3,
+        "schema": 4,
         # The data keys complexity reads; the rest reach it only through the digests.
         "data": {
             "num_cols": list(cfg.data.num_cols),

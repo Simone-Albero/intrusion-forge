@@ -42,6 +42,11 @@ def main() -> None:
     if not dump_path.exists():
         raise FileNotFoundError(f"Missing {dump_path}: re-run `make classify`.")
     complexity = load_from_json(complexity_path)
+    if any("class_id" not in row for row in complexity):
+        raise ValueError(
+            f"{complexity_path} predates the current artifact format: "
+            "re-run `make complexity`."
+        )
     class_complexity = load_from_json(class_complexity_path)
     predictions_path = paths.outputs / "analysis/predictions/clusters.json"
     predictions = load_from_json(predictions_path)

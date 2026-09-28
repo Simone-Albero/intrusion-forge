@@ -96,12 +96,12 @@ def build_cluster_summary(
     summary = []
     for cluster_measures in complexity:
         cluster_id = cluster_measures["cluster_id"]
-        class_id = cluster_measures.get("cluster_class")
-        class_measures = by_class.get(class_id, {}) if class_id is not None else {}
+        class_id = cluster_measures["class_id"]
+        class_measures = by_class.get(class_id, {})
         cluster_feats = {
             f"cluster_{k}": v
             for k, v in cluster_measures.items()
-            if k not in ("cluster_id", "cluster_class", "is_noise_cluster")
+            if k not in ("cluster_id", "class_id", "is_noise_cluster")
         }
         class_feats = {
             f"class_{k}": v
@@ -114,10 +114,8 @@ def build_cluster_summary(
                 "cluster_id": cluster_id,
                 **cluster_feats,
                 **class_feats,
-                "cluster_class": class_id,
-                "is_noise_cluster": int(
-                    cluster_measures.get("is_noise_cluster", False)
-                ),
+                "class_id": class_id,
+                "is_noise_cluster": int(cluster_measures["is_noise_cluster"]),
                 "n_eval": error["n_eval"] if error else 0,
                 "failure_rate": error.get("error_rate"),
                 "mcp_risk": error.get("mcp_risk"),
@@ -217,6 +215,12 @@ def _failure_rate_distribution(rates: pd.Series) -> dict:
     }
 
 
+# Numeric summary columns that are not descriptors: the target and its support, the
+# classifier's own risk (a baseline, not a descriptor), and `class_id`, which names a
+# class and measures nothing.
+_NOT_FEATURES = ("failure_rate", "n_eval", "is_noise_cluster", "mcp_risk", "class_id")
+
+
 @timed
 def fit_failure_regressor(
     cluster_stats: list[dict],
@@ -268,9 +272,7 @@ def fit_failure_regressor(
         )
 
     feature_cols = [
-        c
-        for c in df.select_dtypes("number").columns
-        if c not in ("failure_rate", "n_eval", "is_noise_cluster", "mcp_risk")
+        c for c in df.select_dtypes("number").columns if c not in _NOT_FEATURES
     ]
     X = df[feature_cols].copy()
     y = df["failure_rate"].astype(float)

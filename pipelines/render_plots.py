@@ -110,8 +110,6 @@ _MEASURE_LABEL = {
 
 def _feature_label(feature: str) -> str:
     """Map a raw `{cluster|class}_{measure}[_agg]` feature name to its display notation."""
-    if feature == "cluster_class":
-        return "class label"
     level, _, measure = feature.partition("_")
     agg = None
     for suffix in ("_mean", "_max", "_min"):
@@ -233,7 +231,7 @@ def assemble_analysis_figures(
     logger.info("Building summary visualizations ...")
     summary_df = pd.DataFrame(cluster_summary).set_index("cluster_id")
     class_names = {c["class_id"]: c["class_name"] for c in df_meta["classes"]}
-    summary_df["class_name"] = summary_df["cluster_class"].map(class_names)
+    summary_df["class_name"] = summary_df["class_id"].map(class_names)
 
     if regressor_results.get("skipped"):
         logger.warning(
@@ -278,11 +276,17 @@ def main() -> None:
             raise FileNotFoundError(
                 f"Missing {path}: run `make failure-regress` first."
             )
+    cluster_summary = load_from_json(summary_path)
+    if any("class_id" not in row for row in cluster_summary):
+        raise ValueError(
+            f"{summary_path} predates the current artifact format: "
+            "re-run `make failure-regress`."
+        )
 
     analysis_bus = LogDispatcher()
     analysis_bus.subscribe(FilesystemFigureSubscriber(paths.figures))
     assemble_analysis_figures(
-        cluster_summary=load_from_json(summary_path),
+        cluster_summary=cluster_summary,
         df_meta=load_prepared_metadata(paths.shared / "metadata/df_meta.json"),
         regressor_results=load_from_json(results_path),
         analysis_bus=analysis_bus,
