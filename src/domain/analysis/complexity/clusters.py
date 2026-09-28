@@ -23,14 +23,12 @@ def _approx_silhouette(
         idx = np.arange(n)
     else:
         rng = np.random.default_rng(random_state)
-        # The floor shrinks before the cap is exceeded, but never below one row per
-        # cluster: only more clusters than max_samples push the subsample past the cap.
-        n_labels = len(unique_labels)
-        floor = max(1, min(min_per_cluster, max_samples // n_labels))
+        # The floor holds even past the cap: a silhouette tail read off a handful of
+        # rows per cluster is noise, so many clusters grow the subsample instead.
         idx_parts: list[np.ndarray] = []
         for lbl in unique_labels:
             members = np.where(labels == lbl)[0]
-            take = min(len(members), floor)
+            take = min(len(members), min_per_cluster)
             idx_parts.append(rng.choice(members, size=take, replace=False))
         guaranteed = np.concatenate(idx_parts)
         remaining = max_samples - len(guaranteed)

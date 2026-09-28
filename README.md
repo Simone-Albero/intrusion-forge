@@ -215,7 +215,7 @@ A shell reads `ARGS` before Hydra does, so single-quote an override whose value 
 | `data` | network traffic: `nb15_v2`, `bot_iot_v2`, `cic_2018_v2`, `ton_iot_v2` · benchmarks: `bank_marketing`, `covertype`, `letter_recognition`, `statlog_landsat_satellite`, `thyroid_disease` · `synthetic_test`, the only one needing no external CSV |
 | `classifier` | deep: `mlp` (adapts to the dataset's numerical/categorical feature counts) · classical: `decision_tree`, `random_forest`, `hist_gradient_boosting`, `xgboost`, `knn`, `lda`, `logistic_regression`, `naive_bayes`, `linear_svc` |
 | `clustering` | `kmeans`, `hdbscan`, `birch`, `spectral` |
-| `complexity` | `default` — descriptor graph parameters (`k`, cluster sample caps, silhouette subsample cap) |
+| `complexity` | `default` — descriptor graph parameters (`k`, cluster sample caps, silhouette subsample size and its per-cluster floor) |
 | `failure_regressor` | `random_forest` — nested-CV folds, hyperparameter grid and the draws sampled from it (`n_iter`) |
 | `fit` | `default` — how the classifier is trained and evaluated: training-split balancing (`balance`, `n_samples`), out-of-fold evaluation (`kfold`, `kfold_splits`) and, for deep classifiers, `device`, epochs, gradient clipping, early stopping and data loaders |
 | `grid_search` | `default` — scoring, CV folds and sample cap for classifier tuning |

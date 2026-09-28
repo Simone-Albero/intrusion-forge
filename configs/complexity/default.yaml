@@ -3,5 +3,5 @@ k: 30
 top_k_clusters: 10                 # top-K nearest adversarial clusters per cluster (vs-cluster aggregation)
 min_subsample_per_cluster: 20      # min samples per cluster (measurement floor); keep ≤ clustering.min_cluster_floor
 max_complexity_samples: 50000      # cap on points used to build the k-NN graph (build is Θ(m²))
-silhouette_max_samples: 10000      # cap on points for the per-cluster silhouette tail (p5_silhouette, frac_at_risk); fewer points per cluster make both noisier and can reshape feature_importances while ρ holds
-silhouette_min_per_cluster: 50     # soft floor: shrinks to silhouette_max_samples // n_clusters (at least 1) when the clusters would exceed the cap
+silhouette_max_samples: 10000      # size of the subsample behind the per-cluster silhouette tail (p5_silhouette, frac_at_risk), when the floor below needs fewer; the floor can exceed it, up to max_complexity_samples
+silhouette_min_per_cluster: 50     # rows per cluster (all of a smaller one), kept even past silhouette_max_samples
