@@ -164,6 +164,7 @@ def build_trainer(
         min_delta=fit_cfg.training.early_stopping.min_delta,
         train_loader_params=to_container(fit_cfg.training.dataloader),
         val_loader_params=to_container(fit_cfg.validation.dataloader),
+        seed=cfg.seed,
     )
 
 
@@ -218,7 +219,7 @@ def _fingerprint(cfg, *, data_digest: str) -> dict:
         for key in _INERT_LOADER_KEYS:
             del config["fit"][loop]["dataloader"][key]
     # Bumped when the code changes what a config trains: older records then never match.
-    return {"schema": 1, **config, "data_digest": data_digest}
+    return {"schema": 2, **config, "data_digest": data_digest}
 
 
 def _training_record_path(paths: OutputPaths) -> Path:

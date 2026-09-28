@@ -120,6 +120,7 @@ class DLTrainer:
     min_delta: float
     train_loader_params: dict
     val_loader_params: dict
+    seed: int
 
     def features(self, df: pd.DataFrame) -> pd.DataFrame:
         """The whole frame: the dataset selects its own feature columns."""
@@ -130,11 +131,14 @@ class DLTrainer:
         return df, None
 
     def _loader(self, df: pd.DataFrame, params: dict) -> DataLoader:
+        # Its own generator: a loader draws a seed each time it is iterated, shuffling
+        # or not, and from the global stream that draw would land between two epochs'
+        # dropout draws.
         return create_dataloader(
             create_dataset(
                 df, self.num_cols, self.cat_cols, label_col=[self.label_col]
             ),
-            params,
+            {**params, "generator": torch.Generator().manual_seed(self.seed)},
         )
 
     def fit(
@@ -160,6 +164,9 @@ class DLTrainer:
         if loss_params.get("class_weight") == "auto":
             loss_params["class_weight"] = self.class_weights
 
+        # Seeded here, so a fold trains the same whatever ran before it: the model's
+        # initial weights and its dropout are the only draws on the global stream.
+        torch.manual_seed(self.seed)
         model = _create_model(name, params, self.device)
         loss_fn = create_loss(self.loss.name, loss_params, self.device)
 
