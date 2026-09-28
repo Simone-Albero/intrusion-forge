@@ -57,17 +57,22 @@ def fit_kmeans(
     X_num: np.ndarray,
     *,
     n_clusters: int = 8,
-    # Part of the signature every fit function shares; KMeans still fits every row,
-    # so the cap bounds only grid_search's sweep.
     max_fit_samples: int,
     random_state: int,
 ) -> np.ndarray:
-    """Fit K-means on X and return labels (n,)."""
-    n_clusters = max(2, min(n_clusters, X_num.shape[0] - 1))
+    """Fit K-means on at most `max_fit_samples` rows and label every row of X."""
+    n = X_num.shape[0]
+    # Bounded by the rows the model is fitted on, which the sweep scored.
+    n_clusters = max(2, min(n_clusters, min(n, max_fit_samples) - 1))
     X_num = np.ascontiguousarray(X_num, dtype=np.float64)
     model = KMeans(n_clusters=n_clusters, random_state=random_state)
-    labels = model.fit_predict(X_num)
-    return labels
+    if n > max_fit_samples:
+        sub_num = subsample_features(
+            X_num, max_samples=max_fit_samples, random_state=random_state
+        )
+        model.fit(sub_num)
+        return model.predict(X_num)
+    return model.fit_predict(X_num)
 
 
 @ClusteringFactory.register("birch")
@@ -82,7 +87,7 @@ def fit_birch(
 ) -> np.ndarray:
     """Fit BIRCH with `n_clusters` (AgglomerativeClustering on CF-tree leaves)."""
     n = X_num.shape[0]
-    n_clusters = max(2, min(int(n_clusters), n - 1))
+    n_clusters = max(2, min(int(n_clusters), min(n, max_fit_samples) - 1))
     X_num = np.ascontiguousarray(X_num, dtype=np.float64)
     clf = Birch(
         threshold=threshold,

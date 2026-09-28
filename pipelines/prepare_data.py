@@ -409,7 +409,7 @@ def _fingerprint(cfg) -> dict:
     """The config the splits and regions are built from."""
     return {
         # Bumped when the code changes what a config builds: older records never match.
-        "schema": 2,
+        "schema": 3,
         "data": to_container(cfg.data),
         "clustering": to_container(cfg.clustering),
         "seed": cfg.seed,
