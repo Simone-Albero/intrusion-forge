@@ -46,7 +46,7 @@ _FEATURE_FAMILIES = [
         (
             "max_dispersion",
             "p95_dispersion",
-            "dist_to_nearest_centroid",
+            "dist_to_nearest_rival",
             "p5_silhouette",
             "frac_at_risk",
         ),
@@ -295,13 +295,30 @@ def _fig_family_importance(runs: list[dict]) -> Plot | None:
         return None
     mean_imp = {k: float(np.mean(v)) for k, v in acc.items()}
 
+    def in_family(key: str, prefix: str, members: tuple[str, ...]) -> bool:
+        return key.startswith(prefix) and any(
+            key[len(prefix) :].startswith(m) for m in members
+        )
+
     def part(prefix: str, members: tuple[str, ...]) -> float:
         return 100.0 * sum(
-            v
-            for k, v in mean_imp.items()
-            if k.startswith(prefix)
-            and any(k[len(prefix) :].startswith(m) for m in members)
+            v for k, v in mean_imp.items() if in_family(k, prefix, members)
         )
+
+    for prefix in ("cluster_", "class_"):
+        unmatched = sorted(
+            k
+            for k in mean_imp
+            if k.startswith(prefix)
+            and not any(
+                in_family(k, prefix, members) for _, members in _FEATURE_FAMILIES
+            )
+        )
+        if unmatched:
+            raise ValueError(
+                f"feature_importances has {prefix}-scoped keys _FEATURE_FAMILIES "
+                f"does not list: {unmatched}. A run predates a rename: re-run it."
+            )
 
     names = [name for name, _ in _FEATURE_FAMILIES]
     cluster = [part("cluster_", members) for _, members in _FEATURE_FAMILIES]

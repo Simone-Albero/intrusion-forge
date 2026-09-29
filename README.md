@@ -6,7 +6,7 @@ It divides a dataset into regions, describes each region by how it sits relative
 
 The estimate belongs to the model you point it at. It is fitted on that model's own errors, so it describes how *that* classifier copes with the shape of your data rather than how difficult the data is in the abstract. This makes it useful for identifying unreliable regions before you have the labels to prove they are unreliable, for deciding where to gather more data or review labels, and for monitoring a model after deployment.
 
-Everything is tabular and everything is driven by configuration: a dozen classifiers (scikit-learn, XGBoost, PyTorch), four ways of dividing the data into regions, configurations for the public network-security datasets, and a synthetic dataset that exercises the whole pipeline in about twenty-two minutes.
+Everything is tabular and everything is driven by configuration: a dozen classifiers (scikit-learn, XGBoost, PyTorch), four ways of dividing the data into regions, configurations for the public network-security datasets, and a synthetic dataset that exercises the whole pipeline in about nineteen minutes.
 
 ## Quickstart — the synthetic demo
 
@@ -45,8 +45,8 @@ One command, five stages:
 | Stage | What it does | Time |
 |---|---|---|
 | prepare | preprocess, split, divide each class into regions (1108 of them here) | 10 s |
-| complexity | describe every region | ~130 s |
-| classify | train and evaluate the Random Forest, 5-fold out-of-fold | ~18 min |
+| complexity | describe every region | ~30 s |
+| classify | train and evaluate the Random Forest, 5-fold out-of-fold | ~17 min |
 | failure-regress | fit the region → error-rate estimator | ~100 s |
 | render | 26 figures | 5 s |
 
@@ -57,7 +57,7 @@ quick.
 The result appears at the end of `failure-regress`:
 
 ```
-Failure regressor results — Spearman: 0.9096, R²: 0.8660, MAE: 0.0310, MSE: 0.0023
+Failure regressor results — Spearman: 0.9100, R²: 0.8669, MAE: 0.0309, MSE: 0.0023
 ```
 
 **Spearman ρ ≈ 0.91.** The estimated and observed error rates put the 1108 regions in much the same order, measured on regions held back from the fitting. Expect a little drift in the third decimal between runs.
@@ -151,7 +151,7 @@ Two points worth knowing:
 
 ### What the descriptors measure
 
-Five families, all built on a single shared nearest-neighbour graph over mixed numerical and categorical features. Each compares a region with the ten rival regions nearest to it, reported as min / mean / max across them.
+Five families. The neighbourhood and network families read one shared nearest-neighbour graph built over the numerical and categorical features together; the feature, dimensionality and geometry families work on the numerical features directly, and dimensionality also counts the categorical ones. A rival is a region of another class. The feature and neighbourhood families and `network_density` compare a region with the ten rival regions whose centres lie nearest to it, reported as min / mean / max across them; every other key is a single value per region.
 
 | Family | Keys | What it captures |
 |---|---|---|
@@ -159,9 +159,9 @@ Five families, all built on a single shared nearest-neighbour graph over mixed n
 | **N** — neighbourhood | `n1`–`n4` | how many of a region's neighbours belong to another class |
 | **ND** — network | `network_density`, `cls_coef`, `hub` | how many neighbour links cross into a rival region |
 | **T** — dimensionality | `t2`–`t4` | how many features there are relative to samples, and how many of them matter |
-| **G** — geometry | `max_dispersion`, `p95_dispersion`, `dist_to_nearest_centroid`, `p5_silhouette`, `frac_at_risk` | how widely the region is spread, and how close the nearest rival lies |
+| **G** — geometry | `max_dispersion`, `p95_dispersion`, `dist_to_nearest_rival`, `p5_silhouette`, `frac_at_risk` | how widely the region is spread, and how close the nearest rival lies |
 
-In the demo the estimator relies most on `cluster_f1_max`, `cluster_f4_max` and `cluster_n1_mean`.
+In the demo the estimator relies most on `cluster_f1_max`, `cluster_f3_max` and `cluster_f3_mean`.
 
 ## Pipeline reference
 

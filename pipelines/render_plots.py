@@ -102,7 +102,7 @@ _MEASURE_LABEL = {
     "t4": "T4",
     "max_dispersion": r"$\delta_{\max}$",
     "p95_dispersion": r"$\delta_{95}$",
-    "dist_to_nearest_centroid": r"$\delta_{\mathrm{near}}$",
+    "dist_to_nearest_rival": r"$\delta_{\mathrm{near}}$",
     "p5_silhouette": r"$s_{5}$",
     "frac_at_risk": r"$s^{-}$",
 }

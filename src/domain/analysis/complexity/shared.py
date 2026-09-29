@@ -1,3 +1,6 @@
+import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import numpy as np
 import scipy.sparse
 import scipy.sparse.csgraph
@@ -28,50 +31,56 @@ def l2_normalize(X_num: np.ndarray, eps: float = 1e-8) -> np.ndarray:
     return X_num / np.maximum(norms, eps)
 
 
+def _scale_for_metric(X_num: np.ndarray, metric: str) -> np.ndarray:
+    """Numerics in the space `hybrid_row_batch` expects: unit rows, or range-scaled."""
+    if metric == "cosine":
+        return l2_normalize(X_num)
+    feat_ranges = np.maximum(X_num.max(axis=0) - X_num.min(axis=0), 1e-8)
+    return X_num / feat_ranges
+
+
 def hybrid_row_batch(
-    X_num_norm: np.ndarray,
+    X_num_ref: np.ndarray,
     X_cat: np.ndarray | None,
-    query_num_norm: np.ndarray,
+    query_num_ref: np.ndarray,
     query_cat: np.ndarray | None,
     d_num: int,
     d_cat: int,
+    *,
+    metric: str,
 ) -> np.ndarray:
-    """Gower-cosine hybrid distance: cosine on the numerics, Hamming on the categoricals."""
-    dist = cdist(query_num_norm, X_num_norm, metric="sqeuclidean")
-    dist *= d_num / 2.0
-    # Cosine distance reaches 2 for opposed vectors; the Gower average needs each
-    # numeric term in [0, 1], which is d_num after the scaling above.
-    np.clip(dist, 0.0, d_num, out=dist)
+    """Gower-hybrid distance on numerics scaled by `_scale_for_metric`, plus Hamming.
+
+    `cdist` sums in a different order than a per-feature loop, so a result can drift
+    by a few ulp — N2 is the one downstream measure that reads it, not just order.
+    """
+    if metric == "cosine":
+        dist = cdist(query_num_ref, X_num_ref, metric="sqeuclidean")
+        dist *= d_num / 2.0
+        # Cosine distance reaches 2 for opposed vectors; the Gower average needs each
+        # numeric term in [0, 1], which is d_num after the scaling above.
+        np.clip(dist, 0.0, d_num, out=dist)
+    else:
+        # Range-scaled inputs turn the Gower-Euclidean average into plain Manhattan.
+        dist = cdist(query_num_ref, X_num_ref, metric="cityblock")
 
     if X_cat is not None and d_cat > 0:
+        # uint16 costs little next to `dist`, and keeps d_cat (a column count, at
+        # most in the tens) far from wrapping, unlike uint8's 256.
+        mismatch = np.zeros(dist.shape, dtype=np.uint16)
         for f in range(d_cat):
-            dist += (query_cat[:, f : f + 1] != X_cat[:, f]).astype(np.float64)
+            mismatch += query_cat[:, f : f + 1] != X_cat[:, f]
+        dist += mismatch
 
     dist /= d_num + d_cat
     return dist
 
 
-def hybrid_row_batch_euclidean(
-    X_num: np.ndarray,
-    X_cat: np.ndarray | None,
-    query_num: np.ndarray,
-    query_cat: np.ndarray | None,
-    d_num: int,
-    d_cat: int,
-    feat_ranges: np.ndarray,
-) -> np.ndarray:
-    """Gower-Euclidean hybrid distance: range-normalised Manhattan plus Hamming."""
-    dist = np.zeros((query_num.shape[0], X_num.shape[0]), dtype=np.float64)
-    for f in range(d_num):
-        r = max(float(feat_ranges[f]), 1e-8)
-        dist += np.abs(query_num[:, f : f + 1] - X_num[:, f]) / r
-
-    if X_cat is not None and d_cat > 0:
-        for f in range(d_cat):
-            dist += (query_cat[:, f : f + 1] != X_cat[:, f]).astype(np.float64)
-
-    dist /= d_num + d_cat
-    return dist
+def _thread_budget() -> int:
+    """Worker count for `build_knn_graph`: the cgroup/affinity quota, not the host."""
+    if hasattr(os, "sched_getaffinity"):
+        return len(os.sched_getaffinity(0))
+    return os.cpu_count() or 1
 
 
 @timed
@@ -81,38 +90,23 @@ def build_knn_graph(
     *,
     k: int,
     metric: str,
-    batch_size: int = 1024,
+    batch_size: int = 128,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Build a k-NN graph with batched Gower-hybrid distances, never materialising n×n."""
+    """Build a k-NN graph with Gower-hybrid distances, batches spread across threads."""
     n, d_num = X_num.shape
     d_cat = X_cat.shape[1] if X_cat is not None else 0
     effective_k = min(k, n - 1)
-
-    if metric == "cosine":
-        X_num_norm = l2_normalize(X_num)
-
-        def batch_dists(start: int, end: int) -> np.ndarray:
-            q_cat = X_cat[start:end] if X_cat is not None else None
-            return hybrid_row_batch(
-                X_num_norm, X_cat, X_num_norm[start:end], q_cat, d_num, d_cat
-            )
-
-    else:
-        feat_ranges = X_num.max(axis=0) - X_num.min(axis=0)
-
-        def batch_dists(start: int, end: int) -> np.ndarray:
-            q_cat = X_cat[start:end] if X_cat is not None else None
-            return hybrid_row_batch_euclidean(
-                X_num, X_cat, X_num[start:end], q_cat, d_num, d_cat, feat_ranges
-            )
+    X_ref = _scale_for_metric(X_num, metric)
 
     indices = np.empty((n, effective_k), dtype=np.int64)
     distances = np.empty((n, effective_k), dtype=np.float64)
-    for start in tqdm(
-        range(0, n, batch_size), desc="k-NN graph", unit="batch", leave=False
-    ):
+
+    def fill_batch(start: int) -> None:
         end = min(start + batch_size, n)
-        dists = batch_dists(start, end)
+        q_cat = X_cat[start:end] if X_cat is not None else None
+        dists = hybrid_row_batch(
+            X_ref, X_cat, X_ref[start:end], q_cat, d_num, d_cat, metric=metric
+        )
         batch_idx = np.arange(end - start)
         dists[batch_idx, start + batch_idx] = np.inf
 
@@ -121,6 +115,27 @@ def build_knn_graph(
         order = np.argsort(part_d, axis=1)
         indices[start:end] = np.take_along_axis(part, order, axis=1)
         distances[start:end] = np.take_along_axis(part_d, order, axis=1)
+
+    starts = list(range(0, n, batch_size))
+    # cdist and argpartition release the GIL, so threads overlap real work; each
+    # fills its own slice of `indices`/`distances`, with nothing to lock between them.
+    with ThreadPoolExecutor(max_workers=_thread_budget()) as pool:
+        futures = [pool.submit(fill_batch, start) for start in starts]
+        try:
+            for future in tqdm(
+                as_completed(futures),
+                total=len(futures),
+                desc="k-NN graph",
+                unit="batch",
+                leave=False,
+            ):
+                future.result()
+        except BaseException:
+            # Batches not yet started can still be dropped; ones already running finish
+            # regardless, since they only write to their own slice.
+            for pending in futures:
+                pending.cancel()
+            raise
 
     return indices, distances
 
@@ -171,21 +186,11 @@ def _bridge_disconnected(
 
     mat = mat.tolil()
     ref = int(np.where(comp_labels == 0)[0][0])
-
-    if metric == "cosine":
-        X_num_norm = l2_normalize(X_num)
-        q_num_prep = X_num_norm[ref : ref + 1]
-        q_cat = X_cat[ref : ref + 1] if X_cat is not None else None
-        dists_row = hybrid_row_batch(
-            X_num_norm, X_cat, q_num_prep, q_cat, d_num, d_cat
-        )[0]
-    else:
-        feat_ranges = X_num.max(axis=0) - X_num.min(axis=0)
-        q_num = X_num[ref : ref + 1]
-        q_cat = X_cat[ref : ref + 1] if X_cat is not None else None
-        dists_row = hybrid_row_batch_euclidean(
-            X_num, X_cat, q_num, q_cat, d_num, d_cat, feat_ranges
-        )[0]
+    X_ref = _scale_for_metric(X_num, metric)
+    q_cat = X_cat[ref : ref + 1] if X_cat is not None else None
+    dists_row = hybrid_row_batch(
+        X_ref, X_cat, X_ref[ref : ref + 1], q_cat, d_num, d_cat, metric=metric
+    )[0]
 
     for ci in range(1, n_comp):
         nodes_ci = np.where(comp_labels == ci)[0]

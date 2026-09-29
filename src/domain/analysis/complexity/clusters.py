@@ -57,9 +57,12 @@ def _dispersion(
     return float(np.max(dists)), float(np.percentile(dists, 95))
 
 
-def _nearest_other(pw_row: np.ndarray) -> float | None:
-    """Distance to the closest other centroid."""
-    finite = pw_row[np.isfinite(pw_row)]
+def _nearest_rival(
+    pw_row: np.ndarray, own_class: int, cluster_classes: np.ndarray
+) -> float | None:
+    """Distance to the closest centroid of a different class."""
+    rival = pw_row[cluster_classes != own_class]
+    finite = rival[np.isfinite(rival)]
     if finite.size == 0:
         return None
     return float(np.min(finite))
@@ -75,12 +78,14 @@ def compute_cluster_geometry(
     silhouette_max_samples: int,
     silhouette_min_per_cluster: int,
     random_state: int,
+    cluster_to_class: dict[str, int],
 ) -> dict[str, dict[str, float | None]]:
-    """Per-cluster geometry: dispersion, centroid separation and silhouette tail."""
+    """Per-cluster geometry: dispersion, rival separation and silhouette tail."""
     cluster_ids = [str(cid) for cid in np.unique(y_cluster)]
     centroid_matrix = np.stack(
         [np.asarray(centroids[cid], dtype=np.float64) for cid in cluster_ids]
     )
+    cluster_classes = np.array([cluster_to_class[cid] for cid in cluster_ids])
 
     pw = pairwise_distances(centroid_matrix, metric=metric)
     np.fill_diagonal(pw, np.inf)
@@ -101,7 +106,7 @@ def compute_cluster_geometry(
         max_disp, p95_disp = _dispersion(
             X_num[mask_cid], centroid_matrix[idx_c], metric=metric
         )
-        dist_nearest = _nearest_other(pw[idx_c])
+        dist_rival = _nearest_rival(pw[idx_c], cluster_classes[idx_c], cluster_classes)
 
         if sil is None:
             p5_sil, frac_at_risk = None, None
@@ -117,7 +122,7 @@ def compute_cluster_geometry(
         result[cid] = {
             "max_dispersion": max_disp,
             "p95_dispersion": p95_disp,
-            "dist_to_nearest_centroid": dist_nearest,
+            "dist_to_nearest_rival": dist_rival,
             "p5_silhouette": p5_sil,
             "frac_at_risk": frac_at_risk,
         }

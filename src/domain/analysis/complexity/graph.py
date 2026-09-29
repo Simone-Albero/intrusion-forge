@@ -239,6 +239,7 @@ def compute_complexity_from_graph(
             silhouette_max_samples=silhouette_max_samples,
             silhouette_min_per_cluster=silhouette_min_per_cluster,
             random_state=random_state,
+            cluster_to_class=cluster_to_class,
         )
         pbar.update(1)
 
