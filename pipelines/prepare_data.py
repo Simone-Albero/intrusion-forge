@@ -230,11 +230,9 @@ def _cluster_splits(
     all_classes = sorted(train_df[label_col].unique().tolist())
 
     # How many rows classify's evaluation will measure each region on, per train row it
-    # holds: k-fold evaluates train+test out-of-fold, a single split only the test rows.
+    # holds: only the test rows are ever evaluated.
     n_train, n_test = len(train_df), len(test_df)
-    eval_rows_per_train_row = (
-        (n_train + n_test) / n_train if cfg.kfold else n_test / n_train
-    )
+    eval_rows_per_train_row = n_test / n_train
     if eval_rows_per_train_row <= 0:
         raise ValueError(
             f"eval_rows_per_train_row={eval_rows_per_train_row}: classify would "
@@ -372,11 +370,10 @@ def _fingerprint(cfg) -> dict:
     """The config the splits and regions are built from."""
     return {
         # Bumped when the code changes what a config builds: older records never match.
-        "schema": 6,
+        "schema": 7,
         "data": to_container(cfg.data),
         "clustering": to_container(cfg.clustering),
         "seed": cfg.seed,
-        "kfold": cfg.kfold,
         # The per-class region budget is derived from the complexity sample cap.
         "complexity": {
             key: cfg.complexity[key]

@@ -5,7 +5,7 @@ import pandas as pd
 from sklearn import set_config
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.compose import ColumnTransformer
-from sklearn.model_selection import StratifiedKFold, train_test_split
+from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import LabelEncoder
 
@@ -60,19 +60,6 @@ def random_undersample_df(
     """Undersample to balance classes."""
     min_count = df[label_col].value_counts().min()
     return _stratified_sample(df, label_col, min_count, random_state=random_state)
-
-
-def oof_splits(df: pd.DataFrame, label_col: str, k: int, *, random_state: int) -> list:
-    """Deterministic stratified OOF folds over `df`; K capped to the rarest class."""
-    y = df[label_col].to_numpy()
-    k = min(k, int(np.unique(y, return_counts=True)[1].min()))
-    if k < 2:
-        raise ValueError(f"k-fold OOF needs >=2 samples per class, got k={k}.")
-    return list(
-        StratifiedKFold(n_splits=k, shuffle=True, random_state=random_state).split(
-            df, y
-        )
-    )
 
 
 def ml_split(

@@ -47,9 +47,9 @@ cat_cols:
 
 benign_tag: Benign
 
-train_frac: 0.8
-val_frac: 0.1
-test_frac: 0.1
+train_frac: 0.4
+val_frac: 0.05    # DL early stopping only; every failure rate is measured on test
+test_frac: 0.55
 
 filter_query: null
 min_cat_count: 5000

@@ -47,8 +47,8 @@ def _projection_selection(
         keep_classes = [int(c) for c in classes]
 
     prob_pos = np.flatnonzero(np.isin(y_true, keep_classes))
-    # Fixed seed so "raw" and "latent" draw the same rows on a single split, where
-    # y_true/y_pred are identical.
+    # Fixed seed so "raw" and "latent" draw the same rows: y_true/y_pred are identical
+    # for both, being the same model's predictions on the same test rows.
     sub = stratified_subsample(
         y_true[prob_pos], n_samples=_TSNE_SAMPLES, random_state=42
     )
@@ -118,23 +118,20 @@ def build_test_figures(
 
 
 def latent_figures(
-    folds: list[tuple[str, np.ndarray, np.ndarray | None]],
+    embedding: np.ndarray | None,
     *,
     y_true: np.ndarray,
     y_pred: np.ndarray,
     class_names: dict[int, str],
 ) -> dict[str, Plot]:
-    """One t-SNE latent scatter per fold, keyed `{prefix}latent`."""
-    figures: dict[str, Plot] = {}
-    # K models give K unaligned latent spaces, so each keeps its own figure.
-    for prefix, eval_idx, embedding in folds:
-        if embedding is None:
-            continue
-        y_true_fold = y_true[eval_idx]
-        y_pred_fold = y_pred[eval_idx]
-        vis_idx, names = _projection_selection(y_true_fold, y_pred_fold, class_names)
-        if vis_idx is not None:
-            figures[f"{prefix}latent"] = _scatter_projection(
-                embedding[vis_idx], y_true_fold[vis_idx], y_pred_fold[vis_idx], names
-            )
-    return figures
+    """t-SNE scatter of the latent space, keyed `latent`; empty for ML models."""
+    if embedding is None:
+        return {}
+    vis_idx, names = _projection_selection(y_true, y_pred, class_names)
+    if vis_idx is None:
+        return {}
+    return {
+        "latent": _scatter_projection(
+            embedding[vis_idx], y_true[vis_idx], y_pred[vis_idx], names
+        )
+    }

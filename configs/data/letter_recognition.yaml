@@ -25,9 +25,9 @@ num_cols:
 
 cat_cols: []
 
-train_frac: 0.8
-val_frac: 0.1
-test_frac: 0.1
+train_frac: 0.4
+val_frac: 0.05    # DL early stopping only; every failure rate is measured on test
+test_frac: 0.55
 
 # All 26 classes have 734–813 instances
 min_cat_count: 100

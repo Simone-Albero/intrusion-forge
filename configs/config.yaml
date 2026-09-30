@@ -5,7 +5,7 @@ defaults:
   - loss: focal             # consumed only by DL classifiers
   - optimizer: adamw        # consumed only by DL classifiers
   - scheduler: one_cycle    # consumed only by DL classifiers
-  - fit: default            # how the classifier is trained and evaluated
+  - fit: default            # how the classifier is trained: balancing, epochs, early stopping
   - complexity: default
   - failure_regressor: random_forest
   - grid_search: default
@@ -15,8 +15,7 @@ defaults:
 seed: 42
 name: exp_euc
 distance: euclidean                  # euclidean | cosine — metric for clustering and complexity analysis
-kfold: true                          # true: k-fold out-of-fold over train+test; false: one model evaluated on test — prepare sizes regions for it, classify must match
-force: false                         # recompute every cached stage: prepare, complexity and classify's models
+force: false                         # recompute every cached stage: prepare, complexity and classify's model
 figure_format: pdf                   # figure file format: pdf (vector, lighter) | png
 
 hydra:

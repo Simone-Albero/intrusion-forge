@@ -6,7 +6,7 @@ It divides a dataset into regions, describes each region by how it sits relative
 
 The estimate belongs to the model you point it at. It is fitted on that model's own errors, so it describes how *that* classifier copes with the shape of your data rather than how difficult the data is in the abstract. This makes it useful for identifying unreliable regions before you have the labels to prove they are unreliable, for deciding where to gather more data or review labels, and for monitoring a model after deployment.
 
-Everything is tabular and everything is driven by configuration: a dozen classifiers (scikit-learn, XGBoost, PyTorch), four ways of dividing the data into regions, configurations for the public network-security datasets, and a synthetic dataset that exercises the whole pipeline in about nineteen minutes.
+Everything is tabular and everything is driven by configuration: a dozen classifiers (scikit-learn, XGBoost, PyTorch), four ways of dividing the data into regions, configurations for the public network-security datasets, and a synthetic dataset that exercises the whole pipeline in about five minutes.
 
 ## Quickstart — the synthetic demo
 
@@ -44,25 +44,24 @@ One command, five stages:
 
 | Stage | What it does | Time |
 |---|---|---|
-| prepare | preprocess, split, divide each class into regions (1108 of them here) | 10 s |
-| complexity | describe every region | ~30 s |
-| classify | train and evaluate the Random Forest, 5-fold out-of-fold | ~17 min |
-| failure-regress | fit the region → error-rate estimator | ~100 s |
+| prepare | preprocess, split, divide each class into regions (718 of them here) | 5 s |
+| complexity | describe every region | ~15 s |
+| classify | train the Random Forest on the training split, evaluate it on the test split | ~3 min |
+| failure-regress | fit the region → error-rate estimator | ~70 s |
 | render | 26 figures | 5 s |
 
-`classify` dominates: each fold re-runs the classifier's hyperparameter search on its own held-out-safe
-training slice, which is the point of doing it that way (see [below](#pipeline-reference)) but is not
-quick.
+Nearly all of `classify` goes on training the Random Forest: its hyperparameter search
+cross-validates every candidate of its grid on the training split before refitting the winner.
 
 The result appears at the end of `failure-regress`:
 
 ```
-Failure regressor results — Spearman: 0.9100, R²: 0.8669, MAE: 0.0309, MSE: 0.0023
+Failure regressor results — Spearman: 0.8319, R²: 0.7912, MAE: 0.0382, MSE: 0.0033
 ```
 
-**Spearman ρ ≈ 0.91.** The estimated and observed error rates put the 1108 regions in much the same order, measured on regions held back from the fitting. Expect a little drift in the third decimal between runs.
+**Spearman ρ ≈ 0.83.** The estimated and observed error rates put the 718 regions in much the same order, measured on regions held back from the fitting. Expect a little drift in the third decimal between runs.
 
-`instance_baselines.json` is a check on that signal rather than the purpose of the framework: it compares the regressor's per-sample ranking against confidence-based baselines (MCP, ATC, and rank-averaged combinations of each with the regressor) using *oracle benefit recovered* — the share of a perfect oracle's accuracy gain that abstaining on the riskiest samples actually captures. The regressor recovers about 32% here, a little more than MCP and ATC averaged over each region (about 29% and 30%): at the same granularity, one score per region, an estimate built from the data's geometry ranks this model's errors slightly better than the model's own confidence does. Rank-averaged with each sample's own MCP it recovers the most of the five, about 40%, as the only variant that tells apart the samples within a region.
+`instance_baselines.json` is a check on that signal rather than the purpose of the framework: it compares the regressor's per-sample ranking against confidence-based baselines (MCP, ATC, and rank-averaged combinations of each with the regressor) using *oracle benefit recovered* — the share of a perfect oracle's accuracy gain that abstaining on the riskiest samples actually captures. The regressor recovers about 20% here, a little more than MCP and ATC averaged over each region (about 17% and 19%): at the same granularity, one score per region, an estimate built from the data's geometry ranks this model's errors slightly better than the model's own confidence does. Rank-averaged with each sample's own MCP it recovers the most of the five, about 35%, as the only variant that tells apart the samples within a region.
 
 ### 4. Read the results
 
@@ -81,16 +80,16 @@ random_forest/
 │   ├── failure_regressor_results.json #  ρ, R², MAE, MSE, importances, best parameters per fold
 │   ├── instance_baselines.json       #   ρ and oracle-benefit recovered, regressor vs confidence baselines
 │   └── predictions/                  #   per-sample predictions
-├── models/fold_0 … fold_4/           # one model per fold (~1 GB total)
+├── models/model.joblib               # the trained Random Forest
 └── figures/                          # 26 PDFs
 ```
 
-The fold models account for all but ~25 MB of the ~1 GB the run occupies; delete `models/` once you have the metrics.
+Only a re-run of `classify` reads `models/`, to skip retraining; delete it once you have the metrics.
 
 ### Variations worth trying
 
 ```bash
-# a deep-learning classifier (much slower: 12-15 min in the classify stage alone)
+# a deep-learning classifier
 make run DATA=synthetic_test NAME=demo_dl CLASSIFIER=mlp CLUSTERING=kmeans
 
 # cosine instead of euclidean
@@ -100,9 +99,9 @@ make run DATA=synthetic_test NAME=demo_cos CLASSIFIER=random_forest CLUSTERING=k
 make run DATA=synthetic_test NAME=demo_birch CLASSIFIER=random_forest CLUSTERING=birch
 ```
 
-`prepare` and `complexity` are cached per `(NAME, dataset, seed)`, so changing classifier reuses them. Each recomputes by itself, naming what changed, when a setting it depends on changes or its input does: the raw CSV for `prepare`, judged by size and modification time (without the file, `prepare` checks its settings alone and stops with an error if they changed; a tree holding no record of them, or one whose record comes from code that built its splits or regions differently, is recomputed once, so it needs the file too); the training split and its regions for `complexity`, so re-clustering recomputes the descriptors as well. `classify` is cached too: re-running it under the same `NAME` reuses the models already on disk when they were trained on the same data under the same settings, and retrains by itself — naming the top-level key that differs — when they were not. Every setting counts except the device, the parallelism, the figure format and those only the other stages read, so even one the classifier ignores retrains it: changing the loss, which only deep classifiers use, retrains a Random Forest as well. The classifier depends on neither the clustering nor the descriptors, so re-deriving results after changing those costs an evaluation rather than a retrain. `failure-regress` refuses to run unless `complexity` and `classify` last ran on the splits and regions `prepare` holds now, down to a re-drawn validation or test split, and names what to re-run. `FORCE=1` recomputes everything.
+`prepare` and `complexity` are cached per `(NAME, dataset, seed)`, so changing classifier reuses them. Each recomputes by itself, naming what changed, when a setting it depends on changes or its input does: the raw CSV for `prepare`, judged by size and modification time (without the file, `prepare` checks its settings alone and stops with an error if they changed; a tree holding no record of them, or one whose record comes from code that built its splits or regions differently, is recomputed once, so it needs the file too); the training split and its regions for `complexity`, so re-clustering recomputes the descriptors as well. `classify` is cached too: re-running it under the same `NAME` reuses the model already on disk when it was trained on the same data under the same settings, and retrains by itself — naming the top-level key that differs — when it was not. It stops with an error, naming the key, when a `data` setting differs from the one `prepare` last ran with, since the splits and regions on disk were built for that one. Every setting counts except the device, the parallelism, the figure format and those only the other stages read, so even one the classifier ignores retrains it: changing the loss, which only deep classifiers use, retrains a Random Forest as well. The classifier depends on neither the clustering nor the descriptors, so re-deriving results after changing those costs an evaluation rather than a retrain. `failure-regress` refuses to run unless `complexity` and `classify` last ran on the splits and regions `prepare` holds now, down to a re-drawn validation or test split, and names what to re-run. `FORCE=1` recomputes everything.
 
-How the data is divided into regions matters more than which classifier you use. `kmeans` and `birch` both find about a thousand regions here; `hdbscan` finds far fewer, because this dataset's difficulty gradient is continuous rather than broken by real gaps and density-based clustering merges most of it into a few regions. Count-based algorithms suit data of this kind, density-based ones suit data with genuine separation.
+How the data is divided into regions matters more than which classifier you use. `kmeans` and `birch` find several hundred regions here (718 and 647); `hdbscan` finds only 42, because this dataset's difficulty gradient is continuous rather than broken by real gaps and density-based clustering merges most of it into a few regions. Count-based algorithms suit data of this kind, density-based ones suit data with genuine separation.
 
 ### Inside the synthetic dataset
 
@@ -132,21 +131,22 @@ To add a dataset of your own:
 3. Add it to `DATASETS` in the [Makefile](Makefile).
 4. Run `make run DATA=<name> NAME=my_exp CLASSIFIER=random_forest CLUSTERING=kmeans`.
 
-On datasets of millions of rows, out-of-fold evaluation is disabled automatically (`LARGE_DATASETS` in the Makefile), since one model per fold would otherwise take hours.
+Every configuration shipped here splits the data 40 % training, 5 % validation and 55 % test (`train_frac`, `val_frac`, `test_frac`). The test split is kept large because it is the only one every error rate is measured on; the validation split serves only deep classifiers, which stop early and keep their best epoch by its loss.
 
 ## How it works
 
 Three steps, together with the classifier whose errors they are fitted on. The method assumes nothing about the classifier, the clustering algorithm or the number of classes; it requires only tabular features.
 
-1. **Identify regions.** Divide each class into compact sub-regions, using the training data alone. The number per class is the finest candidate of a grid whose region error rates would stay measurable: each sample's local hardness, the share of its nearest neighbours that belong to another class, predicts how far the regions' error rates will genuinely differ, and the number of samples the classifier's evaluation will measure each region on, far larger under out-of-fold evaluation than on a single test split, predicts how much sampling noise will blur them. When no candidate reaches the reliability target, the most reliable one is kept. A region below a minimum size, and any point the algorithm leaves as noise, merges into the nearest surviving region of the same class, so no training sample is left out of the descriptors.
+1. **Identify regions.** Divide each class into compact sub-regions, using the training data alone. The number per class is the finest candidate of a grid whose region error rates would stay measurable: each sample's local hardness, the share of its nearest neighbours that belong to another class, predicts how far the regions' error rates will genuinely differ, and the number of test samples the classifier's evaluation will measure each region on predicts how much sampling noise will blur them. When no candidate reaches the reliability target, the most reliable one is kept. A region below a minimum size, and any point the algorithm leaves as noise, merges into the nearest surviving region of the same class, so no training sample is left out of the descriptors.
 2. **Describe each region.** Score how separable it is from the rival regions nearest to it, and do the same at class level. These descriptors are drawn from the data alone; nothing about the classifier enters here.
 3. **Learn the mapping.** A Random Forest regresses each region's observed error rate on its descriptors under nested cross-validation, reporting the correlation together with the descriptors that mattered. The choice of a tree-based estimator is deliberate: every risk estimate arrives with the properties that produced it.
 
 The classifier is trained separately and contributes exactly one thing to step 3, namely the error rate it achieved in each region. That is what ties the mapping to the model rather than to the dataset.
 
-Two points worth knowing:
+Three points worth knowing:
 
-- Regions are built from the training split alone, each inside one class. Every sample the classifier is evaluated on, the training ones included under out-of-fold evaluation, is then routed to the region whose centre lies nearest **without reference to its label**, exactly as a sample would be routed at inference time, and a region's error rate counts the mistakes on the samples routed to it, whatever their class. Assigned by label instead, a region would hold only its own class and count only that class's mistakes. Routing is what keeps the correlation a genuine prediction rather than a restatement of labels already known.
+- Regions are built from the training split alone, each inside one class. Every test sample is then routed to the region whose centre lies nearest **without reference to its label**, exactly as a sample would be routed at inference time, and a region's error rate counts the classifier's mistakes on the test samples routed to it, whatever their class. Assigned by label instead, a region would hold only its own class and count only that class's mistakes. Routing is what keeps the correlation a genuine prediction rather than a restatement of labels already known.
+- Error rates are counted on the test split alone. The training samples placed the region centres with their labels known, so even routed without the label they fall back into their own class's region more often than new data would, and counting them would flatter the regions. The classifier, the regions and the descriptors all come from the training split; no test sample shapes any of them.
 - The analysis works chiefly per region rather than per class, since one class usually occupies several separate areas of the space. Class-level figures are kept as a coarse reference.
 
 ### What the descriptors measure
@@ -161,7 +161,7 @@ Five families. The neighbourhood and network families read one shared nearest-ne
 | **T** — dimensionality | `t2`–`t4` | how many features there are relative to samples, and how many of them matter |
 | **G** — geometry | `max_dispersion`, `p95_dispersion`, `dist_to_nearest_rival`, `p5_silhouette`, `frac_at_risk` | how widely the region is spread, and how close the nearest rival lies |
 
-In the demo the estimator relies most on `cluster_f1_max`, `cluster_f3_max` and `cluster_f3_mean`.
+In the demo the estimator relies most on `cluster_network_density_max`, `cluster_f1_max` and `cluster_f1_mean`.
 
 ## Pipeline reference
 
@@ -178,9 +178,9 @@ Each stage is a script under [pipelines/](pipelines/), wrapped by the [Makefile]
 | `make comparisons` | `comparisons.py` | reduces a whole sweep to cross-run figures and tables |
 | `make help` | — | every target, with defaults |
 
-**prepare** produces the splits and the regions. It removes NaNs, drops the classes with fewer rows than `data.min_cat_count`, log-scales and robust-scales the numerical columns, hashes high-cardinality categorical ones, splits the data stratified, then clusters each class of the training split and gives every sample two region ids: `routed_cluster`, the region whose centre lies nearest, found without the label, and `cluster`, which for a training sample is the region the clustering of its class drew it into and elsewhere equals `routed_cluster`. The descriptors are computed on the training split's `cluster`. How finely each class is divided depends on `kfold`, which decides how many samples each region's error rate will be counted over, so `classify` stops with an error under a `kfold` other than the one `prepare` ran with; `make` passes the same value to both. The saved splits hold only the columns named in `data.num_cols` and `data.cat_cols`, the label and the region ids, and retain the original class balance; balancing takes place at training time.
+**prepare** produces the splits and the regions. It removes NaNs, drops the classes with fewer rows than `data.min_cat_count`, log-scales and robust-scales the numerical columns, hashes high-cardinality categorical ones, splits the data stratified, then clusters each class of the training split and gives every sample two region ids: `routed_cluster`, the region whose centre lies nearest, found without the label, and `cluster`, which for a training sample is the region the clustering of its class drew it into and elsewhere equals `routed_cluster`. The descriptors are computed on the training split's `cluster`. How finely each class is divided depends on how many test samples each region's error rate will be counted over, which `prepare` estimates from the ratio of test to training rows (`eval_rows_per_train_row` in `shared/metadata/clustering_report.json`). The saved splits hold only the columns named in `data.num_cols` and `data.cat_cols`, the label and the region ids, and retain the original class balance; balancing takes place at training time.
 
-**classify** trains one classifier and records its per-class metrics and per-sample predictions. `fit.balance=undersample`, the default, undersamples the training split; `fit.balance=none` leaves it intact, and a deep classifier then weights its loss by the original class frequencies instead. The two are alternatives — applying both would correct the same imbalance twice. Setting `fit.n_samples` also caps every class at the same size, so it takes the place of either. Evaluation is by default out-of-fold across train and test together: one model per fold, with both the metrics and the per-region error rates taken from predictions no model saw while training. Every per-region error rate is counted over `routed_cluster`.
+**classify** trains one classifier and records its per-class metrics and per-sample predictions. `fit.balance=undersample`, the default, undersamples the training split; `fit.balance=none` leaves it intact, and a deep classifier then weights its loss by the original class frequencies instead. The two are alternatives — applying both would correct the same imbalance twice. Setting `fit.n_samples` also caps every class at the same size, so it takes the place of either. One model is trained on the training split — a classical classifier's hyperparameters chosen by a grid search cross-validated there (`grid_search.cv` folds), a deep one's epoch by the validation loss — and it predicts the test split: both the metrics and the per-region error rates come from those predictions. Every per-region error rate is counted over the test split's `routed_cluster`.
 
 **failure-regress** assembles the table — a region's descriptors, its class's descriptors and its observed error rate — and fits the estimator over five outer and five inner folds. It also compares the estimate against confidence-based baselines (MCP, ATC, and rank-averaged combinations of the two with the regressor).
 
@@ -203,10 +203,10 @@ The root configuration is [configs/config.yaml](configs/config.yaml); it and eve
 
 ```bash
 make classify DATA=bot_iot_v2 NAME=my_exp SEED=123 CLASSIFIER=random_forest ARGS="fit.n_samples=10000 grid_search.max_samples=5000"
-PYTHONPATH=. python pipelines/classify.py data=bot_iot_v2 name=my_exp seed=123 classifier=random_forest kfold=false fit.n_samples=10000 grid_search.max_samples=5000
+PYTHONPATH=. python pipelines/classify.py data=bot_iot_v2 name=my_exp seed=123 classifier=random_forest fit.n_samples=10000 grid_search.max_samples=5000
 ```
 
-`make` turns `DATA`, `NAME`, `SEED`, `CLASSIFIER`, `CLUSTERING` and `DISTANCE` into their Hydra keys and gives every stage `kfold` too: `false` for the datasets in `LARGE_DATASETS`, `true` otherwise, or whatever `KFOLD` says. `ARGS` comes last on every stage, so its overrides win, `kfold` and `force` included. The six keys that have a variable of their own are refused there, while nested keys such as `data.label_col` are fine. A variable the Makefile does not recognise stops it with an error, so a mistyped override is never silently ignored.
+`make` turns `DATA`, `NAME`, `SEED`, `CLASSIFIER`, `CLUSTERING` and `DISTANCE` into their Hydra keys. `ARGS` comes last on every stage, so its overrides win, `force` included. The six keys that have a variable of their own are refused there, while nested keys such as `data.label_col` are fine. A variable the Makefile does not recognise stops it with an error, so a mistyped override is never silently ignored.
 
 A shell reads `ARGS` before Hydra does, so single-quote an override whose value holds spaces or braces, as in `ARGS="'failure_regressor.param_grid.n_estimators=[100, 300]'"`. Pass a `${…}` interpolation by calling the script directly: make and the shell would both expand it first.
 
@@ -217,7 +217,7 @@ A shell reads `ARGS` before Hydra does, so single-quote an override whose value 
 | `clustering` | `kmeans`, `hdbscan`, `birch`, `spectral` |
 | `complexity` | `default` — descriptor graph parameters (`k`, cluster sample caps, silhouette subsample size and its per-cluster floor) |
 | `failure_regressor` | `random_forest` — nested-CV folds, hyperparameter grid and the draws sampled from it (`n_iter`) |
-| `fit` | `default` — how the classifier is trained and evaluated: training-split balancing (`balance`, `n_samples`), the out-of-fold fold count (`kfold_splits`; whether to evaluate out-of-fold at all is the top-level `kfold`) and, for deep classifiers, `device`, epochs, gradient clipping, early stopping and data loaders |
+| `fit` | `default` — how the classifier is trained: training-split balancing (`balance`, `n_samples`) and, for deep classifiers, `device`, epochs, gradient clipping, early stopping and data loaders |
 | `grid_search` | `default` — scoring, CV folds and sample cap for classifier tuning |
 | `loss` / `optimizer` / `scheduler` | deep learning only: `cross_entropy` \| `focal` / `adamw` / `one_cycle` |
 | `path` | `default` |

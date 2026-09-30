@@ -38,7 +38,7 @@ def main() -> None:
             raise FileNotFoundError(f"Missing {record}: run `make {stage}` first.")
     complexity_path = paths.shared / "complexity.json"
     class_complexity_path = paths.shared / "class_complexity.json"
-    dump_path = paths.outputs / "analysis/predictions/oof_samples.parquet"
+    dump_path = paths.outputs / "analysis/predictions/eval_samples.parquet"
     if not dump_path.exists():
         raise FileNotFoundError(f"Missing {dump_path}: re-run `make classify`.")
     complexity = load_from_json(complexity_path)

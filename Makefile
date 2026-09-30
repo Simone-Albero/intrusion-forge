@@ -23,14 +23,9 @@
 #   CLUSTERING=<name>     fix the clustering strategy (kmeans/hdbscan/birch/spectral);
 #                         omit it in `run` to sweep all of CLUSTERING_ALGOS into NAME_<algo>
 #   ARGS="k=v ..."        extra Hydra overrides, passed last to every stage, so they win
-#                         (e.g. ARGS="fit.n_samples=10000 kfold=false"); data, name, seed,
-#                         classifier, clustering and distance keep their own variables, and
-#                         any other variable on the make line is an error
-#
-# k-fold note: k-fold evaluation (kfold=true) is disabled automatically for LARGE_DATASETS
-#   (nb15_v2, bot_iot_v2, cic_2018_v2, ton_iot_v2) because millions of rows make it impractical.
-#   prepare sizes the regions for it, so classify refuses a KFOLD that disagrees with the
-#   tree's last prepare: override both, e.g. make prepare classify DATA=cic_2018_v2 ... KFOLD=true
+#                         (e.g. ARGS="fit.n_samples=10000 grid_search.max_samples=5000");
+#                         data, name, seed, classifier, clustering and distance keep their
+#                         own variables, and any other variable on the make line is an error
 # ──────────────────────────────────────────────────────────────────────────────
 
 # Use venv if present; falls back to the active conda (or system) python otherwise.
@@ -48,16 +43,16 @@ FORCE      ?=
 ARGS       :=
 
 # A variable make does not know is a Hydra override typed in the wrong place: stop, don't drop it.
-MAKE_VARS    := DATA NAME SEED CLASSIFIER DISTANCE CLUSTERING CLUSTERING_ALGOS FORCE KFOLD ARGS \
-                DATASETS ML_CLASSIFIERS DL_CLASSIFIERS LARGE_DATASETS \
+MAKE_VARS    := DATA NAME SEED CLASSIFIER DISTANCE CLUSTERING CLUSTERING_ALGOS FORCE ARGS \
+                DATASETS ML_CLASSIFIERS DL_CLASSIFIERS \
                 PYTHON SWEEP_DIR FIGURES_DIR ROWS
 UNKNOWN_VARS := $(filter-out $(MAKE_VARS),$(foreach v,$(.VARIABLES),$(if $(filter command line,$(origin $(v))),$(v))))
 ifneq ($(UNKNOWN_VARS),)
 $(error Unknown make variable(s): $(UNKNOWN_VARS). Hydra overrides go through ARGS="key=value ...")
 endif
 
-# ARGS may override kfold and force, but not the keys make itself decides from — the k-fold
-# default per dataset, the NAME_<algo> directories of `run`: those have their own variables.
+# ARGS may override force, but not the keys make itself decides from — the NAME_<algo>
+# directories of `run`: those have their own variables.
 ARGS_CLASH := $(filter $(foreach k,data name seed classifier clustering distance,$(k)=% ++$(k)=%),$(ARGS))
 ifneq ($(ARGS_CLASH),)
 $(error ARGS cannot set $(ARGS_CLASH): use DATA, NAME, SEED, CLASSIFIER, CLUSTERING or DISTANCE)
@@ -93,17 +88,11 @@ DATASETS := \
     bot_iot_v2 \
     synthetic_test
 
-# Datasets too large for k-fold evaluation (millions of rows → hours per classifier).
-# kfold=false is injected automatically for these; override with KFOLD=true on every
-# stage that runs, prepare included, since classify refuses a KFOLD prepare didn't use.
-LARGE_DATASETS := nb15_v2 bot_iot_v2 cic_2018_v2 ton_iot_v2
-
-KFOLD       ?= $(if $(filter $(DATA),$(LARGE_DATASETS)),false,true)
 # Every stage gets $(HYDRA) and saves its resolved config as config_composed_<stage>.json;
 # FORCE_FLAG reaches only the cached stages.
 # Recipes put $(ARGS) last, so an explicit override wins.
 HYDRA       := data=$(DATA) name=$(NAME) seed=$(SEED) classifier=$(CLASSIFIER) \
-               clustering=$(CLUSTERING) distance=$(DISTANCE) kfold=$(KFOLD)
+               clustering=$(CLUSTERING) distance=$(DISTANCE)
 FORCE_FLAG  := $(if $(FORCE),force=true,)
 
 # Cross-run comparisons: aggregate the full experiment tree under SWEEP_DIR into the
@@ -115,11 +104,11 @@ FIGURES_DIR     ?= paper/figures
 
 .PHONY: prepare classify complexity failure-regress render comparisons run generate help
 
-## prepare:            Step 1 — preprocess + cluster raw CSV → parquet splits (DATA, NAME, SEED, CLUSTERING, DISTANCE, KFOLD, FORCE)
+## prepare:            Step 1 — preprocess + cluster raw CSV → parquet splits (DATA, NAME, SEED, CLUSTERING, DISTANCE, FORCE)
 prepare:
 	PYTHONPATH=. $(PYTHON) pipelines/prepare_data.py $(HYDRA) $(FORCE_FLAG) $(ARGS)
 
-## classify:           Step 2 — train & evaluate one classifier (ML or DL)    (DATA, NAME, SEED, CLASSIFIER, KFOLD, FORCE)
+## classify:           Step 2 — train & evaluate one classifier (ML or DL)    (DATA, NAME, SEED, CLASSIFIER, FORCE)
 classify:
 	PYTHONPATH=. $(PYTHON) pipelines/classify.py $(HYDRA) $(FORCE_FLAG) $(ARGS)
 
@@ -211,9 +200,8 @@ help:
 	@echo "DL classifiers: $(DL_CLASSIFIERS)"
 	@echo "Clustering strategies:  kmeans hdbscan birch spectral"
 	@echo ""
-	@echo "Datasets (smallest → largest, kfold auto-disabled for large):"
-	@echo "  small (kfold=true):   statlog_landsat_satellite  thyroid_disease  letter_recognition  bank_marketing  covertype"
-	@echo "  large (kfold=false):  nb15_v2  ton_iot_v2  cic_2018_v2  bot_iot_v2"
+	@echo "Datasets (smallest → largest):"
+	@echo "  statlog_landsat_satellite  thyroid_disease  letter_recognition  bank_marketing  covertype  nb15_v2  ton_iot_v2  cic_2018_v2  bot_iot_v2"
 	@echo ""
 	@echo "Run examples (omitted vars iterate; passed vars are fixed):"
 	@echo "  make run NAME=x                                      # all datasets × all classifiers × all clustering algos"

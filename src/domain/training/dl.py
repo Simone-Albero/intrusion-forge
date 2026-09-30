@@ -164,7 +164,7 @@ class DLTrainer:
         if loss_params.get("class_weight") == "auto":
             loss_params["class_weight"] = self.class_weights
 
-        # Seeded here, so a fold trains the same whatever ran before it: the model's
+        # Seeded here, so a fit trains the same whatever ran before it: the model's
         # initial weights and its dropout are the only draws on the global stream.
         torch.manual_seed(self.seed)
         model = _create_model(name, params, self.device)

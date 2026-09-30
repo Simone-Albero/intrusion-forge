@@ -1,4 +1,3 @@
 scoring: f1_macro
 cv: 5
-nested_cv: 3  # inner cv when the grid search runs inside each k-fold split, which already resamples
 max_samples: 50000
