@@ -8,10 +8,14 @@ from src.core.io import load_df, save_df
 from src.core.log import setup_logger
 from src.core.record import clear_dir, write_record
 from src.core.utils import flush_timing, save_to_json, timed
-from src.domain.analysis.classification import region_failures
+from src.domain.analysis.classification import (
+    empirical_region_rate,
+    region_failures,
+)
 from src.domain.analysis.confidence import atc_threshold
 from src.domain.analysis.failure import is_failure
 from src.domain.analysis.failure_regressor import (
+    error_by_region_size,
     fit_failure_regressor,
     instance_baselines,
     join_region_summary,
@@ -28,7 +32,10 @@ setup_logger()
 logger = logging.getLogger(__name__)
 
 # Bumped when the code changes what a config builds: older records never match.
-SCHEMA = 2
+SCHEMA = 3
+
+# Bins of region size the error is reported over.
+SIZE_BINS = 5
 
 
 def _evaluated_rows(paths, split: str) -> pd.DataFrame:
@@ -50,20 +57,27 @@ def _evaluated_rows(paths, split: str) -> pd.DataFrame:
             "y_true": labels,
             "y_pred": predictions["y_pred"].to_numpy(),
             "mcp_risk": predictions["mcp_risk"].to_numpy(dtype=np.float64),
+            "in_fit": predictions["in_fit"].to_numpy(dtype=bool),
         }
+    )
+
+
+def _failures(rows: pd.DataFrame) -> pd.DataFrame:
+    return region_failures(
+        rows["region"].to_numpy(),
+        rows["y_true"].to_numpy(),
+        rows["y_pred"].to_numpy(),
+        rows["mcp_risk"].to_numpy(),
     )
 
 
 @timed
 def regress(cfg, paths) -> tuple[pd.DataFrame, dict, dict | None]:
     """Fit the failure regressor on the regions' descriptors and failure rates."""
+    train = _evaluated_rows(paths, "train")
     test = _evaluated_rows(paths, "test")
-    failures = region_failures(
-        test["region"].to_numpy(),
-        test["y_true"].to_numpy(),
-        test["y_pred"].to_numpy(),
-        test["mcp_risk"].to_numpy(),
-    )
+    val = _evaluated_rows(paths, "val")
+    failures = _failures(test)
     summary = join_region_summary(
         load_df(paths.of("complexity") / "regions.parquet"),
         load_df(paths.of("complexity") / "classes.parquet"),
@@ -79,7 +93,19 @@ def regress(cfg, paths) -> tuple[pd.DataFrame, dict, dict | None]:
         min_eval_support=fr.min_eval_support,
         random_state=cfg.seed,
     )
+    # Never added to `summary`: the regressor takes every numeric column of it as a feature.
+    fit_failures = _failures(train[train["in_fit"]])
+    val_failures = _failures(val)
+    train_rate = empirical_region_rate(fit_failures, region_class=summary["class_id"])
+    val_rate = empirical_region_rate(val_failures, region_class=summary["class_id"])
     table = summary[["class_id", "n_eval", "failure_rate", "mcp_risk"]].copy()
+    table["n_train"] = (
+        train["region"].value_counts().reindex(table.index).fillna(0).astype(int)
+    )
+    for name, counted in (("fit", fit_failures), ("val", val_failures)):
+        by_region = counted.set_index("region").reindex(table.index)
+        table[f"n_{name}"] = by_region["n_eval"].fillna(0).astype(int)
+        table[f"{name}_failure_rate"] = by_region["failure_rate"]
     table["n_error"] = (
         failures.set_index("region")["n_error"]
         .reindex(table.index)
@@ -88,6 +114,9 @@ def regress(cfg, paths) -> tuple[pd.DataFrame, dict, dict | None]:
     )
     table["predicted_rate"] = predicted_rate.reindex(table.index)
     table["used"] = table.index.isin(predicted_rate.index)
+    scored = predicted_rate.index
+    n_without_fit = int((table.loc[scored, "n_fit"] == 0).sum())
+    n_without_val = int((table.loc[scored, "n_val"] == 0).sum())
     table = table.reset_index()[
         [
             "region",
@@ -96,6 +125,11 @@ def regress(cfg, paths) -> tuple[pd.DataFrame, dict, dict | None]:
             "n_error",
             "failure_rate",
             "mcp_risk",
+            "n_train",
+            "n_fit",
+            "fit_failure_rate",
+            "n_val",
+            "val_failure_rate",
             "predicted_rate",
             "used",
         ]
@@ -105,16 +139,38 @@ def regress(cfg, paths) -> tuple[pd.DataFrame, dict, dict | None]:
         return table, results, None
     # ATC cuts confidence where as many rows fall below as were misjudged: chosen on val,
     # so the test rows it is scored on never pick their own cut.
-    val = _evaluated_rows(paths, "val")
     threshold = atc_threshold(
         1.0 - val["mcp_risk"].to_numpy(),
         ~is_failure(val["y_true"].to_numpy(), val["y_pred"].to_numpy()),
     )
     baselines = {
-        **instance_baselines(test, predicted_rate, atc_threshold=threshold),
+        **instance_baselines(
+            test,
+            predicted_rate,
+            atc_threshold=threshold,
+            train_rate=train_rate,
+            val_rate=val_rate,
+        ),
         "atc_threshold": threshold,
         "n_val": len(val),
+        "n_regions_without_fit": n_without_fit,
+        "n_regions_without_val": n_without_val,
+        "error_by_size": error_by_region_size(
+            summary.loc[scored, "failure_rate"],
+            {
+                "region": predicted_rate,
+                "train_rate_region": train_rate.loc[scored],
+                "val_rate_region": val_rate.loc[scored],
+            },
+            size=table.set_index("region")["n_train"],
+            n_eval=summary.loc[scored, "n_eval"],
+            n_bins=SIZE_BINS,
+        ),
     }
+    if not baselines["error_by_size"]:
+        logger.warning(
+            "Fewer than %d scored regions: no error-by-size table.", SIZE_BINS
+        )
     logger.info(
         "Instance-level baselines (%d rows in %d scored regions).",
         baselines["n_eval"],

@@ -35,11 +35,9 @@ def _stratified_sample(
     *,
     random_state: int,
 ) -> pd.DataFrame:
-    """Sample up to `per_group` rows from every label group."""
-    return (
-        df.groupby(df[label_col].values, group_keys=False)
-        .apply(lambda g: g.sample(n=min(len(g), per_group), random_state=random_state))
-        .reset_index(drop=True)
+    """Sample up to `per_group` rows from every label group, keeping their index."""
+    return df.groupby(df[label_col].values, group_keys=False).apply(
+        lambda g: g.sample(n=min(len(g), per_group), random_state=random_state)
     )
 
 

@@ -11,8 +11,14 @@ from src.core.utils import flush_timing, load_from_json, timed
 from src.domain.analysis.failure_regressor import join_region_summary
 from src.domain.plot.analysis_charts import dual_scatter_plot, strip_count_panel_plot
 from src.domain.plot.base import Plot, set_figure_format
+from src.domain.plot.comparison_charts import grouped_bar_plot
 from src.domain.plot.primitives import bar_plot, numeric_scatter_plot, violin_plot
-from src.domain.plot.style import apply_plot_style
+from src.domain.plot.style import (
+    BASELINE_COLOR,
+    BASELINE_LABEL,
+    NOISE_COLOR,
+    apply_plot_style,
+)
 from stages import load_cli_config, paths_from_cfg, stage_config, upstream_ids
 
 setup_logger()
@@ -20,7 +26,7 @@ apply_plot_style()
 logger = logging.getLogger(__name__)
 
 # Bumped when the code changes what a config builds: older records never match.
-SCHEMA = 1
+SCHEMA = 2
 
 
 def _plot_failure_strips(
@@ -210,12 +216,60 @@ def _plot_rf_evaluation(
     }
 
 
+def _plot_error_by_size(error_by_size: list[dict]) -> dict[str, Plot]:
+    """Squared and signed error per bin of region size, one bar per prediction."""
+    if not error_by_size:
+        return {}
+    table = pd.DataFrame(error_by_size)
+    labels = [
+        f"{row.size_min}–{row.size_max}"
+        for row in table[table["variant"] == "region"]
+        .sort_values("size_bin")
+        .itertuples()
+    ]
+
+    def series(field: str) -> list[tuple[str, list, list, list, str]]:
+        out = []
+        for variant, rows in table.groupby("variant", sort=False):
+            rows = rows.sort_values("size_bin")
+            err = rows[f"{field}_se"].to_numpy()
+            out.append(
+                (
+                    BASELINE_LABEL[variant],
+                    rows[field].tolist(),
+                    err.tolist(),
+                    err.tolist(),
+                    BASELINE_COLOR[variant],
+                )
+            )
+        return out
+
+    noise = table[table["variant"] == "region"].sort_values("size_bin")["test_noise"]
+    return {
+        "baselines/mse_by_region_size": grouped_bar_plot(
+            labels,
+            [*series("mse"), ("test noise", noise.tolist(), None, None, NOISE_COLOR)],
+            x_label="Region size (train rows)",
+            y_label="MSE (± s.e.)",
+            log_y=True,
+        ),
+        "baselines/bias_by_region_size": grouped_bar_plot(
+            labels,
+            series("bias"),
+            x_label="Region size (train rows)",
+            y_label="Predicted − observed rate (± s.e.)",
+            hline=0.0,
+        ),
+    }
+
+
 @timed
 def build_analysis_figures(
     summary_df: pd.DataFrame,
     meta: dict,
     regressor_results: dict,
     predicted_rate: pd.Series,
+    error_by_size: list[dict],
 ) -> dict[str, Plot]:
     """Every analysis figure, keyed by its path under the stage's figures folder."""
     logger.info("Building summary visualizations ...")
@@ -242,6 +296,7 @@ def build_analysis_figures(
     figures.update(_plot_feature_vs_failure(summary_df, scatter_features))
     figures.update(_plot_feature_violin_by_rate_bin(summary_df, scatter_features))
     figures.update(_plot_rf_evaluation(summary_df, regressor_results, predicted_rate))
+    figures.update(_plot_error_by_size(error_by_size))
     return figures
 
 
@@ -262,11 +317,18 @@ def main() -> None:
         failures,
     )
     predicted_rate = failures.set_index("region")["predicted_rate"].dropna()
+    baselines_path = paths.of("regress") / "baselines.json"
     figures = build_analysis_figures(
         summary_df,
         load_from_json(paths.of("split") / "meta.json"),
         load_from_json(paths.of("regress") / "results.json"),
         predicted_rate,
+        # Absent when the regressor skipped, which returns before this is read.
+        (
+            load_from_json(baselines_path)["error_by_size"]
+            if baselines_path.exists()
+            else []
+        ),
     )
     save_figures(figures, stage_dir / "figures")
     flush_timing(stage_dir / "timing.json")

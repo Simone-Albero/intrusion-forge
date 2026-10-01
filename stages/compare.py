@@ -20,7 +20,13 @@ from src.domain.plot.comparison_charts import (
     line_whisker_plot,
     stacked_bar_plot,
 )
-from src.domain.plot.style import PALETTE, apply_plot_style
+from src.domain.plot.style import (
+    BASELINE_COLOR,
+    BASELINE_LABEL,
+    NOISE_COLOR,
+    PALETTE,
+    apply_plot_style,
+)
 
 setup_logger()
 apply_plot_style()
@@ -74,14 +80,6 @@ _CLF_LABEL = {
     "xgboost": "XGBoost",
 }
 _VARIANT_ORDER = list(BASELINE_VARIANTS)
-_VARIANT_LABEL = {
-    "mcp_region": "MCP",
-    "atc_region": "ATC",
-    "region": "regressor",
-    "combo_rankavg": "regressor + MCP",
-    "combo_atc_rankavg": "regressor + ATC",
-}
-_VARIANT_COLOR = {v: PALETTE[i] for i, v in enumerate(_VARIANT_ORDER)}
 _RATE_VARIANT_ORDER = [v for v in _VARIANT_ORDER if v in RATE_BASELINE_VARIANTS]
 # Top-to-bottom row order of the oracle-benefit figure.
 _ORACLE_BENEFIT_ORDER = _VARIANT_ORDER[::-1]
@@ -182,6 +180,20 @@ def _variant_value(run: dict, variant: str, field: str) -> float | None:
     return float(v)
 
 
+def _bar_series(
+    name: str, values_by_group: list[list[float | None]], color: str
+) -> tuple[str, list[float], list[float], list[float], str]:
+    """Median (+ IQR error bars) of each group's values; NaN, so no bar, for an empty group."""
+    medians, err_lo, err_hi = [], [], []
+    for values in values_by_group:
+        stats = _median_iqr(values)
+        m = stats["median"] if stats["median"] is not None else np.nan
+        medians.append(m)
+        err_lo.append(m - stats["p25"] if stats["p25"] is not None else 0.0)
+        err_hi.append(stats["p75"] - m if stats["p75"] is not None else 0.0)
+    return name, medians, err_lo, err_hi, color
+
+
 def _variant_series(
     runs: list[dict],
     *,
@@ -191,26 +203,21 @@ def _variant_series(
     variants: list[str],
 ) -> list[tuple[str, list[float], list[float], list[float], str]]:
     """Median (+ IQR error bars) of `field`, per variant, aggregated within each group."""
-    series = []
-    for variant in variants:
-        medians, err_lo, err_hi = [], [], []
-        for group in groups:
-            vals = [
-                v
-                for r in runs
-                if group_key(r) == group
-                for v in [_variant_value(r, variant, field)]
-                if v is not None
-            ]
-            stats = _median_iqr(vals)
-            m = stats["median"] if stats["median"] is not None else 0.0
-            medians.append(m)
-            err_lo.append(m - stats["p25"] if stats["p25"] is not None else 0.0)
-            err_hi.append(stats["p75"] - m if stats["p75"] is not None else 0.0)
-        series.append(
-            (_VARIANT_LABEL[variant], medians, err_lo, err_hi, _VARIANT_COLOR[variant])
+    return [
+        _bar_series(
+            BASELINE_LABEL[variant],
+            [
+                [
+                    _variant_value(r, variant, field)
+                    for r in runs
+                    if group_key(r) == group
+                ]
+                for group in groups
+            ],
+            BASELINE_COLOR[variant],
         )
-    return series
+        for variant in variants
+    ]
 
 
 def _fig_rho_by_config(runs: list[dict]) -> Plot | None:
@@ -334,6 +341,7 @@ def _fig_variant_by_group(
     y_label: str,
     variants: list[str] = _VARIANT_ORDER,
     y_lim: tuple[float, float] | None = None,
+    log_y: bool = False,
 ) -> Plot | None:
     """Grouped bar of each variant's median (+IQR) `field`, grouped by `group_key`."""
     groups = sorted({group_key(r) for r in runs})
@@ -343,7 +351,11 @@ def _fig_variant_by_group(
         runs, groups=groups, group_key=group_key, field=field, variants=variants
     )
     return grouped_bar_plot(
-        [label_map.get(g, g) for g in groups], series, y_label=y_label, y_lim=y_lim
+        [label_map.get(g, g) for g in groups],
+        series,
+        y_label=y_label,
+        y_lim=y_lim,
+        log_y=log_y,
     )
 
 
@@ -357,17 +369,111 @@ def _fig_oracle_benefit_by_variant(runs: list[dict]) -> Plot | None:
                 acc[variant].append(100.0 * v)
     if not any(acc.values()):
         return None
-    labels = [_VARIANT_LABEL[v] for v in _ORACLE_BENEFIT_ORDER]
+    labels = [BASELINE_LABEL[v] for v in _ORACLE_BENEFIT_ORDER]
     values = [np.asarray(acc[v], dtype=float) for v in _ORACLE_BENEFIT_ORDER]
-    colors = [_VARIANT_COLOR[v] for v in _ORACLE_BENEFIT_ORDER]
+    colors = [BASELINE_COLOR[v] for v in _ORACLE_BENEFIT_ORDER]
     return box_plot(
         labels,
         values,
         colors=colors,
+        figsize=(5.4, 0.6 * len(labels)),
         x_label="oracle benefit recovered (%)",
         x_lim=(-25.0, 105.0),
         axvline=0.0,
     )
+
+
+# The predictions the by-size figures compare, in the order of their bars.
+_SIZE_VARIANTS = ("region", "train_rate_region", "val_rate_region")
+
+
+def _size_values(runs: list[dict], size_bin: int, variant: str, field: str) -> list:
+    """`field` of one variant in one size bin, from every run that has it."""
+    return [
+        row[field]
+        for r in runs
+        if r["instance"] is not None
+        for row in r["instance"]["error_by_size"]
+        if row["size_bin"] == size_bin and row["variant"] == variant
+    ]
+
+
+def _size_bins(runs: list[dict]) -> list[int]:
+    return sorted(
+        {
+            row["size_bin"]
+            for r in runs
+            if r["instance"] is not None
+            for row in r["instance"]["error_by_size"]
+        }
+    )
+
+
+def _fig_error_by_size(
+    runs: list[dict], *, field: str, y_label: str, noise: bool = False
+) -> Plot | None:
+    """Median (+IQR) of `field` per bin of region size, one bar per prediction."""
+    bins = _size_bins(runs)
+    if not bins:
+        return None
+    series = [
+        _bar_series(
+            BASELINE_LABEL[variant],
+            [_size_values(runs, b, variant, field) for b in bins],
+            BASELINE_COLOR[variant],
+        )
+        for variant in _SIZE_VARIANTS
+    ]
+    if noise:
+        series.append(
+            (
+                "test noise",
+                _bar_series(
+                    "",
+                    [_size_values(runs, b, "region", "test_noise") for b in bins],
+                    "",
+                )[1],
+                None,
+                None,
+                NOISE_COLOR,
+            )
+        )
+    labels = [f"Q{b + 1}" for b in bins]
+    labels[0] += " (smallest)"
+    labels[-1] += " (largest)"
+    return grouped_bar_plot(
+        labels,
+        series,
+        x_label="region size (train rows), quantile",
+        y_label=y_label,
+        hline=None if noise else 0.0,
+        log_y=noise,
+    )
+
+
+def _table_error_by_size(runs: list[dict]) -> dict:
+    """Median (+IQR) squared and signed error per bin of region size and prediction."""
+    rows = []
+    for b in _size_bins(runs):
+        for variant in _SIZE_VARIANTS:
+            mse = _median_iqr(_size_values(runs, b, variant, "mse"))
+            bias = _median_iqr(_size_values(runs, b, variant, "bias"))
+            noise = _median_iqr(_size_values(runs, b, variant, "test_noise"))
+            rows.append(
+                {
+                    "size_bin": b,
+                    "variant": variant,
+                    "mse_median": mse["median"],
+                    "mse_p25": mse["p25"],
+                    "mse_p75": mse["p75"],
+                    "bias_median": bias["median"],
+                    "bias_p25": bias["p25"],
+                    "bias_p75": bias["p75"],
+                    "test_noise_median": noise["median"],
+                    "n_runs": mse["n"],
+                }
+            )
+    return {"rows": rows}
 
 
 def _table_perconfig(runs: list[dict]) -> dict:
@@ -517,8 +623,20 @@ def _render_comparisons(root: Path, *, fmt: str, out: Path | None) -> None:
             field="region_rate_mse",
             y_label="MSE (median, IQR)",
             variants=_RATE_VARIANT_ORDER,
+            log_y=True,
         ),
         "oracle_benefit_by_variant": _fig_oracle_benefit_by_variant(kmeans_euclidean),
+        "mse_by_region_size": _fig_error_by_size(
+            kmeans_euclidean,
+            field="mse",
+            y_label="MSE (median, IQR)",
+            noise=True,
+        ),
+        "bias_by_region_size": _fig_error_by_size(
+            kmeans_euclidean,
+            field="bias",
+            y_label="predicted − observed rate (median, IQR)",
+        ),
         "spearman_by_dataset": _fig_variant_by_group(
             kmeans_euclidean,
             group_key=lambda r: _dataset_base(r["dataset"]),
@@ -543,6 +661,7 @@ def _render_comparisons(root: Path, *, fmt: str, out: Path | None) -> None:
         "variant_spearman_by_dataset_table": _table_variant_spearman_by_dataset(
             kmeans_euclidean
         ),
+        "error_by_size_table": _table_error_by_size(kmeans_euclidean),
     }
 
     tables_dir = root / "compare"

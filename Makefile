@@ -98,8 +98,9 @@ FORCE_FLAG  := $(if $(FORCE),force=true,)
 
 # Cross-run comparisons: aggregate the full experiment tree under SWEEP_DIR into the
 # cross-run figures (rho by config / vs regions, family importance, per-classifier and
-# per-dataset baseline comparisons) written to FIGURES_DIR, and the JSON tables
-# (perconfig, nregions, datasets, variant comparisons), written under SWEEP_DIR/compare.
+# per-dataset baseline comparisons, error by region size) written to FIGURES_DIR, and the
+# JSON tables (perconfig, nregions, datasets, variant comparisons, error by size), written
+# under SWEEP_DIR/compare.
 SWEEP_DIR       ?= resources/experiments
 FIGURES_DIR     ?= paper/figures
 
@@ -136,7 +137,7 @@ render:
 ## compare:            Aggregate the experiment tree into cross-run figures + result tables  (SWEEP_DIR, FIGURES_DIR)
 compare:
 	PYTHONPATH=. $(PYTHON) stages/compare.py sweep=$(SWEEP_DIR) out=$(FIGURES_DIR)
-	@echo ""; echo "compare done -> $(FIGURES_DIR)/{rho_by_config,rho_vs_regions,family_importance,spearman_by_classifier,mse_by_classifier,oracle_benefit_by_variant,spearman_by_dataset}.pdf + $(SWEEP_DIR)/compare/{perconfig,nregions,datasets,variant_spearman,variant_region_mse,variant_spearman_by_dataset}_table.json"
+	@echo ""; echo "compare done -> $(FIGURES_DIR)/{rho_by_config,rho_vs_regions,family_importance,spearman_by_classifier,mse_by_classifier,oracle_benefit_by_variant,spearman_by_dataset,mse_by_region_size,bias_by_region_size}.pdf + $(SWEEP_DIR)/compare/{perconfig,nregions,datasets,variant_spearman,variant_region_mse,variant_spearman_by_dataset,error_by_size}_table.json"
 
 ## run:                Whole flow — fix passed vars, iterate the rest (DATA?, CLASSIFIER?, CLUSTERING?)  (NAME, SEED, DISTANCE, FORCE)
 run:

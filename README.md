@@ -48,9 +48,9 @@ One command, seven stages:
 | graph | sample the training split and build its nearest-neighbour graph | 5 s |
 | regions | divide each class into regions (707 of them here), place every sample in one | 4 s |
 | complexity | describe every region and every class | ~15 s |
-| classify | train the Random Forest on the training split, predict the validation and test splits | ~3 min |
+| classify | train the Random Forest on the training split, predict every split | ~3 min |
 | regress | fit the region → error-rate estimator | ~65 s |
-| render | 23 figures | 5 s |
+| render | 25 figures | 5 s |
 
 Nearly all of `classify` goes on training the Random Forest: its hyperparameter search
 cross-validates every candidate of its grid on the training split before refitting the winner.
@@ -63,7 +63,7 @@ Failure regressor results — Spearman: 0.8594, R²: 0.8037, MAE: 0.0376, MSE: 0
 
 **Spearman ρ ≈ 0.86.** The estimated and observed error rates put the 707 regions in much the same order, measured on regions held back from the fitting. Expect a little drift in the third decimal between runs.
 
-`regress/baselines.json` is a check on that signal rather than the purpose of the framework: it compares the regressor's per-sample ranking against confidence-based baselines (MCP, ATC, and rank-averaged combinations of each with the regressor) using *oracle benefit recovered* — the share of a perfect oracle's accuracy gain that abstaining on the riskiest samples actually captures. ATC's confidence threshold is chosen on the validation split, so the test samples it is scored on never pick their own cut. The regressor recovers about 22% here, a little more than MCP and ATC averaged over each region (about 20% and 21%): at the same granularity, one score per region, an estimate built from the data's geometry ranks this model's errors slightly better than the model's own confidence does. Rank-averaged with each sample's own MCP it recovers the most of the five, about 35%, as the only variant that tells apart the samples within a region.
+`regress/baselines.json` is a check on that signal rather than the purpose of the framework: it compares the regressor's per-sample ranking against confidence-based baselines (MCP, ATC, and rank-averaged combinations of each with the regressor) using *oracle benefit recovered* — the share of a perfect oracle's accuracy gain that abstaining on the riskiest samples actually captures. ATC's confidence threshold is chosen on the validation split, so the test samples it is scored on never pick their own cut. The regressor recovers about 22% here, a little more than MCP and ATC averaged over each region (about 20% and 21%): at the same granularity, one score per region, an estimate built from the data's geometry ranks this model's errors slightly better than the model's own confidence does. Rank-averaged with each sample's own MCP it recovers the most of these five, about 35%, as the only variant that tells apart the samples within a region. Two more baselines need no estimator at all: each region's error rate on the training samples the classifier was fitted on, and on the validation samples routed to it. They ask whether the estimate adds anything to the rate a region has already shown on other samples, and `baselines.json` breaks down by region size the error of these two and of the regressor, which `render` draws in `baselines/mse_by_region_size` and `baselines/bias_by_region_size`.
 
 ### 4. Read the results
 
@@ -87,15 +87,15 @@ complexity/
 random_forest/
 ├── classify/
 │   ├── model/model.joblib            #   the trained Random Forest
-│   ├── predictions.parquet           #   predicted class and MCP risk of every validation and test sample
+│   ├── predictions.parquet           #   predicted class and MCP risk of every sample, and which ones the model was fitted on
 │   ├── metrics.json                  #   accuracy, macro F1, per-class metrics
 │   ├── training.json                 #   the hyperparameter search
 │   └── figures/                      #   3 PDFs
 ├── regress/
-│   ├── regions.parquet               #   observed and estimated error rate, per region
+│   ├── regions.parquet               #   per region: observed and estimated error rate, and the rate observed on the fit and validation samples
 │   ├── results.json                  #   ρ, R², MAE, MSE, importances, best parameters per fold
-│   └── baselines.json                #   ρ and oracle benefit recovered, regressor vs confidence baselines
-└── render/figures/                   #   23 PDFs
+│   └── baselines.json                #   ρ, MSE and oracle benefit recovered, regressor vs baselines, and error by region size
+└── render/figures/                   #   25 PDFs
 ```
 
 Every stage folder also holds `record.json`, which the caches check, and `timing.json`. Only a re-run of `classify` reads `classify/model/`, to skip retraining; delete it once you have the metrics.
@@ -149,7 +149,7 @@ To add a dataset of your own:
 3. Add it to `DATASETS` in the [Makefile](Makefile).
 4. Run `make run DATA=<name> NAME=my_exp CLASSIFIER=random_forest CLUSTERING=kmeans`.
 
-Every configuration shipped here splits the data 40 % training, 5 % validation and 55 % test (`train_frac`, `val_frac`, `test_frac`). The test split is kept large because it is the only one every error rate is measured on. The validation split serves deep classifiers, which stop early and keep their best epoch by its loss, and the ATC baseline, whose confidence threshold it chooses.
+Every configuration shipped here splits the data 40 % training, 5 % validation and 55 % test (`train_frac`, `val_frac`, `test_frac`). The test split is kept large because it is the only one the estimator's target, every region's error rate, is measured on. The validation split serves deep classifiers, which stop early and keep their best epoch by its loss, the ATC baseline, whose confidence threshold it chooses, and the validation-rate baseline.
 
 One known limit: clustering holds each class's points in memory, and the one-hot space widens them. For the largest classes of the network-traffic datasets, millions of rows by up to 165 float32 columns, that matrix reaches several GB; BoT-IoT and CIC-IDS-2018 have not been run at full size.
 
@@ -167,7 +167,7 @@ Four points worth knowing:
 
 - Every distance — clustering, routing, hardness, the neighbour graph and every descriptor — is measured in one euclidean space: the numerical features as preprocessed, and each categorical feature as a one-hot block over its 16 most frequent training codes plus one slot shared by all the others, weighted so that a mismatch costs as much as one interquartile step on a numerical feature (`space.top_k`, `space.cat_cost`). Under `DISTANCE=cosine` every row is scaled to unit length first. The classifier keeps its own encoding of the categorical features: it is the object under study, not part of the geometry.
 - Regions are built from the training split alone, each inside one class. Every test sample is then routed to the region whose centre lies nearest **without reference to its label**, exactly as a sample would be routed at inference time, and a region's error rate counts the classifier's mistakes on the test samples routed to it, whatever their class. Assigned by label instead, a region would hold only its own class and count only that class's mistakes. Routing is what keeps the correlation a genuine prediction rather than a restatement of labels already known.
-- Error rates are counted on the test split alone. The training samples placed the region centres with their labels known, so even routed without the label they fall back into their own class's region more often than new data would, and counting them would flatter the regions. The classifier, the reference graph, the regions and the descriptors all come from the training split; no test sample shapes any of them.
+- The error rates the estimator learns are counted on the test split alone. The training samples placed the region centres with their labels known, so even routed without the label they fall back into their own class's region more often than new data would, and counting them would flatter the regions; only the training-rate baseline counts the ones the classifier was fitted on, as a comparison. The classifier, the reference graph, the regions and the descriptors all come from the training split; no test sample shapes any of them.
 - The analysis works chiefly per region rather than per class, since one class usually occupies several separate areas of the space. Class-level figures are kept as a coarse reference.
 
 ### What the descriptors measure
@@ -209,11 +209,13 @@ Each stage is a script under [stages/](stages/), wrapped by the [Makefile](Makef
 
 **complexity** describes every region by its own training samples, and every class likewise, against the reference graph ([What the descriptors measure](#what-the-descriptors-measure)), into `regions.parquet` and `classes.parquet`.
 
-**classify** trains one classifier and records its per-class metrics and per-sample predictions. `fit.balance=undersample`, the default, undersamples the training split; `fit.balance=none` leaves it intact, and a deep classifier then weights its loss by the original class frequencies instead. The two are alternatives — applying both would correct the same imbalance twice. Setting `fit.n_samples` also caps every class at the same size, so it takes the place of either. One model is trained on the training split — a classical classifier's hyperparameters chosen by a grid search cross-validated there (`grid_search.cv` folds), a deep one's epoch by the validation loss — and it predicts the validation and test splits. The metrics come from the test predictions; `predictions.parquet` holds, for every validation and test sample, the predicted class and the classifier's own risk (MCP). `classify` knows nothing of the regions.
+**classify** trains one classifier and records its per-class metrics and per-sample predictions. `fit.balance=undersample`, the default, undersamples the training split; `fit.balance=none` leaves it intact, and a deep classifier then weights its loss by the original class frequencies instead. The two are alternatives — applying both would correct the same imbalance twice. Setting `fit.n_samples` also caps every class at the same size, so it takes the place of either. One model is trained on the training split — a classical classifier's hyperparameters chosen by a grid search cross-validated there (`grid_search.cv` folds), a deep one's epoch by the validation loss — and it predicts every split. The metrics come from the test predictions; `predictions.parquet` holds, for every sample of every split, the predicted class, the classifier's own risk (MCP) and `in_fit`, which marks the training samples left after balancing, the ones the model was fitted on. `classify` knows nothing of the regions.
 
-**regress** counts each region's errors on the test samples routed to it, from `classify`'s predictions and `regions`' assignments, assembles the table — a region's descriptors, its class's descriptors and its observed error rate — and fits the estimator over five outer and five inner folds. A region with no test sample, or fewer than `failure_regressor.min_eval_support`, is left out and counted (`n_regions_total`, `n_regions_used` in `results.json`). It also compares the estimate against confidence-based baselines (MCP, ATC, and rank-averaged combinations of each with the regressor), with ATC's threshold chosen on the validation split. When the error rates leave nothing to learn, fewer than two usable regions or no variance among them, the estimator is skipped and `baselines.json` is not written.
+**regress** counts each region's errors on the test samples routed to it, from `classify`'s predictions and `regions`' assignments, assembles the table — a region's descriptors, its class's descriptors and its observed error rate — and fits the estimator over five outer and five inner folds. A region with no test sample, or fewer than `failure_regressor.min_eval_support`, is left out and counted (`n_regions_total`, `n_regions_used` in `results.json`). It also compares the estimate against confidence-based baselines (MCP, ATC, and rank-averaged combinations of each with the regressor), with ATC's threshold chosen on the validation split, and against two empirical rates. When the error rates leave nothing to learn, fewer than two usable regions or no variance among them, the estimator is skipped and `baselines.json` is not written.
 
-**render** turns the `complexity` and `regress` artefacts into figures. `figure_format` selects `pdf`, the default, or `png`.
+The two empirical baselines need no estimator: `train_rate_region` is each region's error rate on the training samples the classifier was fitted on, `val_rate_region` its rate on the validation samples routed to it. `regions.parquet` keeps both as observed, `fit_failure_rate` and `val_failure_rate`, empty where a region has no such sample, with their sample counts `n_fit` and `n_val` and the region's training-sample count `n_train`; none of them reaches the estimator. As a baseline, a region with no such sample takes the rate pooled over its class's regions, a class with none the rate pooled over every region, and `n_regions_without_fit` and `n_regions_without_val` in `baselines.json` count the scored regions that fell back. Neither is a clean reference. A classifier that makes no mistake on the samples it was fitted on — a Random Forest grown to pure leaves, which the demo's grid search picks, is one — has a training rate of zero in every region, so its ρ is undefined, `null`, and its oracle benefit, near zero, reflects only the order of tied samples. A deep classifier keeps the epoch with the lowest validation loss, so its validation rate is slightly optimistic. `error_by_size` sorts the scored regions by `n_train` into five bins of equal count and gives, per bin, the mean squared and signed error (predicted − observed) of the regressor and of both rates with their standard errors, beside the test rate's own sampling variance, the floor under any prediction's squared error; with fewer than five scored regions it is empty.
+
+**render** turns the `complexity` and `regress` artefacts into figures, among them `baselines.json`'s error by region size, under `baselines/`. `figure_format` selects `pdf`, the default, or `png`.
 
 ### Sweeps
 
@@ -224,7 +226,7 @@ make run NAME=x CLASSIFIER=random_forest    # every dataset, one classifier
 make compare FIGURES_DIR=paper/figures
 ```
 
-Omit `CLUSTERING` and the sweep runs every algorithm into a separate `NAME_<algo>` tree. `compare` then reduces every tree under `SWEEP_DIR` (`resources/experiments` by default) to the cross-run figures (ρ per configuration, ρ against region count, family importance, per-classifier and per-dataset baseline comparisons), written to `FIGURES_DIR`, and the matching JSON tables, written to `SWEEP_DIR/compare/`. It stops, asking for `make regress`, when a run's `regress` was built from other stages than those on disk.
+Omit `CLUSTERING` and the sweep runs every algorithm into a separate `NAME_<algo>` tree. `compare` then reduces every tree under `SWEEP_DIR` (`resources/experiments` by default) to the cross-run figures (ρ per configuration, ρ against region count, family importance, per-classifier and per-dataset baseline comparisons, error by region size), written to `FIGURES_DIR`, and the matching JSON tables, written to `SWEEP_DIR/compare/`. It stops, asking for `make regress`, when a run's `regress` was built from other stages than those on disk.
 
 ## Configuration
 

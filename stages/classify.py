@@ -30,6 +30,7 @@ from src.domain.training.weighting import compute_class_weights
 from src.engine.ml.model import MLClassifierFactory
 from src.engine.ml.preprocessing import supports_random_state
 from stages import (
+    SPLITS,
     load_cli_config,
     load_split,
     paths_from_cfg,
@@ -223,23 +224,25 @@ def _fit_classifier(
     return model, training, figures
 
 
-def _predict(trainer: Trainer, model, df: pd.DataFrame, split: str):
+def _predict(
+    trainer: Trainer, model, df: pd.DataFrame, split: str, *, embed: bool = False
+):
     """Predict every row of a split; the probabilities must be finite."""
-    y_pred, y_proba, embedding = trainer.predict(
-        model, trainer.features(df), return_embedding=True
+    y_pred, y_proba, *embedding = trainer.predict(
+        model, trainer.features(df), return_embedding=embed
     )
     if not np.isfinite(y_proba).all():
         raise ValueError(
             f"The model predicted non-finite probabilities on {split}: every "
             "confidence-based score downstream would be NaN."
         )
-    return y_pred, y_proba, embedding
+    return y_pred, y_proba, embedding[0] if embed else None
 
 
 def _predictions_table(
-    predicted: dict[str, tuple[np.ndarray, np.ndarray]],
+    predicted: dict[str, tuple[np.ndarray, np.ndarray]], *, fit_rows: pd.Index
 ) -> pd.DataFrame:
-    """One row per evaluated row: its predicted class and the classifier's own risk."""
+    """One row per row of every split; `in_fit` marks the train rows the model was fitted on."""
     table = pd.concat(
         [
             pd.DataFrame(
@@ -248,6 +251,11 @@ def _predictions_table(
                     "row": np.arange(len(y_pred), dtype=np.int32),
                     "y_pred": y_pred.astype(np.int32),
                     "mcp_risk": mcp_risk(y_proba).astype(np.float32),
+                    "in_fit": (
+                        np.isin(np.arange(len(y_pred)), fit_rows)
+                        if split == "train"
+                        else np.zeros(len(y_pred), dtype=bool)
+                    ),
                 }
             )
             for split, (y_pred, y_proba) in predicted.items()
@@ -298,7 +306,7 @@ def write_evaluation(
 
 
 def classify(cfg) -> None:
-    """Train or reuse the classifier, predict val and test, and write the evaluation."""
+    """Train or reuse the classifier, predict every split, and write the evaluation."""
     if cfg.fit.balance not in ("undersample", "none"):
         raise ValueError(
             f"Unknown balance: {cfg.fit.balance!r}. Valid: 'undersample', 'none'."
@@ -344,10 +352,12 @@ def classify(cfg) -> None:
     if reuse:
         logger.info("[CACHED] Reusing the trained model — pass force=true to retrain.")
         model = trainer.load(model_dir)
+        fit_rows = _balance_train(cfg, train_df).index
     else:
         # Reassigned, not copied: the full, unbalanced train frame would otherwise stay
         # in memory throughout, alongside its balanced copy.
         train_df = _balance_train(cfg, train_df)
+        fit_rows = train_df.index
         params = _resolve_classifier_params(
             cfg, num_cols=num_cols, cat_cols=cat_cols, meta=meta
         )
@@ -355,16 +365,20 @@ def classify(cfg) -> None:
             cfg, trainer, train_df, val_df, params=params, model_dir=model_dir
         )
         save_to_json({**training, "n_eval": len(test_df)}, stage_dir / "training.json")
+        # The balanced copy is gone from here on: every train row gets a prediction.
+        train_df = load_split(paths, "train")
 
     predicted = {
-        name: _predict(trainer, model, df, name)
-        for name, df in (("val", val_df), ("test", test_df))
+        name: _predict(trainer, model, df, name, embed=name == "test")
+        for name, df in zip(SPLITS, (train_df, val_df, test_df))
     }
     write_evaluation(
         stage_dir, test_df, predicted["test"], meta=meta, extra_figures=figures
     )
     save_df(
-        _predictions_table({name: p[:2] for name, p in predicted.items()}),
+        _predictions_table(
+            {name: p[:2] for name, p in predicted.items()}, fit_rows=fit_rows
+        ),
         stage_dir / "predictions.parquet",
     )
     flush_timing(stage_dir / "timing.json")

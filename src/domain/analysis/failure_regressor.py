@@ -349,15 +349,30 @@ BASELINE_VARIANTS = (
     "region",
     "combo_rankavg",
     "combo_atc_rankavg",
+    "train_rate_region",
+    "val_rate_region",
 )
-RATE_BASELINE_VARIANTS = ("region", "mcp_region", "atc_region")
+RATE_BASELINE_VARIANTS = (
+    "region",
+    "mcp_region",
+    "atc_region",
+    "train_rate_region",
+    "val_rate_region",
+)
 
 
 def instance_baselines(
-    samples: pd.DataFrame, predicted_rate: pd.Series, *, atc_threshold: float
+    samples: pd.DataFrame,
+    predicted_rate: pd.Series,
+    *,
+    atc_threshold: float,
+    train_rate: pd.Series,
+    val_rate: pd.Series,
 ) -> dict:
     """Region rho, region-rate MSE and oracle benefit of every baseline variant."""
-    # `atc_threshold` is the confidence cut, chosen on rows other than `samples`.
+    # `atc_threshold` is the confidence cut, chosen on rows other than `samples`;
+    # `train_rate` and `val_rate` are the failure rates the classifier made on other rows
+    # of each region, indexed by region.
     # Only the regions the regressor scored, so every variant ranks the same regions.
     samples = samples[samples["region"].isin(predicted_rate.index)]
     region_of_row = samples["region"].to_numpy()
@@ -369,6 +384,8 @@ def instance_baselines(
     confidence = 1.0 - mcp
     region = groups.spread(predicted_rate.loc[groups.ids].to_numpy(dtype=float))
     mcp_region = groups.spread(groups.reduce(mcp))
+    train_rate_region = groups.spread(train_rate.loc[groups.ids].to_numpy(dtype=float))
+    val_rate_region = groups.spread(val_rate.loc[groups.ids].to_numpy(dtype=float))
     observed = groups.reduce(failure)
     atc_region = atc_region_risk(confidence, region_of_row, threshold=atc_threshold)
 
@@ -383,6 +400,8 @@ def instance_baselines(
         "region": region,
         "combo_rankavg": combo_rankavg,
         "combo_atc_rankavg": combo_atc_rankavg,
+        "train_rate_region": train_rate_region,
+        "val_rate_region": val_rate_region,
     }
 
     # A rate variant holds one value per region, so that value is the prediction:
@@ -430,3 +449,54 @@ def instance_baselines(
         "n_regions": int(groups.ids.size),
         "baselines": baselines,
     }
+
+
+def _mean_and_se(values: np.ndarray) -> tuple[float, float]:
+    se = float(values.std(ddof=1) / np.sqrt(values.size)) if values.size > 1 else np.nan
+    return float(values.mean()), se
+
+
+def error_by_region_size(
+    observed: pd.Series,
+    predictions: dict[str, pd.Series],
+    *,
+    size: pd.Series,
+    n_eval: pd.Series,
+    n_bins: int,
+) -> list[dict]:
+    """Per bin of region size, each prediction's squared and signed error and the test noise."""
+    regions = observed.index
+    if len(regions) < n_bins:
+        return []
+    order = np.lexsort((regions.to_numpy(), size.loc[regions].to_numpy()))
+    bin_of = np.empty(len(regions), dtype=int)
+    bin_of[order] = np.arange(len(regions)) * n_bins // len(regions)
+
+    rate = observed.to_numpy(dtype=float)
+    support = n_eval.loc[regions].to_numpy(dtype=float)
+    noise = np.where(
+        support > 1, rate * (1 - rate) / np.maximum(support - 1, 1), np.nan
+    )
+    rows = []
+    for b in range(n_bins):
+        in_bin = bin_of == b
+        sizes = size.loc[regions[in_bin]]
+        for variant, predicted in predictions.items():
+            error = predicted.loc[regions[in_bin]].to_numpy(dtype=float) - rate[in_bin]
+            mse, mse_se = _mean_and_se(error**2)
+            bias, bias_se = _mean_and_se(error)
+            rows.append(
+                {
+                    "size_bin": b,
+                    "variant": variant,
+                    "n_regions": int(in_bin.sum()),
+                    "size_min": int(sizes.min()),
+                    "size_max": int(sizes.max()),
+                    "test_noise": float(np.nanmean(noise[in_bin])),
+                    "mse": mse,
+                    "mse_se": mse_se,
+                    "bias": bias,
+                    "bias_se": bias_se,
+                }
+            )
+    return rows

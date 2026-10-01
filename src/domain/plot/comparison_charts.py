@@ -196,15 +196,16 @@ def stacked_bar_plot(
 
 def grouped_bar_plot(
     group_labels: list[str],
-    series: list[tuple[str, list[float], list[float], list[float], str]],
+    series: list[tuple[str, list[float], list[float] | None, list[float] | None, str]],
     *,
     x_label: str = "",
     y_label: str = "",
     y_lim: tuple[float, float] | None = None,
     hline: float | None = None,
+    log_y: bool = False,
     figsize: tuple[float, float] | None = None,
 ) -> Plot:
-    """Vertical grouped bars with asymmetric error bars, one colour per series."""
+    """Vertical grouped bars with asymmetric error bars (None for none), one colour per series."""
     n_groups = len(group_labels)
     n_series = len(series)
     if figsize is None:
@@ -216,8 +217,12 @@ def grouped_bar_plot(
     for i, (name, values, err_low, err_high, color) in enumerate(series):
         values = np.asarray(values, dtype=float)
         offset = (i - (n_series - 1) / 2) * width
-        yerr = np.vstack(
-            [np.asarray(err_low, dtype=float), np.asarray(err_high, dtype=float)]
+        yerr = (
+            None
+            if err_low is None
+            else np.vstack(
+                [np.asarray(err_low, dtype=float), np.asarray(err_high, dtype=float)]
+            )
         )
         ax.bar(
             x + offset,
@@ -233,6 +238,8 @@ def grouped_bar_plot(
 
     if hline is not None:
         ax.axhline(hline, color=MUTED_COLOR, linewidth=0.8, linestyle=":", zorder=1)
+    if log_y:
+        ax.set_yscale("log")
     ax.set_xticks(x, group_labels)
     plt.setp(ax.get_xticklabels(), rotation=35, ha="right")
     if y_lim is not None:

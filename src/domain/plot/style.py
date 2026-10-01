@@ -18,6 +18,29 @@ PALETTE: list[str] = [
 HIGHLIGHT_COLOR: str = "#B22222"
 MUTED_COLOR: str = "#777777"
 NEUTRAL_COLOR: str = "#cccccc"
+# The test-set noise floor of the by-size figures; no baseline takes it.
+NOISE_COLOR: str = PALETTE[5]
+
+
+# One entry per baseline variant, in the order of `BASELINE_VARIANTS`.
+BASELINE_LABEL: dict[str, str] = {
+    "mcp_region": "MCP",
+    "atc_region": "ATC",
+    "region": "regressor",
+    "combo_rankavg": "regressor + MCP",
+    "combo_atc_rankavg": "regressor + ATC",
+    "train_rate_region": "train rate",
+    "val_rate_region": "val rate",
+}
+BASELINE_COLOR: dict[str, str] = {
+    "mcp_region": PALETTE[0],
+    "atc_region": PALETTE[1],
+    "region": PALETTE[2],
+    "combo_rankavg": PALETTE[3],
+    "combo_atc_rankavg": PALETTE[4],
+    "train_rate_region": PALETTE[7],
+    "val_rate_region": HIGHLIGHT_COLOR,
+}
 
 
 def extended_palette(n: int) -> list[str]:
