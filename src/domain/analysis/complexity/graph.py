@@ -125,7 +125,7 @@ def compute_population_complexity(
         pbar.update(1)
 
         pbar.set_description("T measures")
-        t_out = compute_t_measures(queries.X, queries.population, sizes)
+        t_out = compute_t_measures(queries.X, queries.population, sizes, metric=metric)
         pbar.update(1)
 
         pbar.set_description("G measures")

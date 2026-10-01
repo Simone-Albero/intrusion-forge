@@ -29,7 +29,7 @@ setup_logger()
 logger = logging.getLogger(__name__)
 
 # Bumped when the code changes what a config builds: older records never match.
-SCHEMA = 3
+SCHEMA = 4
 OUTPUTS = ("regions.parquet", "classes.parquet")
 
 

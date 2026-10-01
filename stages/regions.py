@@ -9,7 +9,7 @@ from src.core.io import load_arrays, save_df
 from src.core.log import setup_logger
 from src.core.record import clear_dir, is_current, write_record
 from src.core.utils import flush_timing, load_from_json, save_to_json, timed
-from src.domain.analysis.complexity.shared import l2_normalize
+from src.domain.analysis.complexity.shared import scale_for_metric
 from src.domain.clustering import build_cluster_fn
 from src.domain.clustering.base import (
     assign_nearest_centroid,
@@ -39,8 +39,7 @@ ROUTE_CHUNK = 50_000
 
 def _points(cfg, space: Space, rows: pd.DataFrame) -> np.ndarray:
     """The rows in the space regions are drawn in: unit vectors under cosine."""
-    X = space.embed(rows)
-    return l2_normalize(X) if cfg.distance == "cosine" else X
+    return scale_for_metric(space.embed(rows), cfg.distance)
 
 
 def _cluster_per_class(

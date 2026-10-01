@@ -3,6 +3,7 @@ from sklearn.decomposition import PCA
 from tqdm import tqdm
 
 from src.core.utils import timed
+from src.domain.analysis.complexity.shared import scale_for_metric
 
 
 def _t3_t4(rows: np.ndarray, n_rows: int) -> tuple[float | None, float | None]:
@@ -22,11 +23,12 @@ def _t3_t4(rows: np.ndarray, n_rows: int) -> tuple[float | None, float | None]:
 
 @timed
 def compute_t_measures(
-    X: np.ndarray, y_population: np.ndarray, sizes: dict[int, int]
+    X: np.ndarray, y_population: np.ndarray, sizes: dict[int, int], *, metric: str
 ) -> dict[str, dict[str, float | None]]:
     """Per-population dimensionality measures T2, T3 and T4."""
     # The components come from the rows of `X`, a sample of each population; the ratios
     # are over `sizes`, the rows the population really holds.
+    X = scale_for_metric(X, metric)
     result: dict[str, dict[str, float | None]] = {}
     d = X.shape[1]
     for pid in tqdm(

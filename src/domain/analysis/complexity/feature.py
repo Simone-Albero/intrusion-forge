@@ -4,8 +4,8 @@ from tqdm import tqdm
 from src.core.utils import timed
 from src.domain.analysis.complexity.shared import (
     aggregate_min_mean_max,
-    l2_normalize,
     make_null_row,
+    scale_for_metric,
 )
 
 
@@ -83,7 +83,7 @@ def compute_f_measures(
     metric: str,
 ) -> dict[str, dict[str, float | None]]:
     """F1-F4 per cluster against its top-K adversarial clusters, as min/mean/max."""
-    X_v = l2_normalize(X) if metric == "cosine" else X
+    X_v = scale_for_metric(X, metric)
     cluster_block: dict[str, np.ndarray] = {
         str(int(cid)): X_v[y_cluster == cid] for cid in np.unique(y_cluster)
     }
