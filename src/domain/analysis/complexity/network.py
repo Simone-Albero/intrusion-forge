@@ -2,85 +2,58 @@ import numpy as np
 from tqdm import tqdm
 
 from src.core.utils import timed
+from src.domain.analysis.complexity.queries import Queries
 from src.domain.analysis.complexity.shared import aggregate_min_mean_max, make_null_row
 
 
 def compute_cls_coef(
-    cluster_mask: dict[str, np.ndarray],
-    knn_idx: np.ndarray,
-) -> dict[str, float]:
-    """Mean fraction of a member's intra-cluster neighbour pairs that are connected."""
-    result: dict[str, float] = {}
-    for cid, c_mask in cluster_mask.items():
-        c_idx = np.where(c_mask)[0]
-        nbs = knn_idx[c_idx]
-        in_c = c_mask[nbs]
-        coefs = np.zeros(c_idx.size, dtype=np.float64)
-        for i, intra_row in enumerate(in_c):
-            intra = nbs[i, intra_row]
-            if intra.size < 2:
-                continue
-            triangles = int(np.isin(knn_idx[intra], intra).sum())
-            coefs[i] = triangles / (intra.size * (intra.size - 1))
-        result[cid] = float(coefs.mean())
-    return result
-
-
-def compute_hub(
-    cluster_mask: dict[str, np.ndarray],
-    knn_idx: np.ndarray,
-) -> dict[str, float]:
-    """Hub score per cluster: mean in-degree in the reverse kNN graph (hubness proxy)."""
-    n = knn_idx.shape[0]
-    in_degree = np.bincount(knn_idx.ravel(), minlength=n)
-    return {
-        cid: float(in_degree[np.where(c_mask)[0]].mean())
-        for cid, c_mask in cluster_mask.items()
-    }
-
-
-def compute_network_density(
-    knn_idx: np.ndarray,
-    cluster_mask: dict[str, np.ndarray],
-    top_k_map: dict[str, list[str]],
-) -> dict[str, dict[str, float | None]]:
-    """Cross-class k-NN density per cluster against its top-K adversarial clusters."""
-    k = knn_idx.shape[1]
-    null_row = make_null_row(("network_density",))
-
-    result: dict[str, dict[str, float | None]] = {}
-    for cid, c_mask in tqdm(
-        cluster_mask.items(), desc="ND measures", unit="cluster", leave=False
-    ):
-        row = dict(null_row)
-        nbs = knn_idx[np.where(c_mask)[0]]
-        cluster_vals = [
-            float(cluster_mask[ac][nbs].sum()) / (nbs.shape[0] * k)
-            for ac in top_k_map[cid]
-        ]
-
-        mn, me, mx = aggregate_min_mean_max(cluster_vals)
-        row["network_density_min"] = mn
-        row["network_density_mean"] = me
-        row["network_density_max"] = mx
-
-        result[cid] = row
-
-    return result
+    nbs: np.ndarray, in_population: np.ndarray, knn_idx: np.ndarray
+) -> float:
+    """Mean fraction of a query's intra-population neighbour pairs that are connected."""
+    coefs = np.zeros(nbs.shape[0], dtype=np.float64)
+    for i, intra_row in enumerate(in_population):
+        intra = nbs[i, intra_row]
+        if intra.size < 2:
+            continue
+        triangles = int(np.isin(knn_idx[intra], intra).sum())
+        coefs[i] = triangles / (intra.size * (intra.size - 1))
+    return float(coefs.mean())
 
 
 @timed
 def compute_network_measures(
+    queries: Queries,
+    ref_population: np.ndarray,
     knn_idx: np.ndarray,
-    cluster_mask: dict[str, np.ndarray],
     top_k_map: dict[str, list[str]],
 ) -> dict[str, dict[str, float | None]]:
-    """Network-family measures per cluster: density, clustering coefficient and hub score."""
-    density_out = compute_network_density(knn_idx, cluster_mask, top_k_map)
-    cls_coef_out = compute_cls_coef(cluster_mask, knn_idx)
-    hub_out = compute_hub(cluster_mask, knn_idx)
+    """Network-family measures per population: density, clustering coefficient, hubs.
+
+    `knn_idx` is the reference's own k-NN graph: hubs are read off it, the rest off the
+    reference neighbours of the population's query rows.
+    """
+    k = knn_idx.shape[1]
+    # Mean in-degree in the reverse k-NN graph, a hubness proxy.
+    in_degree = np.bincount(knn_idx.ravel(), minlength=knn_idx.shape[0])
+    null_row = make_null_row(("network_density",))
 
     result: dict[str, dict[str, float | None]] = {}
-    for cid, row in density_out.items():
-        result[cid] = {**row, "cls_coef": cls_coef_out[cid], "hub": hub_out[cid]}
+    for pid_str in tqdm(top_k_map, desc="ND measures", unit="pop", leave=False):
+        pid = int(pid_str)
+        nbs = queries.nbs[queries.population == pid]
+        in_population = (ref_population == pid)[nbs]
+        density = [
+            float((ref_population == int(ap))[nbs].sum()) / (nbs.shape[0] * k)
+            for ap in top_k_map[pid_str]
+        ]
+        row = dict(null_row)
+        mn, me, mx = aggregate_min_mean_max(density)
+        row["network_density_min"] = mn
+        row["network_density_mean"] = me
+        row["network_density_max"] = mx
+        row["cls_coef"] = compute_cls_coef(nbs, in_population, knn_idx)
+        # No reference point in the population: nothing to average.
+        members = in_degree[ref_population == pid]
+        row["hub"] = float(members.mean()) if members.size else None
+        result[pid_str] = row
     return result

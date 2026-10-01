@@ -1,11 +1,17 @@
 from src.domain.analysis.complexity.graph import (
-    ComplexityGraph,
-    compute_complexity_from_graph,
-    prepare_complexity_graph,
+    Reference,
+    analysis_centroids,
+    build_reference,
+    compute_population_complexity,
 )
+from src.domain.analysis.complexity.queries import Queries
+from src.domain.analysis.complexity.shared import query_neighbors
 
 __all__ = [
-    "ComplexityGraph",
-    "prepare_complexity_graph",
-    "compute_complexity_from_graph",
+    "Queries",
+    "Reference",
+    "analysis_centroids",
+    "build_reference",
+    "compute_population_complexity",
+    "query_neighbors",
 ]

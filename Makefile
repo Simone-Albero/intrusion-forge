@@ -10,16 +10,18 @@
 #   make run            NAME=my_exp CLUSTERING=kmeans              # all datasets × all classifiers × 1 clustering
 #   make run            NAME=my_exp DATA=cic_2018_v2 CLASSIFIER=mlp CLUSTERING=kmeans       # single (ds, clf, clustering)
 #
-# Single-stage targets (DATA + CLASSIFIER explicit):
-#   make prepare           DATA=cic_2018_v2 NAME=my_exp
+# Single-stage targets (dataset-level stages need no CLASSIFIER):
+#   make split             DATA=cic_2018_v2 NAME=my_exp
+#   make graph             DATA=cic_2018_v2 NAME=my_exp
+#   make regions           DATA=cic_2018_v2 NAME=my_exp
+#   make complexity        DATA=cic_2018_v2 NAME=my_exp
 #   make classify          DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=random_forest
-#   make complexity        DATA=cic_2018_v2 NAME=my_exp                     # shared, dataset-level
-#   make failure-regress   DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=random_forest
+#   make regress           DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=random_forest
 #   make render            DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=random_forest
 #
 # Flags:
-#   FORCE=1               re-run cached stages (prepare, complexity) and retrain the
-#                         classifier even when models for this exact config already exist
+#   FORCE=1               re-run cached stages (split, graph, regions, complexity) and retrain the
+#                         classifier even when a model for this exact config already exists
 #   CLUSTERING=<name>     fix the clustering strategy (kmeans/hdbscan/birch/spectral);
 #                         omit it in `run` to sweep all of CLUSTERING_ALGOS into NAME_<algo>
 #   ARGS="k=v ..."        extra Hydra overrides, passed last to every stage, so they win
@@ -88,46 +90,53 @@ DATASETS := \
     bot_iot_v2 \
     synthetic_test
 
-# Every stage gets $(HYDRA) and saves its resolved config as config_composed_<stage>.json;
-# FORCE_FLAG reaches only the cached stages.
+# Every stage gets $(HYDRA); FORCE_FLAG reaches only the cached stages.
 # Recipes put $(ARGS) last, so an explicit override wins.
 HYDRA       := data=$(DATA) name=$(NAME) seed=$(SEED) classifier=$(CLASSIFIER) \
                clustering=$(CLUSTERING) distance=$(DISTANCE)
 FORCE_FLAG  := $(if $(FORCE),force=true,)
 
 # Cross-run comparisons: aggregate the full experiment tree under SWEEP_DIR into the
-# cross-run figures (rho by config / vs clusters, family importance, per-classifier and
+# cross-run figures (rho by config / vs regions, family importance, per-classifier and
 # per-dataset baseline comparisons) written to FIGURES_DIR, and the JSON tables
-# (perconfig, nclusters, datasets, variant comparisons), written back under SWEEP_DIR.
+# (perconfig, nregions, datasets, variant comparisons), written under SWEEP_DIR/compare.
 SWEEP_DIR       ?= resources/experiments
 FIGURES_DIR     ?= paper/figures
 
-.PHONY: prepare classify complexity failure-regress render comparisons run generate help
+.PHONY: split graph regions complexity classify regress render compare run generate help
 
-## prepare:            Step 1 — preprocess + cluster raw CSV → parquet splits (DATA, NAME, SEED, CLUSTERING, DISTANCE, FORCE)
-prepare:
-	PYTHONPATH=. $(PYTHON) pipelines/prepare_data.py $(HYDRA) $(FORCE_FLAG) $(ARGS)
+## split:              Step 1 — filter, split and preprocess the raw CSV   (DATA, NAME, SEED, FORCE)
+split:
+	PYTHONPATH=. $(PYTHON) stages/split.py $(HYDRA) $(FORCE_FLAG) $(ARGS)
 
-## classify:           Step 2 — train & evaluate one classifier (ML or DL)    (DATA, NAME, SEED, CLASSIFIER, FORCE)
-classify:
-	PYTHONPATH=. $(PYTHON) pipelines/classify.py $(HYDRA) $(FORCE_FLAG) $(ARGS)
+## graph:              Step 2 — uniform reference of train and its k-NN graph   (DATA, NAME, SEED, DISTANCE, FORCE)
+graph:
+	PYTHONPATH=. $(PYTHON) stages/graph.py $(HYDRA) $(FORCE_FLAG) $(ARGS)
 
-## complexity:         Step 3a — cluster + class complexity (shared, idempotent)  (DATA, NAME, SEED, DISTANCE, FORCE)
+## regions:            Step 3 — cluster train per class, route every split   (DATA, NAME, SEED, CLUSTERING, DISTANCE, FORCE)
+regions:
+	PYTHONPATH=. $(PYTHON) stages/regions.py $(HYDRA) $(FORCE_FLAG) $(ARGS)
+
+## complexity:         Step 4 — region and class complexity descriptors   (DATA, NAME, SEED, CLUSTERING, DISTANCE, FORCE)
 complexity:
-	PYTHONPATH=. $(PYTHON) pipelines/compute_complexity.py $(HYDRA) $(FORCE_FLAG) $(ARGS)
+	PYTHONPATH=. $(PYTHON) stages/complexity.py $(HYDRA) $(FORCE_FLAG) $(ARGS)
 
-## failure-regress:    Step 3b — RF to detect problematic clusters            (DATA, NAME, SEED, CLASSIFIER)
-failure-regress:
-	PYTHONPATH=. $(PYTHON) pipelines/fit_failure_regressor.py $(HYDRA) $(ARGS)
+## classify:           Step 5 — train & evaluate one classifier (ML or DL)   (DATA, NAME, SEED, CLASSIFIER, FORCE)
+classify:
+	PYTHONPATH=. $(PYTHON) stages/classify.py $(HYDRA) $(FORCE_FLAG) $(ARGS)
 
-## render:             Step 4 — render plots from analysis artifacts          (DATA, NAME, SEED, CLASSIFIER)
+## regress:            Step 6 — RF predicting each region's failure rate   (DATA, NAME, SEED, CLASSIFIER)
+regress:
+	PYTHONPATH=. $(PYTHON) stages/regress.py $(HYDRA) $(ARGS)
+
+## render:             Step 7 — render plots from the regress artifacts   (DATA, NAME, SEED, CLASSIFIER)
 render:
-	PYTHONPATH=. $(PYTHON) pipelines/render_plots.py $(HYDRA) $(ARGS)
+	PYTHONPATH=. $(PYTHON) stages/render.py $(HYDRA) $(ARGS)
 
-## comparisons:        Aggregate the experiment tree into cross-run figures + result tables  (SWEEP_DIR, FIGURES_DIR)
-comparisons:
-	PYTHONPATH=. $(PYTHON) pipelines/comparisons.py sweep=$(SWEEP_DIR) out=$(FIGURES_DIR)
-	@echo ""; echo "comparisons done -> $(FIGURES_DIR)/{rho_by_config,rho_vs_clusters,family_importance,spearman_by_classifier,mse_by_classifier,oracle_benefit_by_variant,spearman_by_dataset}.pdf + $(SWEEP_DIR)/{perconfig,nclusters,datasets,variant_spearman,variant_cluster_mse,variant_spearman_by_dataset}_table.json"
+## compare:            Aggregate the experiment tree into cross-run figures + result tables  (SWEEP_DIR, FIGURES_DIR)
+compare:
+	PYTHONPATH=. $(PYTHON) stages/compare.py sweep=$(SWEEP_DIR) out=$(FIGURES_DIR)
+	@echo ""; echo "compare done -> $(FIGURES_DIR)/{rho_by_config,rho_vs_regions,family_importance,spearman_by_classifier,mse_by_classifier,oracle_benefit_by_variant,spearman_by_dataset}.pdf + $(SWEEP_DIR)/compare/{perconfig,nregions,datasets,variant_spearman,variant_region_mse,variant_spearman_by_dataset}_table.json"
 
 ## run:                Whole flow — fix passed vars, iterate the rest (DATA?, CLASSIFIER?, CLUSTERING?)  (NAME, SEED, DISTANCE, FORCE)
 run:
@@ -159,24 +168,22 @@ run:
 			echo "══════════════════════════════════════════════"; \
 			echo " Dataset: $$ds  |  name=$$name  seed=$(SEED)"; \
 			echo "══════════════════════════════════════════════"; \
-			$(MAKE) --no-print-directory prepare \
-				DATA=$$ds NAME=$$name SEED=$(SEED) CLUSTERING=$$clu \
-				DISTANCE=$(DISTANCE) FORCE=$(FORCE) || exit 1; \
-			$(MAKE) --no-print-directory complexity \
-				DATA=$$ds NAME=$$name SEED=$(SEED) CLUSTERING=$$clu \
-				DISTANCE=$(DISTANCE) FORCE=$(FORCE) || exit 1; \
+			for step in split graph regions complexity; do \
+				$(MAKE) --no-print-directory $$step \
+					DATA=$$ds NAME=$$name SEED=$(SEED) CLUSTERING=$$clu \
+					DISTANCE=$(DISTANCE) FORCE=$(FORCE) || exit 1; \
+			done; \
 			for clf in $$clf_list; do \
 				echo ""; \
 				echo "── classifier: $$clf ─────────────────────────────"; \
 				$(MAKE) --no-print-directory classify \
 					DATA=$$ds NAME=$$name SEED=$(SEED) CLASSIFIER=$$clf \
 					CLUSTERING=$$clu DISTANCE=$(DISTANCE) FORCE=$(FORCE) || exit 1; \
-				$(MAKE) --no-print-directory failure-regress \
-					DATA=$$ds NAME=$$name SEED=$(SEED) CLASSIFIER=$$clf \
-					CLUSTERING=$$clu DISTANCE=$(DISTANCE) || exit 1; \
-				$(MAKE) --no-print-directory render \
-					DATA=$$ds NAME=$$name SEED=$(SEED) CLASSIFIER=$$clf \
-					CLUSTERING=$$clu DISTANCE=$(DISTANCE) || exit 1; \
+				for step in regress render; do \
+					$(MAKE) --no-print-directory $$step \
+						DATA=$$ds NAME=$$name SEED=$(SEED) CLASSIFIER=$$clf \
+						CLUSTERING=$$clu DISTANCE=$(DISTANCE) || exit 1; \
+				done; \
 			done; \
 		done; \
 	done

@@ -1,34 +1,32 @@
 import logging
-import sys
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
 
-from pipelines import load_prepared_metadata, paths_from_cfg
-from src.core.config import load_config, save_config
-from src.core.log import (
-    FilesystemFigureSubscriber,
-    LogBundle,
-    LogDispatcher,
-    setup_logger,
-)
+from src.core.io import load_df, save_figures
+from src.core.log import setup_logger
+from src.core.record import clear_dir, write_record
 from src.core.utils import flush_timing, load_from_json, timed
+from src.domain.analysis.failure_regressor import join_region_summary
 from src.domain.plot.analysis_charts import dual_scatter_plot, strip_count_panel_plot
 from src.domain.plot.base import Plot, set_figure_format
 from src.domain.plot.primitives import bar_plot, numeric_scatter_plot, violin_plot
 from src.domain.plot.style import apply_plot_style
+from stages import load_cli_config, paths_from_cfg, stage_config, upstream_ids
 
 setup_logger()
 apply_plot_style()
 logger = logging.getLogger(__name__)
 
+# Bumped when the code changes what a config builds: older records never match.
+SCHEMA = 1
+
 
 def _plot_failure_strips(
-    summary_df: pd.DataFrame, oof_predicted_rate: list[dict]
+    summary_df: pd.DataFrame, predicted_rate: pd.Series
 ) -> dict[str, Plot]:
-    """Strip plot of failure rate per class, dots coloured by RF predicted rate."""
+    """Strip plot of failure rate per class, dots coloured by the predicted rate."""
     class_order = (
         summary_df.groupby("class_name")["failure_rate"]
         .median()
@@ -39,13 +37,10 @@ def _plot_failure_strips(
     failure_rate = summary_df["failure_rate"].values
     counts_by_class = summary_df.groupby("class_name").size().to_dict()
 
-    predicted = {r["cluster_id"]: r["predicted_rate"] for r in oof_predicted_rate}
-    fill_vals = np.array(
-        [predicted.get(cid, np.nan) for cid in summary_df.index], dtype=float
-    )
+    fill_vals = predicted_rate.reindex(summary_df.index).to_numpy(dtype=float)
 
     return {
-        "summary/failure_rate_strip_box": strip_count_panel_plot(
+        "failure_rate_strip_box": strip_count_panel_plot(
             categories=classes,
             values=failure_rate,
             category_order=class_order,
@@ -72,7 +67,7 @@ def _plot_feature_vs_failure(
             if int(finite.sum()) >= 3
             else float("nan")
         )
-        out[f"summary/global/{feature}"] = numeric_scatter_plot(
+        out[f"global/{feature}"] = numeric_scatter_plot(
             x,
             rate,
             color_values=rate,
@@ -145,7 +140,7 @@ def _plot_feature_violin_by_rate_bin(
         valid = x.notna() & rate.notna()
         if valid.sum() < 4:
             continue
-        out[f"summary/global/{feature}_violin"] = violin_plot(
+        out[f"global/{feature}_violin"] = violin_plot(
             categories=bin_str[valid].to_numpy(),
             values=x[valid].to_numpy(dtype=float),
             category_order=ordered,
@@ -156,16 +151,12 @@ def _plot_feature_violin_by_rate_bin(
 
 
 def _plot_rf_evaluation(
-    summary_df: pd.DataFrame, regressor_results: dict
+    summary_df: pd.DataFrame, regressor_results: dict, predicted_rate: pd.Series
 ) -> dict[str, Plot]:
     """Predicted-vs-observed scatter (regressor + MCP, shared colorbar) and feature-importance bar."""
-    predicted = {
-        r["cluster_id"]: r["predicted_rate"]
-        for r in regressor_results["oof_predicted_rate"]
-    }
-    cids = [c for c in predicted if c in summary_df.index]
+    cids = [c for c in predicted_rate.index if c in summary_df.index]
     y_true = summary_df.loc[cids, "failure_rate"].to_numpy(dtype=float)
-    y_pred_reg = np.array([predicted[c] for c in cids], dtype=float)
+    y_pred_reg = predicted_rate.loc[cids].to_numpy(dtype=float)
     y_pred_mcp = summary_df.loc[cids, "mcp_risk"].to_numpy(dtype=float)
     importances = regressor_results["feature_importances"]
 
@@ -183,7 +174,7 @@ def _plot_rf_evaluation(
     )
 
     return {
-        "summary/correlation/pred_vs_actual": dual_scatter_plot(
+        "correlation/pred_vs_actual": dual_scatter_plot(
             y_true,
             [
                 (
@@ -205,7 +196,7 @@ def _plot_rf_evaluation(
             x_label="Observed failure rate",
             y_label="Predicted failure rate (OOF)",
         ),
-        "summary/correlation/feature_importances": bar_plot(
+        "correlation/feature_importances": bar_plot(
             labels=[_feature_label(r["feature"]) for r in importances],
             values=[r["importance"] for r in importances],
             orientation="v",
@@ -220,25 +211,23 @@ def _plot_rf_evaluation(
 
 
 @timed
-def assemble_analysis_figures(
-    cluster_summary: list[dict],
-    df_meta: dict,
+def build_analysis_figures(
+    summary_df: pd.DataFrame,
+    meta: dict,
     regressor_results: dict,
-    *,
-    analysis_bus: LogDispatcher,
-) -> None:
-    """Build every analysis figure and publish it on the log bus."""
+    predicted_rate: pd.Series,
+) -> dict[str, Plot]:
+    """Every analysis figure, keyed by its path under the stage's figures folder."""
     logger.info("Building summary visualizations ...")
-    summary_df = pd.DataFrame(cluster_summary).set_index("cluster_id")
-    class_names = {c["class_id"]: c["class_name"] for c in df_meta["classes"]}
-    summary_df["class_name"] = summary_df["class_id"].map(class_names)
+    class_names = {c["class_id"]: c["class_name"] for c in meta["classes"]}
+    summary_df = summary_df.assign(class_name=summary_df["class_id"].map(class_names))
 
     if regressor_results.get("skipped"):
         logger.warning(
             "[STAGE-SKIP] Skipping failure-regressor plots: %s",
             regressor_results["message"],
         )
-        return
+        return {}
 
     ranked = sorted(
         regressor_results["feature_importances"],
@@ -249,51 +238,39 @@ def assemble_analysis_figures(
     scatter_features = [f for f in top10 if f in summary_df.columns]
 
     figures: dict[str, Plot] = {}
-    figures.update(
-        _plot_failure_strips(summary_df, regressor_results["oof_predicted_rate"])
-    )
+    figures.update(_plot_failure_strips(summary_df, predicted_rate))
     figures.update(_plot_feature_vs_failure(summary_df, scatter_features))
     figures.update(_plot_feature_violin_by_rate_bin(summary_df, scatter_features))
-    figures.update(_plot_rf_evaluation(summary_df, regressor_results))
-    analysis_bus.publish(
-        LogBundle.from_dict({f"figure/{name}": plot for name, plot in figures.items()})
-    )
+    figures.update(_plot_rf_evaluation(summary_df, regressor_results, predicted_rate))
+    return figures
 
 
 def main() -> None:
-    """Entry point for the plot rendering stage."""
-    cfg = load_config(
-        config_path=Path(__file__).parent.parent / "configs",
-        config_name="config",
-        overrides=sys.argv[1:],
-    )
+    """Entry point for the render stage."""
+    cfg = load_cli_config()
     set_figure_format(cfg.figure_format)
     paths = paths_from_cfg(cfg)
-    summary_path = paths.outputs / "analysis/cluster_summary.json"
-    results_path = paths.outputs / "analysis/failure_regressor_results.json"
-    for path in (summary_path, results_path):
-        if not path.exists():
-            raise FileNotFoundError(
-                f"Missing {path}: run `make failure-regress` first."
-            )
-    cluster_summary = load_from_json(summary_path)
-    if any("class_id" not in row for row in cluster_summary):
-        raise ValueError(
-            f"{summary_path} predates the current artifact format: "
-            "re-run `make failure-regress`."
-        )
+    stage_dir = paths.of("render")
+    config = stage_config(cfg, "render")
+    inputs = upstream_ids(cfg, paths, "render")
 
-    analysis_bus = LogDispatcher()
-    analysis_bus.subscribe(FilesystemFigureSubscriber(paths.figures))
-    assemble_analysis_figures(
-        cluster_summary=cluster_summary,
-        df_meta=load_prepared_metadata(paths.shared / "metadata/df_meta.json"),
-        regressor_results=load_from_json(results_path),
-        analysis_bus=analysis_bus,
+    clear_dir(stage_dir)
+    failures = load_df(paths.of("regress") / "regions.parquet")
+    summary_df = join_region_summary(
+        load_df(paths.of("complexity") / "regions.parquet"),
+        load_df(paths.of("complexity") / "classes.parquet"),
+        failures,
     )
-
-    flush_timing(paths.outputs / "timing.json")
-    save_config(cfg, paths.configs / "config_composed_render.json")
+    predicted_rate = failures.set_index("region")["predicted_rate"].dropna()
+    figures = build_analysis_figures(
+        summary_df,
+        load_from_json(paths.of("split") / "meta.json"),
+        load_from_json(paths.of("regress") / "results.json"),
+        predicted_rate,
+    )
+    save_figures(figures, stage_dir / "figures")
+    flush_timing(stage_dir / "timing.json")
+    write_record(stage_dir, schema=SCHEMA, config=config, inputs=inputs)
 
 
 if __name__ == "__main__":

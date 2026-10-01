@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 _LOADERS = {
@@ -40,3 +41,24 @@ def save_df(
     if saver is None:
         raise ValueError(f"Unsupported file extension: {ext!r}. Supported: {_ALL_EXTS}")
     saver(df, file_path, index=index, **kwargs)
+
+
+def save_figures(figures: dict, folder: str | Path) -> None:
+    """Write each figure to `folder/<name>.<format>`; a name may carry subfolders."""
+    for name, plot in figures.items():
+        out = Path(folder) / f"{name}.{plot.format}"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(plot.data)
+
+
+def save_arrays(arrays: dict[str, np.ndarray], path: str | Path) -> None:
+    """Write named arrays to one compressed .npz file."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(path, **arrays)
+
+
+def load_arrays(path: str | Path) -> dict[str, np.ndarray]:
+    """Read every array of an .npz file."""
+    with np.load(path) as stored:
+        return {name: stored[name] for name in stored.files}

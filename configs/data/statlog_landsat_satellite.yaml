@@ -1,9 +1,7 @@
 dir: extra/statlog_landsat_satellite
 file_name: statlog_landsat_satellite
-extension: parquet
 
 label_col: class
-benign_tag: "red_soil"
 
 num_cols:
   # Pixel 1 (top-left)
@@ -55,11 +53,11 @@ num_cols:
 cat_cols: []
 
 train_frac: 0.4
-val_frac: 0.05    # DL early stopping only; every failure rate is measured on test
+val_frac: 0.05    # DL early stopping and the ATC threshold; every failure rate is measured on test
 test_frac: 0.55
 
 # All 6 classes have 626–1533 instances
-min_cat_count: 100
+min_class_count: 100
 top_n: 32
 hash_buckets: 64
 filter_query: null

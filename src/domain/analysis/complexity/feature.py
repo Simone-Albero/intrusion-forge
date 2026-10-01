@@ -76,14 +76,14 @@ def _pair_block(X_c: np.ndarray, X_others: list[np.ndarray]) -> dict[str, list[f
 
 @timed
 def compute_f_measures(
-    X_num: np.ndarray,
+    X: np.ndarray,
     y_cluster: np.ndarray,
     top_k_map: dict[str, list[str]],
     *,
     metric: str,
 ) -> dict[str, dict[str, float | None]]:
     """F1-F4 per cluster against its top-K adversarial clusters, as min/mean/max."""
-    X_v = l2_normalize(X_num) if metric == "cosine" else X_num
+    X_v = l2_normalize(X) if metric == "cosine" else X
     cluster_block: dict[str, np.ndarray] = {
         str(int(cid)): X_v[y_cluster == cid] for cid in np.unique(y_cluster)
     }

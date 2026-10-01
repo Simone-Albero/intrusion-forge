@@ -119,8 +119,8 @@ def _predict_reliability(
     n_class: int,
     eval_rows_per_train_row: float,
 ) -> tuple[float, float, float]:
-    """Between/within-region variance of `hardness`, scaled to the rows classify will
-    evaluate each region on. `V_b` is the size-weighted spread of each region's mean
+    """Between/within-region variance of `hardness`, scaled to the test rows each
+    region will be evaluated on. `V_b` is the size-weighted spread of each region's mean
     hardness; `V_n` is the size-weighted sampling noise of a rate measured on that many
     rows. Reliability is `V_b / (V_b + V_n)`: how much of the spread a measured error
     rate would actually reflect, rather than noise from too few evaluated rows."""
@@ -164,7 +164,7 @@ def grid_search(
     # fit_fn through **fixed_params, so it must not shadow an algorithm's own parameter.
     **fixed_params,
 ) -> tuple[dict, np.ndarray | None]:
-    """Grid search scored by the reliability classify's evaluation would let it measure."""
+    """Grid search scored by the reliability the test rows would let a region be measured at."""
     scored = subsample_indices(
         X_num.shape[0], max_samples=max_fit_samples, random_state=random_state
     )
@@ -267,8 +267,8 @@ def grid_search(
     if not eligible:
         raise ValueError(
             f"No candidate partition of max_clusters={max_clusters} or fewer survives "
-            "merging undersized regions. Raise max_complexity_samples, lower "
-            "min_subsample_per_cluster, or tighten the clustering grid."
+            "merging undersized regions. Raise clustering.max_regions or tighten the "
+            "clustering grid."
         )
 
     above_target = [e for e in eligible if e["reliability"] >= reliability_target]

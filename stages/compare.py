@@ -4,15 +4,11 @@ from pathlib import Path
 
 import numpy as np
 
-from pipelines import load_prepared_metadata
-from src.core.log import (
-    FilesystemFigureSubscriber,
-    JSONSubscriber,
-    LogBundle,
-    LogDispatcher,
-    setup_logger,
-)
-from src.core.utils import load_from_json
+from src.core.io import save_figures
+from src.core.log import setup_logger
+from src.core.paths import DATASET_STAGES, RunPaths
+from src.core.record import clear_dir, read_record
+from src.core.utils import load_from_json, save_to_json
 from src.domain.analysis.failure_regressor import (
     BASELINE_VARIANTS,
     RATE_BASELINE_VARIANTS,
@@ -42,7 +38,7 @@ _FEATURE_FAMILIES = [
     ("neighbourhood", ("n1", "n2", "n3", "n4")),
     ("network", ("network_density", "cls_coef", "hub")),
     (
-        "cluster-geometry",
+        "region-geometry",
         (
             "max_dispersion",
             "p95_dispersion",
@@ -79,8 +75,8 @@ _CLF_LABEL = {
 }
 _VARIANT_ORDER = list(BASELINE_VARIANTS)
 _VARIANT_LABEL = {
-    "mcp_cluster": "MCP",
-    "atc_cluster": "ATC",
+    "mcp_region": "MCP",
+    "atc_region": "ATC",
     "region": "regressor",
     "combo_rankavg": "regressor + MCP",
     "combo_atc_rankavg": "regressor + ATC",
@@ -100,52 +96,50 @@ def _load_sweep_runs(root: Path) -> list[dict]:
     runs: list[dict] = []
     for cfg_dir in sorted(p for p in root.iterdir() if p.is_dir()):
         for ds_dir in sorted(p for p in cfg_dir.iterdir() if p.is_dir()):
-            cfg_path = ds_dir / "shared/config_composed_prepare.json"
-            if not cfg_path.exists():
-                if (ds_dir / "shared/config_composed.json").exists():
-                    raise ValueError(
-                        f"{ds_dir} predates the per-stage config snapshots: "
-                        "re-run `make prepare`."
-                    )
-                if (ds_dir / "shared/metadata/df_meta.json").exists():
-                    raise ValueError(
-                        f"{ds_dir} has prepare's outputs but no config snapshot: "
-                        "prepare did not finish, re-run `make prepare`."
-                    )
+            if not (ds_dir / "regions/record.json").exists():
                 continue
-            composed = load_from_json(cfg_path)
-            algorithm = next(iter(composed["clustering"]["algorithms"]), None)
-            data_cfg = composed["data"]
-            n_features = len(data_cfg["num_cols"]) + len(data_cfg["cat_cols"])
+            regions_config = read_record(ds_dir / "regions")["config"]
+            meta = load_from_json(ds_dir / "split/meta.json")
+            algorithm = next(iter(regions_config["clustering"]["algorithms"]), None)
             for clf_dir in sorted(
-                p for p in ds_dir.iterdir() if p.is_dir() and p.name != "shared"
+                p
+                for p in ds_dir.iterdir()
+                if p.is_dir() and p.name not in DATASET_STAGES
             ):
-                base = clf_dir / "outputs/analysis"
-                results_path = base / "failure_regressor_results.json"
+                base = clf_dir / "regress"
+                results_path = base / "results.json"
                 if not results_path.exists():
                     continue
+                # A run is described by what it was built from, not by what the folders
+                # beside it hold now.
+                run_paths = RunPaths(dataset=ds_dir, classifier=clf_dir)
+                for source, source_id in read_record(base)["inputs"].items():
+                    if read_record(run_paths.of(source))["id"] != source_id:
+                        raise ValueError(
+                            f"{base} was built from another {source} than the one on "
+                            "disk: re-run `make regress`."
+                        )
                 # Absent when the failure regressor skipped a degenerate target.
-                instance_path = base / "instance_baselines.json"
+                baselines_path = base / "baselines.json"
                 instance = (
-                    load_from_json(instance_path) if instance_path.exists() else None
+                    load_from_json(baselines_path) if baselines_path.exists() else None
                 )
                 if instance is not None:
                     variants = {r["variant"] for r in instance["baselines"]}
                     if variants != set(_VARIANT_ORDER):
                         raise ValueError(
-                            f"{instance_path} has variants {sorted(variants)}; "
-                            f"comparisons displays {_VARIANT_ORDER}."
+                            f"{baselines_path} has variants {sorted(variants)}; "
+                            f"compare displays {_VARIANT_ORDER}."
                         )
                 runs.append(
                     {
                         "config": cfg_dir.name,
                         "dataset": ds_dir.name,
                         "clf": clf_dir.name,
-                        "distance": composed["distance"],
+                        "distance": regions_config["distance"],
                         "algorithm": algorithm,
-                        "n_features": n_features,
-                        "ds_dir": ds_dir,
-                        "base": base,
+                        "n_features": len(meta["num_cols"]) + len(meta["cat_cols"]),
+                        "meta": meta,
                         "results": load_from_json(results_path),
                         "instance": instance,
                     }
@@ -256,8 +250,8 @@ def _fig_rho_by_config(runs: list[dict]) -> Plot | None:
     )
 
 
-def _fig_rho_vs_clusters(runs: list[dict]) -> Plot | None:
-    """Spearman rho against the number of clusters per run."""
+def _fig_rho_vs_regions(runs: list[dict]) -> Plot | None:
+    """Spearman rho against the number of regions per run."""
     series: dict[str, tuple[np.ndarray, np.ndarray, str]] = {}
     for distance in ("cosine", "euclidean"):
         xs, ys = [], []
@@ -266,7 +260,7 @@ def _fig_rho_vs_clusters(runs: list[dict]) -> Plot | None:
                 continue
             rho = r["results"].get("spearman")
             if rho is not None:
-                xs.append(r["results"]["n_clusters_used"])
+                xs.append(r["results"]["n_regions_used"])
                 ys.append(rho)
         series[distance] = (
             np.asarray(xs, float),
@@ -275,7 +269,7 @@ def _fig_rho_vs_clusters(runs: list[dict]) -> Plot | None:
         )
     return line_whisker_plot(
         series,
-        x_label="number of clusters per run",
+        x_label="number of regions per run",
         y_label=r"Spearman $\rho$",
         log_x=True,
         y_lim=(-1.05, 1.05),
@@ -286,7 +280,7 @@ def _fig_rho_vs_clusters(runs: list[dict]) -> Plot | None:
 
 
 def _fig_family_importance(runs: list[dict]) -> Plot | None:
-    """Feature-family importance, cluster- vs class-level."""
+    """Feature-family importance, region- vs class-level."""
     acc: dict[str, list[float]] = {}
     for r in runs:
         for row in r["results"].get("feature_importances", []):
@@ -305,7 +299,7 @@ def _fig_family_importance(runs: list[dict]) -> Plot | None:
             v for k, v in mean_imp.items() if in_family(k, prefix, members)
         )
 
-    for prefix in ("cluster_", "class_"):
+    for prefix in ("region_", "class_"):
         unmatched = sorted(
             k
             for k in mean_imp
@@ -321,11 +315,11 @@ def _fig_family_importance(runs: list[dict]) -> Plot | None:
             )
 
     names = [name for name, _ in _FEATURE_FAMILIES]
-    cluster = [part("cluster_", members) for _, members in _FEATURE_FAMILIES]
+    region = [part("region_", members) for _, members in _FEATURE_FAMILIES]
     klass = [part("class_", members) for _, members in _FEATURE_FAMILIES]
     return stacked_bar_plot(
         names,
-        [("cluster-level", cluster, _COS), ("class-level", klass, _EUC)],
+        [("region-level", region, _COS), ("class-level", klass, _EUC)],
         x_label="mean importance (% of total)",
         total_format="{:.1f}%",
     )
@@ -403,14 +397,14 @@ def _table_perconfig(runs: list[dict]) -> dict:
     return {"rows": rows}
 
 
-def _table_nclusters(runs: list[dict]) -> dict:
-    """Number of clusters per configuration, sorted by median within each distance."""
+def _table_nregions(runs: list[dict]) -> dict:
+    """Number of regions per configuration, sorted by median within each distance."""
     groups: dict[tuple[str, str], list[int]] = {}
     for r in runs:
         if r["results"].get("spearman") is None:
             continue
         groups.setdefault((r["distance"], r["algorithm"]), []).append(
-            r["results"]["n_clusters_used"]
+            r["results"]["n_regions_used"]
         )
 
     rows = []
@@ -433,17 +427,17 @@ def _table_nclusters(runs: list[dict]) -> dict:
 
 
 def _table_datasets(runs: list[dict]) -> dict:
-    """Per-dataset row and class counts and imbalance, from the raw df_info.json."""
+    """Per-dataset row and class counts and imbalance, from the raw class counts."""
     seen: dict[str, dict] = {}
     for r in runs:
         ds = _dataset_base(r["dataset"])
         if ds in seen:
             continue
-        info = load_prepared_metadata(r["ds_dir"] / "shared/metadata/df_info.json")
-        counts = sorted((c["n_rows"] for c in info["classes"]), reverse=True)
+        meta = r["meta"]
+        counts = sorted((c["n_rows"] for c in meta["raw_classes"]), reverse=True)
         seen[ds] = {
             "dataset": ds,
-            "n_rows": info["n_rows"],
+            "n_rows": meta["n_raw_rows"],
             "n_features": r["n_features"],
             "n_classes": len(counts),
             "imbalance_ratio": (
@@ -505,10 +499,10 @@ def _render_comparisons(root: Path, *, fmt: str, out: Path | None) -> None:
     ]
 
     figures = {
-        "figure/rho_by_config": _fig_rho_by_config(runs),
-        "figure/rho_vs_clusters": _fig_rho_vs_clusters(runs),
-        "figure/family_importance": _fig_family_importance(runs),
-        "figure/spearman_by_classifier": _fig_variant_by_group(
+        "rho_by_config": _fig_rho_by_config(runs),
+        "rho_vs_regions": _fig_rho_vs_regions(runs),
+        "family_importance": _fig_family_importance(runs),
+        "spearman_by_classifier": _fig_variant_by_group(
             kmeans_euclidean,
             group_key=lambda r: r["clf"],
             label_map=_CLF_LABEL,
@@ -516,18 +510,16 @@ def _render_comparisons(root: Path, *, fmt: str, out: Path | None) -> None:
             y_label=r"Spearman $\rho$ (median, IQR)",
             y_lim=(-0.05, 1.05),
         ),
-        "figure/mse_by_classifier": _fig_variant_by_group(
+        "mse_by_classifier": _fig_variant_by_group(
             kmeans_euclidean,
             group_key=lambda r: r["clf"],
             label_map=_CLF_LABEL,
-            field="cluster_rate_mse",
+            field="region_rate_mse",
             y_label="MSE (median, IQR)",
             variants=_RATE_VARIANT_ORDER,
         ),
-        "figure/oracle_benefit_by_variant": _fig_oracle_benefit_by_variant(
-            kmeans_euclidean
-        ),
-        "figure/spearman_by_dataset": _fig_variant_by_group(
+        "oracle_benefit_by_variant": _fig_oracle_benefit_by_variant(kmeans_euclidean),
+        "spearman_by_dataset": _fig_variant_by_group(
             kmeans_euclidean,
             group_key=lambda r: _dataset_base(r["dataset"]),
             label_map=_DATASET_LABEL,
@@ -539,35 +531,30 @@ def _render_comparisons(root: Path, *, fmt: str, out: Path | None) -> None:
     figures = {k: v for k, v in figures.items() if v is not None}
 
     tables = {
-        "json/perconfig_table": _table_perconfig(runs),
-        "json/nclusters_table": _table_nclusters(runs),
-        "json/datasets_table": _table_datasets(runs),
-        "json/variant_spearman_table": _table_variant_field(
+        "perconfig_table": _table_perconfig(runs),
+        "nregions_table": _table_nregions(runs),
+        "datasets_table": _table_datasets(runs),
+        "variant_spearman_table": _table_variant_field(
             kmeans_euclidean, field="spearman"
         ),
-        "json/variant_cluster_mse_table": _table_variant_field(
-            kmeans_euclidean, field="cluster_rate_mse", variants=_RATE_VARIANT_ORDER
+        "variant_region_mse_table": _table_variant_field(
+            kmeans_euclidean, field="region_rate_mse", variants=_RATE_VARIANT_ORDER
         ),
-        "json/variant_spearman_by_dataset_table": _table_variant_spearman_by_dataset(
+        "variant_spearman_by_dataset_table": _table_variant_spearman_by_dataset(
             kmeans_euclidean
         ),
     }
 
-    figures_base = out or root
-    bus = LogDispatcher()
-    bus.subscribe(FilesystemFigureSubscriber(figures_base))
-    bus.subscribe(JSONSubscriber(root))
-    bus.publish(LogBundle.from_dict({**figures, **tables}))
+    tables_dir = root / "compare"
+    clear_dir(tables_dir)
+    figures_dir = out or tables_dir
+    save_figures(figures, figures_dir)
+    for name, table in tables.items():
+        save_to_json(table, tables_dir / f"{name}.json")
     logger.info(
-        "Comparison figures (%s) -> %s",
-        ", ".join(sorted(k.split("/")[-1] for k in figures)),
-        figures_base,
+        "Comparison figures (%s) -> %s", ", ".join(sorted(figures)), figures_dir
     )
-    logger.info(
-        "Comparison tables (%s) -> %s",
-        ", ".join(sorted(k.split("/")[-1] for k in tables)),
-        root,
-    )
+    logger.info("Comparison tables (%s) -> %s", ", ".join(sorted(tables)), tables_dir)
 
 
 def _parse_args(argv: list[str]) -> tuple[Path, str, Path | None]:
@@ -579,12 +566,12 @@ def _parse_args(argv: list[str]) -> tuple[Path, str, Path | None]:
     ]
     if unknown:
         raise ValueError(
-            f"comparisons: unknown argument(s) {unknown}; "
+            f"compare: unknown argument(s) {unknown}; "
             "expected sweep=<path> [format=pdf|png] [out=<dir>]."
         )
     kv = dict(a.split("=", 1) for a in argv)
     if "sweep" not in kv:
-        raise ValueError("comparisons requires sweep=<path>.")
+        raise ValueError("compare requires sweep=<path>.")
     return (
         Path(kv["sweep"]),
         kv.get("format", "pdf"),
@@ -593,7 +580,7 @@ def _parse_args(argv: list[str]) -> tuple[Path, str, Path | None]:
 
 
 def main() -> None:
-    """Entry point for the cross-run comparisons stage."""
+    """Entry point for the compare stage."""
     root, fmt, out = _parse_args(sys.argv[1:])
     _render_comparisons(root, fmt=fmt, out=out)
 

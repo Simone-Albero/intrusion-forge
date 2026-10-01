@@ -20,15 +20,12 @@ def query_filter(df: pd.DataFrame, *, query: str | None) -> pd.DataFrame:
     return df.query(query) if query else df
 
 
-def rare_category_filter(
-    df: pd.DataFrame, cat_cols: list[str], *, min_count: int
+def drop_rare_classes(
+    df: pd.DataFrame, label_col: str, *, min_count: int
 ) -> pd.DataFrame:
-    """Remove rows with rare categories in specified categorical columns."""
-    df = df.copy()
-    for col in cat_cols:
-        counts = df[col].value_counts()
-        df = df[~df[col].isin(counts[counts < min_count].index)]
-    return df
+    """Remove the rows of every class with fewer than `min_count` rows."""
+    counts = df[label_col].value_counts()
+    return df[~df[label_col].isin(counts[counts < min_count].index)]
 
 
 def _stratified_sample(
@@ -88,18 +85,15 @@ def ml_split(
 
 
 class LogTransformer(BaseEstimator, TransformerMixin):
-    """Apply log1p transformation to handle skewed data with zeros."""
-
-    def __init__(self, *, epsilon: float = 1e-10):
-        self.epsilon = epsilon
+    """Signed log1p: compresses a skewed column and keeps the order of its negative values."""
 
     def fit(self, X, *, y=None) -> "LogTransformer":
         """Stateless fit."""
         return self
 
     def transform(self, X):
-        """Apply log1p to the non-negative part of X."""
-        return np.log1p(np.maximum(X, 0) + self.epsilon)
+        """Apply sign(x) * log1p(|x|)."""
+        return np.sign(X) * np.log1p(np.abs(X))
 
 
 class TopNHashEncoder(BaseEstimator, TransformerMixin):
@@ -172,17 +166,16 @@ def encode_labels(
     test_df: pd.DataFrame,
     *,
     src_label_col: str,
-    dst_label_col: str | None = None,
+    dst_label_col: str,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict]:
     """Encode string labels to integers using a LabelEncoder fitted on train."""
     le = LabelEncoder()
-    dst = dst_label_col or f"encoded_{src_label_col}"
     train_df = train_df.copy()
     val_df = val_df.copy()
     test_df = test_df.copy()
-    train_df[dst] = le.fit_transform(train_df[src_label_col])
-    val_df[dst] = le.transform(val_df[src_label_col])
-    test_df[dst] = le.transform(test_df[src_label_col])
+    train_df[dst_label_col] = le.fit_transform(train_df[src_label_col])
+    val_df[dst_label_col] = le.transform(val_df[src_label_col])
+    test_df[dst_label_col] = le.transform(test_df[src_label_col])
     label_mapping = {int(i): str(name) for i, name in enumerate(le.classes_)}
     return train_df, val_df, test_df, label_mapping
 

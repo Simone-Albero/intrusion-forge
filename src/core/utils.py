@@ -77,41 +77,6 @@ def flush_timing(path: str | Path) -> None:
     _TIMING_RECORDS.clear()
 
 
-def skip_if_unchanged(
-    outputs: list[Path],
-    record: Path,
-    fingerprint: dict,
-    *,
-    force: bool,
-    stage_name: str,
-) -> bool:
-    """True (and log) when every output exists and `record` holds this `fingerprint`."""
-    missing = [p for p in outputs if not Path(p).exists()]
-    if force or len(missing) == len(outputs):
-        return False
-    log = logging.getLogger(__name__)
-    if missing:
-        log.info(
-            "[RECOMPUTE] %s: %d of %d outputs missing.",
-            stage_name,
-            len(missing),
-            len(outputs),
-        )
-        return False
-    if not record.exists():
-        log.info("[RECOMPUTE] %s: no record of the inputs of its outputs.", stage_name)
-        return False
-    changed = first_difference(load_from_json(record), fingerprint)
-    if changed is not None:
-        log.info("[RECOMPUTE] %s: its inputs changed (%s).", stage_name, changed)
-        return False
-    log.info(
-        "[CACHED] %s: outputs present and unchanged (force=true to recompute).",
-        stage_name,
-    )
-    return True
-
-
 def first_difference(previous: dict, current: dict) -> str | None:
     """Name a key whose value differs, `schema` first (missing counts as None)."""
     # Another schema differs everywhere: its first key would name the wrong cause.

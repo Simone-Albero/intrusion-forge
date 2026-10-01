@@ -1,14 +1,2 @@
 out_base_path: resources/experiments/${name}/${data.file_name}_${seed}
-
-# inputs (shared)
 raw_data: resources/raw_data/${data.dir}/${data.file_name}.csv
-
-# Shared across classifiers (dataset-level)
-processed_data: ${path.out_base_path}/processed_data
-shared:         ${path.out_base_path}/shared
-
-# Per-classifier (resolved against ${classifier.name})
-models:   ${path.out_base_path}/${classifier.name}/models
-outputs:  ${path.out_base_path}/${classifier.name}/outputs
-configs:  ${path.out_base_path}/${classifier.name}/configs
-figures:  ${path.out_base_path}/${classifier.name}/figures

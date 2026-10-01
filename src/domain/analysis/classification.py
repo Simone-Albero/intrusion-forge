@@ -6,6 +6,7 @@ from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_sc
 from sklearn.utils.multiclass import unique_labels
 
 from src.domain.analysis.failure import is_failure
+from src.domain.analysis.grouping import RowGroups
 
 _METRIC_FNS: list[tuple[str, Callable]] = [
     ("precision", precision_score),
@@ -39,71 +40,19 @@ def compute_classification_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> di
     return full
 
 
-def _cluster_error_rates(
-    clusters: np.ndarray, error_mask: np.ndarray, mcp: np.ndarray
-) -> list[dict]:
-    """One row per cluster: error counts, rate and mean MCP risk, worst rate first."""
-    failed = clusters[error_mask]
-    rows = []
-    for c in np.unique(clusters):
-        mask = clusters == c
-        n_eval = int(mask.sum())
-        n_error = int((failed == c).sum())
-        rows.append(
-            {
-                "cluster_id": int(c),
-                "n_error": n_error,
-                "n_eval": n_eval,
-                "error_rate": n_error / n_eval,
-                "mcp_risk": float(mcp[mask].mean()),
-            }
-        )
-    return sorted(rows, key=lambda r: r["error_rate"], reverse=True)
-
-
-def evaluate_predictions(
-    y_true: np.ndarray,
-    y_pred: np.ndarray,
-    mcp: np.ndarray,
-    clusters: np.ndarray,
-) -> dict:
-    """Two tables of observed failures: one row per class, one row per cluster."""
-    confidences = 1.0 - mcp
-    error_mask = is_failure(y_true, y_pred)
-
-    class_rows = []
-    for label in np.unique(y_true):
-        mask = y_true == label
-        n_eval = int(mask.sum())
-        n_error = int(error_mask[mask].sum())
-        class_rows.append(
-            {
-                "class_id": int(label),
-                "n_error": n_error,
-                "n_eval": n_eval,
-                "error_rate": n_error / n_eval,
-                "mean_confidence": float(confidences[mask].mean()),
-            }
-        )
-
-    return {
-        "classes": sorted(class_rows, key=lambda r: r["error_rate"], reverse=True),
-        "clusters": _cluster_error_rates(clusters, error_mask, mcp),
-    }
-
-
-def per_sample_scores(
-    y_true: np.ndarray,
-    y_pred: np.ndarray,
-    mcp: np.ndarray,
-    clusters: np.ndarray,
+def region_failures(
+    region: np.ndarray, y_true: np.ndarray, y_pred: np.ndarray, mcp: np.ndarray
 ) -> pd.DataFrame:
-    """Per-sample risk table (label-free scores plus labels) for the instance baselines."""
+    """One row per region holding evaluated rows: its error counts, rate and mean MCP risk."""
+    groups = RowGroups(region)
+    n_eval = groups.sizes
+    n_error = groups.reduce(is_failure(y_true, y_pred), np.sum)
     return pd.DataFrame(
         {
-            "cluster": np.asarray(clusters),
-            "y_true": np.asarray(y_true),
-            "y_pred": np.asarray(y_pred),
-            "mcp_risk": np.asarray(mcp),
+            "region": groups.ids,
+            "n_eval": n_eval,
+            "n_error": n_error,
+            "failure_rate": n_error / n_eval,
+            "mcp_risk": groups.reduce(mcp),
         }
-    ).astype({"mcp_risk": "float32"})
+    )

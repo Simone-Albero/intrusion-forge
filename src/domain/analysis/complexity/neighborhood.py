@@ -2,6 +2,7 @@ import numpy as np
 from tqdm import tqdm
 
 from src.core.utils import timed
+from src.domain.analysis.complexity.queries import Queries
 from src.domain.analysis.complexity.shared import aggregate_min_mean_max, make_null_row
 
 _N_KEYS = ("n1", "n2", "n3", "n4")
@@ -86,11 +87,13 @@ def _aggregate_pairs(
     population_masks: list[np.ndarray],
     edges_uv: np.ndarray,
 ) -> dict[str, list[float]]:
-    """N1-N4 of cluster c against every adversarial population."""
+    """N1-N4 of a population against every adversarial population."""
     out: dict[str, list[float]] = {k: [] for k in _N_KEYS}
     for j_mask in population_masks:
         n1, n2, n3, n4 = _pair_metrics(nbs, nb_dists, c_mask, j_mask, edges_uv)
-        out["n1"].append(n1)
+        # No reference point in the population: there is no MST edge to count.
+        if c_mask.any():
+            out["n1"].append(n1)
         out["n2"].append(n2)
         out["n3"].append(n3)
         out["n4"].append(n4)
@@ -99,30 +102,33 @@ def _aggregate_pairs(
 
 @timed
 def compute_n_measures(
-    knn_idx: np.ndarray,
-    knn_dist: np.ndarray,
+    queries: Queries,
+    ref_population: np.ndarray,
     mst_edges: np.ndarray,
-    cluster_mask: dict[str, np.ndarray],
     top_k_map: dict[str, list[str]],
 ) -> dict[str, dict[str, float | None]]:
-    """N1-N4 per cluster against its top-K adversarial clusters, as min/mean/max."""
-    result: dict[str, dict[str, float | None]] = {}
-    for cid_str, c_mask in tqdm(
-        cluster_mask.items(), desc="N measures", unit="cluster", leave=False
-    ):
-        row = make_null_row(_N_KEYS)
-        c_full_idx = np.where(c_mask)[0]
-        nbs = knn_idx[c_full_idx]
-        nb_dists = knn_dist[c_full_idx]
-        cluster_pops = [cluster_mask[ac] for ac in top_k_map[cid_str]]
+    """N1-N4 per population against its top-K adversarial ones, as min/mean/max.
 
-        agg = _aggregate_pairs(nbs, nb_dists, c_mask, cluster_pops, mst_edges)
+    N1 counts reference points on the MST; N2-N4 read the reference neighbours of the
+    population's own query rows.
+    """
+    result: dict[str, dict[str, float | None]] = {}
+    for pid_str in tqdm(top_k_map, desc="N measures", unit="pop", leave=False):
+        row = make_null_row(_N_KEYS)
+        of_population = queries.population == int(pid_str)
+        agg = _aggregate_pairs(
+            queries.nbs[of_population],
+            queries.nb_dist[of_population],
+            ref_population == int(pid_str),
+            [ref_population == int(ap) for ap in top_k_map[pid_str]],
+            mst_edges,
+        )
         for nk in _N_KEYS:
             mn, me, mx = aggregate_min_mean_max(agg[nk])
             row[f"{nk}_min"] = mn
             row[f"{nk}_mean"] = me
             row[f"{nk}_max"] = mx
 
-        result[cid_str] = row
+        result[pid_str] = row
 
     return result

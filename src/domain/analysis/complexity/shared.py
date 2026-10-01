@@ -25,55 +25,15 @@ def make_null_row(metric_keys: tuple[str, ...]) -> dict[str, float | None]:
     return {f"{m}_{stat}": None for m in metric_keys for stat in ("min", "mean", "max")}
 
 
-def l2_normalize(X_num: np.ndarray, eps: float = 1e-8) -> np.ndarray:
+def l2_normalize(X: np.ndarray, eps: float = 1e-8) -> np.ndarray:
     """Row-wise L2-normalize so that Euclidean on unit vectors maps to cosine."""
-    norms = np.linalg.norm(X_num, axis=1, keepdims=True)
-    return X_num / np.maximum(norms, eps)
+    norms = np.linalg.norm(X, axis=1, keepdims=True)
+    return X / np.maximum(norms, eps)
 
 
-def _scale_for_metric(X_num: np.ndarray, metric: str) -> np.ndarray:
-    """Numerics in the space `hybrid_row_batch` expects: unit rows, or range-scaled."""
-    if metric == "cosine":
-        return l2_normalize(X_num)
-    feat_ranges = np.maximum(X_num.max(axis=0) - X_num.min(axis=0), 1e-8)
-    return X_num / feat_ranges
-
-
-def hybrid_row_batch(
-    X_num_ref: np.ndarray,
-    X_cat: np.ndarray | None,
-    query_num_ref: np.ndarray,
-    query_cat: np.ndarray | None,
-    d_num: int,
-    d_cat: int,
-    *,
-    metric: str,
-) -> np.ndarray:
-    """Gower-hybrid distance on numerics scaled by `_scale_for_metric`, plus Hamming.
-
-    `cdist` sums in a different order than a per-feature loop, so a result can drift
-    by a few ulp — N2 is the one downstream measure that reads it, not just order.
-    """
-    if metric == "cosine":
-        dist = cdist(query_num_ref, X_num_ref, metric="sqeuclidean")
-        dist *= d_num / 2.0
-        # Cosine distance reaches 2 for opposed vectors; the Gower average needs each
-        # numeric term in [0, 1], which is d_num after the scaling above.
-        np.clip(dist, 0.0, d_num, out=dist)
-    else:
-        # Range-scaled inputs turn the Gower-Euclidean average into plain Manhattan.
-        dist = cdist(query_num_ref, X_num_ref, metric="cityblock")
-
-    if X_cat is not None and d_cat > 0:
-        # uint16 costs little next to `dist`, and keeps d_cat (a column count, at
-        # most in the tens) far from wrapping, unlike uint8's 256.
-        mismatch = np.zeros(dist.shape, dtype=np.uint16)
-        for f in range(d_cat):
-            mismatch += query_cat[:, f : f + 1] != X_cat[:, f]
-        dist += mismatch
-
-    dist /= d_num + d_cat
-    return dist
+def scale_for_metric(X: np.ndarray, metric: str) -> np.ndarray:
+    """Points as the graph measures them: unit rows under cosine, as they are otherwise."""
+    return l2_normalize(X) if metric == "cosine" else X
 
 
 def _thread_budget() -> int:
@@ -83,32 +43,30 @@ def _thread_budget() -> int:
     return os.cpu_count() or 1
 
 
-@timed
-def build_knn_graph(
-    X_num: np.ndarray,
-    X_cat: np.ndarray | None,
+def query_neighbors(
+    reference: np.ndarray,
+    reference_rows: np.ndarray,
+    query: np.ndarray,
+    query_rows: np.ndarray,
     *,
     k: int,
     metric: str,
-    batch_size: int = 128,
+    batch_size: int = 256,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Build a k-NN graph with Gower-hybrid distances, batches spread across threads."""
-    n, d_num = X_num.shape
-    d_cat = X_cat.shape[1] if X_cat is not None else 0
-    effective_k = min(k, n - 1)
-    X_ref = _scale_for_metric(X_num, metric)
+    """The k nearest reference points of every query, as indices into `reference`."""
+    # A query that is a reference point, told by its row, is not its own neighbour.
+    n = query.shape[0]
+    effective_k = min(k, reference.shape[0] - 1)
+    X_ref = scale_for_metric(reference, metric)
+    X_query = scale_for_metric(query, metric)
 
     indices = np.empty((n, effective_k), dtype=np.int64)
     distances = np.empty((n, effective_k), dtype=np.float64)
 
     def fill_batch(start: int) -> None:
         end = min(start + batch_size, n)
-        q_cat = X_cat[start:end] if X_cat is not None else None
-        dists = hybrid_row_batch(
-            X_ref, X_cat, X_ref[start:end], q_cat, d_num, d_cat, metric=metric
-        )
-        batch_idx = np.arange(end - start)
-        dists[batch_idx, start + batch_idx] = np.inf
+        dists = cdist(X_query[start:end], X_ref, metric="euclidean")
+        dists[reference_rows[None, :] == query_rows[start:end, None]] = np.inf
 
         part = np.argpartition(dists, effective_k, axis=1)[:, :effective_k]
         part_d = np.take_along_axis(dists, part, axis=1)
@@ -125,7 +83,7 @@ def build_knn_graph(
             for future in tqdm(
                 as_completed(futures),
                 total=len(futures),
-                desc="k-NN graph",
+                desc="k-NN",
                 unit="batch",
                 leave=False,
             ):
@@ -138,6 +96,15 @@ def build_knn_graph(
             raise
 
     return indices, distances
+
+
+@timed
+def build_knn_graph(
+    X: np.ndarray, *, k: int, metric: str
+) -> tuple[np.ndarray, np.ndarray]:
+    """The euclidean k-NN graph of a point cloud: every point's k nearest others."""
+    rows = np.arange(X.shape[0])
+    return query_neighbors(X, rows, X, rows, k=k, metric=metric)
 
 
 def _to_sparse_csr(
@@ -171,13 +138,7 @@ def _to_sparse_csr(
 
 
 def _bridge_disconnected(
-    mat: scipy.sparse.csr_matrix,
-    X_num: np.ndarray,
-    X_cat: np.ndarray | None,
-    d_num: int,
-    d_cat: int,
-    *,
-    metric: str,
+    mat: scipy.sparse.csr_matrix, X: np.ndarray, *, metric: str
 ) -> scipy.sparse.csr_matrix:
     """Add one bridge edge per disconnected component of the k-NN graph."""
     n_comp, comp_labels = scipy.sparse.csgraph.connected_components(mat, directed=False)
@@ -186,11 +147,8 @@ def _bridge_disconnected(
 
     mat = mat.tolil()
     ref = int(np.where(comp_labels == 0)[0][0])
-    X_ref = _scale_for_metric(X_num, metric)
-    q_cat = X_cat[ref : ref + 1] if X_cat is not None else None
-    dists_row = hybrid_row_batch(
-        X_ref, X_cat, X_ref[ref : ref + 1], q_cat, d_num, d_cat, metric=metric
-    )[0]
+    X_ref = scale_for_metric(X, metric)
+    dists_row = cdist(X_ref[ref : ref + 1], X_ref, metric="euclidean")[0]
 
     for ci in range(1, n_comp):
         nodes_ci = np.where(comp_labels == ci)[0]
@@ -205,17 +163,13 @@ def _bridge_disconnected(
 def build_approx_mst(
     knn_indices: np.ndarray,
     knn_distances: np.ndarray,
-    X_num: np.ndarray,
-    X_cat: np.ndarray | None,
+    X: np.ndarray,
     *,
     metric: str,
 ) -> np.ndarray:
     """Approximate MST on the sparse k-NN graph, bridging disconnected components first."""
-    n, d_num = X_num.shape
-    d_cat = X_cat.shape[1] if X_cat is not None else 0
-
-    graph = _to_sparse_csr(knn_indices, knn_distances, n)
-    graph = _bridge_disconnected(graph, X_num, X_cat, d_num, d_cat, metric=metric)
+    graph = _to_sparse_csr(knn_indices, knn_distances, X.shape[0])
+    graph = _bridge_disconnected(graph, X, metric=metric)
     mst = scipy.sparse.csgraph.minimum_spanning_tree(graph).tocoo()
     if mst.nnz == 0:
         return np.empty((0, 2), dtype=np.int64)

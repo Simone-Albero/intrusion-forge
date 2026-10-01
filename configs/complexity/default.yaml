@@ -1,7 +1,5 @@
-distance: ${distance}              # inherited from the top-level key — must match the clustering metric
-k: 30
 top_k_clusters: 10                 # top-K nearest adversarial clusters per cluster (vs-cluster aggregation)
-min_subsample_per_cluster: 20      # min samples per cluster (measurement floor); keep ≤ clustering.min_cluster_floor
-max_complexity_samples: 50000      # cap on points used to build the k-NN graph (build is Θ(m²))
-silhouette_max_samples: 10000      # size of the subsample behind the per-cluster silhouette tail (p5_silhouette, frac_at_risk), when the floor below needs fewer; the floor can exceed it, up to max_complexity_samples
+max_queries_per_region: 200        # rows a region is measured on when train is larger than graph.max_samples; below that every row is a query
+max_queries_per_class: 2000        # the same for a class
+silhouette_max_samples: 10000      # size of the subsample behind the per-cluster silhouette tail (p5_silhouette, frac_at_risk), when the floor below needs fewer; the floor can exceed it, up to the rows measured
 silhouette_min_per_cluster: 50     # rows per cluster (all of a smaller one), kept even past silhouette_max_samples

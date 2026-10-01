@@ -1,6 +1,8 @@
 defaults:
   - data: cic_2018_v2
   - classifier: mlp
+  - space: default
+  - graph: default
   - clustering: kmeans
   - loss: focal             # consumed only by DL classifiers
   - optimizer: adamw        # consumed only by DL classifiers
@@ -14,8 +16,8 @@ defaults:
 
 seed: 42
 name: exp_euc
-distance: euclidean                  # euclidean | cosine — metric for clustering and complexity analysis
-force: false                         # recompute every cached stage: prepare, complexity and classify's model
+distance: euclidean                  # euclidean | cosine — metric of the graph, the regions and the complexity measures
+force: false                         # recompute every cached stage: split, graph, regions, complexity and classify's model
 figure_format: pdf                   # figure file format: pdf (vector, lighter) | png
 
 hydra:

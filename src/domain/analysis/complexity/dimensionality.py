@@ -5,39 +5,34 @@ from tqdm import tqdm
 from src.core.utils import timed
 
 
-def t2(n: int, d_num: int, d_cat: int) -> float:
-    """Feature-to-sample ratio: (d_num + d_cat) / n."""
-    return (d_num + d_cat) / n
-
-
-def _t3_t4(X_num: np.ndarray) -> tuple[float | None, float | None]:
-    """T3 and T4 from one PCA fit: (n_pca_95/n, n_pca_95/d_num), None when degenerate."""
-    n, d_num = X_num.shape
-    if n < 2 or d_num < 1:
+def _t3_t4(rows: np.ndarray, n_rows: int) -> tuple[float | None, float | None]:
+    """T3 and T4 from one PCA fit: (n_pca_95/n, n_pca_95/d), None when degenerate."""
+    n, d = rows.shape
+    if n < 2 or d < 1:
         return None, None
-    if d_num == 1:
-        return 1.0 / n, 1.0
-    max_components = min(n, d_num)
+    if d == 1:
+        return 1.0 / n_rows, 1.0
+    max_components = min(n, d)
     cumvar = np.cumsum(
-        PCA(n_components=max_components).fit(X_num).explained_variance_ratio_
+        PCA(n_components=max_components).fit(rows).explained_variance_ratio_
     )
     n_pca_95 = min(int(np.searchsorted(cumvar, 0.95)) + 1, max_components)
-    return n_pca_95 / n, n_pca_95 / d_num
+    return n_pca_95 / n_rows, n_pca_95 / d
 
 
 @timed
 def compute_t_measures(
-    X_num: np.ndarray,
-    X_cat: np.ndarray | None,
-    y_cluster: np.ndarray,
+    X: np.ndarray, y_population: np.ndarray, sizes: dict[int, int]
 ) -> dict[str, dict[str, float | None]]:
-    """Per-cluster dimensionality measures T2, T3 and T4."""
+    """Per-population dimensionality measures T2, T3 and T4."""
+    # The components come from the rows of `X`, a sample of each population; the ratios
+    # are over `sizes`, the rows the population really holds.
     result: dict[str, dict[str, float | None]] = {}
-    cluster_ids = [int(cid) for cid in np.unique(y_cluster)]
-    d_cat = X_cat.shape[1] if X_cat is not None else 0
-    for cid in tqdm(cluster_ids, desc="T measures", unit="cluster", leave=False):
-        Xn = X_num[y_cluster == cid]
-        n, d_num = Xn.shape
-        t3_val, t4_val = _t3_t4(Xn)
-        result[str(cid)] = {"t2": t2(n, d_num, d_cat), "t3": t3_val, "t4": t4_val}
+    d = X.shape[1]
+    for pid in tqdm(
+        np.unique(y_population), desc="T measures", unit="pop", leave=False
+    ):
+        n_rows = sizes[int(pid)]
+        t3_val, t4_val = _t3_t4(X[y_population == pid], n_rows)
+        result[str(int(pid))] = {"t2": d / n_rows, "t3": t3_val, "t4": t4_val}
     return result

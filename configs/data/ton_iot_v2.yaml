@@ -1,6 +1,5 @@
 dir: dataset_v2
 file_name: ton_iot_v2
-extension: parquet
 
 label_col: Attack
 
@@ -45,13 +44,11 @@ cat_cols:
   - DNS_QUERY_TYPE
   - FTP_COMMAND_RET_CODE
 
-benign_tag: Benign
-
 train_frac: 0.4
-val_frac: 0.05    # DL early stopping only; every failure rate is measured on test
+val_frac: 0.05    # DL early stopping and the ATC threshold; every failure rate is measured on test
 test_frac: 0.55
 
 filter_query: null
-min_cat_count: 5000
+min_class_count: 5000
 top_n: 128
 hash_buckets: 256

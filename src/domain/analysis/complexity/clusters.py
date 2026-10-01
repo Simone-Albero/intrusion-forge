@@ -70,7 +70,7 @@ def _nearest_rival(
 
 @timed
 def compute_cluster_geometry(
-    X_num: np.ndarray,
+    X: np.ndarray,
     y_cluster: np.ndarray,
     centroids: dict[str, list[float]],
     *,
@@ -91,7 +91,7 @@ def compute_cluster_geometry(
     np.fill_diagonal(pw, np.inf)
 
     sil = _approx_silhouette(
-        X_num,
+        X,
         y_cluster,
         metric=metric,
         max_samples=silhouette_max_samples,
@@ -104,7 +104,7 @@ def compute_cluster_geometry(
     for idx_c, cid in enumerate(cluster_ids):
         mask_cid = y_cluster == int(cid)
         max_disp, p95_disp = _dispersion(
-            X_num[mask_cid], centroid_matrix[idx_c], metric=metric
+            X[mask_cid], centroid_matrix[idx_c], metric=metric
         )
         dist_rival = _nearest_rival(pw[idx_c], cluster_classes[idx_c], cluster_classes)
 

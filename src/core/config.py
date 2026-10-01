@@ -1,9 +1,7 @@
 from pathlib import Path
 
 from hydra import compose, initialize_config_dir
-from omegaconf import DictConfig, OmegaConf
-
-from src.core.utils import save_to_json
+from omegaconf import DictConfig, ListConfig, OmegaConf
 
 
 def load_config(
@@ -31,14 +29,19 @@ def load_config(
     return DictConfig(cfg)
 
 
-def save_config(cfg: DictConfig, path: str | Path) -> None:
-    """Persist the fully-resolved config to a JSON file."""
-    save_to_json(
-        OmegaConf.to_container(cfg, resolve=True),
-        path,
-    )
-
-
 def to_container(cfg) -> dict:
     """Convert an OmegaConf config (or sub-node) to plain Python types."""
     return OmegaConf.to_container(cfg, resolve=True)
+
+
+def select_config(cfg, keys: tuple[str, ...]) -> dict:
+    """The slice of `cfg` named by dotted `keys`, as plain Python values under those keys."""
+    selected = {}
+    for key in keys:
+        node = cfg
+        for part in key.split("."):
+            node = node[part]
+        selected[key] = (
+            to_container(node) if isinstance(node, (DictConfig, ListConfig)) else node
+        )
+    return selected

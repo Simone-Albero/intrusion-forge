@@ -1,4 +1,4 @@
-min_eval_support: 5                # clusters with fewer evaluated rows are excluded from the failure dataset
+min_eval_support: 5                # regions with fewer evaluated rows are excluded from the failure dataset
 n_outer_splits: 5
 n_inner_splits: 5
 n_iter: 40                         # RandomizedSearchCV draws; budget independent of the grid's size

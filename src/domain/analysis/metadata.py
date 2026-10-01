@@ -1,42 +1,40 @@
 import pandas as pd
 
 
-def get_df_info(df: pd.DataFrame, *, label_col: str) -> dict:
-    """Size of the raw frame, plus one row per class."""
-    return {
-        "n_rows": int(df.shape[0]),
-        "n_columns": int(df.shape[1]),
-        "classes": [
-            {"class_name": str(name), "n_rows": int(n)}
-            for name, n in df[label_col].value_counts().items()
-        ],
-    }
-
-
-def compute_df_metadata(
-    splits: dict[str, pd.DataFrame],
+def build_meta(
+    labels: dict[str, pd.Series],
     *,
-    label_col: str,
     num_cols: list[str],
     cat_cols: list[str],
-    benign_tag: str,
     label_mapping: dict[int, str],
+    raw_classes: pd.Series,
+    n_raw_rows: int,
+    n_raw_columns: int,
 ) -> dict:
-    """Run scalars plus split and class tables, read from the encoded `label_col`."""
-    counts = {tag: df[label_col].value_counts() for tag, df in splits.items()}
-
+    """What the later stages need to know of the split: columns, classes and sizes."""
+    counts = {split: series.value_counts() for split, series in labels.items()}
     return {
-        "benign_tag": benign_tag,
-        "n_classes": int(splits["train"][label_col].nunique()),
-        "numerical_columns": num_cols,
-        "categorical_columns": cat_cols,
-        "splits": [{"split": tag, "n_rows": len(df)} for tag, df in splits.items()],
+        "n_classes": len(label_mapping),
+        "num_cols": num_cols,
+        "cat_cols": cat_cols,
+        "n_raw_rows": n_raw_rows,
+        "n_raw_columns": n_raw_columns,
+        "splits": [
+            {"split": split, "n_rows": len(series)} for split, series in labels.items()
+        ],
         "classes": [
             {
                 "class_id": int(class_id),
                 "class_name": name,
-                **{f"n_{tag}": int(c.get(class_id, 0)) for tag, c in counts.items()},
+                **{
+                    f"n_{split}": int(c.get(class_id, 0)) for split, c in counts.items()
+                },
             }
             for class_id, name in sorted(label_mapping.items())
+        ],
+        # Before the rare-class filter: which classes it dropped stays visible.
+        "raw_classes": [
+            {"class_name": str(name), "n_rows": int(n)}
+            for name, n in raw_classes.items()
         ],
     }

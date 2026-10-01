@@ -10,8 +10,9 @@ from sklearn.model_selection import KFold, RandomizedSearchCV, StratifiedKFold
 from tqdm import tqdm
 
 from src.core.utils import timed
-from src.domain.analysis.confidence import atc_cluster_risk
+from src.domain.analysis.confidence import atc_region_risk
 from src.domain.analysis.failure import is_failure
+from src.domain.analysis.grouping import RowGroups
 from src.domain.analysis.risk_coverage import oracle_benefit_recovered
 
 logger = logging.getLogger(__name__)
@@ -84,41 +85,24 @@ def _quantile_strata(y: pd.Series, q: int) -> pd.Series | None:
     return bins.cat.codes
 
 
-def build_cluster_summary(
-    complexity: list[dict],
-    class_complexity: list[dict],
-    predictions: dict,
-) -> list[dict]:
-    """Merge `cluster_`/`class_`-prefixed complexity with the observed failure rates."""
-    by_class = {rec["class_id"]: rec for rec in class_complexity}
-    errors = {rec["cluster_id"]: rec for rec in predictions["clusters"]}
-
-    summary = []
-    for cluster_measures in complexity:
-        cluster_id = cluster_measures["cluster_id"]
-        class_id = cluster_measures["class_id"]
-        class_measures = by_class.get(class_id, {})
-        cluster_feats = {
-            f"cluster_{k}": v
-            for k, v in cluster_measures.items()
-            if k not in ("cluster_id", "class_id")
-        }
-        class_feats = {
-            f"class_{k}": v for k, v in class_measures.items() if k != "class_id"
-        }
-        error = errors.get(cluster_id, {})
-        summary.append(
-            {
-                "cluster_id": cluster_id,
-                **cluster_feats,
-                **class_feats,
-                "class_id": class_id,
-                "n_eval": error["n_eval"] if error else 0,
-                "failure_rate": error.get("error_rate"),
-                "mcp_risk": error.get("mcp_risk"),
-            }
-        )
-    return summary
+def join_region_summary(
+    regions: pd.DataFrame, classes: pd.DataFrame, failures: pd.DataFrame
+) -> pd.DataFrame:
+    """One row per region: its descriptors, its class's, and the failures observed on it."""
+    measures = [c for c in regions.columns if c not in ("region", "class_id")]
+    class_measures = [c for c in classes.columns if c != "class_id"]
+    summary = pd.DataFrame({"region": regions["region"].to_numpy()})
+    for measure in measures:
+        summary[f"region_{measure}"] = regions[measure].to_numpy()
+    of_class = classes.set_index("class_id").loc[regions["class_id"], class_measures]
+    for measure in class_measures:
+        summary[f"class_{measure}"] = of_class[measure].to_numpy()
+    summary["class_id"] = regions["class_id"].to_numpy()
+    observed = failures.set_index("region").reindex(summary["region"])
+    summary["n_eval"] = observed["n_eval"].fillna(0).astype(int).to_numpy()
+    summary["failure_rate"] = observed["failure_rate"].to_numpy()
+    summary["mcp_risk"] = observed["mcp_risk"].to_numpy()
+    return summary.set_index("region")
 
 
 def _fit_nested_cv(
@@ -188,15 +172,11 @@ def _aggregate_oof_results(oof: dict, feature_cols: list[str]) -> dict:
             {"feature": feature, "importance": importance}
             for feature, importance in zip(feature_cols, mean_importances.tolist())
         ],
-        "oof_predicted_rate": [
-            {"cluster_id": cid, "predicted_rate": float(pred)}
-            for cid, pred in zip(oof["indices"], y_pred)
-        ],
     }
 
 
 def _failure_rate_distribution(rates: pd.Series) -> dict:
-    """Summary stats of the failure-rate distribution over the used clusters."""
+    """Summary stats of the failure-rate distribution over the used regions."""
     if rates.empty:
         return {}
     quantiles = rates.quantile([0.25, 0.5, 0.75, 0.9])
@@ -220,7 +200,7 @@ _NOT_FEATURES = ("failure_rate", "n_eval", "mcp_risk", "class_id")
 
 @timed
 def fit_failure_regressor(
-    cluster_stats: list[dict],
+    summary: pd.DataFrame,
     *,
     param_grid: dict,
     n_outer_splits: int,
@@ -228,10 +208,11 @@ def fit_failure_regressor(
     n_iter: int,
     random_state: int,
     min_eval_support: int,
-) -> dict:
-    """Fit a nested-CV Random Forest predicting each cluster's failure rate from its features."""
+) -> tuple[dict, pd.Series]:
+    """Fit a nested-CV Random Forest predicting each region's failure rate; return the
+    results and each scored region's prediction made while it was held out."""
     logger.info("Running failure regressor ...")
-    df = pd.DataFrame(cluster_stats).set_index("cluster_id")
+    df = summary
 
     # A region can still end up with no routed row, e.g. a small one in a single split.
     no_eval = df["failure_rate"].isna()
@@ -246,8 +227,8 @@ def fit_failure_regressor(
         float((rates * n_eval).sum() / n_eval.sum()) if n_eval.sum() else 0.0
     )
     exclusions = {
-        "n_clusters_total": int(no_eval.size),
-        "n_clusters_used": int(len(df)),
+        "n_regions_total": int(no_eval.size),
+        "n_regions_used": int(len(df)),
         "n_excluded_no_eval": n_excluded_no_eval,
         "n_excluded_low_support": n_excluded_low_support,
         "min_eval_support": min_eval_support,
@@ -255,12 +236,12 @@ def fit_failure_regressor(
     }
     total_excluded = n_excluded_no_eval + n_excluded_low_support
     if total_excluded:
-        # Losing more than a fifth of the clusters earns a warning: routine on a single
-        # split, whose test rows alone starve per-cluster support.
+        # Losing more than a fifth of the regions earns a warning: routine on a single
+        # split, whose test rows alone starve per-region support.
         excluded_frac = total_excluded / no_eval.size if no_eval.size else 0.0
         log = logger.warning if excluded_frac > 0.2 else logger.info
         log(
-            "Excluded clusters — no evaluated rows: %d, support < %d: %d; %d/%d used",
+            "Excluded regions — no evaluated rows: %d, support < %d: %d; %d/%d used",
             n_excluded_no_eval,
             min_eval_support,
             n_excluded_low_support,
@@ -268,8 +249,11 @@ def fit_failure_regressor(
             no_eval.size,
         )
 
+    # A descriptor no region has a value for carries nothing to learn from.
     feature_cols = [
-        c for c in df.select_dtypes("number").columns if c not in _NOT_FEATURES
+        c
+        for c in df.select_dtypes("number").columns
+        if c not in _NOT_FEATURES and df[c].notna().any()
     ]
     X = df[feature_cols].copy()
     y = df["failure_rate"].astype(float)
@@ -280,17 +264,18 @@ def fit_failure_regressor(
     n_used = len(df)
     if n_used < 2 or float(y.std()) < 1e-9:
         message = (
-            f"Failure regressor skipped: {n_used} usable cluster(s), "
-            f"failure-rate std={float(y.std()):.4g}. Need >=2 clusters with variance."
+            f"Failure regressor skipped: {n_used} usable region(s), "
+            f"failure-rate std={float(y.std()):.4g}. Need >=2 regions with variance."
         )
         logger.warning("[STAGE-SKIP] %s", message)
-        return {
+        skipped = {
             "skipped": True,
             "reason": "degenerate_target",
             "message": message,
             **exclusions,
             **context_metrics,
         }
+        return skipped, pd.Series(dtype=float, name="predicted_rate")
 
     strata = _quantile_strata(y, n_outer_splits)
     if strata is not None:
@@ -311,7 +296,7 @@ def fit_failure_regressor(
     inner_k = _max_safe_splits(m_train_worst, n_inner_splits)
     if outer_k < n_outer_splits or inner_k < n_inner_splits:
         logger.warning(
-            "[CV-ADAPT] Adapting CV (clusters=%d): outer %d→%d, inner %d→%d%s",
+            "[CV-ADAPT] Adapting CV (regions=%d): outer %d→%d, inner %d→%d%s",
             n_used,
             n_outer_splits,
             outer_k,
@@ -350,66 +335,68 @@ def fit_failure_regressor(
         results["mae"],
         results["mse"],
     )
-    return results
+    predicted_rate = pd.Series(
+        oof["y_pred"],
+        index=pd.Index(oof["indices"], name="region"),
+        name="predicted_rate",
+    )
+    return results, predicted_rate
 
 
 BASELINE_VARIANTS = (
-    "mcp_cluster",
-    "atc_cluster",
+    "mcp_region",
+    "atc_region",
     "region",
     "combo_rankavg",
     "combo_atc_rankavg",
 )
-RATE_BASELINE_VARIANTS = ("region", "mcp_cluster", "atc_cluster")
+RATE_BASELINE_VARIANTS = ("region", "mcp_region", "atc_region")
 
 
-def instance_baselines(samples: pd.DataFrame, predicted_rate: list[dict]) -> dict:
-    """Cluster rho, cluster-rate MSE and oracle benefit of every baseline variant."""
-    rate_by_cluster = {r["cluster_id"]: r["predicted_rate"] for r in predicted_rate}
-    # Only the clusters the regressor scored, so every variant ranks the same regions.
-    samples = samples[samples["cluster"].isin(rate_by_cluster)]
-    cluster = samples["cluster"].to_numpy()
+def instance_baselines(
+    samples: pd.DataFrame, predicted_rate: pd.Series, *, atc_threshold: float
+) -> dict:
+    """Region rho, region-rate MSE and oracle benefit of every baseline variant."""
+    # `atc_threshold` is the confidence cut, chosen on rows other than `samples`.
+    # Only the regions the regressor scored, so every variant ranks the same regions.
+    samples = samples[samples["region"].isin(predicted_rate.index)]
+    region_of_row = samples["region"].to_numpy()
+    groups = RowGroups(region_of_row)
     failure = is_failure(
         samples["y_true"].to_numpy(), samples["y_pred"].to_numpy()
     ).astype(float)
-    correct = 1.0 - failure
     mcp = samples["mcp_risk"].to_numpy(dtype=float)
     confidence = 1.0 - mcp
-    region = np.array([rate_by_cluster[c] for c in cluster], dtype=float)
-
-    clusters = np.unique(cluster)
-    mcp_cluster = np.empty_like(mcp)
-    observed = np.empty(clusters.size)
-    for i, c in enumerate(clusters):
-        m = cluster == c
-        mcp_cluster[m] = mcp[m].mean()
-        observed[i] = failure[m].mean()
-    atc_cluster = atc_cluster_risk(confidence, correct, cluster)
+    region = groups.spread(predicted_rate.loc[groups.ids].to_numpy(dtype=float))
+    mcp_region = groups.spread(groups.reduce(mcp))
+    observed = groups.reduce(failure)
+    atc_region = atc_region_risk(confidence, region_of_row, threshold=atc_threshold)
 
     n = failure.size
     region_rank = rankdata(region) / (n + 1)
     combo_rankavg = region_rank + rankdata(mcp) / (n + 1)
-    combo_atc_rankavg = region_rank + rankdata(atc_cluster) / (n + 1)
+    combo_atc_rankavg = region_rank + rankdata(atc_region) / (n + 1)
 
     scores = {
-        "mcp_cluster": mcp_cluster,
-        "atc_cluster": atc_cluster,
+        "mcp_region": mcp_region,
+        "atc_region": atc_region,
         "region": region,
         "combo_rankavg": combo_rankavg,
         "combo_atc_rankavg": combo_atc_rankavg,
     }
 
-    # A rate variant holds one value per cluster, so that value is the prediction:
+    # A rate variant holds one value per region, so that value is the prediction:
     # averaging its copies moves the last ulp and breaks ties, and `region` would drift
     # from the regressor's own rho. The rank averages differ row to row and are averaged
     # with numpy, whose pairwise sum a pandas groupby would not reproduce to the ulp.
-    predicted_by_name = {name: np.empty(clusters.size) for name in BASELINE_VARIANTS}
-    for i, c in enumerate(clusters):
-        m = cluster == c
-        for name in BASELINE_VARIANTS:
-            values = scores[name][m]
-            is_rate = name in RATE_BASELINE_VARIANTS
-            predicted_by_name[name][i] = values[0] if is_rate else values.mean()
+    predicted_by_name = {
+        name: (
+            groups.first(scores[name])
+            if name in RATE_BASELINE_VARIANTS
+            else groups.reduce(scores[name])
+        )
+        for name in BASELINE_VARIANTS
+    }
 
     support = np.ones(failure.size)
     baselines = []
@@ -430,7 +417,7 @@ def instance_baselines(samples: pd.DataFrame, predicted_rate: list[dict]) -> dic
                 ),
                 # Null rather than absent: the rank-average variants have no rate to
                 # compare, and a uniform row shape is what makes this a table.
-                "cluster_rate_mse": (
+                "region_rate_mse": (
                     float(np.mean((predicted - observed) ** 2))
                     if name in RATE_BASELINE_VARIANTS
                     else None
@@ -440,6 +427,6 @@ def instance_baselines(samples: pd.DataFrame, predicted_rate: list[dict]) -> dic
 
     return {
         "n_eval": int(len(samples)),
-        "n_clusters": int(clusters.size),
+        "n_regions": int(groups.ids.size),
         "baselines": baselines,
     }
