@@ -32,7 +32,7 @@ setup_logger()
 logger = logging.getLogger(__name__)
 
 # Bumped when the code changes what a config builds: older records never match.
-SCHEMA = 3
+SCHEMA = 4
 
 # Bins of region size the error is reported over.
 SIZE_BINS = 5
@@ -54,6 +54,7 @@ def _evaluated_rows(paths, split: str) -> pd.DataFrame:
     return pd.DataFrame(
         {
             "region": regions["region"].to_numpy(),
+            "nearest_region": regions["nearest_region"].to_numpy(),
             "y_true": labels,
             "y_pred": predictions["y_pred"].to_numpy(),
             "mcp_risk": predictions["mcp_risk"].to_numpy(dtype=np.float64),
@@ -94,7 +95,10 @@ def regress(cfg, paths) -> tuple[pd.DataFrame, dict, dict | None]:
         random_state=cfg.seed,
     )
     # Never added to `summary`: the regressor takes every numeric column of it as a feature.
-    fit_failures = _failures(train[train["in_fit"]])
+    # Counted in the region a test row like it is routed to, not in the cluster its own
+    # class drew it into: the target holds every class's rows that land there.
+    fit_rows = train[train["in_fit"]]
+    fit_failures = _failures(fit_rows.assign(region=fit_rows["nearest_region"]))
     val_failures = _failures(val)
     train_rate = empirical_region_rate(fit_failures, region_class=summary["class_id"])
     val_rate = empirical_region_rate(val_failures, region_class=summary["class_id"])

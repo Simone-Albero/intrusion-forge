@@ -32,7 +32,7 @@ setup_logger()
 logger = logging.getLogger(__name__)
 
 # Bumped when the code changes what a config builds: older records never match.
-SCHEMA = 3
+SCHEMA = 4
 OUTPUTS = ("centroids.parquet", "assignments.parquet", "report.json")
 ROUTE_CHUNK = 50_000
 
@@ -213,10 +213,10 @@ def build_regions(
 
     # Routing never reads the label: a region drawn inside one class holds only rows of
     # that class, and its error rate would count only the mistakes made on it. The train
-    # rows keep the region they were clustered into.
-    assigned = {"train": labels}
-    for name in ("val", "test"):
-        assigned[name] = _route(cfg, space, splits[name], centroids)
+    # rows keep the region they were clustered into as `region`; `nearest_region` routes
+    # every split alike, so a train row can be counted where a test row like it would be.
+    nearest = {name: _route(cfg, space, splits[name], centroids) for name in SPLITS}
+    assigned = {"train": labels, "val": nearest["val"], "test": nearest["test"]}
     assignments = pd.concat(
         [
             pd.DataFrame(
@@ -224,6 +224,7 @@ def build_regions(
                     "split": name,
                     "row": np.arange(len(assigned[name]), dtype=np.int32),
                     "region": assigned[name].astype(np.int32),
+                    "nearest_region": nearest[name].astype(np.int32),
                 }
             )
             for name in SPLITS
