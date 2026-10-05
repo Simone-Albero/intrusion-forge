@@ -9,6 +9,11 @@
 #   make run            NAME=my_exp CLASSIFIER=random_forest       # all datasets × 1 classifier × all clustering
 #   make run            NAME=my_exp CLUSTERING=kmeans              # all datasets × all classifiers × 1 clustering
 #   make run            NAME=my_exp DATA=cic_2018_v2 CLASSIFIER=mlp CLUSTERING=kmeans       # single (ds, clf, clustering)
+#   make run            NAME=my_exp CLASSIFIERS="knn lda"          # all datasets × those classifiers (not with CLASSIFIER)
+#
+# Short sweep: one distance and one clustering, all datasets, SWEEP_CLASSIFIERS only
+# (it takes neither CLASSIFIER nor CLASSIFIERS):
+#   make sweep          DISTANCE=cosine CLUSTERING=kmeans          # NAME defaults to sweep_<distance>_<clustering>
 #
 # Single-stage targets (dataset-level stages need no CLASSIFIER):
 #   make split             DATA=cic_2018_v2 NAME=my_exp
@@ -37,6 +42,7 @@ DATA       ?= cic_2018_v2
 NAME       ?= exp_euc
 SEED       ?= 42
 CLASSIFIER ?= mlp
+CLASSIFIERS ?=
 DISTANCE   ?= euclidean
 CLUSTERING ?= kmeans
 CLUSTERING_ALGOS ?= kmeans spectral birch hdbscan
@@ -45,7 +51,7 @@ FORCE      ?=
 ARGS       :=
 
 # A variable make does not know is a Hydra override typed in the wrong place: stop, don't drop it.
-MAKE_VARS    := DATA NAME SEED CLASSIFIER DISTANCE CLUSTERING CLUSTERING_ALGOS FORCE ARGS \
+MAKE_VARS    := DATA NAME SEED CLASSIFIER CLASSIFIERS DISTANCE CLUSTERING CLUSTERING_ALGOS FORCE ARGS \
                 DATASETS ML_CLASSIFIERS DL_CLASSIFIERS \
                 PYTHON SWEEP_DIR FIGURES_DIR ROWS
 UNKNOWN_VARS := $(filter-out $(MAKE_VARS),$(foreach v,$(.VARIABLES),$(if $(filter command line,$(origin $(v))),$(v))))
@@ -60,10 +66,13 @@ ifneq ($(ARGS_CLASH),)
 $(error ARGS cannot set $(ARGS_CLASH): use DATA, NAME, SEED, CLASSIFIER, CLUSTERING or DISTANCE)
 endif
 
-# `run` distinguishes "passed on the command line" from "default" via $(origin).
+# `run` and `sweep` distinguish "passed on the command line" from "default" via $(origin).
 DATA_GIVEN    := $(if $(filter command line,$(origin DATA)),1,)
 CLF_GIVEN     := $(if $(filter command line,$(origin CLASSIFIER)),1,)
+CLFS_GIVEN    := $(if $(filter command line,$(origin CLASSIFIERS)),1,)
 CLUSTER_GIVEN := $(if $(filter command line,$(origin CLUSTERING)),1,)
+DIST_GIVEN    := $(if $(filter command line,$(origin DISTANCE)),1,)
+NAME_GIVEN    := $(if $(filter command line,$(origin NAME)),1,)
 
 ML_CLASSIFIERS := \
     naive_bayes \
@@ -77,6 +86,9 @@ ML_CLASSIFIERS := \
     xgboost
 
 DL_CLASSIFIERS := mlp
+
+# One linear, one bagging, one boosting and one neural classifier, all scalable to the largest dataset.
+SWEEP_CLASSIFIERS := logistic_regression random_forest xgboost mlp
 
 DATASETS := \
     statlog_landsat_satellite \
@@ -104,7 +116,7 @@ FORCE_FLAG  := $(if $(FORCE),force=true,)
 SWEEP_DIR       ?= resources/experiments
 FIGURES_DIR     ?= paper/figures
 
-.PHONY: split graph regions complexity classify regress render compare run generate help
+.PHONY: split graph regions complexity classify regress render compare run sweep generate help
 
 ## split:              Step 1 — filter, split and preprocess the raw CSV   (DATA, NAME, SEED, FORCE)
 split:
@@ -139,8 +151,9 @@ compare:
 	PYTHONPATH=. $(PYTHON) stages/compare.py sweep=$(SWEEP_DIR) out=$(FIGURES_DIR)
 	@echo ""; echo "compare done -> $(FIGURES_DIR)/{rho_by_config,rho_vs_regions,family_importance,spearman_by_classifier,spearman_by_classifier_combo,mse_by_classifier,mse_by_classifier_combo,oracle_benefit_by_variant,spearman_by_dataset,mse_by_region_size,bias_by_region_size,spearman_by_region_size,mse_by_region_size_combo,bias_by_region_size_combo,spearman_by_region_size_combo}.pdf + $(SWEEP_DIR)/compare/{perconfig,nregions,datasets,variant_spearman,variant_region_mse,variant_spearman_by_dataset,error_by_size}_table.json"
 
-## run:                Whole flow — fix passed vars, iterate the rest (DATA?, CLASSIFIER?, CLUSTERING?)  (NAME, SEED, DISTANCE, FORCE)
+## run:                Whole flow — fix passed vars, iterate the rest (DATA?, CLASSIFIER? or CLASSIFIERS?, CLUSTERING?)  (NAME, SEED, DISTANCE, FORCE)
 run:
+	@$(if $(and $(CLF_GIVEN),$(CLFS_GIVEN)),$(error CLASSIFIER and CLASSIFIERS cannot both be given))
 	@data_given="$(DATA_GIVEN)"; \
 	clf_given="$(CLF_GIVEN)"; \
 	clu_given="$(CLUSTER_GIVEN)"; \
@@ -157,7 +170,7 @@ run:
 	else \
 		ds_list="$(DATASETS)"; \
 	fi; \
-	if [ -n "$$clf_given" ]; then clf_list="$(CLASSIFIER)"; else clf_list="$(ML_CLASSIFIERS) $(DL_CLASSIFIERS)"; fi; \
+	if [ -n "$$clf_given" ]; then clf_list="$(CLASSIFIER)"; elif [ -n "$(CLASSIFIERS)" ]; then clf_list="$(CLASSIFIERS)"; else clf_list="$(ML_CLASSIFIERS) $(DL_CLASSIFIERS)"; fi; \
 	for clu in $$clu_list; do \
 		if [ -n "$$clu_given" ]; then name="$(NAME)"; else name="$(NAME)_$$clu"; fi; \
 		echo ""; \
@@ -191,13 +204,21 @@ run:
 	@echo ""
 	@echo "Done."
 
+## sweep:              Short sweep — one distance and clustering, every dataset, SWEEP_CLASSIFIERS   (DISTANCE, CLUSTERING; NAME, SEED, DATA?, FORCE)
+sweep:
+	@$(if $(or $(CLF_GIVEN),$(CLFS_GIVEN)),$(error sweep runs SWEEP_CLASSIFIERS: use `make run` for CLASSIFIER or CLASSIFIERS))
+	@$(if $(and $(DIST_GIVEN),$(CLUSTER_GIVEN)),,$(error sweep needs DISTANCE=... and CLUSTERING=<$(CLUSTERING_ALGOS)>))
+	@$(MAKE) --no-print-directory run NAME=$(if $(NAME_GIVEN),$(NAME),sweep_$(DISTANCE)_$(CLUSTERING)) \
+		SEED=$(SEED) DISTANCE=$(DISTANCE) CLUSTERING=$(CLUSTERING) \
+		CLASSIFIERS="$(SWEEP_CLASSIFIERS)" FORCE=$(FORCE) $(if $(DATA_GIVEN),DATA=$(DATA),)
+
 ## generate:           Generate synthetic test dataset                        (ROWS)
 generate:
 	$(PYTHON) generate_synthetic.py $(if $(ROWS),--rows $(ROWS),)
 
 ## help:               Show this help message
 help:
-	@echo "Usage: make <target> [DATA=<dataset>] [NAME=<name>] [SEED=<n>] [CLASSIFIER=<name>] [DISTANCE=<dist>] [ARGS=\"k=v ...\"]"
+	@echo "Usage: make <target> [DATA=<dataset>] [NAME=<name>] [SEED=<n>] [CLASSIFIER=<name>] [CLASSIFIERS=\"<name> ...\"] [DISTANCE=<dist>] [ARGS=\"k=v ...\"]"
 	@echo ""
 	@echo "Targets:"
 	@grep -E '^## ' Makefile | sed 's/## /  /'
@@ -216,5 +237,7 @@ help:
 	@echo "  make run NAME=x DATA=letter_recognition              # 1 dataset, all classifiers, all clustering"
 	@echo "  make run NAME=x CLASSIFIER=random_forest             # all datasets, 1 classifier, all clustering"
 	@echo "  make run NAME=x CLUSTERING=kmeans                    # all datasets × all classifiers, 1 clustering"
+	@echo "  make run NAME=x CLASSIFIERS=\"knn lda\"                # all datasets × those classifiers (not with CLASSIFIER)"
 	@echo "  make run NAME=x DATA=cic_2018_v2 CLASSIFIER=mlp CLUSTERING=kmeans      # single"
+	@echo "  make sweep DISTANCE=cosine CLUSTERING=kmeans         # short sweep: all datasets × $(SWEEP_CLASSIFIERS)"
 	@echo "  (clustering swept → artifacts land under NAME_<algo>; clustering fixed → under NAME)"

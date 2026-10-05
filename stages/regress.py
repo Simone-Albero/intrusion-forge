@@ -2,12 +2,19 @@ import logging
 
 import numpy as np
 import pandas as pd
+from sklearn.pipeline import Pipeline
 
 from src.core.config import to_container
 from src.core.io import load_df, save_df
 from src.core.log import setup_logger
 from src.core.record import clear_dir, write_record
-from src.core.utils import flush_timing, load_from_json, save_to_json, timed
+from src.core.utils import (
+    flush_timing,
+    load_from_json,
+    save_to_joblib,
+    save_to_json,
+    timed,
+)
 from src.domain.analysis.baselines import (
     CALIBRATED,
     COMBOS,
@@ -316,7 +323,7 @@ def _score_baselines(
 
 
 @timed
-def regress(cfg, paths) -> tuple[pd.DataFrame, dict, dict | None]:
+def regress(cfg, paths) -> tuple[pd.DataFrame, dict, dict | None, Pipeline | None]:
     """Fit the failure regressor on the regions' descriptors and failure rates, and score
     it against the baselines."""
     train, val, test = (
@@ -330,7 +337,7 @@ def regress(cfg, paths) -> tuple[pd.DataFrame, dict, dict | None]:
         failures,
     )
     regressor_cfg = cfg.failure_regressor
-    results, held_out = fit_failure_regressor(
+    results, held_out, regressor = fit_failure_regressor(
         summary,
         models=to_container(regressor_cfg.models),
         primary=regressor_cfg.primary,
@@ -355,7 +362,7 @@ def regress(cfg, paths) -> tuple[pd.DataFrame, dict, dict | None]:
     )
     if results.get("skipped"):
         logger.info("Baselines skipped: the failure regressor was.")
-        return table, results, None
+        return table, results, None, None
     baselines = _score_baselines(
         cfg,
         paths,
@@ -368,7 +375,7 @@ def regress(cfg, paths) -> tuple[pd.DataFrame, dict, dict | None]:
         fit_failures=fit_failures,
         val_failures=val_failures,
     )
-    return table, results, baselines
+    return table, results, baselines, regressor
 
 
 def main() -> None:
@@ -380,9 +387,11 @@ def main() -> None:
     inputs = upstream_ids(cfg, paths, "regress")
 
     clear_dir(stage_dir)
-    table, results, baselines = regress(cfg, paths)
+    table, results, baselines, regressor = regress(cfg, paths)
     save_df(table, stage_dir / "regions.parquet")
     save_to_json(results, stage_dir / "results.json")
+    if regressor is not None:
+        save_to_joblib(regressor, stage_dir / "model.joblib")
     if baselines is not None:
         save_to_json(baselines, stage_dir / "baselines.json")
     flush_timing(stage_dir / "timing.json")

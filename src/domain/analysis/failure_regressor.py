@@ -11,6 +11,7 @@ from sklearn.model_selection import (
     RandomizedSearchCV,
     StratifiedKFold,
 )
+from sklearn.pipeline import Pipeline
 from tqdm import tqdm
 
 from src.core.utils import timed
@@ -49,6 +50,49 @@ def _check_models(models: dict[str, dict], primary: str) -> None:
         )
 
 
+def _fit_model(
+    X: pd.DataFrame,
+    y: pd.Series,
+    *,
+    name: str,
+    params: dict,
+    param_grid: dict,
+    inner_cv: KFold | None,
+    random_state: int,
+    n_iter: int,
+    search_seed: int,
+) -> tuple[Pipeline, dict, float | None]:
+    """Fit one model; without inner_cv, use its defaults, no search."""
+    params = {**params, "random_state": random_state}
+    if inner_cv is None:
+        fitted = build_regressor_pipeline(name, params)
+        fitted.fit(X, y)
+        model_params = fitted.named_steps["model"].get_params()
+        return fitted, {k: model_params[k] for k in param_grid}, None
+
+    search = RandomizedSearchCV(
+        estimator=build_regressor_pipeline(name, params),
+        param_distributions={f"model__{k}": v for k, v in param_grid.items()},
+        # A grid smaller than the budget is searched whole: asking for more draws than
+        # it holds makes sklearn warn on every fold and run the whole grid anyway.
+        n_iter=min(n_iter, len(ParameterGrid(param_grid))),
+        cv=inner_cv,
+        # Scored as reported, clipped: a model is tuned for the predictor it is
+        # judged as.
+        scoring=make_scorer(
+            lambda y_true, y_pred: r2_score(y_true, np.clip(y_pred, 0.0, 1.0))
+        ),
+        n_jobs=-1,
+        # At a fixed random_state RandomizedSearchCV draws the same combinations
+        # whatever the data, so each fit gets its own seed to search its own slice.
+        random_state=search_seed,
+        verbose=0,
+    )
+    search.fit(X, y)
+    best_params = {k.removeprefix("model__"): v for k, v in search.best_params_.items()}
+    return search.best_estimator_, best_params, float(search.best_score_)
+
+
 def _fit_outer_fold(
     X_fit: pd.DataFrame,
     y_fit: pd.Series,
@@ -63,37 +107,18 @@ def _fit_outer_fold(
     n_iter: int,
     fold: int,
 ) -> dict:
-    """Fit and score one outer fold; without inner_cv, use the model's defaults, no search."""
-    params = {**params, "random_state": random_state}
-    if inner_cv is None:
-        fitted = build_regressor_pipeline(name, params)
-        fitted.fit(X_fit, y_fit)
-        model_params = fitted.named_steps["model"].get_params()
-        best_params = {k: model_params[k] for k in param_grid}
-        best_score = None
-    else:
-        search = RandomizedSearchCV(
-            estimator=build_regressor_pipeline(name, params),
-            param_distributions={f"model__{k}": v for k, v in param_grid.items()},
-            # A grid smaller than the budget is searched whole: asking for more draws than
-            # it holds makes sklearn warn on every fold and run the whole grid anyway.
-            n_iter=min(n_iter, len(ParameterGrid(param_grid))),
-            cv=inner_cv,
-            # Scored as reported, clipped: a model is tuned for the predictor it is judged as.
-            scoring=make_scorer(lambda y, p: r2_score(y, np.clip(p, 0.0, 1.0))),
-            n_jobs=-1,
-            # Offset by fold: at a fixed random_state RandomizedSearchCV draws the same
-            # combinations whatever the data, so every outer fold would search the same
-            # slice of the grid.
-            random_state=random_state + fold,
-            verbose=0,
-        )
-        search.fit(X_fit, y_fit)
-        fitted = search.best_estimator_
-        best_params = {
-            k.removeprefix("model__"): v for k, v in search.best_params_.items()
-        }
-        best_score = float(search.best_score_)
+    """Fit one outer fold and score it on its held-out regions."""
+    fitted, best_params, best_score = _fit_model(
+        X_fit,
+        y_fit,
+        name=name,
+        params=params,
+        param_grid=param_grid,
+        inner_cv=inner_cv,
+        random_state=random_state,
+        n_iter=n_iter,
+        search_seed=random_state + fold,
+    )
 
     # A rate lies in [0, 1] and a forest's mean of rates always does; the other models
     # are not bound to it.
@@ -267,9 +292,10 @@ def fit_failure_regressor(
     n_iter: int,
     random_state: int,
     min_eval_support: int,
-) -> tuple[dict, pd.DataFrame]:
-    """Nested CV of every model on the same outer folds: the primary's results, and its
-    held-out `predicted_rate` and `fold` per region."""
+) -> tuple[dict, pd.DataFrame, Pipeline | None]:
+    """Nested CV of every model on the same outer folds: the primary's results, its
+    held-out `predicted_rate` and `fold` per region, and the primary refitted on every
+    used region (None when the target is degenerate)."""
     _check_models(models, primary)
     logger.info("Running failure regressor ...")
 
@@ -334,13 +360,14 @@ def fit_failure_regressor(
             **exclusions,
             **rate_distribution,
         }
-        return skipped, pd.DataFrame(
+        no_held_out = pd.DataFrame(
             {
                 "predicted_rate": pd.Series(dtype=float),
                 "fold": pd.Series(dtype=int),
             },
             index=pd.Index([], name="region"),
         )
+        return skipped, no_held_out, None
 
     strata = _quantile_strata(y, n_outer_splits)
     if strata is not None:
@@ -394,12 +421,34 @@ def fit_failure_regressor(
     }
     metrics = {name: _pooled_metrics(result) for name, result in cv_results.items()}
 
+    logger.info("Refitting %s on the %d used regions ...", primary, n_used)
+    primary_spec = models[primary]
+    refit_model, refit_params, refit_score = _fit_model(
+        X,
+        y,
+        name=primary,
+        params=primary_spec["params"],
+        param_grid=primary_spec["param_grid"],
+        inner_cv=inner_cv,
+        random_state=random_state,
+        n_iter=n_iter,
+        # The seed after the outer folds' own, so the refit searches a slice of its own.
+        search_seed=random_state + n_outer,
+    )
+
     results = {
         **exclusions,
         **rate_distribution,
         **metrics[primary],
         **_primary_details(cv_results[primary], feature_cols),
         "model": primary,
+        "refit": [
+            {
+                "model": primary,
+                "best_score": refit_score,
+                **{f"param_{k}": v for k, v in refit_params.items()},
+            }
+        ],
         "models": [{"model": name, **scores} for name, scores in metrics.items()],
         "model_folds": [
             {
@@ -428,4 +477,4 @@ def fit_failure_regressor(
         {"predicted_rate": primary_result["y_pred"], "fold": primary_result["fold"]},
         index=pd.Index(primary_result["indices"], name="region"),
     )
-    return results, held_out
+    return results, held_out, refit_model
