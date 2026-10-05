@@ -3,6 +3,7 @@ import logging
 import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
+from sklearn.metrics import confusion_matrix
 
 from src.core.io import load_df, save_figures
 from src.core.log import setup_logger
@@ -15,6 +16,11 @@ from src.domain.analysis.failure_regressor import (
 )
 from src.domain.plot.analysis_charts import dual_scatter_plot, strip_count_panel_plot
 from src.domain.plot.base import Plot, set_figure_format
+from src.domain.plot.classify_charts import (
+    build_test_figures,
+    latent_figures,
+    training_history_figures,
+)
 from src.domain.plot.comparison_charts import dual_axis_bar_plot, grouped_bar_plot
 from src.domain.plot.primitives import bar_plot, numeric_scatter_plot, violin_plot
 from src.domain.plot.style import (
@@ -23,7 +29,13 @@ from src.domain.plot.style import (
     PALETTE,
     apply_plot_style,
 )
-from stages import load_cli_config, paths_from_cfg, stage_config, upstream_ids
+from stages import (
+    load_cli_config,
+    load_split,
+    paths_from_cfg,
+    stage_config,
+    upstream_ids,
+)
 
 setup_logger()
 apply_plot_style()
@@ -320,6 +332,48 @@ def build_analysis_figures(
     return figures
 
 
+@timed
+def build_classification_figures(
+    test: pd.DataFrame,
+    meta: dict,
+    *,
+    y_pred: np.ndarray,
+    latent: pd.DataFrame | None,
+    history: list[dict],
+) -> dict[str, Plot]:
+    """The classifier's figures, keyed by their path under the stage's figures folder."""
+    class_names = {c["class_id"]: c["class_name"] for c in meta["classes"]}
+    y_true = test["label"].to_numpy()
+    all_classes = np.arange(meta["n_classes"])
+    # The rows the latent space was saved for: both projections draw from them.
+    rows = None if latent is None else latent["row"].to_numpy()
+    figures = build_test_figures(
+        test,
+        meta["num_cols"] + meta["cat_cols"],
+        y_true=y_true,
+        y_pred=y_pred,
+        cm=confusion_matrix(y_true, y_pred, labels=all_classes, normalize="true"),
+        cm_classes=all_classes,
+        class_names=class_names,
+        pool=rows,
+    )
+    if latent is not None:
+        figures.update(
+            latent_figures(
+                latent.drop(columns="row").to_numpy(),
+                rows,
+                y_true=y_true,
+                y_pred=y_pred,
+                class_names=class_names,
+            )
+        )
+    if history:
+        figures.update(
+            training_history_figures({"loss": [step["loss"] for step in history]})
+        )
+    return {f"classification/{name}": plot for name, plot in figures.items()}
+
+
 def main() -> None:
     """Entry point for the render stage."""
     cfg = load_cli_config()
@@ -330,6 +384,21 @@ def main() -> None:
     inputs = upstream_ids(cfg, paths, "render")
 
     clear_dir(stage_dir)
+    meta = load_from_json(paths.of("split") / "meta.json")
+    classify_dir = paths.of("classify")
+    latent_path = classify_dir / "latent.parquet"
+    test_predictions = load_df(
+        classify_dir / "predictions.parquet",
+        columns=["row", "y_pred"],
+        filters=[("split", "==", "test")],
+    ).sort_values("row")
+    figures = build_classification_figures(
+        load_split(paths, "test"),
+        meta,
+        y_pred=test_predictions["y_pred"].to_numpy(),
+        latent=load_df(latent_path) if latent_path.exists() else None,
+        history=load_from_json(classify_dir / "training.json")["history"],
+    )
     failures = load_df(paths.of("regress") / "regions.parquet")
     summary_df = join_region_summary(
         load_df(paths.of("complexity") / "regions.parquet"),
@@ -338,9 +407,9 @@ def main() -> None:
     )
     predicted_rate = failures.set_index("region")["predicted_rate"].dropna()
     baselines_path = paths.of("regress") / "baselines.json"
-    figures = build_analysis_figures(
+    figures |= build_analysis_figures(
         summary_df,
-        load_from_json(paths.of("split") / "meta.json"),
+        meta,
         load_from_json(paths.of("regress") / "results.json"),
         predicted_rate,
         # Absent when the regressor skipped, which returns before this is read.

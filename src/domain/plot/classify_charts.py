@@ -7,6 +7,7 @@ from src.domain.plot.metrics import confusion_matrix_plot
 from src.domain.plot.primitives import bar_plot, line_plot, scatter_plot
 from src.domain.plot.style import extended_palette
 from src.domain.projection import (
+    TSNE_MAX_SAMPLES,
     TSNE_MIN_SAMPLES,
     stratified_subsample,
     tsne_projection,
@@ -16,20 +17,25 @@ from src.domain.projection import (
 def training_history_figures(history: dict[str, list[float]]) -> dict[str, Plot]:
     """One line plot per scalar in the per-step DL training history, keyed by scalar name."""
     return {
-        f"{name}_curve": line_plot({name: values}, y_label=name, show_legend=False)
+        f"training_{name}_curve": line_plot(
+            {name: values}, y_label=name, show_legend=False
+        )
         for name, values in history.items()
         if values
     }
 
 
-_TSNE_SAMPLES = 2000
-
-
 def _projection_selection(
-    y_true: np.ndarray, y_pred: np.ndarray, class_names: dict[int, str]
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    class_names: dict[int, str],
+    *,
+    pool: np.ndarray | None,
 ) -> tuple[np.ndarray, dict] | tuple[None, None]:
-    """Sampled rows of the fewest classes (≥ 2) holding 90% of the errors, and names.
+    """Sampled rows, from `pool` (every row when None), of the fewest classes (≥ 2)
+    holding 90% of the errors, and their names.
 
+    The classes are chosen on every row's errors, the sample on the pool's rows.
     (None, None) when fewer than TSNE_MIN_SAMPLES rows survive subsampling.
     """
     classes = np.unique(y_true)
@@ -47,10 +53,12 @@ def _projection_selection(
         keep_classes = [int(c) for c in classes]
 
     prob_pos = np.flatnonzero(np.isin(y_true, keep_classes))
+    if pool is not None:
+        prob_pos = np.intersect1d(prob_pos, pool)
     # Fixed seed so "raw" and "latent" draw the same rows: y_true/y_pred are identical
     # for both, being the same model's predictions on the same test rows.
     sub = stratified_subsample(
-        y_true[prob_pos], n_samples=_TSNE_SAMPLES, random_state=42
+        y_true[prob_pos], n_samples=TSNE_MAX_SAMPLES, random_state=42
     )
     vis_idx = prob_pos[sub]
     if len(vis_idx) < TSNE_MIN_SAMPLES:
@@ -82,8 +90,9 @@ def build_test_figures(
     cm: np.ndarray,
     cm_classes: np.ndarray,
     class_names: dict[int, str],
+    pool: np.ndarray | None,
 ) -> dict[str, Plot]:
-    """Confusion matrix over `cm_classes`, F1 over the observed classes, raw t-SNE."""
+    """Confusion matrix, per-class F1 and the raw t-SNE of rows drawn from `pool`."""
     cm_names = [class_names.get(int(c), str(c)) for c in cm_classes]
     figures: dict[str, Plot] = {
         "confusion_matrix": confusion_matrix_plot(cm, class_names=cm_names)
@@ -106,7 +115,7 @@ def build_test_figures(
         ylim=(0, 1),
     )
 
-    vis_idx, names = _projection_selection(y_true, y_pred, class_names)
+    vis_idx, names = _projection_selection(y_true, y_pred, class_names, pool=pool)
     if vis_idx is not None:
         figures["raw"] = _scatter_projection(
             eval_df.iloc[vis_idx][feat_cols].to_numpy(),
@@ -118,20 +127,22 @@ def build_test_figures(
 
 
 def latent_figures(
-    embedding: np.ndarray | None,
+    embedding: np.ndarray,
+    rows: np.ndarray,
     *,
     y_true: np.ndarray,
     y_pred: np.ndarray,
     class_names: dict[int, str],
 ) -> dict[str, Plot]:
-    """t-SNE scatter of the latent space, keyed `latent`; empty for ML models."""
-    if embedding is None:
-        return {}
-    vis_idx, names = _projection_selection(y_true, y_pred, class_names)
+    """t-SNE of the latent space, keyed `latent`; row `rows[i]` has `embedding[i]`."""
+    vis_idx, names = _projection_selection(y_true, y_pred, class_names, pool=rows)
     if vis_idx is None:
         return {}
     return {
         "latent": _scatter_projection(
-            embedding[vis_idx], y_true[vis_idx], y_pred[vis_idx], names
+            embedding[np.searchsorted(rows, vis_idx)],
+            y_true[vis_idx],
+            y_pred[vis_idx],
+            names,
         )
     }

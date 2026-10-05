@@ -53,7 +53,6 @@ def _draw_sample(
         picked.append(members)
     rows = np.sort(np.concatenate(picked))
     if np.array_equal(rows, graph_rows):
-        # Every graph node is a sampled row: its neighbours are the graph's own.
         return MeasuredSample(
             train_graph.X,
             population[rows],
@@ -122,8 +121,6 @@ def main() -> None:
         graph["mst"],
     )
 
-    # A graph that is the whole split measures every row; a smaller one measures each
-    # population on a capped sample of its rows.
     sampled = len(graph_rows) < len(train)
     cx = cfg.complexity
     centroids = load_df(paths.of("regions") / "centroids.parquet")

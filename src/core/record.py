@@ -27,13 +27,11 @@ def read_record(stage_dir: Path) -> dict:
     return load_from_json(path)
 
 
-def clear_dir(stage_dir: Path, *, keep: tuple[str, ...] = ()) -> None:
-    """Empty a stage's folder, sparing the entries named in `keep`."""
+def clear_dir(stage_dir: Path) -> None:
+    """Empty a stage's folder."""
     stage_dir = Path(stage_dir)
     if stage_dir.exists():
         for child in stage_dir.iterdir():
-            if child.name in keep:
-                continue
             if child.is_dir():
                 shutil.rmtree(child)
             else:

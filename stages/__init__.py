@@ -39,7 +39,7 @@ READS = {
     "complexity": ("split", "graph", "regions"),
     "classify": ("split",),
     "regress": ("split", "regions", "complexity", "classify"),
-    "render": ("split", "complexity", "regress"),
+    "render": ("split", "classify", "complexity", "regress"),
 }
 
 

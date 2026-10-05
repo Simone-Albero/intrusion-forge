@@ -6,23 +6,15 @@ import numpy as np
 import pandas as pd
 import torch
 from omegaconf import OmegaConf
-from sklearn.metrics import confusion_matrix
 
 from src.core.config import to_container
-from src.core.io import save_df, save_figures
+from src.core.io import save_df
 from src.core.log import setup_logger
-from src.core.record import RECORD, clear_dir, is_current, write_record
+from src.core.record import clear_dir, is_current, write_record
 from src.core.utils import flush_timing, load_from_json, save_to_json, timed
 from src.domain.analysis.classification import compute_classification_metrics
-from src.domain.analysis.confidence import mcp_risk
 from src.domain.data.preprocessing import random_undersample_df, subsample_df
-from src.domain.plot.base import Plot, set_figure_format
-from src.domain.plot.classify_charts import (
-    build_test_figures,
-    latent_figures,
-    training_history_figures,
-)
-from src.domain.plot.style import apply_plot_style
+from src.domain.projection import TSNE_MAX_SAMPLES
 from src.domain.training.base import ComponentSpec, Trainer
 from src.domain.training.dl import DLTrainer
 from src.domain.training.ml import MLTrainer
@@ -39,12 +31,8 @@ from stages import (
 )
 
 setup_logger()
-apply_plot_style()
 logger = logging.getLogger(__name__)
 
-# What a reused model keeps: the model, how it was trained, and the figures of that
-# training; its record stays too, since a crash while predicting does not make it stale.
-MODEL_FILES = ("model", "training.json", "figures", RECORD)
 LABEL = "label"
 
 
@@ -95,8 +83,6 @@ def build_trainer(
         num_cols=num_cols,
         cat_cols=cat_cols,
         label_col=LABEL,
-        # The weights correct the original distribution; `balance` and `n_samples` both
-        # flatten it already, and weighting on top would correct the imbalance twice.
         class_weights=(
             [weight_by_class[cid] for cid in class_ids]
             if fit_cfg.balance == "none" and fit_cfg.n_samples is None
@@ -125,7 +111,6 @@ def _resolve_classifier_params(
         else {}
     )
     if cfg.classifier.kind == "dl":
-        # The data shape, derived here rather than written in the YAML.
         params["num_classes"] = meta["n_classes"]
         params["num_numerical_features"] = len(num_cols)
         params["cardinalities"] = [cfg.data.top_n + cfg.data.hash_buckets] * len(
@@ -145,10 +130,10 @@ def _fit_classifier(
     *,
     params: dict,
     model_dir: Path,
-) -> tuple[object, dict, dict[str, Plot]]:
-    """Fit and save the classifier; return it with its training record and figures."""
+) -> tuple[object, dict]:
+    """Fit and save the classifier; return it with its training record."""
     X, y = trainer.prepare(train_df, LABEL)
-    figures: dict[str, Plot] = {}
+    best, grid_rows, history = {}, [], []
 
     if "grid" in cfg.classifier and len(cfg.classifier.grid) > 0:
         cv = cfg.grid_search.cv
@@ -175,8 +160,6 @@ def _fit_classifier(
             summary["scoring"],
             summary["best_score"],
         )
-        # Flat: the grid's parameter names are the same for every candidate, and the
-        # `param_` prefix keeps them from colliding with the score columns.
         best = {
             **{f"param_{k}": v for k, v in summary["best_params"].items()},
             "best_score": summary["best_score"],
@@ -189,7 +172,6 @@ def _fit_classifier(
             }
             for combination in summary["cv_results"]
         ]
-        search = {"scoring": cfg.grid_search.scoring, "cv": cfg.grid_search.cv}
     else:
         logger.info("Training %s ...", cfg.classifier.name)
         model, summary = trainer.fit(
@@ -200,35 +182,34 @@ def _fit_classifier(
             X_val=trainer.features(val_df),
             save_dir=model_dir,
         )
-        figures = {
-            f"training_{key}": plot
-            for key, plot in training_history_figures(
-                summary.get("history", {})
-            ).items()
-        }
-        best, grid_rows, search = {}, [], {"scoring": None, "cv": None}
+        history = [
+            {"step": step, "loss": loss}
+            for step, loss in enumerate(summary.get("history", {}).get("loss", []))
+        ]
 
     trainer.save(model, model_dir, name=cfg.classifier.name, params=params)
     logger.info("Trained 1 model under %s", model_dir)
-    training = {
-        "seed": cfg.seed,
-        "balance": cfg.fit.balance,
-        "n_samples": cfg.fit.n_samples,
-        **search,
-        "n_train": len(train_df),
-        **best,
-        "grid_search": grid_rows,
-    }
-    return model, training, figures
+    return model, {**best, "grid_search": grid_rows, "history": history}
 
 
 def _predict(
-    trainer: Trainer, model, df: pd.DataFrame, split: str, *, embed: bool = False
+    trainer: Trainer,
+    model,
+    df: pd.DataFrame,
+    split: str,
+    *,
+    n_classes: int,
+    embed: bool = False,
 ):
-    """Predict every row of a split; the probabilities must be finite."""
+    """Predict every row of a split; one finite probability per class."""
     y_pred, y_proba, *embedding = trainer.predict(
         model, trainer.features(df), return_embedding=embed
     )
+    if y_proba.shape[1] != n_classes:
+        raise ValueError(
+            f"The model gave {y_proba.shape[1]} probabilities per row on {split} for "
+            f"{n_classes} classes: column k of predictions would not be class k."
+        )
     if not np.isfinite(y_proba).all():
         raise ValueError(
             f"The model predicted non-finite probabilities on {split}: every "
@@ -238,9 +219,13 @@ def _predict(
 
 
 def _predictions_table(
-    predicted: dict[str, tuple[np.ndarray, np.ndarray]], *, fit_rows: pd.Index
+    predicted: dict[str, tuple[np.ndarray, np.ndarray]],
+    *,
+    fit_rows: pd.Index,
+    n_classes: int,
 ) -> pd.DataFrame:
-    """One row per row of every split; `in_fit` marks the train rows the model was fitted on."""
+    """One row per split row: `y_pred`, `proba_<class_id>` and `in_fit`, the train rows
+    the model was fitted on."""
     table = pd.concat(
         [
             pd.DataFrame(
@@ -248,7 +233,10 @@ def _predictions_table(
                     "split": split,
                     "row": np.arange(len(y_pred), dtype=np.int32),
                     "y_pred": y_pred.astype(np.int32),
-                    "mcp_risk": mcp_risk(y_proba).astype(np.float32),
+                    **{
+                        f"proba_{c}": y_proba[:, c].astype(np.float32)
+                        for c in range(n_classes)
+                    },
                     "in_fit": (
                         np.isin(np.arange(len(y_pred)), fit_rows)
                         if split == "train"
@@ -264,60 +252,45 @@ def _predictions_table(
     return table
 
 
-@timed
-def write_evaluation(
-    stage_dir: Path,
-    test_df: pd.DataFrame,
-    predicted: tuple[np.ndarray, np.ndarray, np.ndarray | None],
-    *,
-    meta: dict,
-    extra_figures: dict[str, Plot],
-) -> None:
-    """Metrics and figures of the test predictions."""
-    y_pred, _, embedding = predicted
-    class_names = {c["class_id"]: c["class_name"] for c in meta["classes"]}
-    y_true = test_df[LABEL].to_numpy()
-
-    # Every class, not only the observed ones: a prediction into a class the test rows
-    # never contain stays visible, and row k is class id k.
-    all_classes = np.arange(meta["n_classes"])
-    cm = confusion_matrix(y_true, y_pred, labels=all_classes, normalize="true")
-    figures = {
-        **build_test_figures(
-            test_df,
-            meta["num_cols"] + meta["cat_cols"],
-            y_true=y_true,
-            y_pred=y_pred,
-            cm=cm,
-            cm_classes=all_classes,
-            class_names=class_names,
-        ),
-        **latent_figures(
-            embedding, y_true=y_true, y_pred=y_pred, class_names=class_names
-        ),
-        **extra_figures,
-    }
-    save_figures(figures, stage_dir / "figures")
-    save_to_json(
-        compute_classification_metrics(y_true, y_pred), stage_dir / "metrics.json"
+def _latent_table(
+    y_true: np.ndarray, embedding: np.ndarray, *, random_state: int
+) -> pd.DataFrame:
+    """Up to `TSNE_MAX_SAMPLES` test rows of every class, with their embedding."""
+    rng = np.random.default_rng(random_state)
+    rows = np.sort(
+        np.concatenate(
+            [
+                rng.choice(
+                    members, size=min(TSNE_MAX_SAMPLES, len(members)), replace=False
+                )
+                for members in (np.flatnonzero(y_true == c) for c in np.unique(y_true))
+            ]
+        )
     )
+    table = pd.DataFrame(
+        embedding[rows].astype(np.float32),
+        columns=[f"z_{i}" for i in range(embedding.shape[1])],
+    )
+    table.insert(0, "row", rows.astype(np.int32))
+    return table
 
 
 def classify(cfg) -> None:
-    """Train or reuse the classifier, predict every split, and write the evaluation."""
+    """Train the classifier, predict every split and write its metrics."""
     if cfg.fit.balance not in ("undersample", "none"):
         raise ValueError(
             f"Unknown balance: {cfg.fit.balance!r}. Valid: 'undersample', 'none'."
         )
-    random.seed(cfg.seed)
-    np.random.seed(cfg.seed)
-    set_figure_format(cfg.figure_format)
-
     paths = paths_from_cfg(cfg)
     stage_dir = paths.of("classify")
-    model_dir = stage_dir / "model"
     config = stage_config(cfg, "classify")
     inputs = upstream_ids(cfg, paths, "classify")
+    if is_current(stage_dir, config=config, inputs=inputs, force=cfg.force):
+        return
+
+    random.seed(cfg.seed)
+    np.random.seed(cfg.seed)
+    clear_dir(stage_dir)
     meta = load_from_json(paths.of("split") / "meta.json")
     num_cols, cat_cols = meta["num_cols"], meta["cat_cols"]
     train_df, val_df, test_df = (
@@ -334,49 +307,46 @@ def classify(cfg) -> None:
     trainer = build_trainer(
         cfg, meta=meta, train_df=train_df, num_cols=num_cols, cat_cols=cat_cols
     )
-    reuse = trainer.has_model(model_dir) and is_current(
-        stage_dir, config=config, inputs=inputs, force=cfg.force
-    )
-    # A new model clears the record with the rest: a crash between saving it and writing
-    # its record would otherwise leave the old record vouching for a model it never saw.
-    clear_dir(stage_dir, keep=MODEL_FILES if reuse else ())
-
-    figures: dict[str, Plot] = {}
-    if reuse:
-        logger.info("[CACHED] Reusing the trained model — pass force=true to retrain.")
-        model = trainer.load(model_dir)
-        fit_rows = _balance_train(cfg, train_df).index
-    else:
-        # Reassigned, not copied: the full, unbalanced train frame would otherwise stay
-        # in memory throughout, alongside its balanced copy.
-        train_df = _balance_train(cfg, train_df)
-        fit_rows = train_df.index
-        params = _resolve_classifier_params(
+    fit_df = _balance_train(cfg, train_df)
+    model, training = _fit_classifier(
+        cfg,
+        trainer,
+        fit_df,
+        val_df,
+        params=_resolve_classifier_params(
             cfg, num_cols=num_cols, cat_cols=cat_cols, meta=meta
-        )
-        model, training, figures = _fit_classifier(
-            cfg, trainer, train_df, val_df, params=params, model_dir=model_dir
-        )
-        save_to_json({**training, "n_eval": len(test_df)}, stage_dir / "training.json")
-        # The balanced copy is gone from here on: every train row gets a prediction.
-        train_df = load_split(paths, "train")
+        ),
+        model_dir=stage_dir / "model",
+    )
+    save_to_json(training, stage_dir / "training.json")
 
+    n_classes = meta["n_classes"]
     predicted = {
-        name: _predict(trainer, model, df, name, embed=name == "test")
+        name: _predict(
+            trainer, model, df, name, n_classes=n_classes, embed=name == "test"
+        )
         for name, df in zip(SPLITS, (train_df, val_df, test_df))
     }
-    write_evaluation(
-        stage_dir, test_df, predicted["test"], meta=meta, extra_figures=figures
+    y_true = test_df[LABEL].to_numpy()
+    y_pred, _, embedding = predicted["test"]
+    save_to_json(
+        compute_classification_metrics(y_true, y_pred), stage_dir / "metrics.json"
     )
+    if embedding is not None:
+        save_df(
+            _latent_table(y_true, embedding, random_state=cfg.seed),
+            stage_dir / "latent.parquet",
+        )
     save_df(
         _predictions_table(
-            {name: p[:2] for name, p in predicted.items()}, fit_rows=fit_rows
+            {name: p[:2] for name, p in predicted.items()},
+            fit_rows=fit_df.index,
+            n_classes=n_classes,
         ),
         stage_dir / "predictions.parquet",
     )
     flush_timing(stage_dir / "timing.json")
     write_record(stage_dir, config=config, inputs=inputs)
-    logger.info("All stages completed.")
 
 
 def main() -> None:

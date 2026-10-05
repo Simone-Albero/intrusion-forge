@@ -5,6 +5,8 @@ _TSNE_MIN_PERPLEXITY = 5
 _TSNE_MAX_PERPLEXITY = 30
 # t-SNE needs more samples than its perplexity.
 TSNE_MIN_SAMPLES = _TSNE_MIN_PERPLEXITY + 1
+# Rows a t-SNE figure draws, at most: more only slow it down.
+TSNE_MAX_SAMPLES = 2000
 
 
 def stratified_subsample(

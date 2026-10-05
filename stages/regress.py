@@ -14,7 +14,7 @@ from src.domain.analysis.classification import (
     empirical_region_rate,
     region_failures,
 )
-from src.domain.analysis.confidence import atc_threshold
+from src.domain.analysis.confidence import atc_threshold, mcp_risk
 from src.domain.analysis.failure import is_failure
 from src.domain.analysis.failure_regressor import (
     CALIBRATED_VARIANTS,
@@ -47,6 +47,12 @@ def _evaluated_rows(paths, split: str) -> pd.DataFrame:
     predictions = load_df(paths.of("classify") / "predictions.parquet", filters=only)
     regions = regions.sort_values("row")
     predictions = predictions.sort_values("row")
+    proba_columns = [c for c in predictions.columns if c.startswith("proba_")]
+    if not proba_columns:
+        raise ValueError(
+            "classify's predictions hold no class probabilities: re-run "
+            "`make classify FORCE=1`."
+        )
     if not len(labels) == len(regions) == len(predictions):
         raise ValueError(
             f"{split} has {len(labels)} rows, {len(regions)} regions and "
@@ -58,7 +64,7 @@ def _evaluated_rows(paths, split: str) -> pd.DataFrame:
             "nearest_region": regions["nearest_region"].to_numpy(),
             "y_true": labels,
             "y_pred": predictions["y_pred"].to_numpy(),
-            "mcp_risk": predictions["mcp_risk"].to_numpy(dtype=np.float64),
+            "mcp_risk": mcp_risk(predictions[proba_columns].to_numpy(dtype=np.float64)),
             "in_fit": predictions["in_fit"].to_numpy(dtype=bool),
         }
     )

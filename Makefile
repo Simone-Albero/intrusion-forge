@@ -130,7 +130,7 @@ classify:
 regress:
 	PYTHONPATH=. $(PYTHON) stages/regress.py $(HYDRA) $(ARGS)
 
-## render:             Step 7 — render plots from the regress artifacts   (DATA, NAME, SEED, CLASSIFIER)
+## render:             Step 7 — render plots from the classify and regress artifacts   (DATA, NAME, SEED, CLASSIFIER)
 render:
 	PYTHONPATH=. $(PYTHON) stages/render.py $(HYDRA) $(ARGS)
 
