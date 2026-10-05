@@ -284,12 +284,16 @@ def _score_baselines(
         "n_regions_without_val": int(
             (region_table["used"] & (region_table["n_val"] == 0)).sum()
         ),
-        "error_by_size": error_by_region_size(
-            observed,
-            {name: rates[name] for name in SIZE_ERROR_VARIANTS},
-            size=region_table.set_index("region")["n_train"],
-            n_bins=SIZE_BINS,
-        ),
+        "error_by_size": [
+            row
+            for variants in (SIZE_ERROR_VARIANTS, tuple(COMBOS))
+            for row in error_by_region_size(
+                observed,
+                {name: rates[name] for name in variants},
+                size=region_table.set_index("region")["n_train"],
+                n_bins=SIZE_BINS,
+            )
+        ],
     }
     if not report["error_by_size"]:
         logger.warning(

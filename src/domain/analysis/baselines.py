@@ -45,6 +45,7 @@ SIZE_ERROR_VARIANTS = (
     "atc",
     "atc_cal",
 )
+SIZE_COMBO_VARIANTS = ("regressor", *COMBOS)
 
 
 def rank_correlation(x: np.ndarray, y: np.ndarray) -> float:

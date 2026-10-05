@@ -137,7 +137,7 @@ render:
 ## compare:            Aggregate the experiment tree into cross-run figures + result tables  (SWEEP_DIR, FIGURES_DIR)
 compare:
 	PYTHONPATH=. $(PYTHON) stages/compare.py sweep=$(SWEEP_DIR) out=$(FIGURES_DIR)
-	@echo ""; echo "compare done -> $(FIGURES_DIR)/{rho_by_config,rho_vs_regions,family_importance,spearman_by_classifier,spearman_by_classifier_combo,mse_by_classifier,mse_by_classifier_combo,oracle_benefit_by_variant,spearman_by_dataset,mse_by_region_size,bias_by_region_size,spearman_by_region_size}.pdf + $(SWEEP_DIR)/compare/{perconfig,nregions,datasets,variant_spearman,variant_region_mse,variant_spearman_by_dataset,error_by_size}_table.json"
+	@echo ""; echo "compare done -> $(FIGURES_DIR)/{rho_by_config,rho_vs_regions,family_importance,spearman_by_classifier,spearman_by_classifier_combo,mse_by_classifier,mse_by_classifier_combo,oracle_benefit_by_variant,spearman_by_dataset,mse_by_region_size,bias_by_region_size,spearman_by_region_size,mse_by_region_size_combo,bias_by_region_size_combo,spearman_by_region_size_combo}.pdf + $(SWEEP_DIR)/compare/{perconfig,nregions,datasets,variant_spearman,variant_region_mse,variant_spearman_by_dataset,error_by_size}_table.json"
 
 ## run:                Whole flow — fix passed vars, iterate the rest (DATA?, CLASSIFIER?, CLUSTERING?)  (NAME, SEED, DISTANCE, FORCE)
 run:

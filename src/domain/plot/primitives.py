@@ -2,6 +2,7 @@ import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.axes import Axes
+from matplotlib.ticker import FuncFormatter, NullLocator
 
 from src.domain.plot.base import (
     Plot,
@@ -35,14 +36,8 @@ def bar_plot(
     x_label: str = "",
     y_label: str = "",
     ylim: tuple[float, float] | None = None,
-    xlim: tuple[float, float] | None = None,
     figsize: tuple[float, float] | None = None,
-    ax: Axes | None = None,
-    bar_positions: np.ndarray | None = None,
-    bar_alpha: float = 1.0,
-    hide_yticks: bool = False,
-    hide_left_spine: bool = False,
-) -> Plot | None:
+) -> Plot:
     """Bar chart with optional sorting, top-k filtering and value annotations."""
     if orientation not in ("h", "v"):
         raise ValueError("`orientation` must be 'h' or 'v'.")
@@ -85,15 +80,13 @@ def bar_plot(
             else (max(8, n * 0.5 + 1.5), 6)
         )
 
-    ax, fig = _ensure_ax(ax, figsize)
+    fig, ax = plt.subplots(figsize=figsize)
 
-    positions = bar_positions if bar_positions is not None else plot_labels
     draw = ax.barh if orientation == "h" else ax.bar
     draw(
-        positions,
+        plot_labels,
         plot_values,
         color=bar_color,
-        alpha=bar_alpha,
         edgecolor="white",
         linewidth=0.5,
     )
@@ -117,22 +110,39 @@ def bar_plot(
         offset = max(value_range * 0.01, 1e-6)
         for i, v in enumerate(plot_values):
             text = value_format.format(v)
-            pos = float(bar_positions[i]) if bar_positions is not None else i
             if orientation == "h":
-                ax.text(v + offset, pos, text, va="center", ha="left")
+                ax.text(v + offset, i, text, va="center", ha="left")
             else:
-                ax.text(pos, v + offset, text, ha="center", va="bottom")
+                ax.text(i, v + offset, text, ha="center", va="bottom")
 
     if ylim is not None:
         ax.set_ylim(ylim)
-    if xlim is not None:
-        ax.set_xlim(xlim)
-    if hide_yticks:
-        ax.tick_params(axis="y", left=False, labelleft=False)
-    if hide_left_spine:
-        ax.spines["left"].set_visible(False)
 
-    return _finalize(fig)
+    return _fig_to_plot(fig)
+
+
+def histogram_plot(
+    values: np.ndarray,
+    *,
+    vlines: list[float] | None = None,
+    x_label: str = "",
+    y_label: str = "Count",
+) -> Plot:
+    """Histogram of positive `values` in 20 log-spaced bins, with dashed `vlines`."""
+    values = np.asarray(values, dtype=float)
+    edges = np.geomspace(values.min(), max(values.max(), values.min() * 1.01), 21)
+    fig, ax = plt.subplots(figsize=(5.4, 3.2))
+    ax.set_xscale("log")
+    ax.set_xticks(edges[::5])
+    ax.xaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:,.0f}"))
+    ax.xaxis.set_minor_locator(NullLocator())
+    ax.hist(values, bins=edges, color=PALETTE[0], edgecolor="white", linewidth=0.5)
+    for x in vlines or []:
+        ax.axvline(x, color=MUTED_COLOR, linewidth=0.9, linestyle="--", zorder=1)
+    ax.grid(True, axis="y")
+    ax.grid(False, axis="x")
+    _apply_labels(ax, x_label=x_label, y_label=y_label)
+    return _fig_to_plot(fig)
 
 
 def violin_plot(
@@ -370,7 +380,6 @@ def numeric_scatter_plot(
     *,
     color_values: np.ndarray | None = None,
     reference_line: bool = False,
-    trend_line: bool = False,
     annotations: dict[str, float] | None = None,
     cmap: str = "viridis",
     colorbar_label: str = "",
@@ -383,7 +392,7 @@ def numeric_scatter_plot(
     figsize: tuple[float, float] = (5.6, 4.2),
     ax: Axes | None = None,
 ) -> Plot | None:
-    """Numeric scatter with optional colouring, reference line, trend line and metrics box."""
+    """Numeric scatter with optional colouring, reference line and metrics box."""
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
     ax, fig = _ensure_ax(ax, figsize)
@@ -407,20 +416,6 @@ def numeric_scatter_plot(
     if color_values is not None and fig is not None:
         cbar = fig.colorbar(points, ax=ax, fraction=0.046, pad=0.04)
         cbar.set_label(colorbar_label)
-
-    if trend_line:
-        finite = np.isfinite(x) & np.isfinite(y)
-        if int(finite.sum()) >= 2:
-            slope, intercept = np.polyfit(x[finite], y[finite], 1)
-            x_range = np.array([float(x[finite].min()), float(x[finite].max())])
-            ax.plot(
-                x_range,
-                slope * x_range + intercept,
-                color=NEUTRAL_COLOR,
-                linewidth=1.0,
-                linestyle="--",
-                zorder=2,
-            )
 
     if annotations:
         text = "\n".join(

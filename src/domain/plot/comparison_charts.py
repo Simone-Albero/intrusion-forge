@@ -203,9 +203,10 @@ def grouped_bar_plot(
     y_lim: tuple[float, float] | None = None,
     hline: float | None = None,
     log_y: bool = False,
+    group_notes: list[str] | None = None,
     figsize: tuple[float, float] | None = None,
 ) -> Plot:
-    """Vertical grouped bars with asymmetric error bars (None for none), one colour per series."""
+    """Vertical grouped bars with asymmetric error bars, one colour per series."""
     n_groups = len(group_labels)
     n_series = len(series)
     if figsize is None:
@@ -242,6 +243,19 @@ def grouped_bar_plot(
         ax.set_yscale("log")
     ax.set_xticks(x, group_labels)
     plt.setp(ax.get_xticklabels(), rotation=35, ha="right")
+    if group_notes:
+        ax.margins(y=0.15)
+    for xi, note in zip(x, group_notes or []):
+        ax.text(
+            xi,
+            0.99,
+            note,
+            transform=ax.get_xaxis_transform(),
+            ha="center",
+            va="top",
+            fontsize="small",
+            color=MUTED_COLOR,
+        )
     if y_lim is not None:
         ax.set_ylim(y_lim)
     ax.grid(True, axis="y")
@@ -249,7 +263,7 @@ def grouped_bar_plot(
     ax.legend(
         loc="lower center",
         bbox_to_anchor=(0.5, 1.0),
-        ncol=min(n_series, 5),
+        ncol=min(n_series, 3),
         columnspacing=1.2,
         frameon=False,
     )

@@ -12,6 +12,7 @@ from src.core.utils import load_from_json, save_to_json
 from src.domain.analysis.baselines import (
     CALIBRATED,
     COMBOS,
+    SIZE_COMBO_VARIANTS,
     SIZE_ERROR_VARIANTS,
     SIZE_VARIANTS,
     VARIANTS,
@@ -458,28 +459,29 @@ def _fig_error_by_size(
 def _table_error_by_size(runs: list[dict]) -> dict:
     """Median (+IQR) squared error, signed error and rho per bin of region size and prediction."""
     rows = []
-    for b in _size_bins(runs):
-        for variant in SIZE_ERROR_VARIANTS:
-            mse = _median_iqr(_size_values(runs, b, variant, "mse"))
-            bias = _median_iqr(_size_values(runs, b, variant, "bias"))
-            rho = _median_iqr(_size_values(runs, b, variant, "spearman"))
-            rows.append(
-                {
-                    "size_bin": b,
-                    "variant": variant,
-                    "mse_median": mse["median"],
-                    "mse_p25": mse["p25"],
-                    "mse_p75": mse["p75"],
-                    "bias_median": bias["median"],
-                    "bias_p25": bias["p25"],
-                    "bias_p75": bias["p75"],
-                    "spearman_median": rho["median"],
-                    "spearman_p25": rho["p25"],
-                    "spearman_p75": rho["p75"],
-                    "spearman_n_runs": rho["n"],
-                    "n_runs": mse["n"],
-                }
-            )
+    for variants in (SIZE_ERROR_VARIANTS, tuple(COMBOS)):
+        for b in _size_bins(runs):
+            for variant in variants:
+                mse = _median_iqr(_size_values(runs, b, variant, "mse"))
+                bias = _median_iqr(_size_values(runs, b, variant, "bias"))
+                rho = _median_iqr(_size_values(runs, b, variant, "spearman"))
+                rows.append(
+                    {
+                        "size_bin": b,
+                        "variant": variant,
+                        "mse_median": mse["median"],
+                        "mse_p25": mse["p25"],
+                        "mse_p75": mse["p75"],
+                        "bias_median": bias["median"],
+                        "bias_p25": bias["p25"],
+                        "bias_p75": bias["p75"],
+                        "spearman_median": rho["median"],
+                        "spearman_p25": rho["p25"],
+                        "spearman_p75": rho["p75"],
+                        "spearman_n_runs": rho["n"],
+                        "n_runs": mse["n"],
+                    }
+                )
     return {"rows": rows}
 
 
@@ -671,6 +673,26 @@ def _render_comparisons(
             field="spearman",
             y_label=r"Spearman $\rho$ (median, IQR)",
             variants=SIZE_VARIANTS,
+            y_lim=(-1.05, 1.05),
+        ),
+        "mse_by_region_size_combo": _fig_error_by_size(
+            kmeans_euclidean,
+            field="mse",
+            y_label="MSE (median, IQR)",
+            variants=SIZE_COMBO_VARIANTS,
+            log_y=True,
+        ),
+        "bias_by_region_size_combo": _fig_error_by_size(
+            kmeans_euclidean,
+            field="bias",
+            y_label="predicted − observed rate (median, IQR)",
+            variants=SIZE_COMBO_VARIANTS,
+        ),
+        "spearman_by_region_size_combo": _fig_error_by_size(
+            kmeans_euclidean,
+            field="spearman",
+            y_label=r"Spearman $\rho$ (median, IQR)",
+            variants=SIZE_COMBO_VARIANTS,
             y_lim=(-1.05, 1.05),
         ),
         "spearman_by_dataset": _fig_variant_by_group(

@@ -9,9 +9,13 @@ from src.core.io import load_df, save_figures
 from src.core.log import setup_logger
 from src.core.record import clear_dir, write_record
 from src.core.utils import flush_timing, load_from_json, timed
-from src.domain.analysis.baselines import SIZE_ERROR_VARIANTS, SIZE_VARIANTS
+from src.domain.analysis.baselines import (
+    SIZE_COMBO_VARIANTS,
+    SIZE_ERROR_VARIANTS,
+    SIZE_VARIANTS,
+)
 from src.domain.analysis.failure_regressor import join_region_summary
-from src.domain.plot.analysis_charts import dual_scatter_plot, strip_count_panel_plot
+from src.domain.plot.analysis_charts import dual_scatter_plot
 from src.domain.plot.base import Plot, set_figure_format
 from src.domain.plot.classify_charts import (
     build_test_figures,
@@ -19,7 +23,7 @@ from src.domain.plot.classify_charts import (
     training_history_figures,
 )
 from src.domain.plot.comparison_charts import dual_axis_bar_plot, grouped_bar_plot
-from src.domain.plot.primitives import bar_plot, numeric_scatter_plot, violin_plot
+from src.domain.plot.primitives import bar_plot, histogram_plot, violin_plot
 from src.domain.plot.style import (
     BASELINE_COLOR,
     BASELINE_LABEL,
@@ -37,63 +41,6 @@ from stages import (
 setup_logger()
 apply_plot_style()
 logger = logging.getLogger(__name__)
-
-
-def _plot_failure_strips(
-    summary: pd.DataFrame, predicted_rate: pd.Series
-) -> dict[str, Plot]:
-    """Strip plot of failure rate per class, dots coloured by the predicted rate."""
-    class_order = (
-        summary.groupby("class_name")["failure_rate"]
-        .median()
-        .sort_values(ascending=False)
-        .index.tolist()
-    )
-    classes = summary["class_name"].values
-    failure_rate = summary["failure_rate"].values
-    counts_by_class = summary.groupby("class_name").size().to_dict()
-
-    fill_values = predicted_rate.reindex(summary.index).to_numpy(dtype=float)
-
-    return {
-        "failure_rate_strip_box": strip_count_panel_plot(
-            categories=classes,
-            values=failure_rate,
-            category_order=class_order,
-            counts_by_class=counts_by_class,
-            fill_values=fill_values,
-            fill_cmap="viridis",
-            fill_cmap_label="Predicted rate",
-            x_label="Failure rate",
-        ),
-    }
-
-
-def _plot_feature_vs_failure(
-    summary: pd.DataFrame, features: list[str]
-) -> dict[str, Plot]:
-    """Per-feature scatter of complexity vs failure rate, with trend line and Spearman ρ."""
-    rate = summary["failure_rate"].to_numpy(dtype=float)
-    out: dict[str, Plot] = {}
-    for feature in features:
-        x = summary[feature].to_numpy(dtype=float)
-        finite = np.isfinite(x) & np.isfinite(rate)
-        rho = (
-            float(spearmanr(x[finite], rate[finite]).statistic)
-            if int(finite.sum()) >= 3
-            else float("nan")
-        )
-        out[f"global/{feature}"] = numeric_scatter_plot(
-            x,
-            rate,
-            color_values=rate,
-            colorbar_label="failure rate",
-            x_label=_feature_label(feature),
-            y_label="failure rate",
-            trend_line=True,
-            annotations={"Spearman ρ": rho},
-        )
-    return out
 
 
 _MEASURE_LABEL = {
@@ -242,12 +189,11 @@ def _plot_error_by_size(error_by_size: list[dict]) -> dict[str, Plot]:
     if not error_by_size:
         return {}
     table = pd.DataFrame(error_by_size)
-    labels = [
-        f"{row.size_min}–{row.size_max}"
-        for row in table[table["variant"] == "regressor"]
-        .sort_values("size_bin")
-        .itertuples()
-    ]
+    bins = table[table["variant"] == "regressor"].sort_values("size_bin").itertuples()
+    bins = list(bins)
+    n_scored = sum(row.n_regions for row in bins)
+    labels = [f"{row.size_min}–{row.size_max}" for row in bins]
+    notes = [f"{row.n_regions} of {n_scored}" for row in bins]
 
     def series(field: str, variants: tuple[str, ...], *, with_se: bool) -> list[tuple]:
         out = []
@@ -265,28 +211,60 @@ def _plot_error_by_size(error_by_size: list[dict]) -> dict[str, Plot]:
             )
         return out
 
+    x_label = "Region size (train rows)"
+    figures = {}
+    for suffix, error_variants, rho_variants in (
+        ("", SIZE_ERROR_VARIANTS, SIZE_VARIANTS),
+        ("_combo", SIZE_COMBO_VARIANTS, SIZE_COMBO_VARIANTS),
+    ):
+        figures |= {
+            f"baselines/mse_by_region_size{suffix}": grouped_bar_plot(
+                labels,
+                series("mse", error_variants, with_se=True),
+                x_label=x_label,
+                group_notes=notes,
+                y_label="MSE",
+                log_y=True,
+            ),
+            f"baselines/bias_by_region_size{suffix}": grouped_bar_plot(
+                labels,
+                series("bias", error_variants, with_se=True),
+                x_label=x_label,
+                group_notes=notes,
+                y_label="Predicted − observed rate",
+                hline=0.0,
+            ),
+            f"baselines/spearman_by_region_size{suffix}": grouped_bar_plot(
+                labels,
+                series("spearman", rho_variants, with_se=False),
+                x_label=x_label,
+                group_notes=notes,
+                y_label="Spearman ρ",
+                hline=0.0,
+            ),
+        }
+    return figures
+
+
+def _plot_region_sizes(
+    region_sizes: pd.Series, error_by_size: list[dict]
+) -> dict[str, Plot]:
+    """Histogram of the scored regions' sizes, the error-by-size bins' edges dashed."""
+    if region_sizes.empty:
+        return {}
+    largest = {
+        row["size_bin"]: row["size_max"]
+        for row in error_by_size
+        if row["variant"] == "regressor"
+    }
+    edges = [largest[size_bin] for size_bin in sorted(largest)[:-1]]
     return {
-        "baselines/mse_by_region_size": grouped_bar_plot(
-            labels,
-            series("mse", SIZE_ERROR_VARIANTS, with_se=True),
+        "baselines/region_size_histogram": histogram_plot(
+            region_sizes.to_numpy(dtype=float),
+            vlines=edges,
             x_label="Region size (train rows)",
-            y_label="MSE",
-            log_y=True,
-        ),
-        "baselines/bias_by_region_size": grouped_bar_plot(
-            labels,
-            series("bias", SIZE_ERROR_VARIANTS, with_se=True),
-            x_label="Region size (train rows)",
-            y_label="Predicted − observed rate",
-            hline=0.0,
-        ),
-        "baselines/spearman_by_region_size": grouped_bar_plot(
-            labels,
-            series("spearman", SIZE_VARIANTS, with_se=False),
-            x_label="Region size (train rows)",
-            y_label="Spearman ρ",
-            hline=0.0,
-        ),
+            y_label="Regions",
+        )
     }
 
 
@@ -296,6 +274,7 @@ def build_analysis_figures(
     meta: dict,
     regressor_results: dict,
     predicted_rate: pd.Series,
+    region_sizes: pd.Series,
     error_by_size: list[dict],
 ) -> dict[str, Plot]:
     """Every analysis figure, keyed by its path under the stage's figures folder."""
@@ -316,17 +295,16 @@ def build_analysis_figures(
         reverse=True,
     )
     top10 = [r["feature"] for r in ranked[:10]]
-    scatter_features = [f for f in top10 if f in summary.columns]
+    top_features = [f for f in top10 if f in summary.columns]
 
     figures: dict[str, Plot] = {}
-    figures.update(_plot_failure_strips(summary, predicted_rate))
-    figures.update(_plot_feature_vs_failure(summary, scatter_features))
-    figures.update(_plot_feature_violin_by_rate_bin(summary, scatter_features))
+    figures.update(_plot_feature_violin_by_rate_bin(summary, top_features))
     figures.update(
         _plot_regressor_evaluation(summary, regressor_results, predicted_rate)
     )
     figures.update(_plot_regressor_comparison(regressor_results["models"]))
     figures.update(_plot_error_by_size(error_by_size))
+    figures.update(_plot_region_sizes(region_sizes, error_by_size))
     return figures
 
 
@@ -410,6 +388,7 @@ def main() -> None:
         meta,
         load_from_json(paths.of("regress") / "results.json"),
         predicted_rate,
+        regress_regions.loc[regress_regions["used"]].set_index("region")["n_train"],
         # Absent when the regressor skipped, which returns before this is read.
         (
             load_from_json(baselines_path)["error_by_size"]
