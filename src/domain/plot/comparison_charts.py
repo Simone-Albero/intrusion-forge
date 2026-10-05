@@ -255,3 +255,64 @@ def grouped_bar_plot(
     )
     _apply_labels(ax, x_label=x_label, y_label=y_label)
     return _fig_to_plot(fig)
+
+
+def dual_axis_bar_plot(
+    group_labels: list[str],
+    left: tuple[str, list[float], str],
+    right: tuple[str, list[float], str],
+    *,
+    x_label: str = "",
+    left_lim: tuple[float, float] = (-0.05, 1.05),
+    figsize: tuple[float, float] | None = None,
+) -> Plot:
+    """Two bars per group, `left` on the left y axis and `right` on its own right one.
+
+    The axes are aligned at zero, so both bars of a group start from the same line.
+    """
+    n_groups = len(group_labels)
+    if figsize is None:
+        figsize = (max(5.0, n_groups * 1.1 + 1.5), 3.6)
+    fig, ax_left = plt.subplots(figsize=figsize)
+    ax_right = ax_left.twinx()
+
+    width = 0.38
+    x = np.arange(n_groups, dtype=float)
+    handles = []
+    for ax, (name, values, color), offset in (
+        (ax_left, left, -width / 2),
+        (ax_right, right, width / 2),
+    ):
+        ax.bar(
+            x + offset,
+            np.asarray(values, dtype=float),
+            width=width * 0.92,
+            color=color,
+            edgecolor="white",
+            linewidth=0.4,
+        )
+        ax.set_ylabel(name, color=color)
+        ax.tick_params(axis="y", colors=color)
+        handles.append(Patch(facecolor=color, label=name))
+
+    ax_left.axhline(0.0, color=MUTED_COLOR, linewidth=0.8, linestyle=":", zorder=1)
+    ax_left.set_xticks(x, group_labels)
+    plt.setp(ax_left.get_xticklabels(), rotation=35, ha="right")
+    ax_right.spines["right"].set_visible(True)
+    lo, hi = left_lim
+    lo = min(lo, float(np.nanmin(np.asarray(left[1], dtype=float))))
+    ax_left.set_ylim(lo, hi)
+    top = ax_right.get_ylim()[1]
+    ax_right.set_ylim(lo / hi * top, top)
+    ax_left.grid(True, axis="y")
+    ax_left.grid(False, axis="x")
+    ax_right.grid(False)
+    ax_left.legend(
+        handles=handles,
+        loc="lower center",
+        bbox_to_anchor=(0.5, 1.0),
+        ncol=2,
+        frameon=False,
+    )
+    _apply_labels(ax_left, x_label=x_label)
+    return _fig_to_plot(fig)

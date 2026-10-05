@@ -5,10 +5,11 @@ import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder
+from sklearn.impute import SimpleImputer
+from sklearn.pipeline import Pipeline, make_pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
-from src.engine.ml.model import MLClassifierFactory
+from src.engine.ml.model import MLClassifierFactory, MLRegressorFactory
 
 _HISTGB_MAX_CARDINALITY = 255
 
@@ -22,6 +23,15 @@ CLASSIFIER_PREPROCESS: dict[str, str] = {
     "hist_gradient_boosting": "native_sklearn",
     "xgboost": "native_xgb",
     "naive_bayes": "drop_cat",
+}
+
+# Trees read NaN themselves; ridge and the MLP need it filled and the features on one
+# scale.
+REGRESSOR_PREPROCESS: dict[str, str] = {
+    "random_forest": "passthrough",
+    "xgboost": "passthrough",
+    "ridge": "standardize",
+    "mlp": "standardize",
 }
 
 
@@ -128,3 +138,14 @@ def supports_random_state(clf_cls: type) -> bool:
         return "random_state" in clf_cls().get_params()
     except Exception:
         return False
+
+
+def build_regressor_pipeline(name: str, params: dict) -> Pipeline:
+    """Build a preprocess-plus-regressor Pipeline, per the `REGRESSOR_PREPROCESS` table."""
+    strategy = REGRESSOR_PREPROCESS[name]
+    pre = (
+        make_pipeline(SimpleImputer(), StandardScaler())
+        if strategy == "standardize"
+        else "passthrough"
+    )
+    return Pipeline([("pre", pre), ("model", MLRegressorFactory.create(name, params))])

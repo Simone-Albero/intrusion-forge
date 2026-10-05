@@ -9,7 +9,7 @@ defaults:
   - scheduler: one_cycle    # consumed only by DL classifiers
   - fit: default            # how the classifier is trained: balancing, epochs, early stopping
   - complexity: default
-  - failure_regressor: random_forest
+  - failure_regressor: default
   - grid_search: default
   - _self_
   - path: default

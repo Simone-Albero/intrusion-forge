@@ -11,7 +11,10 @@ from src.core.record import clear_dir, read_record
 from src.core.utils import load_from_json, save_to_json
 from src.domain.analysis.failure_regressor import (
     BASELINE_VARIANTS,
+    CALIBRATED_VARIANTS,
     RATE_BASELINE_VARIANTS,
+    SIZE_ERROR_VARIANTS,
+    SIZE_VARIANTS,
 )
 from src.domain.plot.base import Plot, set_figure_format
 from src.domain.plot.comparison_charts import (
@@ -23,7 +26,6 @@ from src.domain.plot.comparison_charts import (
 from src.domain.plot.style import (
     BASELINE_COLOR,
     BASELINE_LABEL,
-    NOISE_COLOR,
     PALETTE,
     apply_plot_style,
 )
@@ -79,8 +81,13 @@ _CLF_LABEL = {
     "hist_gradient_boosting": "HistGB",
     "xgboost": "XGBoost",
 }
-_VARIANT_ORDER = list(BASELINE_VARIANTS)
-_RATE_VARIANT_ORDER = [v for v in _VARIANT_ORDER if v in RATE_BASELINE_VARIANTS]
+# A calibrated variant ranks as its raw one, so only the rate figures and tables show it,
+# each beside its raw one.
+_VARIANT_ORDER = [v for v in BASELINE_VARIANTS if v not in CALIBRATED_VARIANTS]
+_RATE_VARIANT_ORDER = sorted(
+    RATE_BASELINE_VARIANTS,
+    key=lambda v: _VARIANT_ORDER.index(CALIBRATED_VARIANTS.get(v, v)),
+)
 # Top-to-bottom row order of the oracle-benefit figure.
 _ORACLE_BENEFIT_ORDER = _VARIANT_ORDER[::-1]
 
@@ -124,10 +131,11 @@ def _load_sweep_runs(root: Path) -> list[dict]:
                 )
                 if instance is not None:
                     variants = {r["variant"] for r in instance["baselines"]}
-                    if variants != set(_VARIANT_ORDER):
+                    if variants != set(BASELINE_VARIANTS):
                         raise ValueError(
                             f"{baselines_path} has variants {sorted(variants)}; "
-                            f"compare displays {_VARIANT_ORDER}."
+                            f"compare displays {list(BASELINE_VARIANTS)}: re-run "
+                            "`make regress`."
                         )
                 runs.append(
                     {
@@ -383,10 +391,6 @@ def _fig_oracle_benefit_by_variant(runs: list[dict]) -> Plot | None:
     )
 
 
-# The predictions the by-size figures compare, in the order of their bars.
-_SIZE_VARIANTS = ("region", "train_rate_region", "val_rate_region")
-
-
 def _size_values(runs: list[dict], size_bin: int, variant: str, field: str) -> list:
     """`field` of one variant in one size bin, from every run that has it."""
     return [
@@ -410,7 +414,13 @@ def _size_bins(runs: list[dict]) -> list[int]:
 
 
 def _fig_error_by_size(
-    runs: list[dict], *, field: str, y_label: str, noise: bool = False
+    runs: list[dict],
+    *,
+    field: str,
+    y_label: str,
+    variants: tuple[str, ...],
+    y_lim: tuple[float, float] | None = None,
+    log_y: bool = False,
 ) -> Plot | None:
     """Median (+IQR) of `field` per bin of region size, one bar per prediction."""
     bins = _size_bins(runs)
@@ -422,22 +432,8 @@ def _fig_error_by_size(
             [_size_values(runs, b, variant, field) for b in bins],
             BASELINE_COLOR[variant],
         )
-        for variant in _SIZE_VARIANTS
+        for variant in variants
     ]
-    if noise:
-        series.append(
-            (
-                "test noise",
-                _bar_series(
-                    "",
-                    [_size_values(runs, b, "region", "test_noise") for b in bins],
-                    "",
-                )[1],
-                None,
-                None,
-                NOISE_COLOR,
-            )
-        )
     labels = [f"Q{b + 1}" for b in bins]
     labels[0] += " (smallest)"
     labels[-1] += " (largest)"
@@ -446,19 +442,20 @@ def _fig_error_by_size(
         series,
         x_label="region size (train rows), quantile",
         y_label=y_label,
-        hline=None if noise else 0.0,
-        log_y=noise,
+        y_lim=y_lim,
+        hline=None if log_y else 0.0,
+        log_y=log_y,
     )
 
 
 def _table_error_by_size(runs: list[dict]) -> dict:
-    """Median (+IQR) squared and signed error per bin of region size and prediction."""
+    """Median (+IQR) squared error, signed error and rho per bin of region size and prediction."""
     rows = []
     for b in _size_bins(runs):
-        for variant in _SIZE_VARIANTS:
+        for variant in SIZE_ERROR_VARIANTS:
             mse = _median_iqr(_size_values(runs, b, variant, "mse"))
             bias = _median_iqr(_size_values(runs, b, variant, "bias"))
-            noise = _median_iqr(_size_values(runs, b, variant, "test_noise"))
+            rho = _median_iqr(_size_values(runs, b, variant, "spearman"))
             rows.append(
                 {
                     "size_bin": b,
@@ -469,7 +466,10 @@ def _table_error_by_size(runs: list[dict]) -> dict:
                     "bias_median": bias["median"],
                     "bias_p25": bias["p25"],
                     "bias_p75": bias["p75"],
-                    "test_noise_median": noise["median"],
+                    "spearman_median": rho["median"],
+                    "spearman_p25": rho["p25"],
+                    "spearman_p75": rho["p75"],
+                    "spearman_n_runs": rho["n"],
                     "n_runs": mse["n"],
                 }
             )
@@ -630,12 +630,21 @@ def _render_comparisons(root: Path, *, fmt: str, out: Path | None) -> None:
             kmeans_euclidean,
             field="mse",
             y_label="MSE (median, IQR)",
-            noise=True,
+            variants=SIZE_ERROR_VARIANTS,
+            log_y=True,
         ),
         "bias_by_region_size": _fig_error_by_size(
             kmeans_euclidean,
             field="bias",
             y_label="predicted − observed rate (median, IQR)",
+            variants=SIZE_ERROR_VARIANTS,
+        ),
+        "spearman_by_region_size": _fig_error_by_size(
+            kmeans_euclidean,
+            field="spearman",
+            y_label=r"Spearman $\rho$ (median, IQR)",
+            variants=SIZE_VARIANTS,
+            y_lim=(-1.05, 1.05),
         ),
         "spearman_by_dataset": _fig_variant_by_group(
             kmeans_euclidean,

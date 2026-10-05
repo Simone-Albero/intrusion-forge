@@ -18,8 +18,6 @@ PALETTE: list[str] = [
 HIGHLIGHT_COLOR: str = "#B22222"
 MUTED_COLOR: str = "#777777"
 NEUTRAL_COLOR: str = "#cccccc"
-# The test-set noise floor of the by-size figures; no baseline takes it.
-NOISE_COLOR: str = PALETTE[5]
 
 
 # One entry per baseline variant, in the order of `BASELINE_VARIANTS`.
@@ -31,6 +29,9 @@ BASELINE_LABEL: dict[str, str] = {
     "combo_atc_rankavg": "regressor + ATC",
     "train_rate_region": "train rate",
     "val_rate_region": "val rate",
+    "mcp_region_cal": "MCP (cal.)",
+    "atc_region_cal": "ATC (cal.)",
+    "train_rate_region_cal": "train rate (cal.)",
 }
 BASELINE_COLOR: dict[str, str] = {
     "mcp_region": PALETTE[0],
@@ -40,6 +41,10 @@ BASELINE_COLOR: dict[str, str] = {
     "combo_atc_rankavg": PALETTE[4],
     "train_rate_region": PALETTE[7],
     "val_rate_region": HIGHLIGHT_COLOR,
+    # The raw variant's hue, half transparent, so each pair reads as one.
+    "mcp_region_cal": PALETTE[0] + "80",
+    "atc_region_cal": PALETTE[1] + "80",
+    "train_rate_region_cal": PALETTE[7] + "80",
 }
 
 

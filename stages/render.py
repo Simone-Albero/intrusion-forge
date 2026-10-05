@@ -8,15 +8,19 @@ from src.core.io import load_df, save_figures
 from src.core.log import setup_logger
 from src.core.record import clear_dir, write_record
 from src.core.utils import flush_timing, load_from_json, timed
-from src.domain.analysis.failure_regressor import join_region_summary
+from src.domain.analysis.failure_regressor import (
+    SIZE_ERROR_VARIANTS,
+    SIZE_VARIANTS,
+    join_region_summary,
+)
 from src.domain.plot.analysis_charts import dual_scatter_plot, strip_count_panel_plot
 from src.domain.plot.base import Plot, set_figure_format
-from src.domain.plot.comparison_charts import grouped_bar_plot
+from src.domain.plot.comparison_charts import dual_axis_bar_plot, grouped_bar_plot
 from src.domain.plot.primitives import bar_plot, numeric_scatter_plot, violin_plot
 from src.domain.plot.style import (
     BASELINE_COLOR,
     BASELINE_LABEL,
-    NOISE_COLOR,
+    PALETTE,
     apply_plot_style,
 )
 from stages import load_cli_config, paths_from_cfg, stage_config, upstream_ids
@@ -216,8 +220,20 @@ def _plot_rf_evaluation(
     }
 
 
+def _plot_regressor_comparison(models: list[dict]) -> dict[str, Plot]:
+    """Spearman rho and MSE of every failure regressor, on the same outer folds."""
+    return {
+        "correlation/regressor_comparison": dual_axis_bar_plot(
+            [m["model"] for m in models],
+            ("Spearman ρ", [m["spearman"] for m in models], PALETTE[0]),
+            ("MSE", [m["mse"] for m in models], PALETTE[1]),
+            x_label="Failure regressor",
+        )
+    }
+
+
 def _plot_error_by_size(error_by_size: list[dict]) -> dict[str, Plot]:
-    """Squared and signed error per bin of region size, one bar per prediction."""
+    """Squared error, signed error and rho per bin of region size, one bar per prediction."""
     if not error_by_size:
         return {}
     table = pd.DataFrame(error_by_size)
@@ -228,36 +244,42 @@ def _plot_error_by_size(error_by_size: list[dict]) -> dict[str, Plot]:
         .itertuples()
     ]
 
-    def series(field: str) -> list[tuple[str, list, list, list, str]]:
+    def series(field: str, variants: tuple[str, ...], *, with_se: bool) -> list[tuple]:
         out = []
-        for variant, rows in table.groupby("variant", sort=False):
-            rows = rows.sort_values("size_bin")
-            err = rows[f"{field}_se"].to_numpy()
+        for variant in variants:
+            rows = table[table["variant"] == variant].sort_values("size_bin")
+            err = rows[f"{field}_se"].tolist() if with_se else None
             out.append(
                 (
                     BASELINE_LABEL[variant],
                     rows[field].tolist(),
-                    err.tolist(),
-                    err.tolist(),
+                    err,
+                    err,
                     BASELINE_COLOR[variant],
                 )
             )
         return out
 
-    noise = table[table["variant"] == "region"].sort_values("size_bin")["test_noise"]
     return {
         "baselines/mse_by_region_size": grouped_bar_plot(
             labels,
-            [*series("mse"), ("test noise", noise.tolist(), None, None, NOISE_COLOR)],
+            series("mse", SIZE_ERROR_VARIANTS, with_se=True),
             x_label="Region size (train rows)",
-            y_label="MSE (± s.e.)",
+            y_label="MSE",
             log_y=True,
         ),
         "baselines/bias_by_region_size": grouped_bar_plot(
             labels,
-            series("bias"),
+            series("bias", SIZE_ERROR_VARIANTS, with_se=True),
             x_label="Region size (train rows)",
-            y_label="Predicted − observed rate (± s.e.)",
+            y_label="Predicted − observed rate",
+            hline=0.0,
+        ),
+        "baselines/spearman_by_region_size": grouped_bar_plot(
+            labels,
+            series("spearman", SIZE_VARIANTS, with_se=False),
+            x_label="Region size (train rows)",
+            y_label="Spearman ρ",
             hline=0.0,
         ),
     }
@@ -296,6 +318,7 @@ def build_analysis_figures(
     figures.update(_plot_feature_vs_failure(summary_df, scatter_features))
     figures.update(_plot_feature_violin_by_rate_bin(summary_df, scatter_features))
     figures.update(_plot_rf_evaluation(summary_df, regressor_results, predicted_rate))
+    figures.update(_plot_regressor_comparison(regressor_results["models"]))
     figures.update(_plot_error_by_size(error_by_size))
     return figures
 

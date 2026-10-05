@@ -1,0 +1,34 @@
+min_eval_support: 5                # regions with fewer evaluated rows are excluded from the failure dataset
+n_outer_splits: 5
+n_inner_splits: 5
+n_iter: 40                         # RandomizedSearchCV draws per model; a grid smaller than this is searched whole
+primary: random_forest             # its predictions are predicted_rate, the baselines' regressor and the importances
+models:
+  random_forest:
+    params: {}
+    param_grid:
+      n_estimators: [100, 200, 300, 500]
+      max_depth: [null, 3, 5, 10, 20]
+      min_samples_leaf: [1, 2, 3, 5]
+      max_features: [sqrt, 0.5]
+  ridge:
+    params: {}
+    param_grid:
+      alpha: [0.001, 0.0031622776601683794, 0.01, 0.03162277660168379, 0.1, 0.31622776601683794, 1.0, 3.1622776601683795, 10.0, 31.622776601683793, 100.0, 316.22776601683796, 1000.0]
+  xgboost:
+    params:
+      n_jobs: 1                    # the search already runs its candidates in parallel
+    param_grid:
+      n_estimators: [100, 300, 500]
+      learning_rate: [0.03, 0.1, 0.3]
+      max_depth: [2, 3, 4, 6]
+      min_child_weight: [1, 5, 10]
+      subsample: [0.7, 1.0]
+      colsample_bytree: [0.5, 1.0]
+  mlp:
+    params:
+      max_iter: 1000               # no early stopping: its validation split fails on fewer than ~20 regions
+    param_grid:
+      hidden_layer_sizes: [[32], [64], [64, 32], [128, 64]]
+      alpha: [0.0001, 0.001, 0.01, 0.1, 1.0]
+      learning_rate_init: [0.001, 0.003, 0.01]

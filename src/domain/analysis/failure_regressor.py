@@ -4,9 +4,13 @@ import math
 import numpy as np
 import pandas as pd
 from scipy.stats import rankdata, spearmanr
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import mean_absolute_error, r2_score
-from sklearn.model_selection import KFold, RandomizedSearchCV, StratifiedKFold
+from sklearn.metrics import make_scorer, mean_absolute_error, r2_score
+from sklearn.model_selection import (
+    KFold,
+    ParameterGrid,
+    RandomizedSearchCV,
+    StratifiedKFold,
+)
 from tqdm import tqdm
 
 from src.core.utils import timed
@@ -14,6 +18,8 @@ from src.domain.analysis.confidence import atc_region_risk
 from src.domain.analysis.failure import is_failure
 from src.domain.analysis.grouping import RowGroups
 from src.domain.analysis.risk_coverage import oracle_benefit_recovered
+from src.engine.ml.model import MLRegressorFactory
+from src.engine.ml.preprocessing import REGRESSOR_PREPROCESS, build_regressor_pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -24,31 +30,61 @@ def _max_safe_splits(n_minority: int, n_splits_cfg: int) -> int:
     return k if k >= 2 else 0
 
 
+def _check_models(models: dict[str, dict], primary: str) -> None:
+    """Raise before any fit on a model, grid key or primary the run could not finish with."""
+    if primary not in models:
+        raise ValueError(
+            f"The primary failure regressor {primary!r} is not among the models "
+            f"{sorted(models)}."
+        )
+    for name, spec in models.items():
+        if name not in REGRESSOR_PREPROCESS:
+            raise ValueError(
+                f"No preprocessing for failure regressor {name!r}: "
+                f"add it to REGRESSOR_PREPROCESS ({sorted(REGRESSOR_PREPROCESS)})."
+            )
+        accepted = build_regressor_pipeline(name, spec["params"]).get_params()
+        unknown = [k for k in spec["param_grid"] if f"model__{k}" not in accepted]
+        if unknown:
+            raise TypeError(f"Failure regressor {name!r} takes no parameter {unknown}.")
+    if not hasattr(MLRegressorFactory.get(primary), "feature_importances_"):
+        raise TypeError(
+            f"The primary failure regressor {primary!r} has no feature_importances_."
+        )
+
+
 def _fit_outer_fold(
     X_train: pd.DataFrame,
     y_train: pd.Series,
     X_test: pd.DataFrame,
     y_test: pd.Series,
     *,
-    inner_cv: KFold | None,
+    name: str,
+    params: dict,
     param_grid: dict,
+    inner_cv: KFold | None,
     random_state: int,
     n_iter: int,
     fold: int,
 ) -> dict:
-    """Fit and score one outer fold; without inner_cv, use a default RF, no search."""
+    """Fit and score one outer fold; without inner_cv, use the model's defaults, no search."""
+    params = {**params, "random_state": random_state}
     if inner_cv is None:
-        best = RandomForestRegressor(random_state=random_state)
+        best = build_regressor_pipeline(name, params)
         best.fit(X_train, y_train)
-        best_params = {k: best.get_params()[k] for k in param_grid}
+        model_params = best.named_steps["model"].get_params()
+        best_params = {k: model_params[k] for k in param_grid}
         best_score = None
     else:
         search = RandomizedSearchCV(
-            estimator=RandomForestRegressor(random_state=random_state),
-            param_distributions=param_grid,
-            n_iter=n_iter,
+            estimator=build_regressor_pipeline(name, params),
+            param_distributions={f"model__{k}": v for k, v in param_grid.items()},
+            # A grid smaller than the budget is searched whole: asking for more draws than
+            # it holds makes sklearn warn on every fold and run the whole grid anyway.
+            n_iter=min(n_iter, len(ParameterGrid(param_grid))),
             cv=inner_cv,
-            scoring="r2",
+            # Scored as reported, clipped: a model is tuned for the predictor it is judged as.
+            scoring=make_scorer(lambda y, p: r2_score(y, np.clip(p, 0.0, 1.0))),
             n_jobs=-1,
             # Offset by fold: at a fixed random_state RandomizedSearchCV draws the same
             # combinations whatever the data, so every outer fold would search the same
@@ -58,10 +94,14 @@ def _fit_outer_fold(
         )
         search.fit(X_train, y_train)
         best = search.best_estimator_
-        best_params = search.best_params_
+        best_params = {
+            k.removeprefix("model__"): v for k, v in search.best_params_.items()
+        }
         best_score = float(search.best_score_)
 
-    y_pred = best.predict(X_test)
+    # A rate lies in [0, 1] and a forest's mean of rates always does; the other models
+    # are not bound to it.
+    y_pred = np.clip(best.predict(X_test), 0.0, 1.0)
     has_variance = len(y_test) > 1 and np.std(y_test) > 0 and np.std(y_pred) > 0
     return {
         "r2": float(r2_score(y_test, y_pred)) if len(y_test) > 1 else float("nan"),
@@ -69,7 +109,7 @@ def _fit_outer_fold(
         "spearman": (
             float(spearmanr(y_pred, y_test).statistic) if has_variance else float("nan")
         ),
-        "importances": best.feature_importances_,
+        "importances": getattr(best.named_steps["model"], "feature_importances_", None),
         "y_pred": y_pred.tolist(),
         "indices": X_test.index.tolist(),
         "best_params": best_params,
@@ -109,26 +149,30 @@ def _fit_nested_cv(
     X: pd.DataFrame,
     y: pd.Series,
     *,
+    name: str,
+    params: dict,
+    param_grid: dict,
     outer_cv: StratifiedKFold | KFold,
     outer_k: int,
     split_labels: pd.Series | None,
     inner_cv: KFold | None,
-    param_grid: dict,
     random_state: int,
     n_iter: int,
 ) -> dict:
     """Fit every outer fold; collect per-fold scores and out-of-fold predictions."""
     folds = []
     for f, (train_idx, test_idx) in enumerate(
-        tqdm(outer_cv.split(X, split_labels), total=outer_k, desc="Outer CV")
+        tqdm(outer_cv.split(X, split_labels), total=outer_k, desc=f"Outer CV {name}")
     ):
         fold = _fit_outer_fold(
             X.iloc[train_idx],
             y.iloc[train_idx],
             X.iloc[test_idx],
             y.iloc[test_idx],
-            inner_cv=inner_cv,
+            name=name,
+            params=params,
             param_grid=param_grid,
+            inner_cv=inner_cv,
             random_state=random_state,
             n_iter=n_iter,
             fold=f,
@@ -143,12 +187,10 @@ def _fit_nested_cv(
     }
 
 
-def _aggregate_oof_results(oof: dict, feature_cols: list[str]) -> dict:
+def _oof_metrics(oof: dict) -> dict:
     y_true, y_pred = oof["y_true"], oof["y_pred"]
     folds = oof["folds"]
-    mean_importances = np.mean([f["importances"] for f in folds], axis=0)
     rho = spearmanr(y_pred, y_true)
-
     return {
         "spearman": float(rho.statistic),
         "spearman_pvalue": float(rho.pvalue),
@@ -157,6 +199,13 @@ def _aggregate_oof_results(oof: dict, feature_cols: list[str]) -> dict:
         "mae": float(mean_absolute_error(y_true, y_pred)),
         "mae_std": float(np.std([f["mae"] for f in folds])),
         "mse": float(np.mean((y_pred - y_true) ** 2)),
+    }
+
+
+def _primary_details(oof: dict, feature_cols: list[str]) -> dict:
+    folds = oof["folds"]
+    mean_importances = np.mean([f["importances"] for f in folds], axis=0)
+    return {
         "per_fold": [
             {
                 "fold": f["fold_id"],
@@ -202,15 +251,16 @@ _NOT_FEATURES = ("failure_rate", "n_eval", "mcp_risk", "class_id")
 def fit_failure_regressor(
     summary: pd.DataFrame,
     *,
-    param_grid: dict,
+    models: dict[str, dict],
+    primary: str,
     n_outer_splits: int,
     n_inner_splits: int,
     n_iter: int,
     random_state: int,
     min_eval_support: int,
 ) -> tuple[dict, pd.Series]:
-    """Fit a nested-CV Random Forest predicting each region's failure rate; return the
-    results and each scored region's prediction made while it was held out."""
+    """Fit every model by nested CV on the same outer folds; return the primary's results and held-out predictions."""
+    _check_models(models, primary)
     logger.info("Running failure regressor ...")
     df = summary
 
@@ -302,7 +352,7 @@ def fit_failure_regressor(
             outer_k,
             n_inner_splits,
             inner_k or 0,
-            " (no search — using RF defaults)" if inner_k == 0 else "",
+            " (no search — using model defaults)" if inner_k == 0 else "",
         )
 
     inner_cv = (
@@ -311,30 +361,54 @@ def fit_failure_regressor(
         else None
     )
 
-    oof = _fit_nested_cv(
-        X,
-        y,
-        outer_cv=outer_cv,
-        outer_k=outer_k,
-        split_labels=split_labels,
-        inner_cv=inner_cv,
-        param_grid=param_grid,
-        random_state=random_state,
-        n_iter=n_iter,
-    )
+    oofs = {
+        name: _fit_nested_cv(
+            X,
+            y,
+            name=name,
+            params=spec["params"],
+            param_grid=spec["param_grid"],
+            outer_cv=outer_cv,
+            outer_k=outer_k,
+            split_labels=split_labels,
+            inner_cv=inner_cv,
+            random_state=random_state,
+            n_iter=n_iter,
+        )
+        for name, spec in models.items()
+    }
+    metrics = {name: _oof_metrics(oof) for name, oof in oofs.items()}
 
     results = {
         **exclusions,
         **context_metrics,
-        **_aggregate_oof_results(oof, feature_cols),
+        **metrics[primary],
+        **_primary_details(oofs[primary], feature_cols),
+        "model": primary,
+        "models": [{"model": name, **m} for name, m in metrics.items()],
+        "model_folds": [
+            {
+                "model": name,
+                "fold": f["fold_id"],
+                "spearman": f["spearman"],
+                "r2": f["r2"],
+                "mae": f["mae"],
+                "best_score": f["best_score"],
+            }
+            for name, oof in oofs.items()
+            for f in oof["folds"]
+        ],
     }
-    logger.info(
-        "Failure regressor results — Spearman: %.4f, R²: %.4f, MAE: %.4f, MSE: %.4f",
-        results["spearman"],
-        results["r2"],
-        results["mae"],
-        results["mse"],
-    )
+    for name, m in metrics.items():
+        logger.info(
+            "Failure regressor %s — Spearman: %.4f, R²: %.4f, MAE: %.4f, MSE: %.4f",
+            name,
+            m["spearman"],
+            m["r2"],
+            m["mae"],
+            m["mse"],
+        )
+    oof = oofs[primary]
     predicted_rate = pd.Series(
         oof["y_pred"],
         index=pd.Index(oof["indices"], name="region"),
@@ -343,6 +417,12 @@ def fit_failure_regressor(
     return results, predicted_rate
 
 
+# Each calibrated variant and the raw one it maps onto the failure rate's scale.
+CALIBRATED_VARIANTS = {
+    "mcp_region_cal": "mcp_region",
+    "atc_region_cal": "atc_region",
+    "train_rate_region_cal": "train_rate_region",
+}
 BASELINE_VARIANTS = (
     "mcp_region",
     "atc_region",
@@ -351,6 +431,7 @@ BASELINE_VARIANTS = (
     "combo_atc_rankavg",
     "train_rate_region",
     "val_rate_region",
+    *CALIBRATED_VARIANTS,
 )
 RATE_BASELINE_VARIANTS = (
     "region",
@@ -358,6 +439,7 @@ RATE_BASELINE_VARIANTS = (
     "atc_region",
     "train_rate_region",
     "val_rate_region",
+    *CALIBRATED_VARIANTS,
 )
 
 
@@ -368,11 +450,13 @@ def instance_baselines(
     atc_threshold: float,
     train_rate: pd.Series,
     val_rate: pd.Series,
+    calibrated: dict[str, pd.Series],
 ) -> dict:
     """Region rho, region-rate MSE and oracle benefit of every baseline variant."""
     # `atc_threshold` is the confidence cut, chosen on rows other than `samples`;
     # `train_rate` and `val_rate` are the failure rates the classifier made on other rows
-    # of each region, indexed by region.
+    # of each region, `calibrated` the rate of each `CALIBRATED_VARIANTS` entry, all
+    # indexed by region.
     # Only the regions the regressor scored, so every variant ranks the same regions.
     samples = samples[samples["region"].isin(predicted_rate.index)]
     region_of_row = samples["region"].to_numpy()
@@ -402,6 +486,10 @@ def instance_baselines(
         "combo_atc_rankavg": combo_atc_rankavg,
         "train_rate_region": train_rate_region,
         "val_rate_region": val_rate_region,
+        **{
+            name: groups.spread(rate.loc[groups.ids].to_numpy(dtype=float))
+            for name, rate in calibrated.items()
+        },
     }
 
     # A rate variant holds one value per region, so that value is the prediction:
@@ -431,8 +519,11 @@ def instance_baselines(
             {
                 "variant": name,
                 "spearman": rho,
-                "oracle_benefit_recovered": oracle_benefit_recovered(
-                    sc, failure, support
+                # A NaN score, a baseline val could not calibrate, ranks no row.
+                "oracle_benefit_recovered": (
+                    oracle_benefit_recovered(sc, failure, support)
+                    if np.isfinite(sc).all()
+                    else float("nan")
                 ),
                 # Null rather than absent: the rank-average variants have no rate to
                 # compare, and a uniform row shape is what makes this a table.
@@ -451,6 +542,29 @@ def instance_baselines(
     }
 
 
+# The predictions the by-size tables and figures compare, in the order of their bars.
+SIZE_VARIANTS = (
+    "region",
+    "train_rate_region",
+    "val_rate_region",
+    "mcp_region",
+    "atc_region",
+)
+# The by-size squared and signed errors add the calibrated variants, each beside its raw
+# one; a positive slope keeps the raw one's rho up to float resolution, so the rho
+# figures leave them out.
+SIZE_ERROR_VARIANTS = (
+    "region",
+    "train_rate_region",
+    "train_rate_region_cal",
+    "val_rate_region",
+    "mcp_region",
+    "mcp_region_cal",
+    "atc_region",
+    "atc_region_cal",
+)
+
+
 def _mean_and_se(values: np.ndarray) -> tuple[float, float]:
     se = float(values.std(ddof=1) / np.sqrt(values.size)) if values.size > 1 else np.nan
     return float(values.mean()), se
@@ -461,10 +575,9 @@ def error_by_region_size(
     predictions: dict[str, pd.Series],
     *,
     size: pd.Series,
-    n_eval: pd.Series,
     n_bins: int,
 ) -> list[dict]:
-    """Per bin of region size, each prediction's squared and signed error and the test noise."""
+    """Per bin of region size, each prediction's squared and signed error and its rho."""
     regions = observed.index
     if len(regions) < n_bins:
         return []
@@ -473,16 +586,13 @@ def error_by_region_size(
     bin_of[order] = np.arange(len(regions)) * n_bins // len(regions)
 
     rate = observed.to_numpy(dtype=float)
-    support = n_eval.loc[regions].to_numpy(dtype=float)
-    noise = np.where(
-        support > 1, rate * (1 - rate) / np.maximum(support - 1, 1), np.nan
-    )
     rows = []
     for b in range(n_bins):
         in_bin = bin_of == b
         sizes = size.loc[regions[in_bin]]
         for variant, predicted in predictions.items():
-            error = predicted.loc[regions[in_bin]].to_numpy(dtype=float) - rate[in_bin]
+            value = predicted.loc[regions[in_bin]].to_numpy(dtype=float)
+            error = value - rate[in_bin]
             mse, mse_se = _mean_and_se(error**2)
             bias, bias_se = _mean_and_se(error)
             rows.append(
@@ -492,7 +602,11 @@ def error_by_region_size(
                     "n_regions": int(in_bin.sum()),
                     "size_min": int(sizes.min()),
                     "size_max": int(sizes.max()),
-                    "test_noise": float(np.nanmean(noise[in_bin])),
+                    "spearman": (
+                        float(spearmanr(value, rate[in_bin]).statistic)
+                        if np.std(value) > 1e-12 and np.std(rate[in_bin]) > 1e-12
+                        else float("nan")
+                    ),
                     "mse": mse,
                     "mse_se": mse_se,
                     "bias": bias,

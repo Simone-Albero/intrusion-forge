@@ -2,12 +2,14 @@ import logging
 
 import numpy as np
 import pandas as pd
+from scipy.special import expit
 
 from src.core.config import to_container
 from src.core.io import load_df, save_df
 from src.core.log import setup_logger
 from src.core.record import clear_dir, write_record
 from src.core.utils import flush_timing, save_to_json, timed
+from src.domain.analysis.calibration import fit_platt
 from src.domain.analysis.classification import (
     empirical_region_rate,
     region_failures,
@@ -15,6 +17,7 @@ from src.domain.analysis.classification import (
 from src.domain.analysis.confidence import atc_threshold
 from src.domain.analysis.failure import is_failure
 from src.domain.analysis.failure_regressor import (
+    CALIBRATED_VARIANTS,
     error_by_region_size,
     fit_failure_regressor,
     instance_baselines,
@@ -32,7 +35,7 @@ setup_logger()
 logger = logging.getLogger(__name__)
 
 # Bumped when the code changes what a config builds: older records never match.
-SCHEMA = 4
+SCHEMA = 6
 
 # Bins of region size the error is reported over.
 SIZE_BINS = 5
@@ -87,7 +90,8 @@ def regress(cfg, paths) -> tuple[pd.DataFrame, dict, dict | None]:
     fr = cfg.failure_regressor
     results, predicted_rate = fit_failure_regressor(
         summary,
-        param_grid=to_container(fr.param_grid),
+        models=to_container(fr.models),
+        primary=fr.primary,
         n_outer_splits=fr.n_outer_splits,
         n_inner_splits=fr.n_inner_splits,
         n_iter=fr.n_iter,
@@ -147,6 +151,48 @@ def regress(cfg, paths) -> tuple[pd.DataFrame, dict, dict | None]:
         1.0 - val["mcp_risk"].to_numpy(),
         ~is_failure(val["y_true"].to_numpy(), val["y_pred"].to_numpy()),
     )
+
+    def atc_rate(rows: pd.DataFrame) -> pd.Series:
+        return ((1.0 - rows["mcp_risk"]) < threshold).groupby(rows["region"]).mean()
+
+    rates = {
+        "region": predicted_rate,
+        "train_rate_region": train_rate.loc[scored],
+        "val_rate_region": val_rate.loc[scored],
+        "mcp_region": summary.loc[scored, "mcp_risk"],
+        "atc_region": atc_rate(test).loc[scored],
+    }
+    # Each score on val's regions, fitted to val's failures there, then mapped on test's
+    # regions: no test row chooses its own scale.
+    val_regions = val_failures.set_index("region")
+    val_scores = {
+        "mcp_region": val_regions["mcp_risk"],
+        "atc_region": atc_rate(val).loc[val_regions.index],
+        "train_rate_region": train_rate.loc[val_regions.index],
+    }
+    # A val without failures, or with nothing else, has no scale to fit: the calibrated
+    # variants stay NaN instead of stopping the stage over a fact of the data.
+    val_failure_rate = val_regions["failure_rate"].mean()
+    can_calibrate = 0.0 < val_failure_rate < 1.0
+    if not can_calibrate:
+        logger.warning(
+            "Val's regions fail at a rate of %s: no calibrated baselines.",
+            val_failure_rate,
+        )
+    calibration = []
+    for name, raw in CALIBRATED_VARIANTS.items():
+        intercept, slope = np.nan, np.nan
+        if can_calibrate:
+            intercept, slope = fit_platt(
+                val_scores[raw].to_numpy(), val_regions["failure_rate"].to_numpy()
+            )
+        if slope == 0.0 and val_scores[raw].nunique() > 1:
+            logger.warning(
+                "%s does not rise with val's failures: its calibration is constant.",
+                raw,
+            )
+        rates[name] = expit(intercept + slope * rates[raw])
+        calibration.append({"variant": name, "intercept": intercept, "slope": slope})
     baselines = {
         **instance_baselines(
             test,
@@ -154,20 +200,18 @@ def regress(cfg, paths) -> tuple[pd.DataFrame, dict, dict | None]:
             atc_threshold=threshold,
             train_rate=train_rate,
             val_rate=val_rate,
+            calibrated={name: rates[name] for name in CALIBRATED_VARIANTS},
         ),
         "atc_threshold": threshold,
+        "calibration": calibration,
+        "n_regions_val": len(val_regions),
         "n_val": len(val),
         "n_regions_without_fit": n_without_fit,
         "n_regions_without_val": n_without_val,
         "error_by_size": error_by_region_size(
             summary.loc[scored, "failure_rate"],
-            {
-                "region": predicted_rate,
-                "train_rate_region": train_rate.loc[scored],
-                "val_rate_region": val_rate.loc[scored],
-            },
+            rates,
             size=table.set_index("region")["n_train"],
-            n_eval=summary.loc[scored, "n_eval"],
             n_bins=SIZE_BINS,
         ),
     }
