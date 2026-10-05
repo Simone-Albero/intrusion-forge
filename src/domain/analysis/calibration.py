@@ -19,20 +19,20 @@ def fit_platt(score: np.ndarray, rate: np.ndarray) -> tuple[float, float]:
     unit = (score - mean) / sd
 
     def loss(params: np.ndarray) -> tuple[float, np.ndarray]:
-        z = params[0] + params[1] * unit
-        residual = expit(z) - rate
-        value = np.mean(np.logaddexp(0.0, z) - rate * z)
+        logit_rate = params[0] + params[1] * unit
+        residual = expit(logit_rate) - rate
+        value = np.mean(np.logaddexp(0.0, logit_rate) - rate * logit_rate)
         return value, np.array([residual.mean(), (residual * unit).mean()])
 
     # A negative slope would reverse the ranking a calibration has to keep.
-    fit = minimize(
+    result = minimize(
         loss,
         x0=np.array([logit(pooled), 0.0]),
         jac=True,
         method="L-BFGS-B",
         bounds=[(None, None), (0.0, None)],
     )
-    if not fit.success:
-        raise RuntimeError(f"Platt fit did not converge: {fit.message}")
-    a, b = fit.x
-    return float(a - b * mean / sd), float(b / sd)
+    if not result.success:
+        raise RuntimeError(f"Platt fit did not converge: {result.message}")
+    intercept, slope = result.x
+    return float(intercept - slope * mean / sd), float(slope / sd)

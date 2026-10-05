@@ -29,8 +29,8 @@ def stratified_subsample(
     per_group = min(n_samples // len(unique_groups), int(counts.min()))
 
     parts = []
-    for g in unique_groups:
-        pool = np.where(labels == g)[0]
+    for group in unique_groups:
+        pool = np.where(labels == group)[0]
         parts.append(rng.choice(pool, min(per_group, len(pool)), replace=False))
 
     return np.concatenate(parts) if parts else np.array([], dtype=int)

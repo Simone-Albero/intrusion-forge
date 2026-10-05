@@ -50,36 +50,36 @@ def _cluster_per_class(
 ) -> tuple[np.ndarray, dict[int, np.ndarray], dict[str, list]]:
     """Cluster each class at the granularity that least misreads its rows' hardness from
     their region's error rate, merging any undersized cluster into a survivor."""
-    y_class = train["label"].to_numpy()
-    classes = sorted(np.unique(y_class).tolist())
-    n = len(train)
+    train_labels = train["label"].to_numpy()
+    classes = sorted(np.unique(train_labels).tolist())
+    n_train = len(train)
     clustering = cfg.clustering
     algorithms = OmegaConf.to_container(clustering.algorithms, resolve=True)
     max_clusters_per_class = max(2, clustering.max_regions // len(classes))
-    labels = np.full(n, -1, dtype=np.int64)
+    labels = np.full(n_train, -1, dtype=np.int64)
     centroids: dict[int, np.ndarray] = {}
     offset = 0
     report: dict[str, list] = {"classes": [], "sweep": []}
 
     nodes = KdnNodes(
         X=_points(cfg, space, train.iloc[graph_rows]),
-        y=y_class[graph_rows],
-        ids=graph_rows,
+        y=train_labels[graph_rows],
+        row_ids=graph_rows,
     )
 
-    for cls in tqdm(classes, desc="Clustering classes"):
-        mask = y_class == cls
-        if not mask.any():
+    for class_id in tqdm(classes, desc="Clustering classes"):
+        in_class = train_labels == class_id
+        if not in_class.any():
             continue
-        ids_cls = np.flatnonzero(mask)
-        X_num_cls = _points(cfg, space, train.iloc[ids_cls])
+        class_rows = np.flatnonzero(in_class)
+        X_class = _points(cfg, space, train.iloc[class_rows])
 
-        algo_reports: dict[str, dict] = {}
+        algorithm_reports: dict[str, dict] = {}
         cluster_fn = build_cluster_fn(
             algorithms=algorithms,
             max_fit_samples=clustering.max_fit_samples,
             random_state=cfg.seed,
-            reporter=algo_reports.__setitem__,
+            reporter=algorithm_reports.__setitem__,
             max_clusters=max_clusters_per_class,
             min_cluster_floor=clustering.min_cluster_floor,
             hardness_k=clustering.hardness_k,
@@ -88,24 +88,25 @@ def _cluster_per_class(
             metric=cfg.distance,
         )
         raw_labels, n_merged_clusters, n_merged = cluster_fn(
-            X_num_cls, ids=ids_cls, label=cls
+            X_class, row_ids=class_rows, label=class_id
         )
-        n_clusters_cls = int(np.unique(raw_labels).size)
-        if n_clusters_cls > max_clusters_per_class:
+        n_class_clusters = int(np.unique(raw_labels).size)
+        if n_class_clusters > max_clusters_per_class:
             raise ValueError(
-                f"class {class_names[cls]!r}: {n_clusters_cls} clusters survive merging, "
+                f"class {class_names[class_id]!r}: {n_class_clusters} clusters survive "
+                "merging, "
                 f"over its share of clustering.max_regions ({max_clusters_per_class}). "
                 "Raise max_regions or tighten the clustering grid."
             )
 
-        [algo_report] = algo_reports.values()
-        best = algo_report["best"]
-        identity = {"class_id": int(cls), "class_name": class_names[cls]}
+        [algorithm_report] = algorithm_reports.values()
+        best = algorithm_report["best"]
+        identity = {"class_id": int(class_id), "class_name": class_names[class_id]}
         report["classes"].append(
             {
                 **identity,
                 "n_train": int(raw_labels.shape[0]),
-                "n_clusters": n_clusters_cls,
+                "n_clusters": n_class_clusters,
                 "loss": best["loss"],
                 "size_balance": cluster_size_balance(raw_labels),
                 "n_merged_clusters": n_merged_clusters,
@@ -127,14 +128,17 @@ def _cluster_per_class(
                 "duration_s": candidate["duration_s"],
                 "error": candidate.get("error", False),
             }
-            for candidate in algo_report["sweep"]
+            for candidate in algorithm_report["sweep"]
         )
 
         cluster_ids = np.unique(raw_labels)
-        labels[mask] = raw_labels + offset
-        class_centroids = compute_centroids(X_num_cls, raw_labels, metric=cfg.distance)
+        labels[in_class] = raw_labels + offset
+        class_centroids = compute_centroids(X_class, raw_labels, metric=cfg.distance)
         centroids.update(
-            {int(cid) + offset: centroid for cid, centroid in class_centroids.items()}
+            {
+                int(cluster) + offset: centroid
+                for cluster, centroid in class_centroids.items()
+            }
         )
         offset += int(cluster_ids.max()) + 1
 
@@ -163,7 +167,7 @@ def build_regions(
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     """Cluster train per class, then place every split's rows in the nearest region."""
     train = splits["train"]
-    y_class = train["label"].to_numpy()
+    train_labels = train["label"].to_numpy()
     class_names = {c["class_id"]: c["class_name"] for c in meta["classes"]}
 
     eval_rows_per_train_row = len(splits["test"]) / len(train)
@@ -192,7 +196,7 @@ def build_regions(
     if (labels < 0).any():
         raise ValueError(f"{int((labels < 0).sum())} train rows were given no region.")
     region_ids = sorted(centroids)
-    region_class = pd.Series(y_class).groupby(labels).first()
+    region_class = pd.Series(train_labels).groupby(labels).first()
     centroid_table = pd.DataFrame(
         np.stack([centroids[r] for r in region_ids]),
         columns=space.columns(),

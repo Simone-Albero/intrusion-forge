@@ -60,17 +60,17 @@ def _to_snake_case(name: str) -> str:
 def discover_and_import_modules(package_path: Path, package_name: str) -> list[str]:
     """Recursively import every module in a package, triggering decorator registration."""
     imported: list[str] = []
-    for _, modname, _ in pkgutil.walk_packages(
+    for _, module_name, _ in pkgutil.walk_packages(
         path=[str(package_path)], prefix=f"{package_name}."
     ):
-        if "__pycache__" in modname:
+        if "__pycache__" in module_name:
             continue
         try:
-            importlib.import_module(modname)
-        except Exception as e:
+            importlib.import_module(module_name)
+        except Exception as error:
             raise ImportError(
-                f"Factory auto-discovery failed to import {modname!r}; "
+                f"Factory auto-discovery failed to import {module_name!r}; "
                 "its registrations would be silently missing."
-            ) from e
-        imported.append(modname)
+            ) from error
+        imported.append(module_name)
     return imported

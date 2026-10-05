@@ -68,7 +68,7 @@ def _build_validation_engine(
     *,
     loss_fn: nn.Module,
     device: torch.device,
-    trainer: Engine,
+    train_engine: Engine,
     patience: int,
     min_delta: float,
     checkpoint_dir: Path,
@@ -79,18 +79,18 @@ def _build_validation_engine(
         patience=patience,
         min_delta=min_delta,
         score_function=lambda engine: -engine.state.metrics["loss"],
-        trainer=trainer,
+        trainer=train_engine,
     )
     checkpoint = ModelCheckpoint(
         dirname=checkpoint_dir,
         score_function=lambda engine: -engine.state.metrics["loss"],
         score_name="loss",
         n_saved=1,
-        global_step_transform=lambda engine, _: trainer.state.epoch,
+        global_step_transform=lambda engine, _: train_engine.state.epoch,
         require_empty=False,
     )
 
-    validator = build_engine(
+    validation_engine = build_engine(
         eval_step,
         state={"model": model, "loss_fn": loss_fn, "device": device},
         metric=("loss", Average(output_transform=lambda x: x["loss"])),
@@ -99,7 +99,7 @@ def _build_validation_engine(
             (Events.COMPLETED, lambda engine: checkpoint(engine, {"model": model})),
         ],
     )
-    return validator, checkpoint
+    return validation_engine, checkpoint
 
 
 @dataclass
@@ -152,8 +152,8 @@ class DLTrainer:
         save_dir: Path,
     ) -> tuple[nn.Module, dict]:
         """Train with early stopping and return the best checkpoint plus its loss history."""
-        # Emptied first: the handler deletes only the files it saved itself, so each fit
-        # would otherwise leave one more checkpoint behind.
+        # Emptied first: the handler deletes only the files it saved itself, so each
+        # fit would otherwise leave one more checkpoint behind.
         checkpoint_dir = Path(save_dir) / "checkpoints"
         if checkpoint_dir.exists():
             shutil.rmtree(checkpoint_dir)
@@ -180,7 +180,7 @@ class DLTrainer:
             self.scheduler.name, self.scheduler.params, optimizer, train_loader
         )
 
-        trainer, history = _build_train_engine(
+        train_engine, history = _build_train_engine(
             model,
             loss_fn=loss_fn,
             optimizer=optimizer,
@@ -188,31 +188,31 @@ class DLTrainer:
             device=self.device,
             max_grad_norm=self.max_grad_norm,
         )
-        validator, checkpoint = _build_validation_engine(
+        validation_engine, checkpoint = _build_validation_engine(
             model,
             loss_fn=loss_fn,
             device=self.device,
-            trainer=trainer,
+            train_engine=train_engine,
             patience=self.patience,
             min_delta=self.min_delta,
             checkpoint_dir=checkpoint_dir,
         )
 
-        @trainer.on(Events.EPOCH_COMPLETED)
+        @train_engine.on(Events.EPOCH_COMPLETED)
         def _validate(engine) -> None:
             logger.info(
                 "Epoch [%d] Train Loss: %.6f",
                 engine.state.epoch,
                 engine.state.metrics["loss"],
             )
-            validator.run(val_loader)
+            validation_engine.run(val_loader)
             logger.info(
                 "Epoch [%d] Val Loss: %.6f",
                 engine.state.epoch,
-                validator.state.metrics["loss"],
+                validation_engine.state.metrics["loss"],
             )
 
-        trainer.run(train_loader, max_epochs=self.epochs)
+        train_engine.run(train_loader, max_epochs=self.epochs)
 
         best = checkpoint.last_checkpoint
         if best is None:
@@ -256,12 +256,12 @@ class DLTrainer:
             dtypes=[torch.float32, torch.long],
         )
         output = forward_eval(model, inputs, self.device)
-        probs = F.softmax(output["logits"].cpu(), dim=1)
-        y_pred = probs.argmax(dim=1).numpy()
-        y_proba = probs.numpy()
+        probabilities = F.softmax(output["logits"].cpu(), dim=1)
+        y_pred = probabilities.argmax(dim=1).numpy()
+        y_proba = probabilities.numpy()
         if return_embedding:
-            z = output["z"].cpu().numpy() if "z" in output else None
-            return y_pred, y_proba, z
+            embedding = output["z"].cpu().numpy() if "z" in output else None
+            return y_pred, y_proba, embedding
         return y_pred, y_proba
 
     def save(
@@ -282,9 +282,9 @@ class DLTrainer:
 
     def load(self, path: Path) -> nn.Module:
         """Load the model from `path / model.pt` onto this trainer's device."""
-        ckpt = torch.load(
+        saved_model = torch.load(
             Path(path) / "model.pt", map_location="cpu", weights_only=True
         )
-        model = _create_model(ckpt["name"], ckpt["params"], self.device)
-        model.load_state_dict(ckpt["state_dict"])
+        model = _create_model(saved_model["name"], saved_model["params"], self.device)
+        model.load_state_dict(saved_model["state_dict"])
         return model

@@ -124,19 +124,22 @@ _OVERLAPS = (
 )
 
 
-def _n(mu: float, sigma: float, n: int) -> np.ndarray:
+def _draw_normal(mu: float, sigma: float, n: int) -> np.ndarray:
     """Draw n normal samples."""
     return RNG.normal(loc=mu, scale=sigma, size=n)
 
 
-def _cat(values: list, weights: tuple[float, ...], n: int) -> np.ndarray:
+def _draw_categorical(values: list, weights: tuple[float, ...], n: int) -> np.ndarray:
     """Draw n categorical samples with the given weights."""
     return RNG.choice(values, size=n, p=weights)
 
 
-def _base(n: int) -> dict:
+def _baseline_features(n: int) -> dict:
     """All numerical features at the shared baseline N(5, 1)."""
-    return {f"num_{i}": _n(_BASE_MU, _BASE_SIGMA, n) for i in range(1, _N_FEATURES + 1)}
+    return {
+        f"num_{i}": _draw_normal(_BASE_MU, _BASE_SIGMA, n)
+        for i in range(1, _N_FEATURES + 1)
+    }
 
 
 def _adversaries(label: str) -> list[str]:
@@ -150,11 +153,11 @@ def _rung_center(
     """Means placed `margin` mixing sigmas from the pair midpoint, on the own-class side."""
     keys = sorted(set(mu) | set(adv_mu))
     own = np.array([mu.get(k, _BASE_MU) for k in keys])
-    adv = np.array([adv_mu.get(k, _BASE_MU) for k in keys])
-    direction = own - adv
+    adversary = np.array([adv_mu.get(k, _BASE_MU) for k in keys])
+    direction = own - adversary
     norm = float(np.linalg.norm(direction))
     offset = margin * _MIX_SIGMA * direction / norm if norm > 0 else 0.0
-    return dict(zip(keys, (own + adv) / 2 + offset))
+    return dict(zip(keys, (own + adversary) / 2 + offset))
 
 
 def _blend_weights(
@@ -186,12 +189,12 @@ def _subgroup_frame(
     cat_2: tuple[float, ...],
 ) -> pd.DataFrame:
     """One sub-group: baseline features with `center` overridden, plus categoricals and label."""
-    features = _base(n)
+    features = _baseline_features(n)
     for col, mu in center.items():
-        features[col] = _n(mu, sigma, n)
+        features[col] = _draw_normal(mu, sigma, n)
     df = pd.DataFrame(features)
-    df["cat_1"] = _cat(_CAT1_VALUES, cat_1, n)
-    df["cat_2"] = _cat(_CAT2_VALUES, cat_2, n)
+    df["cat_1"] = _draw_categorical(_CAT1_VALUES, cat_1, n)
+    df["cat_2"] = _draw_categorical(_CAT2_VALUES, cat_2, n)
     df["label"] = label
     df["true_subgroup"] = subgroup
     return df
@@ -217,16 +220,16 @@ def generate_class(label: str, n: int) -> pd.DataFrame:
         )
     ]
     for adversary in adversaries:
-        adv = _CLASSES[adversary]
+        adversary_spec = _CLASSES[adversary]
         for rung in _LADDER:
             plan.append(
                 (
                     rung.name,
                     rung.share / len(adversaries),
-                    _rung_center(spec.mu, adv.mu, rung.margin),
+                    _rung_center(spec.mu, adversary_spec.mu, rung.margin),
                     _MIX_SIGMA,
-                    _blend_weights(spec.cat_1, adv.cat_1, rung.blend),
-                    _blend_weights(spec.cat_2, adv.cat_2, rung.blend),
+                    _blend_weights(spec.cat_1, adversary_spec.cat_1, rung.blend),
+                    _blend_weights(spec.cat_2, adversary_spec.cat_2, rung.blend),
                 )
             )
 
@@ -264,8 +267,8 @@ def _compute_sizes(total_rows: int) -> dict[str, int]:
     scalable_total = _DEFAULT_TOTAL - _RARE_CLASS_SIZE
     scale = (total_rows - _RARE_CLASS_SIZE) / scalable_total
     return {
-        cls: _RARE_CLASS_SIZE if cls == "class_10" else max(1, round(n * scale))
-        for cls, n in _DEFAULT_CLASS_SIZES.items()
+        label: _RARE_CLASS_SIZE if label == "class_10" else max(1, round(n * scale))
+        for label, n in _DEFAULT_CLASS_SIZES.items()
     }
 
 

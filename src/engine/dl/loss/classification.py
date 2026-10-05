@@ -38,16 +38,16 @@ class CrossEntropyLoss(BaseLoss):
             raise ValueError("label_smoothing must be in [0, 1)")
         self.ignore_index = ignore_index
         self.label_smoothing = label_smoothing
-        w = _make_class_weight(class_weight, device)
-        if w is not None:
-            self.register_buffer("class_weight", w)
+        weight = _make_class_weight(class_weight, device)
+        if weight is not None:
+            self.register_buffer("class_weight", weight)
         else:
             self.class_weight = None
 
-    def forward(self, x: Tensor, target: Tensor) -> Tensor:
+    def forward(self, logits: Tensor, target: Tensor) -> Tensor:
         """Weighted cross-entropy over the non-ignored targets."""
         loss = F.cross_entropy(
-            x,
+            logits,
             target,
             weight=self.class_weight,
             ignore_index=self.ignore_index,
@@ -79,17 +79,17 @@ class FocalLoss(BaseLoss):
         self.gamma = gamma
         self.ignore_index = ignore_index
         self.label_smoothing = label_smoothing
-        w = _make_class_weight(class_weight, device)
-        if w is not None:
-            self.register_buffer("class_weight", w)
+        weight = _make_class_weight(class_weight, device)
+        if weight is not None:
+            self.register_buffer("class_weight", weight)
         else:
             self.class_weight = None
 
-    def forward(self, x: Tensor, target: Tensor) -> Tensor:
+    def forward(self, logits: Tensor, target: Tensor) -> Tensor:
         """Focal loss over the non-ignored targets."""
         valid = target != self.ignore_index
         ce_loss = F.cross_entropy(
-            x,
+            logits,
             target,
             reduction="none",
             label_smoothing=self.label_smoothing,
@@ -103,7 +103,9 @@ class FocalLoss(BaseLoss):
                 self.ignore_index,
             )
         safe_target = target.clamp_min(0)
-        p_t = torch.softmax(x, dim=1).gather(1, safe_target.unsqueeze(1)).squeeze(1)
+        p_t = (
+            torch.softmax(logits, dim=1).gather(1, safe_target.unsqueeze(1)).squeeze(1)
+        )
         loss = (1 - p_t) ** self.gamma * ce_loss
         if self.class_weight is not None:
             loss = self.class_weight.gather(0, safe_target) * loss

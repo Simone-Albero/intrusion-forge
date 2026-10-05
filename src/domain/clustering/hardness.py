@@ -11,11 +11,11 @@ class KdnNodes:
 
     X: np.ndarray
     y: np.ndarray
-    ids: np.ndarray
+    row_ids: np.ndarray
 
 
 def compute_kdn(
-    X: np.ndarray, *, ids: np.ndarray, label: object, nodes: KdnNodes, k: int
+    X: np.ndarray, *, row_ids: np.ndarray, label: object, nodes: KdnNodes, k: int
 ) -> np.ndarray:
     """Share of each row's k nearest nodes, itself excluded, of another class."""
     effective_k = min(k, nodes.X.shape[0] - 1)
@@ -24,12 +24,12 @@ def compute_kdn(
             f"compute_kdn: {nodes.X.shape[0]} node(s) leave no "
             "neighbour once a row's own copy is excluded."
         )
-    nn = NearestNeighbors(n_neighbors=effective_k + 1).fit(nodes.X)
-    _, neighbor_pos = nn.kneighbors(X)
-    neighbor_ids = nodes.ids[neighbor_pos]
-    neighbor_labels = nodes.y[neighbor_pos]
+    index = NearestNeighbors(n_neighbors=effective_k + 1).fit(nodes.X)
+    _, neighbor_positions = index.kneighbors(X)
+    neighbor_ids = nodes.row_ids[neighbor_positions]
+    neighbor_labels = nodes.y[neighbor_positions]
 
-    self_mask = neighbor_ids == ids[:, np.newaxis]
+    self_mask = neighbor_ids == row_ids[:, np.newaxis]
     has_self = self_mask.any(axis=1)
     # Drop the row's own node when it has one, else the farthest neighbour,
     # so every row keeps exactly `effective_k` votes.

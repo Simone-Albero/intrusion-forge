@@ -21,12 +21,12 @@ _N_CLUSTERS_ALGOS = ("kmeans", "spectral", "birch")
 
 
 def _n_clusters_grid(
-    n_class: int, target_size: int, k_cap: int, levels: int = 7
+    n_class: int, target_size: int, max_n_clusters: int, levels: int = 7
 ) -> list[int]:
     """Data-relative `n_clusters` candidates: a geometric band from `target_size` up."""
-    sizes = (target_size * (2**i) for i in range(levels))
-    ks = {min(k_cap, max(2, round(n_class / s))) for s in sizes}
-    return sorted(ks)
+    sizes = (target_size * (2**level) for level in range(levels))
+    candidates = {min(max_n_clusters, max(2, round(n_class / size))) for size in sizes}
+    return sorted(candidates)
 
 
 def build_cluster_fn(
@@ -69,24 +69,26 @@ def build_cluster_fn(
         )
 
     def _fn(
-        X_num: np.ndarray, *, ids: np.ndarray, label: object
+        X: np.ndarray, *, row_ids: np.ndarray, label: object
     ) -> tuple[np.ndarray, int, int]:
-        common = {
+        fixed_fit_params = {
             "max_fit_samples": max_fit_samples,
             "random_state": random_state,
             **fixed,
         }
-        algo_grid = dict(grid)
+        full_grid = dict(grid)
         if derives_n_clusters:
-            k_cap = max(2, min(max_fit_samples // min_cluster_floor, max_clusters))
-            algo_grid["n_clusters"] = _n_clusters_grid(
-                X_num.shape[0], min_cluster_floor, k_cap
+            max_n_clusters = max(
+                2, min(max_fit_samples // min_cluster_floor, max_clusters)
+            )
+            full_grid["n_clusters"] = _n_clusters_grid(
+                X.shape[0], min_cluster_floor, max_n_clusters
             )
         report, best_labels = grid_search(
-            X_num,
+            X,
             fit_fn,
-            algo_grid,
-            ids=ids,
+            full_grid,
+            row_ids=row_ids,
             label=label,
             nodes=nodes,
             hardness_k=hardness_k,
@@ -94,17 +96,17 @@ def build_cluster_fn(
             min_cluster_floor=min_cluster_floor,
             max_clusters=max_clusters,
             merge_metric=metric,
-            **common,
+            **fixed_fit_params,
         )
         reporter(name, report)
         if best_labels is not None:
             best = report["best"]
             return best_labels, best["n_merged_clusters"], best["n_merged"]
-        raw = fit_fn(X_num, **report["best"]["combo"], **common)
+        refit_labels = fit_fn(X, **report["best"]["combo"], **fixed_fit_params)
         # Refit on the full class: the sweep's merge counts described the scored
         # subsample, at a floor scaled down to match it, so they don't describe this.
         final_labels, n_merged_clusters, n_merged = merge_small_clusters(
-            X_num, raw, min_size=min_cluster_floor, metric=metric
+            X, refit_labels, min_size=min_cluster_floor, metric=metric
         )
         return final_labels, n_merged_clusters, n_merged
 

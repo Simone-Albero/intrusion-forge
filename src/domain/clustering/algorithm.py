@@ -11,7 +11,7 @@ _PREDICT_CHUNK = 200_000
 
 @ClusteringFactory.register("hdbscan")
 def fit_hdbscan(
-    X_num: np.ndarray,
+    X: np.ndarray,
     *,
     min_cluster_size: int = 50,
     min_samples: int | None = None,
@@ -21,9 +21,9 @@ def fit_hdbscan(
     random_state: int,
 ) -> np.ndarray:
     """Fit HDBSCAN (Euclidean) and return labels (n,), keeping noise as -1."""
-    n = X_num.shape[0]
+    n_rows = X.shape[0]
 
-    clf = hdbscan.HDBSCAN(
+    clusterer = hdbscan.HDBSCAN(
         min_cluster_size=min_cluster_size,
         min_samples=min_samples,
         cluster_selection_method=cluster_selection_method,
@@ -32,52 +32,52 @@ def fit_hdbscan(
         prediction_data=True,
     )
 
-    if n > max_fit_samples:
-        sub_num = subsample_features(
-            X_num, max_samples=max_fit_samples, random_state=random_state
+    if n_rows > max_fit_samples:
+        X_sub = subsample_features(
+            X, max_samples=max_fit_samples, random_state=random_state
         )
-        clf.fit(sub_num)
+        clusterer.fit(X_sub)
         labels = np.concatenate(
             [
-                hdbscan.approximate_predict(clf, X_num[start : start + _PREDICT_CHUNK])[
-                    0
-                ]
-                for start in range(0, n, _PREDICT_CHUNK)
+                hdbscan.approximate_predict(
+                    clusterer, X[start : start + _PREDICT_CHUNK]
+                )[0]
+                for start in range(0, n_rows, _PREDICT_CHUNK)
             ]
         )
     else:
-        clf.fit(X_num)
-        labels = clf.labels_
+        clusterer.fit(X)
+        labels = clusterer.labels_
 
     return labels
 
 
 @ClusteringFactory.register("kmeans")
 def fit_kmeans(
-    X_num: np.ndarray,
+    X: np.ndarray,
     *,
     n_clusters: int = 8,
     max_fit_samples: int,
     random_state: int,
 ) -> np.ndarray:
     """Fit K-means on at most `max_fit_samples` rows and label every row of X."""
-    n = X_num.shape[0]
+    n_rows = X.shape[0]
     # Bounded by the rows the model is fitted on, which the sweep scored.
-    n_clusters = max(2, min(n_clusters, min(n, max_fit_samples) - 1))
-    X_num = np.ascontiguousarray(X_num, dtype=np.float64)
+    n_clusters = max(2, min(n_clusters, min(n_rows, max_fit_samples) - 1))
+    X = np.ascontiguousarray(X, dtype=np.float64)
     model = KMeans(n_clusters=n_clusters, random_state=random_state)
-    if n > max_fit_samples:
-        sub_num = subsample_features(
-            X_num, max_samples=max_fit_samples, random_state=random_state
+    if n_rows > max_fit_samples:
+        X_sub = subsample_features(
+            X, max_samples=max_fit_samples, random_state=random_state
         )
-        model.fit(sub_num)
-        return model.predict(X_num)
-    return model.fit_predict(X_num)
+        model.fit(X_sub)
+        return model.predict(X)
+    return model.fit_predict(X)
 
 
 @ClusteringFactory.register("birch")
 def fit_birch(
-    X_num: np.ndarray,
+    X: np.ndarray,
     *,
     n_clusters: int = 8,
     threshold: float = 0.5,
@@ -86,29 +86,29 @@ def fit_birch(
     random_state: int,
 ) -> np.ndarray:
     """Fit BIRCH with `n_clusters` (AgglomerativeClustering on CF-tree leaves)."""
-    n = X_num.shape[0]
-    n_clusters = max(2, min(int(n_clusters), min(n, max_fit_samples) - 1))
-    X_num = np.ascontiguousarray(X_num, dtype=np.float64)
-    clf = Birch(
+    n_rows = X.shape[0]
+    n_clusters = max(2, min(int(n_clusters), min(n_rows, max_fit_samples) - 1))
+    X = np.ascontiguousarray(X, dtype=np.float64)
+    clusterer = Birch(
         threshold=threshold,
         branching_factor=branching_factor,
         n_clusters=n_clusters,
     )
-    if n > max_fit_samples:
-        sub_num = subsample_features(
-            X_num, max_samples=max_fit_samples, random_state=random_state
+    if n_rows > max_fit_samples:
+        X_sub = subsample_features(
+            X, max_samples=max_fit_samples, random_state=random_state
         )
-        clf.fit(sub_num)
-        labels = clf.predict(X_num)
+        clusterer.fit(X_sub)
+        labels = clusterer.predict(X)
     else:
-        clf.fit(X_num)
-        labels = clf.labels_
+        clusterer.fit(X)
+        labels = clusterer.labels_
     return labels
 
 
 @ClusteringFactory.register("spectral")
 def fit_spectral(
-    X_num: np.ndarray,
+    X: np.ndarray,
     *,
     n_clusters: int = 8,
     affinity: str = "rbf",
@@ -124,11 +124,11 @@ def fit_spectral(
         raise TypeError(
             f"fit_spectral: n_neighbors is ignored with affinity={affinity!r}."
         )
-    n = X_num.shape[0]
-    n_clusters = max(2, min(int(n_clusters), min(n, max_fit_samples) - 1))
-    X_num = np.ascontiguousarray(X_num, dtype=np.float64)
+    n_rows = X.shape[0]
+    n_clusters = max(2, min(int(n_clusters), min(n_rows, max_fit_samples) - 1))
+    X = np.ascontiguousarray(X, dtype=np.float64)
 
-    spec_kwargs = dict(
+    spectral_params = dict(
         n_clusters=n_clusters,
         affinity=affinity,
         assign_labels="kmeans",
@@ -136,17 +136,17 @@ def fit_spectral(
         eigen_solver="arpack",
     )
     if gamma is not None:
-        spec_kwargs["gamma"] = float(gamma)
+        spectral_params["gamma"] = float(gamma)
     if n_neighbors is not None:
-        spec_kwargs["n_neighbors"] = int(n_neighbors)
+        spectral_params["n_neighbors"] = int(n_neighbors)
 
-    if n <= max_fit_samples:
-        return SpectralClustering(**spec_kwargs).fit_predict(X_num)
+    if n_rows <= max_fit_samples:
+        return SpectralClustering(**spectral_params).fit_predict(X)
 
-    sub_num = subsample_features(
-        X_num, max_samples=max_fit_samples, random_state=random_state
+    X_sub = subsample_features(
+        X, max_samples=max_fit_samples, random_state=random_state
     )
-    sub_labels = SpectralClustering(**spec_kwargs).fit_predict(sub_num)
-    nn = NearestNeighbors(n_neighbors=1, algorithm="auto").fit(sub_num)
-    _, idx = nn.kneighbors(X_num, n_neighbors=1, return_distance=True)
-    return sub_labels[idx.ravel()]
+    sub_labels = SpectralClustering(**spectral_params).fit_predict(X_sub)
+    nearest = NearestNeighbors(n_neighbors=1, algorithm="auto").fit(X_sub)
+    _, nearest_sample = nearest.kneighbors(X, n_neighbors=1, return_distance=True)
+    return sub_labels[nearest_sample.ravel()]

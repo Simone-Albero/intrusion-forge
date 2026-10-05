@@ -40,20 +40,20 @@ logger = logging.getLogger(__name__)
 
 
 def _plot_failure_strips(
-    summary_df: pd.DataFrame, predicted_rate: pd.Series
+    summary: pd.DataFrame, predicted_rate: pd.Series
 ) -> dict[str, Plot]:
     """Strip plot of failure rate per class, dots coloured by the predicted rate."""
     class_order = (
-        summary_df.groupby("class_name")["failure_rate"]
+        summary.groupby("class_name")["failure_rate"]
         .median()
         .sort_values(ascending=False)
         .index.tolist()
     )
-    classes = summary_df["class_name"].values
-    failure_rate = summary_df["failure_rate"].values
-    counts_by_class = summary_df.groupby("class_name").size().to_dict()
+    classes = summary["class_name"].values
+    failure_rate = summary["failure_rate"].values
+    counts_by_class = summary.groupby("class_name").size().to_dict()
 
-    fill_vals = predicted_rate.reindex(summary_df.index).to_numpy(dtype=float)
+    fill_values = predicted_rate.reindex(summary.index).to_numpy(dtype=float)
 
     return {
         "failure_rate_strip_box": strip_count_panel_plot(
@@ -61,22 +61,22 @@ def _plot_failure_strips(
             values=failure_rate,
             category_order=class_order,
             counts_by_class=counts_by_class,
-            fill_values=fill_vals,
+            fill_values=fill_values,
             fill_cmap="viridis",
-            fill_cmap_label="RF predicted rate",
+            fill_cmap_label="Predicted rate",
             x_label="Failure rate",
         ),
     }
 
 
 def _plot_feature_vs_failure(
-    summary_df: pd.DataFrame, features: list[str]
+    summary: pd.DataFrame, features: list[str]
 ) -> dict[str, Plot]:
     """Per-feature scatter of complexity vs failure rate, with trend line and Spearman ρ."""
-    rate = summary_df["failure_rate"].to_numpy(dtype=float)
+    rate = summary["failure_rate"].to_numpy(dtype=float)
     out: dict[str, Plot] = {}
     for feature in features:
-        x = summary_df[feature].to_numpy(dtype=float)
+        x = summary[feature].to_numpy(dtype=float)
         finite = np.isfinite(x) & np.isfinite(rate)
         rho = (
             float(spearmanr(x[finite], rate[finite]).statistic)
@@ -133,10 +133,10 @@ def _feature_label(feature: str) -> str:
 
 
 def _plot_feature_violin_by_rate_bin(
-    summary_df: pd.DataFrame, features: list[str], n_bins: int = 4
+    summary: pd.DataFrame, features: list[str], n_bins: int = 4
 ) -> dict[str, Plot]:
     """Violin distribution of each complexity feature split by failure-rate quartile bins."""
-    rate = summary_df["failure_rate"]
+    rate = summary["failure_rate"]
     bins = pd.qcut(rate, q=n_bins, duplicates="drop")
     if bins.nunique() < 2:
         return {}
@@ -146,34 +146,33 @@ def _plot_feature_violin_by_rate_bin(
     bin_labels = [
         f"G{i + 1}\n({bin_means[cat]:.2f})" for i, cat in enumerate(categories)
     ]
-    label_map = {cat: lab for cat, lab in zip(categories, bin_labels)}
-    bin_str = bins.map(label_map)
-    ordered = bin_labels
+    label_of = dict(zip(categories, bin_labels))
+    bin_labels_by_region = bins.map(label_of)
 
     out: dict[str, Plot] = {}
     for feature in features:
-        x = summary_df[feature]
+        x = summary[feature]
         valid = x.notna() & rate.notna()
         if valid.sum() < 4:
             continue
         out[f"global/{feature}_violin"] = violin_plot(
-            categories=bin_str[valid].to_numpy(),
+            categories=bin_labels_by_region[valid].to_numpy(),
             values=x[valid].to_numpy(dtype=float),
-            category_order=ordered,
+            category_order=bin_labels,
             x_label="Failure rate bin",
             y_label=_feature_label(feature),
         )
     return out
 
 
-def _plot_rf_evaluation(
-    summary_df: pd.DataFrame, regressor_results: dict, predicted_rate: pd.Series
+def _plot_regressor_evaluation(
+    summary: pd.DataFrame, regressor_results: dict, predicted_rate: pd.Series
 ) -> dict[str, Plot]:
     """Predicted-vs-observed scatter (regressor + MCP, shared colorbar) and feature-importance bar."""
-    cids = [c for c in predicted_rate.index if c in summary_df.index]
-    y_true = summary_df.loc[cids, "failure_rate"].to_numpy(dtype=float)
-    y_pred_reg = predicted_rate.loc[cids].to_numpy(dtype=float)
-    y_pred_mcp = summary_df.loc[cids, "mcp_risk"].to_numpy(dtype=float)
+    region_ids = [c for c in predicted_rate.index if c in summary.index]
+    y_true = summary.loc[region_ids, "failure_rate"].to_numpy(dtype=float)
+    y_pred_reg = predicted_rate.loc[region_ids].to_numpy(dtype=float)
+    y_pred_mcp = summary.loc[region_ids, "mcp_risk"].to_numpy(dtype=float)
     importances = regressor_results["feature_importances"]
 
     se_reg = (y_pred_reg - y_true) ** 2
@@ -293,7 +292,7 @@ def _plot_error_by_size(error_by_size: list[dict]) -> dict[str, Plot]:
 
 @timed
 def build_analysis_figures(
-    summary_df: pd.DataFrame,
+    summary: pd.DataFrame,
     meta: dict,
     regressor_results: dict,
     predicted_rate: pd.Series,
@@ -302,7 +301,7 @@ def build_analysis_figures(
     """Every analysis figure, keyed by its path under the stage's figures folder."""
     logger.info("Building summary visualizations ...")
     class_names = {c["class_id"]: c["class_name"] for c in meta["classes"]}
-    summary_df = summary_df.assign(class_name=summary_df["class_id"].map(class_names))
+    summary = summary.assign(class_name=summary["class_id"].map(class_names))
 
     if regressor_results.get("skipped"):
         logger.warning(
@@ -317,13 +316,15 @@ def build_analysis_figures(
         reverse=True,
     )
     top10 = [r["feature"] for r in ranked[:10]]
-    scatter_features = [f for f in top10 if f in summary_df.columns]
+    scatter_features = [f for f in top10 if f in summary.columns]
 
     figures: dict[str, Plot] = {}
-    figures.update(_plot_failure_strips(summary_df, predicted_rate))
-    figures.update(_plot_feature_vs_failure(summary_df, scatter_features))
-    figures.update(_plot_feature_violin_by_rate_bin(summary_df, scatter_features))
-    figures.update(_plot_rf_evaluation(summary_df, regressor_results, predicted_rate))
+    figures.update(_plot_failure_strips(summary, predicted_rate))
+    figures.update(_plot_feature_vs_failure(summary, scatter_features))
+    figures.update(_plot_feature_violin_by_rate_bin(summary, scatter_features))
+    figures.update(
+        _plot_regressor_evaluation(summary, regressor_results, predicted_rate)
+    )
     figures.update(_plot_regressor_comparison(regressor_results["models"]))
     figures.update(_plot_error_by_size(error_by_size))
     return figures
@@ -396,16 +397,16 @@ def main() -> None:
         latent=load_df(latent_path) if latent_path.exists() else None,
         history=load_from_json(classify_dir / "training.json")["history"],
     )
-    failures = load_df(paths.of("regress") / "regions.parquet")
-    summary_df = join_region_summary(
+    regress_regions = load_df(paths.of("regress") / "regions.parquet")
+    summary = join_region_summary(
         load_df(paths.of("complexity") / "regions.parquet"),
         load_df(paths.of("complexity") / "classes.parquet"),
-        failures,
+        regress_regions,
     )
-    predicted_rate = failures.set_index("region")["predicted_rate"].dropna()
+    predicted_rate = regress_regions.set_index("region")["predicted_rate"].dropna()
     baselines_path = paths.of("regress") / "baselines.json"
     figures |= build_analysis_figures(
-        summary_df,
+        summary,
         meta,
         load_from_json(paths.of("regress") / "results.json"),
         predicted_rate,

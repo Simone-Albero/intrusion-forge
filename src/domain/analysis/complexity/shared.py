@@ -11,18 +11,22 @@ from src.core.utils import timed
 
 
 def aggregate_min_mean_max(
-    vals: list[float],
+    values: list[float],
 ) -> tuple[float | None, float | None, float | None]:
     """Aggregate a list of values into (min, mean, max). Returns Nones if empty."""
-    if not vals:
+    if not values:
         return None, None, None
-    arr = np.asarray(vals, dtype=np.float64)
-    return float(arr.min()), float(arr.mean()), float(arr.max())
+    array = np.asarray(values, dtype=np.float64)
+    return float(array.min()), float(array.mean()), float(array.max())
 
 
 def make_null_row(metric_keys: tuple[str, ...]) -> dict[str, float | None]:
     """Null pairwise-output row: `f"{metric}_{stat}": None` for stats min/mean/max."""
-    return {f"{m}_{stat}": None for m in metric_keys for stat in ("min", "mean", "max")}
+    return {
+        f"{measure}_{stat}": None
+        for measure in metric_keys
+        for stat in ("min", "mean", "max")
+    }
 
 
 def l2_normalize(X: np.ndarray, eps: float = 1e-8) -> np.ndarray:
@@ -55,26 +59,28 @@ def nearest_neighbors(
 ) -> tuple[np.ndarray, np.ndarray]:
     """The k nearest graph nodes of every point, as indices into `nodes`."""
     # A point that is a node, told by its row, is not its own neighbour.
-    n = points.shape[0]
+    n_points = points.shape[0]
     effective_k = min(k, nodes.shape[0] - 1)
     X_nodes = scale_for_metric(nodes, metric)
     X_points = scale_for_metric(points, metric)
 
-    indices = np.empty((n, effective_k), dtype=np.int64)
-    distances = np.empty((n, effective_k), dtype=np.float64)
+    indices = np.empty((n_points, effective_k), dtype=np.int64)
+    distances = np.empty((n_points, effective_k), dtype=np.float64)
 
     def fill_batch(start: int) -> None:
-        end = min(start + batch_size, n)
-        dists = cdist(X_points[start:end], X_nodes, metric="euclidean")
-        dists[node_rows[None, :] == point_rows[start:end, None]] = np.inf
+        end = min(start + batch_size, n_points)
+        distances_to_nodes = cdist(X_points[start:end], X_nodes, metric="euclidean")
+        distances_to_nodes[node_rows[None, :] == point_rows[start:end, None]] = np.inf
 
-        part = np.argpartition(dists, effective_k, axis=1)[:, :effective_k]
-        part_d = np.take_along_axis(dists, part, axis=1)
-        order = np.argsort(part_d, axis=1)
-        indices[start:end] = np.take_along_axis(part, order, axis=1)
-        distances[start:end] = np.take_along_axis(part_d, order, axis=1)
+        candidates = np.argpartition(distances_to_nodes, effective_k, axis=1)[
+            :, :effective_k
+        ]
+        candidate_dist = np.take_along_axis(distances_to_nodes, candidates, axis=1)
+        order = np.argsort(candidate_dist, axis=1)
+        indices[start:end] = np.take_along_axis(candidates, order, axis=1)
+        distances[start:end] = np.take_along_axis(candidate_dist, order, axis=1)
 
-    starts = list(range(0, n, batch_size))
+    starts = list(range(0, n_points, batch_size))
     # cdist and argpartition release the GIL, so threads overlap real work; each
     # fills its own slice of `indices`/`distances`, with nothing to lock between them.
     with ThreadPoolExecutor(max_workers=_thread_budget()) as pool:
@@ -107,7 +113,7 @@ def build_knn_graph(
     return nearest_neighbors(X, rows, X, rows, k=k, metric=metric)
 
 
-def _to_sparse_csr(
+def _symmetrize_knn_graph(
     indices: np.ndarray, distances: np.ndarray, n: int
 ) -> scipy.sparse.csr_matrix:
     """Symmetrise the directed k-NN graph keeping the minimum distance per edge."""
@@ -125,39 +131,43 @@ def _to_sparse_csr(
     sym_cols = sym_cols[order]
     sym_data = sym_data[order]
 
-    unique_mask = np.ones(len(sym_rows), dtype=bool)
-    unique_mask[1:] = (sym_rows[1:] != sym_rows[:-1]) | (sym_cols[1:] != sym_cols[:-1])
+    first_of_edge = np.ones(len(sym_rows), dtype=bool)
+    first_of_edge[1:] = (sym_rows[1:] != sym_rows[:-1]) | (
+        sym_cols[1:] != sym_cols[:-1]
+    )
 
-    mat = scipy.sparse.csr_matrix(
-        (sym_data[unique_mask], (sym_rows[unique_mask], sym_cols[unique_mask])),
+    adjacency = scipy.sparse.csr_matrix(
+        (sym_data[first_of_edge], (sym_rows[first_of_edge], sym_cols[first_of_edge])),
         shape=(n, n),
     )
-    mat.setdiag(0)
-    mat.eliminate_zeros()
-    return mat
+    adjacency.setdiag(0)
+    adjacency.eliminate_zeros()
+    return adjacency
 
 
 def _bridge_disconnected(
-    mat: scipy.sparse.csr_matrix, X: np.ndarray, *, metric: str
+    adjacency: scipy.sparse.csr_matrix, X: np.ndarray, *, metric: str
 ) -> scipy.sparse.csr_matrix:
     """Add one bridge edge per disconnected component of the k-NN graph."""
-    n_comp, comp_labels = scipy.sparse.csgraph.connected_components(mat, directed=False)
-    if n_comp == 1:
-        return mat
+    n_components, component_of = scipy.sparse.csgraph.connected_components(
+        adjacency, directed=False
+    )
+    if n_components == 1:
+        return adjacency
 
-    mat = mat.tolil()
-    ref = int(np.where(comp_labels == 0)[0][0])
-    X_ref = scale_for_metric(X, metric)
-    dists_row = cdist(X_ref[ref : ref + 1], X_ref, metric="euclidean")[0]
+    adjacency = adjacency.tolil()
+    anchor = int(np.where(component_of == 0)[0][0])
+    X_scaled = scale_for_metric(X, metric)
+    anchor_dist = cdist(X_scaled[anchor : anchor + 1], X_scaled, metric="euclidean")[0]
 
-    for ci in range(1, n_comp):
-        nodes_ci = np.where(comp_labels == ci)[0]
-        best_j = int(nodes_ci[dists_row[nodes_ci].argmin()])
-        d = max(float(dists_row[best_j]), 1e-10)
-        mat[ref, best_j] = d
-        mat[best_j, ref] = d
-        comp_labels[nodes_ci] = 0
-    return mat.tocsr()
+    for component in range(1, n_components):
+        component_nodes = np.where(component_of == component)[0]
+        bridge_node = int(component_nodes[anchor_dist[component_nodes].argmin()])
+        bridge_dist = max(float(anchor_dist[bridge_node]), 1e-10)
+        adjacency[anchor, bridge_node] = bridge_dist
+        adjacency[bridge_node, anchor] = bridge_dist
+        component_of[component_nodes] = 0
+    return adjacency.tocsr()
 
 
 def build_approx_mst(
@@ -168,7 +178,7 @@ def build_approx_mst(
     metric: str,
 ) -> np.ndarray:
     """Approximate MST on the sparse k-NN graph, bridging disconnected components first."""
-    graph = _to_sparse_csr(knn_indices, knn_distances, X.shape[0])
+    graph = _symmetrize_knn_graph(knn_indices, knn_distances, X.shape[0])
     graph = _bridge_disconnected(graph, X, metric=metric)
     mst = scipy.sparse.csgraph.minimum_spanning_tree(graph).tocoo()
     if mst.nnz == 0:
@@ -185,13 +195,20 @@ def nearest_rivals(
 ) -> dict[int, list[int]]:
     """Each population's `top_k` nearest rivals, of another class, by centroid."""
     ids = list(population_class)
-    matrix = np.stack([np.asarray(centroids[pid], dtype=np.float64) for pid in ids])
-    pw = cdist(matrix, matrix, metric=metric)
-    np.fill_diagonal(pw, np.inf)
-    classes = np.array([population_class[pid] for pid in ids], dtype=np.int64)
+    matrix = np.stack(
+        [
+            np.asarray(centroids[population_id], dtype=np.float64)
+            for population_id in ids
+        ]
+    )
+    centroid_distances = cdist(matrix, matrix, metric=metric)
+    np.fill_diagonal(centroid_distances, np.inf)
+    classes = np.array(
+        [population_class[population_id] for population_id in ids], dtype=np.int64
+    )
     out: dict[int, list[int]] = {}
-    for i, pid in enumerate(ids):
-        rival_idx = np.where(classes != classes[i])[0]
-        order = np.argsort(pw[i, rival_idx])
-        out[pid] = [ids[int(rival_idx[j])] for j in order[:top_k]]
+    for i, population_id in enumerate(ids):
+        rival_positions = np.where(classes != classes[i])[0]
+        order = np.argsort(centroid_distances[i, rival_positions])
+        out[population_id] = [ids[int(rival_positions[j])] for j in order[:top_k]]
     return out

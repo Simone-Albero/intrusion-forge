@@ -17,6 +17,6 @@ class BaseLoss(nn.Module):
             return loss.sum()
         return loss
 
-    def forward(self, out: Tensor, **extras) -> Tensor:
+    def forward(self, logits: Tensor, target: Tensor) -> Tensor:
         """Compute the loss; implemented by subclasses."""
         raise NotImplementedError

@@ -88,7 +88,7 @@ def _region_table(
     train: pd.DataFrame,
     fit_failures: pd.DataFrame,
     val_failures: pd.DataFrame,
-    oof: pd.DataFrame,
+    held_out: pd.DataFrame,
 ) -> pd.DataFrame:
     table = summary[["class_id", "n_eval", "failure_rate", "mcp_risk"]].copy()
     table["n_train"] = (
@@ -104,8 +104,8 @@ def _region_table(
         .fillna(0)
         .astype(int)
     )
-    table["predicted_rate"] = oof["predicted_rate"].reindex(table.index)
-    table["used"] = table.index.isin(oof.index)
+    table["predicted_rate"] = held_out["predicted_rate"].reindex(table.index)
+    table["used"] = table.index.isin(held_out.index)
     return table.reset_index()[
         [
             "region",
@@ -149,26 +149,31 @@ def _mcp(
 
 
 def _sample_regressor(
-    cfg, paths, rows: pd.DataFrame, oof: pd.DataFrame
+    cfg, paths, scored_rows: pd.DataFrame, held_out: pd.DataFrame
 ) -> tuple[pd.Series, np.ndarray]:
     """Each region's mean predicted chance of failure, and each row's, from the row's own
     features, never the region's geometry."""
     meta = load_from_json(paths.of("split") / "meta.json")
-    fr = cfg.failure_regressor
+    regressor_cfg = cfg.failure_regressor
     features = load_split(paths, "test", columns=meta["num_cols"] + meta["cat_cols"])
-    in_scored = rows.index.to_numpy()
+    row_positions = scored_rows.index.to_numpy()
     predicted = fit_sample_regressor(
-        features.iloc[in_scored],
-        is_failure(rows["y_true"].to_numpy(), rows["y_pred"].to_numpy()).astype(float),
-        rows["region"].to_numpy(),
-        fold_of_region=oof["fold"],
-        name=fr.primary,
+        features.iloc[row_positions],
+        is_failure(
+            scored_rows["y_true"].to_numpy(), scored_rows["y_pred"].to_numpy()
+        ).astype(float),
+        scored_rows["region"].to_numpy(),
+        fold_of_region=held_out["fold"],
+        name=regressor_cfg.primary,
         # No search runs here, so the cores the search's candidates would use are free.
-        params={**to_container(fr.models)[fr.primary]["params"], "n_jobs": -1},
-        max_rows=fr.max_sample_rows,
+        params={
+            **to_container(regressor_cfg.models)[regressor_cfg.primary]["params"],
+            "n_jobs": -1,
+        },
+        max_rows=regressor_cfg.max_sample_rows,
         random_state=cfg.seed,
     )
-    rate = pd.Series(predicted).groupby(rows["region"].to_numpy()).mean()
+    rate = pd.Series(predicted).groupby(scored_rows["region"].to_numpy()).mean()
     rate.index.name = "region"
     return rate, predicted
 
@@ -211,32 +216,34 @@ def _score_baselines(
     paths,
     *,
     summary: pd.DataFrame,
-    oof: pd.DataFrame,
-    table: pd.DataFrame,
+    held_out: pd.DataFrame,
+    region_table: pd.DataFrame,
     test: pd.DataFrame,
     val: pd.DataFrame,
     failures: pd.DataFrame,
     fit_failures: pd.DataFrame,
     val_failures: pd.DataFrame,
 ) -> dict:
-    scored = oof.index
+    scored_regions = held_out.index
     region_class = summary["class_id"]
     atc, val_atc, threshold = _atc(val, test)
     mcp, val_mcp = _mcp(failures, val_failures)
     train_empiric = empirical_rate(fit_failures, region_class=region_class)
     val_empiric = empirical_rate(val_failures, region_class=region_class)
-    rows = test[test["region"].isin(scored)]
-    sample_rate, sample_rows = _sample_regressor(cfg, paths, rows, oof)
+    scored_rows = test[test["region"].isin(scored_regions)]
+    sample_regressor_rate, row_predictions = _sample_regressor(
+        cfg, paths, scored_rows, held_out
+    )
 
     rates = {
-        "regressor": oof["predicted_rate"],
-        "sample_regressor": sample_rate,
+        "regressor": held_out["predicted_rate"],
+        "sample_regressor": sample_regressor_rate,
         "atc": atc,
         "mcp": mcp,
         "train_empiric": train_empiric,
         "val_empiric": val_empiric,
     }
-    rates = {name: rate.loc[scored] for name, rate in rates.items()}
+    rates = {name: rate.loc[scored_regions] for name, rate in rates.items()}
     val_regions = val_failures["region"]
     val_rate = val_failures.set_index("region")["failure_rate"]
     calibrated, calibration = _calibrated(
@@ -254,42 +261,46 @@ def _score_baselines(
         for combo, partner in COMBOS.items()
     }
 
-    observed = summary.loc[scored, "failure_rate"]
-    baselines = {
-        "n_eval": len(rows),
-        "n_regions": len(scored),
+    observed = summary.loc[scored_regions, "failure_rate"]
+    report = {
+        "n_eval": len(scored_rows),
+        "n_regions": len(scored_regions),
         "baselines": score_variants(
             rates,
             observed,
-            region=rows["region"].to_numpy(),
+            region=scored_rows["region"].to_numpy(),
             failure=is_failure(
-                rows["y_true"].to_numpy(), rows["y_pred"].to_numpy()
+                scored_rows["y_true"].to_numpy(), scored_rows["y_pred"].to_numpy()
             ).astype(float),
-            row_scores={"sample_regressor": sample_rows},
+            row_scores={"sample_regressor": row_predictions},
         ),
         "atc_threshold": threshold,
         "calibration": calibration,
         "n_regions_val": len(val_regions),
         "n_val": len(val),
-        "n_regions_without_fit": int((table["used"] & (table["n_fit"] == 0)).sum()),
-        "n_regions_without_val": int((table["used"] & (table["n_val"] == 0)).sum()),
+        "n_regions_without_fit": int(
+            (region_table["used"] & (region_table["n_fit"] == 0)).sum()
+        ),
+        "n_regions_without_val": int(
+            (region_table["used"] & (region_table["n_val"] == 0)).sum()
+        ),
         "error_by_size": error_by_region_size(
             observed,
             {name: rates[name] for name in SIZE_ERROR_VARIANTS},
-            size=table.set_index("region")["n_train"],
+            size=region_table.set_index("region")["n_train"],
             n_bins=SIZE_BINS,
         ),
     }
-    if not baselines["error_by_size"]:
+    if not report["error_by_size"]:
         logger.warning(
             "Fewer than %d scored regions: no error-by-size table.", SIZE_BINS
         )
     logger.info(
         "Baselines (%d test rows in %d scored regions):",
-        baselines["n_eval"],
-        baselines["n_regions"],
+        report["n_eval"],
+        report["n_regions"],
     )
-    for row in baselines["baselines"]:
+    for row in report["baselines"]:
         logger.info(
             "  %-24s rho=%7.4f  mse=%.5f  oracle benefit=%7.4f",
             row["variant"],
@@ -297,7 +308,7 @@ def _score_baselines(
             row["mse"],
             row["oracle_benefit_recovered"],
         )
-    return baselines
+    return report
 
 
 @timed
@@ -314,15 +325,15 @@ def regress(cfg, paths) -> tuple[pd.DataFrame, dict, dict | None]:
         load_df(paths.of("complexity") / "classes.parquet"),
         failures,
     )
-    fr = cfg.failure_regressor
-    results, oof = fit_failure_regressor(
+    regressor_cfg = cfg.failure_regressor
+    results, held_out = fit_failure_regressor(
         summary,
-        models=to_container(fr.models),
-        primary=fr.primary,
-        n_outer_splits=fr.n_outer_splits,
-        n_inner_splits=fr.n_inner_splits,
-        n_iter=fr.n_iter,
-        min_eval_support=fr.min_eval_support,
+        models=to_container(regressor_cfg.models),
+        primary=regressor_cfg.primary,
+        n_outer_splits=regressor_cfg.n_outer_splits,
+        n_inner_splits=regressor_cfg.n_inner_splits,
+        n_iter=regressor_cfg.n_iter,
+        min_eval_support=regressor_cfg.min_eval_support,
         random_state=cfg.seed,
     )
     # Counted in the region a test row like it is routed to, not in the cluster its own
@@ -336,7 +347,7 @@ def regress(cfg, paths) -> tuple[pd.DataFrame, dict, dict | None]:
         train=train,
         fit_failures=fit_failures,
         val_failures=val_failures,
-        oof=oof,
+        held_out=held_out,
     )
     if results.get("skipped"):
         logger.info("Baselines skipped: the failure regressor was.")
@@ -345,8 +356,8 @@ def regress(cfg, paths) -> tuple[pd.DataFrame, dict, dict | None]:
         cfg,
         paths,
         summary=summary,
-        oof=oof,
-        table=table,
+        held_out=held_out,
+        region_table=table,
         test=test,
         val=val,
         failures=failures,

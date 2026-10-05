@@ -17,20 +17,22 @@ class Plot:
     format: str = "png"
 
 
-def set_figure_format(fmt: str) -> None:
+def set_figure_format(figure_format: str) -> None:
     """Set the rendering format ("pdf" or "png") for every Plot created after."""
     global _FIGURE_FORMAT
-    if fmt not in ("pdf", "png"):
-        raise ValueError(f"Unsupported figure format: {fmt!r}. Use 'pdf' or 'png'.")
-    _FIGURE_FORMAT = fmt
+    if figure_format not in ("pdf", "png"):
+        raise ValueError(
+            f"Unsupported figure format: {figure_format!r}. Use 'pdf' or 'png'."
+        )
+    _FIGURE_FORMAT = figure_format
 
 
 def _fig_to_plot(fig: Figure) -> Plot:
     """Render a figure into a Plot payload and close it."""
-    buf = io.BytesIO()
-    fig.savefig(buf, format=_FIGURE_FORMAT, bbox_inches="tight")
+    buffer = io.BytesIO()
+    fig.savefig(buffer, format=_FIGURE_FORMAT, bbox_inches="tight")
     plt.close(fig)
-    return Plot(data=buf.getvalue(), format=_FIGURE_FORMAT)
+    return Plot(data=buffer.getvalue(), format=_FIGURE_FORMAT)
 
 
 def _ensure_ax(
@@ -69,26 +71,28 @@ def _smart_legend_loc(ax: Axes, X: np.ndarray, max_points: int = 5000) -> str:
     """Pick the legend corner with the fewest data points."""
     if X.size == 0:
         return "best"
-    pts = X
-    if len(pts) > max_points:
-        idx = np.random.default_rng(0).choice(len(pts), max_points, replace=False)
-        pts = pts[idx]
+    points = X
+    if len(points) > max_points:
+        sampled = np.random.default_rng(0).choice(
+            len(points), max_points, replace=False
+        )
+        points = points[sampled]
 
     x_lo, x_hi = ax.get_xlim()
     y_lo, y_hi = ax.get_ylim()
     if x_lo == x_hi or y_lo == y_hi:
-        x_lo, x_hi = float(pts[:, 0].min()), float(pts[:, 0].max())
-        y_lo, y_hi = float(pts[:, 1].min()), float(pts[:, 1].max())
+        x_lo, x_hi = float(points[:, 0].min()), float(points[:, 0].max())
+        y_lo, y_hi = float(points[:, 1].min()), float(points[:, 1].max())
         if x_lo == x_hi or y_lo == y_hi:
             return "best"
     x_mid = 0.5 * (x_lo + x_hi)
     y_mid = 0.5 * (y_lo + y_hi)
 
     counts = {
-        "upper left": int(((pts[:, 0] < x_mid) & (pts[:, 1] >= y_mid)).sum()),
-        "upper right": int(((pts[:, 0] >= x_mid) & (pts[:, 1] >= y_mid)).sum()),
-        "lower left": int(((pts[:, 0] < x_mid) & (pts[:, 1] < y_mid)).sum()),
-        "lower right": int(((pts[:, 0] >= x_mid) & (pts[:, 1] < y_mid)).sum()),
+        "upper left": int(((points[:, 0] < x_mid) & (points[:, 1] >= y_mid)).sum()),
+        "upper right": int(((points[:, 0] >= x_mid) & (points[:, 1] >= y_mid)).sum()),
+        "lower left": int(((points[:, 0] < x_mid) & (points[:, 1] < y_mid)).sum()),
+        "lower right": int(((points[:, 0] >= x_mid) & (points[:, 1] < y_mid)).sum()),
     }
     counts_values = list(counts.values())
     if min(counts_values) > 0 and max(counts_values) / min(counts_values) < 1.3:
@@ -96,20 +100,20 @@ def _smart_legend_loc(ax: Axes, X: np.ndarray, max_points: int = 5000) -> str:
     return min(counts, key=counts.get)
 
 
-def _format_value(v: float, *, kind: str = "auto") -> str:
-    if v is None or (isinstance(v, float) and not np.isfinite(v)):
+def _format_value(value: float, *, kind: str = "auto") -> str:
+    if value is None or (isinstance(value, float) and not np.isfinite(value)):
         return "-"
     if kind == "score":
-        return f"{v:.3f}"
+        return f"{value:.3f}"
     if kind == "normalized_cm":
-        return f"{v:.2f}"
+        return f"{value:.2f}"
     if kind == "count":
-        return f"{int(v):d}"
-    abs_v = abs(v)
-    if abs_v == 0:
+        return f"{int(value):d}"
+    magnitude = abs(value)
+    if magnitude == 0:
         return "0"
-    if abs_v >= 1000:
-        return f"{v:.0f}"
-    if abs_v >= 1:
-        return f"{v:.2f}"
-    return f"{v:.3g}"
+    if magnitude >= 1000:
+        return f"{value:.0f}"
+    if magnitude >= 1:
+        return f"{value:.2f}"
+    return f"{value:.3g}"

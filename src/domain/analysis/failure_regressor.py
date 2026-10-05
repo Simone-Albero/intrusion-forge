@@ -20,10 +20,10 @@ from src.engine.ml.preprocessing import REGRESSOR_PREPROCESS, build_regressor_pi
 logger = logging.getLogger(__name__)
 
 
-def _max_safe_splits(n_minority: int, n_splits_cfg: int) -> int:
-    """Largest k <= n_splits_cfg such that StratifiedKFold(k) won't degenerate."""
-    k = min(n_splits_cfg, n_minority)
-    return k if k >= 2 else 0
+def _usable_n_splits(n_smallest: int, n_splits: int) -> int:
+    """Largest split count up to `n_splits` the smallest group can fill, 0 below two."""
+    usable = min(n_splits, n_smallest)
+    return usable if usable >= 2 else 0
 
 
 def _check_models(models: dict[str, dict], primary: str) -> None:
@@ -50,10 +50,10 @@ def _check_models(models: dict[str, dict], primary: str) -> None:
 
 
 def _fit_outer_fold(
-    X_train: pd.DataFrame,
-    y_train: pd.Series,
-    X_test: pd.DataFrame,
-    y_test: pd.Series,
+    X_fit: pd.DataFrame,
+    y_fit: pd.Series,
+    X_held_out: pd.DataFrame,
+    y_held_out: pd.Series,
     *,
     name: str,
     params: dict,
@@ -66,9 +66,9 @@ def _fit_outer_fold(
     """Fit and score one outer fold; without inner_cv, use the model's defaults, no search."""
     params = {**params, "random_state": random_state}
     if inner_cv is None:
-        best = build_regressor_pipeline(name, params)
-        best.fit(X_train, y_train)
-        model_params = best.named_steps["model"].get_params()
+        fitted = build_regressor_pipeline(name, params)
+        fitted.fit(X_fit, y_fit)
+        model_params = fitted.named_steps["model"].get_params()
         best_params = {k: model_params[k] for k in param_grid}
         best_score = None
     else:
@@ -88,8 +88,8 @@ def _fit_outer_fold(
             random_state=random_state + fold,
             verbose=0,
         )
-        search.fit(X_train, y_train)
-        best = search.best_estimator_
+        search.fit(X_fit, y_fit)
+        fitted = search.best_estimator_
         best_params = {
             k.removeprefix("model__"): v for k, v in search.best_params_.items()
         }
@@ -97,17 +97,23 @@ def _fit_outer_fold(
 
     # A rate lies in [0, 1] and a forest's mean of rates always does; the other models
     # are not bound to it.
-    y_pred = np.clip(best.predict(X_test), 0.0, 1.0)
-    has_variance = len(y_test) > 1 and np.std(y_test) > 0 and np.std(y_pred) > 0
+    y_pred = np.clip(fitted.predict(X_held_out), 0.0, 1.0)
+    has_variance = len(y_held_out) > 1 and np.std(y_held_out) > 0 and np.std(y_pred) > 0
     return {
-        "r2": float(r2_score(y_test, y_pred)) if len(y_test) > 1 else float("nan"),
-        "mae": float(mean_absolute_error(y_test, y_pred)),
-        "spearman": (
-            float(spearmanr(y_pred, y_test).statistic) if has_variance else float("nan")
+        "r2": (
+            float(r2_score(y_held_out, y_pred)) if len(y_held_out) > 1 else float("nan")
         ),
-        "importances": getattr(best.named_steps["model"], "feature_importances_", None),
+        "mae": float(mean_absolute_error(y_held_out, y_pred)),
+        "spearman": (
+            float(spearmanr(y_pred, y_held_out).statistic)
+            if has_variance
+            else float("nan")
+        ),
+        "importances": getattr(
+            fitted.named_steps["model"], "feature_importances_", None
+        ),
         "y_pred": y_pred.tolist(),
-        "indices": X_test.index.tolist(),
+        "indices": X_held_out.index.tolist(),
         "best_params": best_params,
         "best_score": best_score,
     }
@@ -149,7 +155,7 @@ def _fit_nested_cv(
     params: dict,
     param_grid: dict,
     outer_cv: StratifiedKFold | KFold,
-    outer_k: int,
+    n_outer_folds: int,
     split_labels: pd.Series | None,
     inner_cv: KFold | None,
     random_state: int,
@@ -157,23 +163,29 @@ def _fit_nested_cv(
 ) -> dict:
     """Fit every outer fold; collect per-fold scores and out-of-fold predictions."""
     folds = []
-    for f, (train_idx, test_idx) in enumerate(
-        tqdm(outer_cv.split(X, split_labels), total=outer_k, desc=f"Outer CV {name}")
+    for fold_id, (fit_idx, held_out_idx) in enumerate(
+        tqdm(
+            outer_cv.split(X, split_labels),
+            total=n_outer_folds,
+            desc=f"Outer CV {name}",
+        )
     ):
-        fold = _fit_outer_fold(
-            X.iloc[train_idx],
-            y.iloc[train_idx],
-            X.iloc[test_idx],
-            y.iloc[test_idx],
+        scores = _fit_outer_fold(
+            X.iloc[fit_idx],
+            y.iloc[fit_idx],
+            X.iloc[held_out_idx],
+            y.iloc[held_out_idx],
             name=name,
             params=params,
             param_grid=param_grid,
             inner_cv=inner_cv,
             random_state=random_state,
             n_iter=n_iter,
-            fold=f,
+            fold=fold_id,
         )
-        folds.append({**fold, "y_true": y.iloc[test_idx].tolist(), "fold_id": f})
+        folds.append(
+            {**scores, "y_true": y.iloc[held_out_idx].tolist(), "fold_id": fold_id}
+        )
 
     return {
         "folds": folds,
@@ -184,35 +196,35 @@ def _fit_nested_cv(
     }
 
 
-def _oof_metrics(oof: dict) -> dict:
-    y_true, y_pred = oof["y_true"], oof["y_pred"]
-    folds = oof["folds"]
+def _pooled_metrics(cv_result: dict) -> dict:
+    y_true, y_pred = cv_result["y_true"], cv_result["y_pred"]
+    folds = cv_result["folds"]
     rho = spearmanr(y_pred, y_true)
     return {
         "spearman": float(rho.statistic),
         "spearman_pvalue": float(rho.pvalue),
         "r2": float(r2_score(y_true, y_pred)),
-        "r2_std": float(np.nanstd([f["r2"] for f in folds])),
+        "r2_std": float(np.nanstd([fold["r2"] for fold in folds])),
         "mae": float(mean_absolute_error(y_true, y_pred)),
-        "mae_std": float(np.std([f["mae"] for f in folds])),
+        "mae_std": float(np.std([fold["mae"] for fold in folds])),
         "mse": float(np.mean((y_pred - y_true) ** 2)),
     }
 
 
-def _primary_details(oof: dict, feature_cols: list[str]) -> dict:
-    folds = oof["folds"]
-    mean_importances = np.mean([f["importances"] for f in folds], axis=0)
+def _primary_details(cv_result: dict, feature_cols: list[str]) -> dict:
+    folds = cv_result["folds"]
+    mean_importances = np.mean([fold["importances"] for fold in folds], axis=0)
     return {
         "per_fold": [
             {
-                "fold": f["fold_id"],
-                "spearman": f["spearman"],
-                "r2": f["r2"],
-                "mae": f["mae"],
-                **{f"param_{k}": v for k, v in f["best_params"].items()},
-                "best_score": f["best_score"],
+                "fold": fold["fold_id"],
+                "spearman": fold["spearman"],
+                "r2": fold["r2"],
+                "mae": fold["mae"],
+                **{f"param_{k}": v for k, v in fold["best_params"].items()},
+                "best_score": fold["best_score"],
             }
-            for f in folds
+            for fold in folds
         ],
         "feature_importances": [
             {"feature": feature, "importance": importance}
@@ -260,23 +272,22 @@ def fit_failure_regressor(
     held-out `predicted_rate` and `fold` per region."""
     _check_models(models, primary)
     logger.info("Running failure regressor ...")
-    df = summary
 
     # A region can still end up with no routed row, e.g. a small one in a single split.
-    no_eval = df["failure_rate"].isna()
-    low_support = ~no_eval & (df["n_eval"] < min_eval_support)
+    no_eval = summary["failure_rate"].isna()
+    low_support = ~no_eval & (summary["n_eval"] < min_eval_support)
     n_excluded_no_eval = int(no_eval.sum())
     n_excluded_low_support = int(low_support.sum())
-    df = df[~no_eval & ~low_support]
+    used = summary[~no_eval & ~low_support]
 
-    rates = df["failure_rate"].astype(float)
-    n_eval = df["n_eval"].astype(float)
+    rates = used["failure_rate"].astype(float)
+    n_eval = used["n_eval"].astype(float)
     global_error_rate = (
         float((rates * n_eval).sum() / n_eval.sum()) if n_eval.sum() else 0.0
     )
     exclusions = {
         "n_regions_total": int(no_eval.size),
-        "n_regions_used": int(len(df)),
+        "n_regions_used": int(len(used)),
         "n_excluded_no_eval": n_excluded_no_eval,
         "n_excluded_low_support": n_excluded_low_support,
         "min_eval_support": min_eval_support,
@@ -293,23 +304,23 @@ def fit_failure_regressor(
             n_excluded_no_eval,
             min_eval_support,
             n_excluded_low_support,
-            len(df),
+            len(used),
             no_eval.size,
         )
 
     # A descriptor no region has a value for carries nothing to learn from.
     feature_cols = [
         c
-        for c in df.select_dtypes("number").columns
-        if c not in _NOT_FEATURES and df[c].notna().any()
+        for c in used.select_dtypes("number").columns
+        if c not in _NOT_FEATURES and used[c].notna().any()
     ]
-    X = df[feature_cols].copy()
-    y = df["failure_rate"].astype(float)
+    X = used[feature_cols].copy()
+    y = used["failure_rate"].astype(float)
 
-    context_metrics = {
+    rate_distribution = {
         "failure_rate_distribution": _failure_rate_distribution(rates),
     }
-    n_used = len(df)
+    n_used = len(used)
     if n_used < 2 or float(y.std()) < 1e-9:
         message = (
             f"Failure regressor skipped: {n_used} usable region(s), "
@@ -321,7 +332,7 @@ def fit_failure_regressor(
             "reason": "degenerate_target",
             "message": message,
             **exclusions,
-            **context_metrics,
+            **rate_distribution,
         }
         return skipped, pd.DataFrame(
             {
@@ -333,39 +344,39 @@ def fit_failure_regressor(
 
     strata = _quantile_strata(y, n_outer_splits)
     if strata is not None:
-        outer_k = _max_safe_splits(int(strata.value_counts().min()), n_outer_splits)
+        n_outer = _usable_n_splits(int(strata.value_counts().min()), n_outer_splits)
     else:
-        outer_k = 0
-    if outer_k >= 2:
+        n_outer = 0
+    if n_outer >= 2:
         outer_cv = StratifiedKFold(
-            n_splits=outer_k, shuffle=True, random_state=random_state
+            n_splits=n_outer, shuffle=True, random_state=random_state
         )
         split_labels = strata
     else:
-        outer_k = _max_safe_splits(n_used, n_outer_splits)
-        outer_cv = KFold(n_splits=outer_k, shuffle=True, random_state=random_state)
+        n_outer = _usable_n_splits(n_used, n_outer_splits)
+        outer_cv = KFold(n_splits=n_outer, shuffle=True, random_state=random_state)
         split_labels = None
 
-    m_train_worst = n_used - math.ceil(n_used / outer_k)
-    inner_k = _max_safe_splits(m_train_worst, n_inner_splits)
-    if outer_k < n_outer_splits or inner_k < n_inner_splits:
+    n_fit_worst = n_used - math.ceil(n_used / n_outer)
+    n_inner = _usable_n_splits(n_fit_worst, n_inner_splits)
+    if n_outer < n_outer_splits or n_inner < n_inner_splits:
         logger.warning(
             "[CV-ADAPT] Adapting CV (regions=%d): outer %d→%d, inner %d→%d%s",
             n_used,
             n_outer_splits,
-            outer_k,
+            n_outer,
             n_inner_splits,
-            inner_k or 0,
-            " (no search — using model defaults)" if inner_k == 0 else "",
+            n_inner or 0,
+            " (no search — using model defaults)" if n_inner == 0 else "",
         )
 
     inner_cv = (
-        KFold(n_splits=inner_k, shuffle=True, random_state=random_state)
-        if inner_k > 0
+        KFold(n_splits=n_inner, shuffle=True, random_state=random_state)
+        if n_inner > 0
         else None
     )
 
-    oofs = {
+    cv_results = {
         name: _fit_nested_cv(
             X,
             y,
@@ -373,7 +384,7 @@ def fit_failure_regressor(
             params=spec["params"],
             param_grid=spec["param_grid"],
             outer_cv=outer_cv,
-            outer_k=outer_k,
+            n_outer_folds=n_outer,
             split_labels=split_labels,
             inner_cv=inner_cv,
             random_state=random_state,
@@ -381,40 +392,40 @@ def fit_failure_regressor(
         )
         for name, spec in models.items()
     }
-    metrics = {name: _oof_metrics(oof) for name, oof in oofs.items()}
+    metrics = {name: _pooled_metrics(result) for name, result in cv_results.items()}
 
     results = {
         **exclusions,
-        **context_metrics,
+        **rate_distribution,
         **metrics[primary],
-        **_primary_details(oofs[primary], feature_cols),
+        **_primary_details(cv_results[primary], feature_cols),
         "model": primary,
-        "models": [{"model": name, **m} for name, m in metrics.items()],
+        "models": [{"model": name, **scores} for name, scores in metrics.items()],
         "model_folds": [
             {
                 "model": name,
-                "fold": f["fold_id"],
-                "spearman": f["spearman"],
-                "r2": f["r2"],
-                "mae": f["mae"],
-                "best_score": f["best_score"],
+                "fold": fold["fold_id"],
+                "spearman": fold["spearman"],
+                "r2": fold["r2"],
+                "mae": fold["mae"],
+                "best_score": fold["best_score"],
             }
-            for name, oof in oofs.items()
-            for f in oof["folds"]
+            for name, result in cv_results.items()
+            for fold in result["folds"]
         ],
     }
-    for name, m in metrics.items():
+    for name, scores in metrics.items():
         logger.info(
             "Failure regressor %s — Spearman: %.4f, R²: %.4f, MAE: %.4f, MSE: %.4f",
             name,
-            m["spearman"],
-            m["r2"],
-            m["mae"],
-            m["mse"],
+            scores["spearman"],
+            scores["r2"],
+            scores["mae"],
+            scores["mse"],
         )
-    oof = oofs[primary]
+    primary_result = cv_results[primary]
     held_out = pd.DataFrame(
-        {"predicted_rate": oof["y_pred"], "fold": oof["fold"]},
-        index=pd.Index(oof["indices"], name="region"),
+        {"predicted_rate": primary_result["y_pred"], "fold": primary_result["fold"]},
+        index=pd.Index(primary_result["indices"], name="region"),
     )
     return results, held_out

@@ -21,13 +21,13 @@ def _forward_and_loss(
 
 def train_step(engine: Engine, batch: Batch) -> dict[str, float]:
     """Single training step: forward, loss, backward, optimizer."""
-    s = engine.state
+    state = engine.state
     model, optimizer, scheduler, loss_fn, device = (
-        s.model,
-        s.optimizer,
-        s.scheduler,
-        s.loss_fn,
-        s.device,
+        state.model,
+        state.optimizer,
+        state.scheduler,
+        state.loss_fn,
+        state.device,
     )
 
     model.train()
@@ -36,7 +36,7 @@ def train_step(engine: Engine, batch: Batch) -> dict[str, float]:
     optimizer.zero_grad()
     _, loss = _forward_and_loss(model, batch, loss_fn)
     loss.backward()
-    grad_norm = float(clip_grad_norm_(model.parameters(), max_norm=s.max_grad_norm))
+    grad_norm = float(clip_grad_norm_(model.parameters(), max_norm=state.max_grad_norm))
     optimizer.step()
     if scheduler is not None:
         scheduler.step()
@@ -46,8 +46,8 @@ def train_step(engine: Engine, batch: Batch) -> dict[str, float]:
 
 def eval_step(engine: Engine, batch: Batch) -> dict[str, float]:
     """Single evaluation step returning the batch loss."""
-    s = engine.state
-    model, loss_fn, device = s.model, s.loss_fn, s.device
+    state = engine.state
+    model, loss_fn, device = state.model, state.loss_fn, state.device
 
     model.eval()
     batch = ensure_batch(batch).to(device, non_blocking=True)

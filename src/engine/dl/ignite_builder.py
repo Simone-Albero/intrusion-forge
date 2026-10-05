@@ -19,8 +19,8 @@ def build_engine(
             setattr(engine.state, key, value)
 
     engine.add_event_handler(Events.STARTED, _inject_state)
-    name, m = metric
-    m.attach(engine, name)
+    metric_name, metric_impl = metric
+    metric_impl.attach(engine, metric_name)
     for event, handler in handlers:
         engine.add_event_handler(event, handler)
     return engine

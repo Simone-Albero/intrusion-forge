@@ -47,7 +47,7 @@ def _balance_train(cfg, train_df: pd.DataFrame) -> pd.DataFrame:
     return train_df
 
 
-def _component(node) -> ComponentSpec:
+def _component_spec(node) -> ComponentSpec:
     """Resolve a `{name, params}` config node into plain Python values."""
     params = to_container(node.params) if node.params is not None else {}
     return ComponentSpec(name=node.name, params=params)
@@ -88,9 +88,9 @@ def build_trainer(
             if fit_cfg.balance == "none" and fit_cfg.n_samples is None
             else None
         ),
-        loss=_component(cfg.loss),
-        optimizer=_component(cfg.optimizer),
-        scheduler=_component(cfg.scheduler),
+        loss=_component_spec(cfg.loss),
+        optimizer=_component_spec(cfg.optimizer),
+        scheduler=_component_spec(cfg.scheduler),
         epochs=fit_cfg.training.epochs,
         max_grad_norm=fit_cfg.training.max_grad_norm,
         patience=fit_cfg.training.early_stopping.patience,
@@ -234,8 +234,8 @@ def _predictions_table(
                     "row": np.arange(len(y_pred), dtype=np.int32),
                     "y_pred": y_pred.astype(np.int32),
                     **{
-                        f"proba_{c}": y_proba[:, c].astype(np.float32)
-                        for c in range(n_classes)
+                        f"proba_{class_id}": y_proba[:, class_id].astype(np.float32)
+                        for class_id in range(n_classes)
                     },
                     "in_fit": (
                         np.isin(np.arange(len(y_pred)), fit_rows)
@@ -339,7 +339,7 @@ def classify(cfg) -> None:
         )
     save_df(
         _predictions_table(
-            {name: p[:2] for name, p in predicted.items()},
+            {name: result[:2] for name, result in predicted.items()},
             fit_rows=fit_df.index,
             n_classes=n_classes,
         ),

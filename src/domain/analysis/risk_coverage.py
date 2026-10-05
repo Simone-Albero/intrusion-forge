@@ -14,9 +14,9 @@ def risk_coverage_curve(
         return np.array([]), np.array([])
 
     order = np.argsort(score, kind="stable")
-    s = support[order]
-    correct = (1.0 - failure_rate[order]) * s
-    cum_support = np.cumsum(s)
+    ordered_support = support[order]
+    correct = (1.0 - failure_rate[order]) * ordered_support
+    cum_support = np.cumsum(ordered_support)
     coverage = cum_support / cum_support[-1]
     accuracy = np.cumsum(correct) / cum_support
     return coverage, accuracy
@@ -38,10 +38,14 @@ def oracle_benefit_recovered(
         return float("nan")
 
     global_accuracy = float(1.0 - (actual * support).sum() / total)
-    cov_p, acc_p = risk_coverage_curve(score, actual, support)
-    cov_o, acc_o = risk_coverage_curve(actual, actual, support)
-    at_target_p = float(np.interp(coverage_target, cov_p, acc_p))
-    at_target_o = float(np.interp(coverage_target, cov_o, acc_o))
+    coverage_scored, accuracy_scored = risk_coverage_curve(score, actual, support)
+    coverage_oracle, accuracy_oracle = risk_coverage_curve(actual, actual, support)
+    scored_at_target = float(
+        np.interp(coverage_target, coverage_scored, accuracy_scored)
+    )
+    oracle_at_target = float(
+        np.interp(coverage_target, coverage_oracle, accuracy_oracle)
+    )
 
-    gain = at_target_o - global_accuracy
-    return (at_target_p - global_accuracy) / gain if gain > 1e-9 else float("nan")
+    gain = oracle_at_target - global_accuracy
+    return (scored_at_target - global_accuracy) / gain if gain > 1e-9 else float("nan")

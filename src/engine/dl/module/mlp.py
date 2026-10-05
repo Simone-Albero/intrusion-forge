@@ -33,11 +33,11 @@ class MLPModule(nn.Module):
 
     def _init_weights(self) -> None:
         """Xavier-initialise the linear layers."""
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight)
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
 
     def forward(self, x: Tensor) -> Tensor:
         """Run the feedforward stack."""

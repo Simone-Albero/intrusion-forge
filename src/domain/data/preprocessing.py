@@ -37,7 +37,9 @@ def _stratified_sample(
 ) -> pd.DataFrame:
     """Sample up to `per_group` rows from every label group, keeping their index."""
     return df.groupby(df[label_col].values, group_keys=False).apply(
-        lambda g: g.sample(n=min(len(g), per_group), random_state=random_state)
+        lambda group: group.sample(
+            n=min(len(group), per_group), random_state=random_state
+        )
     )
 
 
@@ -112,13 +114,13 @@ class TopNHashEncoder(BaseEstimator, TransformerMixin):
         self.hash_key = hash_key
         self.dtype = dtype
 
-    def _hash_bucket(self, col: str, value, n: int) -> int:
+    def _hash_bucket(self, col: str, value, n_buckets: int) -> int:
         """Stable bucket index of a category value."""
-        s = "NA" if pd.isna(value) else str(value)
+        text = "NA" if pd.isna(value) else str(value)
         digest = hashlib.blake2b(
-            f"{self.hash_key}|{col}|{s}".encode(), digest_size=8
+            f"{self.hash_key}|{col}|{text}".encode(), digest_size=8
         ).digest()
-        return int.from_bytes(digest, byteorder="little") % n
+        return int.from_bytes(digest, byteorder="little") % n_buckets
 
     def fit(self, X: pd.DataFrame, *, y=None) -> "TopNHashEncoder":
         """Learn the top-N categories of every column."""
@@ -143,18 +145,19 @@ class TopNHashEncoder(BaseEstimator, TransformerMixin):
         hashed_start = 1 + self.top_n
         out = {}
         for col in (c for c in self.columns_ if c in X.columns):
-            cmap = self.category_maps_[col]
-            s = X[col]
-            ids = s.map(cmap)
+            category_map = self.category_maps_[col]
+            column = X[col]
+            codes = column.map(category_map)
             if self.hash_buckets > 0:
-                oov = ids.isna() & s.notna()
+                unseen = codes.isna() & column.notna()
                 hash_map = {
-                    v: hashed_start + self._hash_bucket(col, v, self.hash_buckets)
-                    for v in s[oov].unique()
+                    value: hashed_start
+                    + self._hash_bucket(col, value, self.hash_buckets)
+                    for value in column[unseen].unique()
                 }
-                ids = ids.where(~oov, s.map(hash_map))
-            ids = ids.fillna(self.missing_token)
-            out[col] = ids.to_numpy(dtype=self.dtype)
+                codes = codes.where(~unseen, column.map(hash_map))
+            codes = codes.fillna(self.missing_token)
+            out[col] = codes.to_numpy(dtype=self.dtype)
         return pd.DataFrame(out, index=X.index)
 
 
@@ -167,14 +170,14 @@ def encode_labels(
     dst_label_col: str,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict]:
     """Encode string labels to integers using a LabelEncoder fitted on train."""
-    le = LabelEncoder()
+    label_encoder = LabelEncoder()
     train_df = train_df.copy()
     val_df = val_df.copy()
     test_df = test_df.copy()
-    train_df[dst_label_col] = le.fit_transform(train_df[src_label_col])
-    val_df[dst_label_col] = le.transform(val_df[src_label_col])
-    test_df[dst_label_col] = le.transform(test_df[src_label_col])
-    label_mapping = {int(i): str(name) for i, name in enumerate(le.classes_)}
+    train_df[dst_label_col] = label_encoder.fit_transform(train_df[src_label_col])
+    val_df[dst_label_col] = label_encoder.transform(val_df[src_label_col])
+    test_df[dst_label_col] = label_encoder.transform(test_df[src_label_col])
+    label_mapping = {int(i): str(name) for i, name in enumerate(label_encoder.classes_)}
     return train_df, val_df, test_df, label_mapping
 
 

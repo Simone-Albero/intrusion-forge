@@ -18,11 +18,11 @@ def box_plot(
     figsize: tuple[float, float] = (5.4, 3.0),
 ) -> Plot:
     """Horizontal box plots, one row per group."""
-    pos = list(range(len(labels), 0, -1))
+    positions = list(range(len(labels), 0, -1))
     fig, ax = plt.subplots(figsize=figsize)
-    bp = ax.boxplot(
+    boxes = ax.boxplot(
         values,
-        positions=pos,
+        positions=positions,
         vert=False,
         widths=0.6,
         patch_artist=True,
@@ -32,21 +32,21 @@ def box_plot(
         whiskerprops=dict(color=MUTED_COLOR),
         capprops=dict(color=MUTED_COLOR),
     )
-    for patch, color in zip(bp["boxes"], colors):
+    for patch, color in zip(boxes["boxes"], colors):
         patch.set_facecolor(color)
         patch.set_alpha(0.65)
         patch.set_edgecolor("0.3")
     if axvline is not None:
         ax.axvline(axvline, color=MUTED_COLOR, linewidth=0.8, linestyle="--", zorder=1)
-    ax.set_yticks(pos, labels)
+    ax.set_yticks(positions, labels)
     if x_lim:
         ax.set_xlim(*x_lim)
     ax.grid(True, axis="x")
     ax.grid(False, axis="y")
     if legend:
         handles = [
-            Patch(facecolor=c, alpha=0.65, edgecolor="0.3", label=lab)
-            for lab, c in legend.items()
+            Patch(facecolor=color, alpha=0.65, edgecolor="0.3", label=name)
+            for name, color in legend.items()
         ]
         ax.legend(handles=handles, loc="lower left")
     _apply_labels(ax, x_label=x_label)
@@ -85,11 +85,11 @@ def line_whisker_plot(
             edges = np.geomspace(lo, hi, n_bins + 1)
         else:
             edges = np.linspace(lo, hi, n_bins + 1)
-        idx = np.clip(np.digitize(x, edges[1:-1]), 0, len(edges) - 2)
+        bin_of = np.clip(np.digitize(x, edges[1:-1]), 0, len(edges) - 2)
         centers, means, stds = [], [], []
         for b in range(len(edges) - 1):
-            sel = idx == b
-            if not sel.any():
+            in_bin = bin_of == b
+            if not in_bin.any():
                 continue
             centers.append(
                 float(
@@ -98,8 +98,8 @@ def line_whisker_plot(
                     else 0.5 * (edges[b] + edges[b + 1])
                 )
             )
-            means.append(float(y[sel].mean()))
-            stds.append(float(y[sel].std()))
+            means.append(float(y[in_bin].mean()))
+            stds.append(float(y[in_bin].std()))
         if not centers:
             continue
         ax.errorbar(
@@ -157,17 +157,17 @@ def stacked_bar_plot(
     labels = [labels[i] for i in order]
     totals = [totals[i] for i in order]
     segments = [
-        (name, [vals[i] for i in order], color) for name, vals, color in segments
+        (name, [values[i] for i in order], color) for name, values, color in segments
     ]
 
     y = np.arange(len(labels))
     fig, ax = plt.subplots(figsize=figsize)
     left = np.zeros(len(labels))
-    for name, vals, color in segments:
-        vals = np.asarray(vals, dtype=float)
+    for name, values, color in segments:
+        values = np.asarray(values, dtype=float)
         ax.barh(
             y,
-            vals,
+            values,
             left=left,
             height=0.55,
             color=color,
@@ -175,7 +175,7 @@ def stacked_bar_plot(
             edgecolor="0.3",
             label=name,
         )
-        left = left + vals
+        left = left + values
     span = max(totals) if totals else 1.0
     for yi, total in zip(y, totals):
         ax.text(total + span * 0.015, yi, total_format.format(total), va="center")

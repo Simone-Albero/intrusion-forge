@@ -51,10 +51,10 @@ def bar_plot(
 
     items = list(zip(list(labels), list(values)))
     if sort == "asc":
-        items.sort(key=lambda kv: kv[1])
+        items.sort(key=lambda item: item[1])
         items = items[-top_k:] if top_k is not None else items
     elif sort == "desc":
-        items.sort(key=lambda kv: kv[1], reverse=True)
+        items.sort(key=lambda item: item[1], reverse=True)
         items = items[:top_k] if top_k is not None else items
     elif top_k is not None:
         items = items[:top_k]
@@ -70,8 +70,11 @@ def bar_plot(
         if color_gradient and n > 0:
             base_rgb = np.array(mcolors.to_rgb(base))
             white = np.ones(3)
-            ts = 0.25 + 0.75 * np.arange(n) / max(n - 1, 1)
-            bar_color = [mcolors.to_hex(t * base_rgb + (1 - t) * white) for t in ts]
+            weights = 0.25 + 0.75 * np.arange(n) / max(n - 1, 1)
+            bar_color = [
+                mcolors.to_hex(weight * base_rgb + (1 - weight) * white)
+                for weight in weights
+            ]
         else:
             bar_color = base
 
@@ -161,15 +164,15 @@ def violin_plot(
 
     fig, ax = plt.subplots(figsize=figsize)
 
-    for idx, (cat, color) in enumerate(zip(unique_cats, cat_colors)):
-        mask = categories == cat
-        vals = values[mask]
-        if len(vals) < 2 or np.unique(vals).size < 2:
+    for position, (category, color) in enumerate(zip(unique_cats, cat_colors)):
+        mask = categories == category
+        category_values = values[mask]
+        if len(category_values) < 2 or np.unique(category_values).size < 2:
             continue
 
         parts = ax.violinplot(
-            vals,
-            positions=[idx],
+            category_values,
+            positions=[position],
             showmedians=False,
             showextrema=False,
             widths=0.85,
@@ -180,14 +183,14 @@ def violin_plot(
         body.set_edgecolor(color)
         body.set_linewidth(1.0)
 
-        q1, med, q3 = np.percentile(vals, [25, 50, 75])
-        whisker_low = float(np.min(vals))
-        whisker_high = float(np.max(vals))
+        q1, med, q3 = np.percentile(category_values, [25, 50, 75])
+        whisker_low = float(np.min(category_values))
+        whisker_high = float(np.max(category_values))
 
         box_half = 0.05
         ax.add_patch(
             plt.Rectangle(
-                (idx - box_half, q1),
+                (position - box_half, q1),
                 box_half * 2,
                 q3 - q1,
                 facecolor="white",
@@ -197,7 +200,7 @@ def violin_plot(
             )
         )
         ax.plot(
-            [idx - box_half, idx + box_half],
+            [position - box_half, position + box_half],
             [med, med],
             color=MUTED_COLOR,
             linewidth=1.8,
@@ -205,7 +208,7 @@ def violin_plot(
         )
         for y0, y1 in ((whisker_low, q1), (q3, whisker_high)):
             ax.plot(
-                [idx, idx],
+                [position, position],
                 [y0, y1],
                 color=MUTED_COLOR,
                 linewidth=0.8,
@@ -248,7 +251,7 @@ def scatter_plot(
         else np.zeros(len(X), dtype=bool)
     )
 
-    unique_labels = sorted(int(l) for l in np.unique(labels))
+    unique_labels = sorted(int(label) for label in np.unique(labels))
     n_labels = max(len(unique_labels), 1)
     color_list = extended_palette(n_labels)
     color_map = {lbl: color_list[i] for i, lbl in enumerate(unique_labels)}
@@ -258,7 +261,7 @@ def scatter_plot(
 
     counts = {lbl: int((labels == lbl).sum()) for lbl in unique_labels}
     total_visible = max(sum(counts.values()), 1)
-    draw_order = sorted(unique_labels, key=lambda l: counts[l], reverse=True)
+    draw_order = sorted(unique_labels, key=lambda label: counts[label], reverse=True)
 
     for lbl in draw_order:
         base = labels == lbl
@@ -390,7 +393,7 @@ def numeric_scatter_plot(
         hi = float(max(x.max(), y.max()))
         ax.plot([lo, hi], [lo, hi], color=NEUTRAL_COLOR, linewidth=1.0, linestyle=":")
 
-    sc = ax.scatter(
+    points = ax.scatter(
         x,
         y,
         c=color_values if color_values is not None else PALETTE[0],
@@ -402,17 +405,17 @@ def numeric_scatter_plot(
         vmax=vmax,
     )
     if color_values is not None and fig is not None:
-        cbar = fig.colorbar(sc, ax=ax, fraction=0.046, pad=0.04)
+        cbar = fig.colorbar(points, ax=ax, fraction=0.046, pad=0.04)
         cbar.set_label(colorbar_label)
 
     if trend_line:
         finite = np.isfinite(x) & np.isfinite(y)
         if int(finite.sum()) >= 2:
-            m, b = np.polyfit(x[finite], y[finite], 1)
+            slope, intercept = np.polyfit(x[finite], y[finite], 1)
             x_range = np.array([float(x[finite].min()), float(x[finite].max())])
             ax.plot(
                 x_range,
-                m * x_range + b,
+                slope * x_range + intercept,
                 color=NEUTRAL_COLOR,
                 linewidth=1.0,
                 linestyle="--",

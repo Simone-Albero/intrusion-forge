@@ -39,41 +39,45 @@ def _projection_selection(
     (None, None) when fewer than TSNE_MIN_SAMPLES rows survive subsampling.
     """
     classes = np.unique(y_true)
-    mis = y_pred != y_true
-    total_mis = int(mis.sum())
-    mis_per_class = {int(c): int((mis & (y_true == c)).sum()) for c in classes}
-    keep_classes: list[int] = []
+    is_error = y_pred != y_true
+    total_errors = int(is_error.sum())
+    errors_per_class = {int(c): int((is_error & (y_true == c)).sum()) for c in classes}
+    shown_classes: list[int] = []
     cumulative = 0
-    for c in sorted(mis_per_class, key=mis_per_class.get, reverse=True):
-        if len(keep_classes) >= 2 and total_mis and cumulative >= 0.9 * total_mis:
+    for c in sorted(errors_per_class, key=errors_per_class.get, reverse=True):
+        if (
+            len(shown_classes) >= 2
+            and total_errors
+            and cumulative >= 0.9 * total_errors
+        ):
             break
-        keep_classes.append(c)
-        cumulative += mis_per_class[c]
-    if not keep_classes:
-        keep_classes = [int(c) for c in classes]
+        shown_classes.append(c)
+        cumulative += errors_per_class[c]
+    if not shown_classes:
+        shown_classes = [int(c) for c in classes]
 
-    prob_pos = np.flatnonzero(np.isin(y_true, keep_classes))
+    candidate_rows = np.flatnonzero(np.isin(y_true, shown_classes))
     if pool is not None:
-        prob_pos = np.intersect1d(prob_pos, pool)
+        candidate_rows = np.intersect1d(candidate_rows, pool)
     # Fixed seed so "raw" and "latent" draw the same rows: y_true/y_pred are identical
     # for both, being the same model's predictions on the same test rows.
-    sub = stratified_subsample(
-        y_true[prob_pos], n_samples=TSNE_MAX_SAMPLES, random_state=42
+    sampled = stratified_subsample(
+        y_true[candidate_rows], n_samples=TSNE_MAX_SAMPLES, random_state=42
     )
-    vis_idx = prob_pos[sub]
-    if len(vis_idx) < TSNE_MIN_SAMPLES:
+    shown_rows = candidate_rows[sampled]
+    if len(shown_rows) < TSNE_MIN_SAMPLES:
         return None, None
-    return vis_idx, {c: class_names.get(c, str(c)) for c in keep_classes}
+    return shown_rows, {c: class_names.get(c, str(c)) for c in shown_classes}
 
 
 def _scatter_projection(
-    space_vis: np.ndarray, y_true_vis: np.ndarray, y_pred_vis: np.ndarray, names: dict
+    X_shown: np.ndarray, y_true_shown: np.ndarray, y_pred_shown: np.ndarray, names: dict
 ) -> Plot:
     """t-SNE scatter of an already-selected row subset."""
     return scatter_plot(
-        tsne_projection(space_vis, n_components=2),
-        y_true_vis,
-        highlight_mask=y_pred_vis != y_true_vis,
+        tsne_projection(X_shown, n_components=2),
+        y_true_shown,
+        highlight_mask=y_pred_shown != y_true_shown,
         names=names,
         marker_size=35.0,
         marker_alpha=0.85,
@@ -102,25 +106,25 @@ def build_test_figures(
     f1_per_class = f1_score(
         y_true, y_pred, labels=observed, average=None, zero_division=0
     )
-    f1_dict = {
+    f1_by_class = {
         class_names.get(int(c), str(c)): float(v)
         for c, v in zip(observed, f1_per_class)
     }
     figures["f1_per_class"] = bar_plot(
-        list(f1_dict.keys()),
-        list(f1_dict.values()),
+        list(f1_by_class.keys()),
+        list(f1_by_class.values()),
         orientation="v",
-        color=extended_palette(len(f1_dict)),
+        color=extended_palette(len(f1_by_class)),
         sort=None,
         ylim=(0, 1),
     )
 
-    vis_idx, names = _projection_selection(y_true, y_pred, class_names, pool=pool)
-    if vis_idx is not None:
+    shown_rows, names = _projection_selection(y_true, y_pred, class_names, pool=pool)
+    if shown_rows is not None:
         figures["raw"] = _scatter_projection(
-            eval_df.iloc[vis_idx][feat_cols].to_numpy(),
-            y_true[vis_idx],
-            y_pred[vis_idx],
+            eval_df.iloc[shown_rows][feat_cols].to_numpy(),
+            y_true[shown_rows],
+            y_pred[shown_rows],
             names,
         )
     return figures
@@ -135,14 +139,14 @@ def latent_figures(
     class_names: dict[int, str],
 ) -> dict[str, Plot]:
     """t-SNE of the latent space, keyed `latent`; row `rows[i]` has `embedding[i]`."""
-    vis_idx, names = _projection_selection(y_true, y_pred, class_names, pool=rows)
-    if vis_idx is None:
+    shown_rows, names = _projection_selection(y_true, y_pred, class_names, pool=rows)
+    if shown_rows is None:
         return {}
     return {
         "latent": _scatter_projection(
-            embedding[np.searchsorted(rows, vis_idx)],
-            y_true[vis_idx],
-            y_pred[vis_idx],
+            embedding[np.searchsorted(rows, shown_rows)],
+            y_true[shown_rows],
+            y_pred[shown_rows],
             names,
         )
     }

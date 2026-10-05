@@ -29,9 +29,11 @@ def setup_logger(log_file: str = "resources/logs.txt") -> logging.Logger:
         and getattr(h, "baseFilename", "") == resolved_path
     ]
     if not existing:
-        fh = logging.FileHandler(filename=log_file, mode="a", encoding="utf-8")
-        fh.setFormatter(formatter)
-        fh.setLevel(logging.INFO)
-        root.addHandler(fh)
+        file_handler = logging.FileHandler(
+            filename=log_file, mode="a", encoding="utf-8"
+        )
+        file_handler.setFormatter(formatter)
+        file_handler.setLevel(logging.INFO)
+        root.addHandler(file_handler)
 
     return root

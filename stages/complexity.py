@@ -77,7 +77,7 @@ def _measure(
     centroids: dict[int, np.ndarray],
 ) -> dict[int, dict[str, float | None]]:
     """Complexity measures of every population, keyed by its id."""
-    cx = cfg.complexity
+    complexity_cfg = cfg.complexity
     ids, counts = np.unique(population, return_counts=True)
     return compute_population_complexity(
         train_graph,
@@ -86,10 +86,10 @@ def _measure(
         population_class=population_class,
         centroids=centroids,
         sizes=dict(zip(ids.tolist(), counts.tolist())),
-        top_k_clusters=cx.top_k_clusters,
+        top_k_clusters=complexity_cfg.top_k_clusters,
         metric=cfg.distance,
-        silhouette_max_samples=cx.silhouette_max_samples,
-        silhouette_min_per_cluster=cx.silhouette_min_per_cluster,
+        silhouette_max_samples=complexity_cfg.silhouette_max_samples,
+        silhouette_min_per_cluster=complexity_cfg.silhouette_min_per_cluster,
         random_state=cfg.seed,
     )
 
@@ -107,24 +107,24 @@ def main() -> None:
     clear_dir(stage_dir)
     space = load_space(paths, load_from_json(paths.of("split") / "meta.json"))
     train = load_split(paths, "train")
-    graph = load_arrays(paths.of("graph") / "graph.npz")
+    graph_arrays = load_arrays(paths.of("graph") / "graph.npz")
     assignments = load_df(
         paths.of("regions") / "assignments.parquet", filters=[("split", "==", "train")]
     )
     region = assignments.sort_values("row")["region"].to_numpy(dtype=np.int64)
     label = train["label"].to_numpy(dtype=np.int64)
-    graph_rows = graph["rows"]
+    graph_rows = graph_arrays["rows"]
     train_graph = TrainGraph(
         space.embed(train.iloc[graph_rows]),
-        graph["knn_idx"],
-        graph["knn_dist"],
-        graph["mst"],
+        graph_arrays["knn_idx"],
+        graph_arrays["knn_dist"],
+        graph_arrays["mst"],
     )
 
-    sampled = len(graph_rows) < len(train)
-    cx = cfg.complexity
+    graph_is_sample = len(graph_rows) < len(train)
+    complexity_cfg = cfg.complexity
     centroids = load_df(paths.of("regions") / "centroids.parquet")
-    coordinates = centroids.drop(columns=["region", "class_id"]).to_numpy()
+    centroid_coordinates = centroids.drop(columns=["region", "class_id"]).to_numpy()
     region_class = {
         int(r): int(c) for r, c in zip(centroids["region"], centroids["class_id"])
     }
@@ -136,7 +136,7 @@ def main() -> None:
         population=region,
         train_graph=train_graph,
         graph_rows=graph_rows,
-        cap=cx.max_sample_per_region if sampled else None,
+        cap=complexity_cfg.max_sample_per_region if graph_is_sample else None,
     )
     region_measures = _measure(
         cfg,
@@ -146,7 +146,9 @@ def main() -> None:
         sample=region_sample,
         population_class=region_class,
         # Exact centroids: the ones regions routes by, not a sample's.
-        centroids={int(r): point for r, point in zip(centroids["region"], coordinates)},
+        centroids={
+            int(r): point for r, point in zip(centroids["region"], centroid_coordinates)
+        },
     )
 
     label_sample = _draw_sample(
@@ -156,7 +158,7 @@ def main() -> None:
         population=label,
         train_graph=train_graph,
         graph_rows=graph_rows,
-        cap=cx.max_sample_per_class if sampled else None,
+        cap=complexity_cfg.max_sample_per_class if graph_is_sample else None,
     )
     class_measures = _measure(
         cfg,

@@ -57,9 +57,9 @@ def timed(fn: Callable) -> Callable:
 
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
-        t0 = time.perf_counter()
+        started = time.perf_counter()
         output = fn(*args, **kwargs)
-        elapsed_s = time.perf_counter() - t0
+        elapsed_s = time.perf_counter() - started
         logging.getLogger(fn.__module__).info(
             "%s completed in %.2f s", fn.__qualname__, elapsed_s
         )

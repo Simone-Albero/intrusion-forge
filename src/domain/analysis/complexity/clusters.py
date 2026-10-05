@@ -20,48 +20,50 @@ def _approx_silhouette(
 
     n = len(X)
     if n <= max_samples:
-        idx = np.arange(n)
+        rows = np.arange(n)
     else:
         rng = np.random.default_rng(random_state)
         # The floor holds even past the cap: a silhouette tail read off a handful of
         # rows per cluster is noise, so many clusters grow the subsample instead.
-        idx_parts: list[np.ndarray] = []
-        for lbl in unique_labels:
-            members = np.where(labels == lbl)[0]
+        picked_parts: list[np.ndarray] = []
+        for label in unique_labels:
+            members = np.where(labels == label)[0]
             take = min(len(members), min_per_cluster)
-            idx_parts.append(rng.choice(members, size=take, replace=False))
-        guaranteed = np.concatenate(idx_parts)
-        remaining = max_samples - len(guaranteed)
+            picked_parts.append(rng.choice(members, size=take, replace=False))
+        floor_rows = np.concatenate(picked_parts)
+        remaining = max_samples - len(floor_rows)
         if remaining > 0:
-            pool = np.setdiff1d(np.arange(n), guaranteed)
+            pool = np.setdiff1d(np.arange(n), floor_rows)
             extra = rng.choice(pool, size=min(remaining, len(pool)), replace=False)
-            idx = np.concatenate([guaranteed, extra])
+            rows = np.concatenate([floor_rows, extra])
         else:
-            idx = guaranteed
+            rows = floor_rows
 
     try:
-        scores = silhouette_samples(X[idx], labels[idx], metric=metric)
+        scores = silhouette_samples(X[rows], labels[rows], metric=metric)
     except ValueError:
         return None
 
-    full = np.full(n, np.nan)
-    full[idx] = scores
-    return full
+    scores_by_row = np.full(n, np.nan)
+    scores_by_row[rows] = scores
+    return scores_by_row
 
 
 def _dispersion(
     samples: np.ndarray, centroid: np.ndarray, *, metric: str
 ) -> tuple[float, float]:
     """Max and 95th-percentile distance of a cluster's samples from its centroid."""
-    dists = pairwise_distances(samples, centroid.reshape(1, -1), metric=metric).ravel()
-    return float(np.max(dists)), float(np.percentile(dists, 95))
+    distances = pairwise_distances(
+        samples, centroid.reshape(1, -1), metric=metric
+    ).ravel()
+    return float(np.max(distances)), float(np.percentile(distances, 95))
 
 
 def _nearest_rival(
-    pw_row: np.ndarray, own_class: int, classes: np.ndarray
+    distances_to_centroids: np.ndarray, own_class: int, classes: np.ndarray
 ) -> float | None:
     """Distance to the closest centroid of a different class."""
-    rival = pw_row[classes != own_class]
+    rival = distances_to_centroids[classes != own_class]
     finite = rival[np.isfinite(rival)]
     if finite.size == 0:
         return None
@@ -69,7 +71,7 @@ def _nearest_rival(
 
 
 @timed
-def compute_cluster_geometry(
+def compute_geometry_measures(
     X: np.ndarray,
     population: np.ndarray,
     centroids: dict[int, np.ndarray],
@@ -81,16 +83,21 @@ def compute_cluster_geometry(
     population_class: dict[int, int],
 ) -> dict[int, dict[str, float | None]]:
     """Per-population geometry: dispersion, rival separation and silhouette tail."""
-    pids = [int(pid) for pid in np.unique(population)]
+    population_ids = [int(population_id) for population_id in np.unique(population)]
     centroid_matrix = np.stack(
-        [np.asarray(centroids[pid], dtype=np.float64) for pid in pids]
+        [
+            np.asarray(centroids[population_id], dtype=np.float64)
+            for population_id in population_ids
+        ]
     )
-    classes = np.array([population_class[pid] for pid in pids])
+    classes = np.array(
+        [population_class[population_id] for population_id in population_ids]
+    )
 
-    pw = pairwise_distances(centroid_matrix, metric=metric)
-    np.fill_diagonal(pw, np.inf)
+    centroid_distances = pairwise_distances(centroid_matrix, metric=metric)
+    np.fill_diagonal(centroid_distances, np.inf)
 
-    sil = _approx_silhouette(
+    silhouettes = _approx_silhouette(
         X,
         population,
         metric=metric,
@@ -101,29 +108,31 @@ def compute_cluster_geometry(
 
     result: dict[int, dict[str, float | None]] = {}
 
-    for i, pid in enumerate(pids):
-        in_population = population == pid
-        max_disp, p95_disp = _dispersion(
+    for i, population_id in enumerate(population_ids):
+        in_population = population == population_id
+        max_dispersion, p95_dispersion = _dispersion(
             X[in_population], centroid_matrix[i], metric=metric
         )
-        dist_rival = _nearest_rival(pw[i], classes[i], classes)
+        dist_to_nearest_rival = _nearest_rival(
+            centroid_distances[i], classes[i], classes
+        )
 
-        if sil is None:
-            p5_sil, frac_at_risk = None, None
+        if silhouettes is None:
+            p5_silhouette, frac_at_risk = None, None
         else:
-            sil_c = sil[in_population]
-            sil_finite = sil_c[np.isfinite(sil_c)]
-            if len(sil_finite) == 0:
-                p5_sil, frac_at_risk = None, None
+            own_silhouettes = silhouettes[in_population]
+            finite_silhouettes = own_silhouettes[np.isfinite(own_silhouettes)]
+            if len(finite_silhouettes) == 0:
+                p5_silhouette, frac_at_risk = None, None
             else:
-                p5_sil = float(np.percentile(sil_finite, 5))
-                frac_at_risk = float(np.mean(sil_finite < 0))
+                p5_silhouette = float(np.percentile(finite_silhouettes, 5))
+                frac_at_risk = float(np.mean(finite_silhouettes < 0))
 
-        result[pid] = {
-            "max_dispersion": max_disp,
-            "p95_dispersion": p95_disp,
-            "dist_to_nearest_rival": dist_rival,
-            "p5_silhouette": p5_sil,
+        result[population_id] = {
+            "max_dispersion": max_dispersion,
+            "p95_dispersion": p95_dispersion,
+            "dist_to_nearest_rival": dist_to_nearest_rival,
+            "p5_silhouette": p5_silhouette,
             "frac_at_risk": frac_at_risk,
         }
 

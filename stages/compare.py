@@ -34,8 +34,8 @@ setup_logger()
 apply_plot_style()
 logger = logging.getLogger(__name__)
 
-_ALGO_ORDER = ["kmeans", "spectral", "birch", "hdbscan"]
-_ALGO_LABEL = {
+_ALGORITHM_ORDER = ["kmeans", "spectral", "birch", "hdbscan"]
+_ALGORITHM_LABEL = {
     "kmeans": "$k$-means",
     "spectral": "spectral",
     "birch": "BIRCH",
@@ -69,7 +69,7 @@ _DATASET_LABEL = {
     "ton_iot_v2": "ToN-IoT",
     "unsw_nb15_v2": "UNSW",
 }
-_CLF_LABEL = {
+_CLASSIFIER_LABEL = {
     "decision_tree": "Decision Tree",
     "naive_bayes": "Naive Bayes",
     "lda": "LDA",
@@ -91,49 +91,48 @@ _BASELINE_MSE_ORDER = [
     for w in (v, *(c for c, raw in CALIBRATED.items() if raw == v))
 ]
 _COMBO_ORDER = ["regressor", *COMBOS]
-# Top-to-bottom row order of the oracle-benefit figure.
 _ORACLE_BENEFIT_ORDER = _VARIANT_ORDER[::-1]
 
 
 def _load_sweep_runs(root: Path) -> list[dict]:
     """Collect one record per `<config>/<dataset>/<classifier>` run under `root`.
 
-    `clf` is the run directory name, taken verbatim: runs saved under a name a classifier
-    no longer uses are reported as a classifier of their own.
+    `classifier` is the run directory name, taken verbatim: runs saved under a name
+    a classifier no longer uses are reported as a classifier of their own.
     """
     runs: list[dict] = []
-    for cfg_dir in sorted(p for p in root.iterdir() if p.is_dir()):
-        for ds_dir in sorted(p for p in cfg_dir.iterdir() if p.is_dir()):
-            if not (ds_dir / "regions/record.json").exists():
+    for config_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+        for dataset_dir in sorted(p for p in config_dir.iterdir() if p.is_dir()):
+            if not (dataset_dir / "regions/record.json").exists():
                 continue
-            regions_config = read_record(ds_dir / "regions")["config"]
-            meta = load_from_json(ds_dir / "split/meta.json")
+            regions_config = read_record(dataset_dir / "regions")["config"]
+            meta = load_from_json(dataset_dir / "split/meta.json")
             algorithm = next(iter(regions_config["clustering"]["algorithms"]), None)
-            for clf_dir in sorted(
+            for classifier_dir in sorted(
                 p
-                for p in ds_dir.iterdir()
+                for p in dataset_dir.iterdir()
                 if p.is_dir() and p.name not in DATASET_STAGES
             ):
-                base = clf_dir / "regress"
-                results_path = base / "results.json"
+                regress_dir = classifier_dir / "regress"
+                results_path = regress_dir / "results.json"
                 if not results_path.exists():
                     continue
                 # A run is described by what it was built from, not by what the folders
                 # beside it hold now.
-                run_paths = RunPaths(dataset=ds_dir, classifier=clf_dir)
-                for source, source_id in read_record(base)["inputs"].items():
+                run_paths = RunPaths(dataset=dataset_dir, classifier=classifier_dir)
+                for source, source_id in read_record(regress_dir)["inputs"].items():
                     if read_record(run_paths.of(source))["id"] != source_id:
                         raise ValueError(
-                            f"{base} was built from another {source} than the one on "
-                            "disk: re-run `make regress`."
+                            f"{regress_dir} was built from another {source} than "
+                            "the one on disk: re-run `make regress`."
                         )
                 # Absent when the failure regressor skipped a degenerate target.
-                baselines_path = base / "baselines.json"
-                instance = (
+                baselines_path = regress_dir / "baselines.json"
+                baselines = (
                     load_from_json(baselines_path) if baselines_path.exists() else None
                 )
-                if instance is not None:
-                    variants = {r["variant"] for r in instance["baselines"]}
+                if baselines is not None:
+                    variants = {row["variant"] for row in baselines["baselines"]}
                     if variants != set(VARIANTS):
                         raise ValueError(
                             f"{baselines_path} has variants {sorted(variants)}; "
@@ -142,15 +141,15 @@ def _load_sweep_runs(root: Path) -> list[dict]:
                         )
                 runs.append(
                     {
-                        "config": cfg_dir.name,
-                        "dataset": ds_dir.name,
-                        "clf": clf_dir.name,
+                        "config": config_dir.name,
+                        "dataset": dataset_dir.name,
+                        "classifier": classifier_dir.name,
                         "distance": regions_config["distance"],
                         "algorithm": algorithm,
                         "n_features": len(meta["num_cols"]) + len(meta["cat_cols"]),
                         "meta": meta,
                         "results": load_from_json(results_path),
-                        "instance": instance,
+                        "baselines": baselines,
                     }
                 )
     return runs
@@ -162,7 +161,7 @@ def _dataset_base(name: str) -> str:
     return head if tail.isdigit() else name
 
 
-def _dist_color(distance: str) -> str:
+def _distance_color(distance: str) -> str:
     return _COS if distance == "cosine" else _EUC
 
 
@@ -181,10 +180,10 @@ def _median_iqr(values: list[float]) -> dict:
 
 
 def _variant_value(run: dict, variant: str, field: str) -> float | None:
-    """One scalar field of one baseline variant from a run's instance-baselines table, if valid."""
-    if run["instance"] is None:
+    """One scalar field of one variant from a run's baselines table, if valid."""
+    if run["baselines"] is None:
         return None
-    entry = next(r for r in run["instance"]["baselines"] if r["variant"] == variant)
+    entry = next(r for r in run["baselines"]["baselines"] if r["variant"] == variant)
     v = entry[field]
     if v is None or (isinstance(v, float) and np.isnan(v)):
         return None
@@ -234,29 +233,30 @@ def _variant_series(
 def _fig_rho_by_config(runs: list[dict]) -> Plot | None:
     """Spearman rho distribution per clustering configuration."""
 
-    def sort_key(cfg: str) -> tuple[int, int]:
-        meta = next(r for r in runs if r["config"] == cfg)
+    def sort_key(config: str) -> tuple[int, int]:
+        meta = next(r for r in runs if r["config"] == config)
         algo = meta["algorithm"]
         return (
             0 if meta["distance"] == "cosine" else 1,
-            _ALGO_ORDER.index(algo) if algo in _ALGO_ORDER else 99,
+            _ALGORITHM_ORDER.index(algo) if algo in _ALGORITHM_ORDER else 99,
         )
 
     labels, values, colors = [], [], []
-    for cfg in sorted({r["config"] for r in runs}, key=sort_key):
-        crows = [r for r in runs if r["config"] == cfg]
+    for config in sorted({r["config"] for r in runs}, key=sort_key):
+        config_runs = [r for r in runs if r["config"] == config]
         vals = [
             r["results"]["spearman"]
-            for r in crows
+            for r in config_runs
             if r["results"].get("spearman") is not None
         ]
         if not vals:
             continue
-        meta = crows[0]
-        label = f"{meta['distance']} {_ALGO_LABEL.get(meta['algorithm'], meta['algorithm'])}"
+        meta = config_runs[0]
+        algorithm = _ALGORITHM_LABEL.get(meta["algorithm"], meta["algorithm"])
+        label = f"{meta['distance']} {algorithm}"
         labels.append(label)
         values.append(np.asarray(vals, dtype=float))
-        colors.append(_dist_color(meta["distance"]))
+        colors.append(_distance_color(meta["distance"]))
     return box_plot(
         labels,
         values,
@@ -283,7 +283,7 @@ def _fig_rho_vs_regions(runs: list[dict]) -> Plot | None:
         series[distance] = (
             np.asarray(xs, float),
             np.asarray(ys, float),
-            _dist_color(distance),
+            _distance_color(distance),
         )
     return line_whisker_plot(
         series,
@@ -299,13 +299,15 @@ def _fig_rho_vs_regions(runs: list[dict]) -> Plot | None:
 
 def _fig_family_importance(runs: list[dict]) -> Plot | None:
     """Feature-family importance, region- vs class-level."""
-    acc: dict[str, list[float]] = {}
+    importances_by_feature: dict[str, list[float]] = {}
     for r in runs:
         for row in r["results"].get("feature_importances", []):
-            acc.setdefault(row["feature"], []).append(row["importance"])
-    if not acc:
+            importances_by_feature.setdefault(row["feature"], []).append(
+                row["importance"]
+            )
+    if not importances_by_feature:
         return None
-    mean_imp = {k: float(np.mean(v)) for k, v in acc.items()}
+    mean_importance = {k: float(np.mean(v)) for k, v in importances_by_feature.items()}
 
     def in_family(key: str, prefix: str, members: tuple[str, ...]) -> bool:
         return key.startswith(prefix) and any(
@@ -314,13 +316,13 @@ def _fig_family_importance(runs: list[dict]) -> Plot | None:
 
     def part(prefix: str, members: tuple[str, ...]) -> float:
         return 100.0 * sum(
-            v for k, v in mean_imp.items() if in_family(k, prefix, members)
+            v for k, v in mean_importance.items() if in_family(k, prefix, members)
         )
 
     for prefix in ("region_", "class_"):
         unmatched = sorted(
             k
-            for k in mean_imp
+            for k in mean_importance
             if k.startswith(prefix)
             and not any(
                 in_family(k, prefix, members) for _, members in _FEATURE_FAMILIES
@@ -334,10 +336,10 @@ def _fig_family_importance(runs: list[dict]) -> Plot | None:
 
     names = [name for name, _ in _FEATURE_FAMILIES]
     region = [part("region_", members) for _, members in _FEATURE_FAMILIES]
-    klass = [part("class_", members) for _, members in _FEATURE_FAMILIES]
+    class_level = [part("class_", members) for _, members in _FEATURE_FAMILIES]
     return stacked_bar_plot(
         names,
-        [("region-level", region, _COS), ("class-level", klass, _EUC)],
+        [("region-level", region, _COS), ("class-level", class_level, _EUC)],
         x_label="mean importance (% of total)",
         total_format="{:.1f}%",
     )
@@ -372,16 +374,18 @@ def _fig_variant_by_group(
 
 def _fig_oracle_benefit_by_variant(runs: list[dict]) -> Plot | None:
     """Per-sample oracle benefit recovered (%) of the variants."""
-    acc: dict[str, list[float]] = {v: [] for v in _ORACLE_BENEFIT_ORDER}
+    benefit_by_variant: dict[str, list[float]] = {v: [] for v in _ORACLE_BENEFIT_ORDER}
     for r in runs:
         for variant in _ORACLE_BENEFIT_ORDER:
             v = _variant_value(r, variant, "oracle_benefit_recovered")
             if v is not None:
-                acc[variant].append(100.0 * v)
-    if not any(acc.values()):
+                benefit_by_variant[variant].append(100.0 * v)
+    if not any(benefit_by_variant.values()):
         return None
     labels = [BASELINE_LABEL[v] for v in _ORACLE_BENEFIT_ORDER]
-    values = [np.asarray(acc[v], dtype=float) for v in _ORACLE_BENEFIT_ORDER]
+    values = [
+        np.asarray(benefit_by_variant[v], dtype=float) for v in _ORACLE_BENEFIT_ORDER
+    ]
     colors = [BASELINE_COLOR[v] for v in _ORACLE_BENEFIT_ORDER]
     return box_plot(
         labels,
@@ -399,8 +403,8 @@ def _size_values(runs: list[dict], size_bin: int, variant: str, field: str) -> l
     return [
         row[field]
         for r in runs
-        if r["instance"] is not None
-        for row in r["instance"]["error_by_size"]
+        if r["baselines"] is not None
+        for row in r["baselines"]["error_by_size"]
         if row["size_bin"] == size_bin and row["variant"] == variant
     ]
 
@@ -410,8 +414,8 @@ def _size_bins(runs: list[dict]) -> list[int]:
         {
             row["size_bin"]
             for r in runs
-            if r["instance"] is not None
-            for row in r["instance"]["error_by_size"]
+            if r["baselines"] is not None
+            for row in r["baselines"]["error_by_size"]
         }
     )
 
@@ -518,9 +522,9 @@ def _table_nregions(runs: list[dict]) -> dict:
 
     rows = []
     for distance in sorted({d for d, _ in groups}):
-        algos = [algo for (d, algo) in groups if d == distance]
-        algos.sort(key=lambda algo: -float(np.median(groups[(distance, algo)])))
-        for algorithm in algos:
+        algorithms = [algo for (d, algo) in groups if d == distance]
+        algorithms.sort(key=lambda algo: -float(np.median(groups[(distance, algo)])))
+        for algorithm in algorithms:
             arr = np.array(groups[(distance, algorithm)], dtype=float)
             rows.append(
                 {
@@ -575,12 +579,12 @@ def _table_variant_spearman_by_dataset(runs: list[dict]) -> dict:
     datasets = sorted({_dataset_base(r["dataset"]) for r in runs})
     rows = []
     for ds in datasets:
-        ds_runs = [r for r in runs if _dataset_base(r["dataset"]) == ds]
+        dataset_runs = [r for r in runs if _dataset_base(r["dataset"]) == ds]
         row: dict = {"dataset": ds}
         for variant in _VARIANT_ORDER:
             vals = [
                 v
-                for r in ds_runs
+                for r in dataset_runs
                 for v in [_variant_value(r, variant, "spearman")]
                 if v is not None
             ]
@@ -589,18 +593,20 @@ def _table_variant_spearman_by_dataset(runs: list[dict]) -> dict:
     return {"rows": rows}
 
 
-def _render_comparisons(root: Path, *, fmt: str, out: Path | None) -> None:
+def _render_comparisons(
+    root: Path, *, figure_format: str, figures_out: Path | None
+) -> None:
     """Aggregate the sweep under `root` into the cross-run figures and result tables."""
-    set_figure_format(fmt)
+    set_figure_format(figure_format)
     runs = _load_sweep_runs(root)
     if not runs:
         raise FileNotFoundError(f"No sweep runs found under {root}.")
-    n_hdb = sum(1 for r in runs if r["algorithm"] == "hdbscan")
+    n_hdbscan = sum(1 for r in runs if r["algorithm"] == "hdbscan")
     logger.info(
         "Sweep results from %d runs (%d main, %d hdbscan) under %s",
         len(runs),
-        len(runs) - n_hdb,
-        n_hdb,
+        len(runs) - n_hdbscan,
+        n_hdbscan,
         root,
     )
     kmeans_euclidean = [
@@ -613,16 +619,16 @@ def _render_comparisons(root: Path, *, fmt: str, out: Path | None) -> None:
         "family_importance": _fig_family_importance(runs),
         "spearman_by_classifier": _fig_variant_by_group(
             kmeans_euclidean,
-            group_key=lambda r: r["clf"],
-            label_map=_CLF_LABEL,
+            group_key=lambda r: r["classifier"],
+            label_map=_CLASSIFIER_LABEL,
             field="spearman",
             y_label=r"Spearman $\rho$ (median, IQR)",
             y_lim=(-0.05, 1.05),
         ),
         "spearman_by_classifier_combo": _fig_variant_by_group(
             kmeans_euclidean,
-            group_key=lambda r: r["clf"],
-            label_map=_CLF_LABEL,
+            group_key=lambda r: r["classifier"],
+            label_map=_CLASSIFIER_LABEL,
             field="spearman",
             y_label=r"Spearman $\rho$ (median, IQR)",
             variants=_COMBO_ORDER,
@@ -630,8 +636,8 @@ def _render_comparisons(root: Path, *, fmt: str, out: Path | None) -> None:
         ),
         "mse_by_classifier": _fig_variant_by_group(
             kmeans_euclidean,
-            group_key=lambda r: r["clf"],
-            label_map=_CLF_LABEL,
+            group_key=lambda r: r["classifier"],
+            label_map=_CLASSIFIER_LABEL,
             field="mse",
             y_label="MSE (median, IQR)",
             variants=_BASELINE_MSE_ORDER,
@@ -639,8 +645,8 @@ def _render_comparisons(root: Path, *, fmt: str, out: Path | None) -> None:
         ),
         "mse_by_classifier_combo": _fig_variant_by_group(
             kmeans_euclidean,
-            group_key=lambda r: r["clf"],
-            label_map=_CLF_LABEL,
+            group_key=lambda r: r["classifier"],
+            label_map=_CLASSIFIER_LABEL,
             field="mse",
             y_label="MSE (median, IQR)",
             variants=_COMBO_ORDER,
@@ -696,7 +702,7 @@ def _render_comparisons(root: Path, *, fmt: str, out: Path | None) -> None:
 
     tables_dir = root / "compare"
     clear_dir(tables_dir)
-    figures_dir = out or tables_dir
+    figures_dir = figures_out or tables_dir
     save_figures(figures, figures_dir)
     for name, table in tables.items():
         save_to_json(table, tables_dir / f"{name}.json")
@@ -718,20 +724,20 @@ def _parse_args(argv: list[str]) -> tuple[Path, str, Path | None]:
             f"compare: unknown argument(s) {unknown}; "
             "expected sweep=<path> [format=pdf|png] [out=<dir>]."
         )
-    kv = dict(a.split("=", 1) for a in argv)
-    if "sweep" not in kv:
+    args_by_key = dict(a.split("=", 1) for a in argv)
+    if "sweep" not in args_by_key:
         raise ValueError("compare requires sweep=<path>.")
     return (
-        Path(kv["sweep"]),
-        kv.get("format", "pdf"),
-        Path(kv["out"]) if kv.get("out") else None,
+        Path(args_by_key["sweep"]),
+        args_by_key.get("format", "pdf"),
+        Path(args_by_key["out"]) if args_by_key.get("out") else None,
     )
 
 
 def main() -> None:
     """Entry point for the compare stage."""
-    root, fmt, out = _parse_args(sys.argv[1:])
-    _render_comparisons(root, fmt=fmt, out=out)
+    root, figure_format, figures_out = _parse_args(sys.argv[1:])
+    _render_comparisons(root, figure_format=figure_format, figures_out=figures_out)
 
 
 if __name__ == "__main__":

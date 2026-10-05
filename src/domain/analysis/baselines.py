@@ -155,13 +155,13 @@ def error_by_region_size(
     if len(regions) < n_bins:
         return []
     order = np.lexsort((regions.to_numpy(), size.loc[regions].to_numpy()))
-    bin_of = np.empty(len(regions), dtype=int)
-    bin_of[order] = np.arange(len(regions)) * n_bins // len(regions)
+    size_bin_of = np.empty(len(regions), dtype=int)
+    size_bin_of[order] = np.arange(len(regions)) * n_bins // len(regions)
 
     rate = observed.to_numpy(dtype=float)
     rows = []
-    for b in range(n_bins):
-        in_bin = bin_of == b
+    for size_bin in range(n_bins):
+        in_bin = size_bin_of == size_bin
         sizes = size.loc[regions[in_bin]]
         for variant, predicted in predictions.items():
             value = predicted.loc[regions[in_bin]].to_numpy(dtype=float)
@@ -170,7 +170,7 @@ def error_by_region_size(
             bias, bias_se = _mean_and_se(error)
             rows.append(
                 {
-                    "size_bin": b,
+                    "size_bin": size_bin,
                     "variant": variant,
                     "n_regions": int(in_bin.sum()),
                     "size_min": int(sizes.min()),

@@ -59,9 +59,9 @@ class CappedCategoryEncoder(BaseEstimator, TransformerMixin):
         """Cast every column to its learned category set, mapping the rest to NaN."""
         result = X.copy()
         for col in result.columns:
-            cats = self.categories_[col]
+            kept = self.categories_[col]
             result[col] = pd.Categorical(
-                result[col].where(result[col].isin(cats)), categories=cats
+                result[col].where(result[col].isin(kept)), categories=kept
             )
         return result
 
@@ -99,10 +99,10 @@ def _build_preprocess(
         transformers.append(("cat", encoder_factory(), cat_cols))
 
     native = strategy in _NATIVE_CATEGORICAL_STRATEGIES
-    pre = ColumnTransformer(
+    preprocessor = ColumnTransformer(
         transformers, remainder="drop", verbose_feature_names_out=not native
     )
-    return pre.set_output(transform="pandas") if native else pre
+    return preprocessor.set_output(transform="pandas") if native else preprocessor
 
 
 def _augment_params_for_strategy(strategy: str, params: dict) -> dict:
@@ -124,18 +124,18 @@ def build_pipeline(
 ) -> Pipeline:
     """Build a preprocess-plus-classifier Pipeline, per the `CLASSIFIER_PREPROCESS` table."""
     strategy = CLASSIFIER_PREPROCESS.get(name, "passthrough")
-    pre = _build_preprocess(strategy, num_cols, cat_cols)
+    preprocessor = _build_preprocess(strategy, num_cols, cat_cols)
     full_params = _augment_params_for_strategy(strategy, params)
-    clf = MLClassifierFactory.create(name, full_params)
-    return Pipeline([("pre", pre), ("clf", clf)])
+    classifier = MLClassifierFactory.create(name, full_params)
+    return Pipeline([("pre", preprocessor), ("clf", classifier)])
 
 
-def supports_random_state(clf_cls: type) -> bool:
+def supports_random_state(estimator_cls: type) -> bool:
     """True if the estimator accepts a `random_state` parameter."""
-    if "random_state" in inspect.signature(clf_cls.__init__).parameters:
+    if "random_state" in inspect.signature(estimator_cls.__init__).parameters:
         return True
     try:
-        return "random_state" in clf_cls().get_params()
+        return "random_state" in estimator_cls().get_params()
     except Exception:
         return False
 
@@ -143,9 +143,11 @@ def supports_random_state(clf_cls: type) -> bool:
 def build_regressor_pipeline(name: str, params: dict) -> Pipeline:
     """Build a preprocess-plus-regressor Pipeline, per the `REGRESSOR_PREPROCESS` table."""
     strategy = REGRESSOR_PREPROCESS[name]
-    pre = (
+    preprocessor = (
         make_pipeline(SimpleImputer(), StandardScaler())
         if strategy == "standardize"
         else "passthrough"
     )
-    return Pipeline([("pre", pre), ("model", MLRegressorFactory.create(name, params))])
+    return Pipeline(
+        [("pre", preprocessor), ("model", MLRegressorFactory.create(name, params))]
+    )

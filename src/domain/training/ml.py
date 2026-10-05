@@ -61,7 +61,7 @@ class MLTrainer:
         random_state: int,
     ) -> tuple[Pipeline, dict]:
         """Cross-validated grid search over the classifier step, refitting the winner on all data."""
-        clf_grid = {f"clf__{k}": v for k, v in grid.items()}
+        prefixed_grid = {f"clf__{k}": v for k, v in grid.items()}
 
         subsampled = max_samples is not None and len(X) > max_samples
         if subsampled:
@@ -72,11 +72,11 @@ class MLTrainer:
             X_search, y_search = X, y
 
         with tempfile.TemporaryDirectory() as cache_dir:
-            base = build_pipeline(name, params, self.num_cols, self.cat_cols)
-            base.memory = cache_dir
+            base_pipeline = build_pipeline(name, params, self.num_cols, self.cat_cols)
+            base_pipeline.memory = cache_dir
             search = GridSearchCV(
-                base,
-                param_grid=clf_grid,
+                base_pipeline,
+                param_grid=prefixed_grid,
                 scoring=scoring,
                 cv=cv,
                 n_jobs=-1,
@@ -95,11 +95,11 @@ class MLTrainer:
 
         cv_results = [
             {
-                "params": _strip_clf_prefix(p),
-                "mean_test_score": float(s),
-                "std_test_score": float(std),
+                "params": _strip_clf_prefix(candidate_params),
+                "mean_test_score": float(mean_score),
+                "std_test_score": float(std_score),
             }
-            for p, s, std in zip(
+            for candidate_params, mean_score, std_score in zip(
                 search.cv_results_["params"],
                 search.cv_results_["mean_test_score"],
                 search.cv_results_["std_test_score"],

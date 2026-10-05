@@ -1,7 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-# Stages shared by every classifier of a run, and the ones that live under each.
 DATASET_STAGES = ("split", "graph", "regions", "complexity")
 CLASSIFIER_STAGES = ("classify", "regress", "render")
 

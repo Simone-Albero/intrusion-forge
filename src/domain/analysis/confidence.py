@@ -8,10 +8,10 @@ def mcp_risk(y_proba: np.ndarray) -> np.ndarray:
 
 def atc_threshold(confidence: np.ndarray, correct: np.ndarray) -> float:
     """ATC cut: the confidence below which as many samples fall as were misjudged."""
-    conf = np.sort(np.asarray(confidence, dtype=float))
+    sorted_confidence = np.sort(np.asarray(confidence, dtype=float))
     n_errors = int((~np.asarray(correct).astype(bool)).sum())
     # Only distinct values are cuts: `confidence < cut` cannot split a run of ties, so a
     # cut placed inside one would flag fewer samples than it was chosen for.
-    cuts = np.append(np.unique(conf), np.inf)
-    below = np.searchsorted(conf, cuts, side="left")
-    return float(cuts[np.argmin(np.abs(below - n_errors))])
+    cuts = np.append(np.unique(sorted_confidence), np.inf)
+    n_below = np.searchsorted(sorted_confidence, cuts, side="left")
+    return float(cuts[np.argmin(np.abs(n_below - n_errors))])

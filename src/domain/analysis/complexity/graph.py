@@ -5,7 +5,7 @@ import numpy as np
 from tqdm import tqdm
 
 from src.core.utils import timed
-from src.domain.analysis.complexity.clusters import compute_cluster_geometry
+from src.domain.analysis.complexity.clusters import compute_geometry_measures
 from src.domain.analysis.complexity.dimensionality import compute_t_measures
 from src.domain.analysis.complexity.feature import compute_f_measures
 from src.domain.analysis.complexity.neighborhood import compute_n_measures
@@ -59,35 +59,37 @@ def compute_population_complexity(
     random_state: int,
 ) -> dict[int, dict[str, float | None]]:
     """Every complexity-measure family for each population, keyed by population id."""
-    # `graph_population` names each graph node's population; `sample` holds the rows
-    # drawn from every population, `sizes` the rows each really has.
     rivals = nearest_rivals(
         centroids, population_class, top_k=top_k_clusters, metric=metric
     )
 
-    with tqdm(total=5, desc="complexity families", unit="family") as pbar:
-        pbar.set_description("F measures")
-        f_out = compute_f_measures(sample.X, sample.population, rivals, metric=metric)
-        pbar.update(1)
+    with tqdm(total=5, desc="complexity families", unit="family") as progress:
+        progress.set_description("F measures")
+        feature_overlap = compute_f_measures(
+            sample.X, sample.population, rivals, metric=metric
+        )
+        progress.update(1)
 
-        pbar.set_description("N measures")
-        n_out = compute_n_measures(
+        progress.set_description("N measures")
+        neighborhood = compute_n_measures(
             sample, graph_population, train_graph.mst_edges, rivals
         )
-        pbar.update(1)
+        progress.update(1)
 
-        pbar.set_description("ND measures")
-        nd_out = compute_network_measures(
+        progress.set_description("ND measures")
+        network = compute_network_measures(
             sample, graph_population, train_graph.knn_idx, rivals
         )
-        pbar.update(1)
+        progress.update(1)
 
-        pbar.set_description("T measures")
-        t_out = compute_t_measures(sample.X, sample.population, sizes, metric=metric)
-        pbar.update(1)
+        progress.set_description("T measures")
+        dimensionality = compute_t_measures(
+            sample.X, sample.population, sizes, metric=metric
+        )
+        progress.update(1)
 
-        pbar.set_description("G measures")
-        g_out = compute_cluster_geometry(
+        progress.set_description("G measures")
+        geometry = compute_geometry_measures(
             sample.X,
             sample.population,
             centroids,
@@ -97,15 +99,15 @@ def compute_population_complexity(
             random_state=random_state,
             population_class=population_class,
         )
-        pbar.update(1)
+        progress.update(1)
 
     return {
-        pid: {
-            **f_out[pid],
-            **n_out[pid],
-            **nd_out[pid],
-            **t_out[pid],
-            **g_out[pid],
+        population_id: {
+            **feature_overlap[population_id],
+            **neighborhood[population_id],
+            **network[population_id],
+            **dimensionality[population_id],
+            **geometry[population_id],
         }
-        for pid in sorted(population_class)
+        for population_id in sorted(population_class)
     }

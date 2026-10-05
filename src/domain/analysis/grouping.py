@@ -26,7 +26,9 @@ class RowsBy:
     def reduce(self, values: np.ndarray, fn=np.mean) -> np.ndarray:
         """One value per group, in ascending label order."""
         ordered = np.asarray(values)[self._order]
-        return np.array([fn(ordered[s:e]) for s, e in zip(self._starts, self._ends)])
+        return np.array(
+            [fn(ordered[start:end]) for start, end in zip(self._starts, self._ends)]
+        )
 
     def spread(self, per_group: np.ndarray) -> np.ndarray:
         """Give every row the value of its group."""

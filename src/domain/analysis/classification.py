@@ -8,7 +8,7 @@ from sklearn.utils.multiclass import unique_labels
 from src.domain.analysis.failure import is_failure
 from src.domain.analysis.grouping import RowsBy
 
-_METRIC_FNS: list[tuple[str, Callable]] = [
+_METRICS: list[tuple[str, Callable]] = [
     ("precision", precision_score),
     ("recall", recall_score),
     ("f1", f1_score),
@@ -17,27 +17,29 @@ _METRIC_FNS: list[tuple[str, Callable]] = [
 
 def compute_classification_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
     """Overall accuracy, macro/weighted precision/recall/F1, plus one row per class."""
-    full: dict = {"accuracy": float(accuracy_score(y_true, y_pred))}
+    metrics: dict = {"accuracy": float(accuracy_score(y_true, y_pred))}
 
-    for avg in ("macro", "weighted"):
-        for name, fn in _METRIC_FNS:
-            full[f"{name}_{avg}"] = float(
-                fn(y_true, y_pred, average=avg, zero_division=0)
+    for average in ("macro", "weighted"):
+        for name, metric_fn in _METRICS:
+            metrics[f"{name}_{average}"] = float(
+                metric_fn(y_true, y_pred, average=average, zero_division=0)
             )
 
     # Every class observed or predicted, passed explicitly so the rows below line up
     # with the arrays sklearn returns.
     labels = unique_labels(y_true, y_pred)
     per_class = {
-        name: fn(y_true, y_pred, labels=labels, average=None, zero_division=0).tolist()
-        for name, fn in _METRIC_FNS
+        name: metric_fn(
+            y_true, y_pred, labels=labels, average=None, zero_division=0
+        ).tolist()
+        for name, metric_fn in _METRICS
     }
-    full["classes"] = [
+    metrics["classes"] = [
         {"class_id": int(c), **{name: values[i] for name, values in per_class.items()}}
         for i, c in enumerate(labels)
     ]
 
-    return full
+    return metrics
 
 
 def region_failures(
