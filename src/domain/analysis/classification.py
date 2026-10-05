@@ -56,19 +56,3 @@ def region_failures(
             "mcp_risk": by_region.reduce(mcp),
         }
     )
-
-
-def empirical_region_rate(
-    failures: pd.DataFrame, *, region_class: pd.Series
-) -> pd.Series:
-    """Failure rate of each region; one without rows takes its class's, then the overall."""
-    counts = (
-        failures.set_index("region")[["n_eval", "n_error"]]
-        .reindex(region_class.index)
-        .fillna(0)
-    )
-    by_class = counts.groupby(region_class).sum()
-    class_rate = by_class["n_error"] / by_class["n_eval"].replace(0, np.nan)
-    overall = counts["n_error"].sum() / counts["n_eval"].sum()
-    fallback = region_class.map(class_rate).fillna(overall)
-    return (counts["n_error"] / counts["n_eval"].replace(0, np.nan)).fillna(fallback)

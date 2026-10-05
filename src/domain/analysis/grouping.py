@@ -28,10 +28,6 @@ class RowsBy:
         ordered = np.asarray(values)[self._order]
         return np.array([fn(ordered[s:e]) for s, e in zip(self._starts, self._ends)])
 
-    def first(self, values: np.ndarray) -> np.ndarray:
-        """The first row's value of every group."""
-        return np.asarray(values)[self._order][self._starts]
-
     def spread(self, per_group: np.ndarray) -> np.ndarray:
         """Give every row the value of its group."""
         out = np.empty(len(self._order), dtype=per_group.dtype)

@@ -1,7 +1,5 @@
 import numpy as np
 
-from src.domain.analysis.grouping import RowsBy
-
 
 def mcp_risk(y_proba: np.ndarray) -> np.ndarray:
     """1 - max predicted class probability, per sample."""
@@ -17,12 +15,3 @@ def atc_threshold(confidence: np.ndarray, correct: np.ndarray) -> float:
     cuts = np.append(np.unique(conf), np.inf)
     below = np.searchsorted(conf, cuts, side="left")
     return float(cuts[np.argmin(np.abs(below - n_errors))])
-
-
-def atc_region_risk(
-    confidence: np.ndarray, region: np.ndarray, *, threshold: float
-) -> np.ndarray:
-    """Region-level ATC: the share of a region below the threshold, per sample."""
-    below = (np.asarray(confidence, dtype=float) < threshold).astype(float)
-    by_region = RowsBy(np.asarray(region))
-    return by_region.spread(by_region.reduce(below))

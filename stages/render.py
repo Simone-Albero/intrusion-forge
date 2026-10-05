@@ -9,11 +9,8 @@ from src.core.io import load_df, save_figures
 from src.core.log import setup_logger
 from src.core.record import clear_dir, write_record
 from src.core.utils import flush_timing, load_from_json, timed
-from src.domain.analysis.failure_regressor import (
-    SIZE_ERROR_VARIANTS,
-    SIZE_VARIANTS,
-    join_region_summary,
-)
+from src.domain.analysis.baselines import SIZE_ERROR_VARIANTS, SIZE_VARIANTS
+from src.domain.analysis.failure_regressor import join_region_summary
 from src.domain.plot.analysis_charts import dual_scatter_plot, strip_count_panel_plot
 from src.domain.plot.base import Plot, set_figure_format
 from src.domain.plot.classify_charts import (
@@ -248,7 +245,7 @@ def _plot_error_by_size(error_by_size: list[dict]) -> dict[str, Plot]:
     table = pd.DataFrame(error_by_size)
     labels = [
         f"{row.size_min}–{row.size_max}"
-        for row in table[table["variant"] == "region"]
+        for row in table[table["variant"] == "regressor"]
         .sort_values("size_bin")
         .itertuples()
     ]

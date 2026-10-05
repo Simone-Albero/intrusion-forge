@@ -2,6 +2,7 @@ min_eval_support: 5                # regions with fewer evaluated rows are exclu
 n_outer_splits: 5
 n_inner_splits: 5
 n_iter: 40                         # RandomizedSearchCV draws per model; a grid smaller than this is searched whole
+max_sample_rows: 200000            # rows the sample regressor fits on per fold, drawn from the other folds' regions
 primary: random_forest             # its predictions are predicted_rate, the baselines' regressor and the importances
 models:
   random_forest:

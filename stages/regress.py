@@ -2,27 +2,31 @@ import logging
 
 import numpy as np
 import pandas as pd
-from scipy.special import expit
 
 from src.core.config import to_container
 from src.core.io import load_df, save_df
 from src.core.log import setup_logger
 from src.core.record import clear_dir, write_record
-from src.core.utils import flush_timing, save_to_json, timed
-from src.domain.analysis.calibration import fit_platt
-from src.domain.analysis.classification import (
-    empirical_region_rate,
-    region_failures,
+from src.core.utils import flush_timing, load_from_json, save_to_json, timed
+from src.domain.analysis.baselines import (
+    CALIBRATED,
+    COMBOS,
+    SIZE_ERROR_VARIANTS,
+    atc_rate,
+    calibrate,
+    combine,
+    empirical_rate,
+    error_by_region_size,
+    score_variants,
 )
+from src.domain.analysis.classification import region_failures
 from src.domain.analysis.confidence import atc_threshold, mcp_risk
 from src.domain.analysis.failure import is_failure
 from src.domain.analysis.failure_regressor import (
-    CALIBRATED_VARIANTS,
-    error_by_region_size,
     fit_failure_regressor,
-    instance_baselines,
     join_region_summary,
 )
+from src.domain.analysis.sample_regressor import fit_sample_regressor
 from stages import (
     load_cli_config,
     load_split,
@@ -34,8 +38,6 @@ from stages import (
 setup_logger()
 logger = logging.getLogger(__name__)
 
-
-# Bins of region size the error is reported over.
 SIZE_BINS = 5
 
 
@@ -79,37 +81,15 @@ def _failures(rows: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-@timed
-def regress(cfg, paths) -> tuple[pd.DataFrame, dict, dict | None]:
-    """Fit the failure regressor on the regions' descriptors and failure rates."""
-    train = _evaluated_rows(paths, "train")
-    test = _evaluated_rows(paths, "test")
-    val = _evaluated_rows(paths, "val")
-    failures = _failures(test)
-    summary = join_region_summary(
-        load_df(paths.of("complexity") / "regions.parquet"),
-        load_df(paths.of("complexity") / "classes.parquet"),
-        failures,
-    )
-    fr = cfg.failure_regressor
-    results, predicted_rate = fit_failure_regressor(
-        summary,
-        models=to_container(fr.models),
-        primary=fr.primary,
-        n_outer_splits=fr.n_outer_splits,
-        n_inner_splits=fr.n_inner_splits,
-        n_iter=fr.n_iter,
-        min_eval_support=fr.min_eval_support,
-        random_state=cfg.seed,
-    )
-    # Never added to `summary`: the regressor takes every numeric column of it as a feature.
-    # Counted in the region a test row like it is routed to, not in the cluster its own
-    # class drew it into: the target holds every class's rows that land there.
-    fit_rows = train[train["in_fit"]]
-    fit_failures = _failures(fit_rows.assign(region=fit_rows["nearest_region"]))
-    val_failures = _failures(val)
-    train_rate = empirical_region_rate(fit_failures, region_class=summary["class_id"])
-    val_rate = empirical_region_rate(val_failures, region_class=summary["class_id"])
+def _region_table(
+    summary: pd.DataFrame,
+    failures: pd.DataFrame,
+    *,
+    train: pd.DataFrame,
+    fit_failures: pd.DataFrame,
+    val_failures: pd.DataFrame,
+    oof: pd.DataFrame,
+) -> pd.DataFrame:
     table = summary[["class_id", "n_eval", "failure_rate", "mcp_risk"]].copy()
     table["n_train"] = (
         train["region"].value_counts().reindex(table.index).fillna(0).astype(int)
@@ -124,12 +104,9 @@ def regress(cfg, paths) -> tuple[pd.DataFrame, dict, dict | None]:
         .fillna(0)
         .astype(int)
     )
-    table["predicted_rate"] = predicted_rate.reindex(table.index)
-    table["used"] = table.index.isin(predicted_rate.index)
-    scored = predicted_rate.index
-    n_without_fit = int((table.loc[scored, "n_fit"] == 0).sum())
-    n_without_val = int((table.loc[scored, "n_val"] == 0).sum())
-    table = table.reset_index()[
+    table["predicted_rate"] = oof["predicted_rate"].reindex(table.index)
+    table["used"] = table.index.isin(oof.index)
+    return table.reset_index()[
         [
             "region",
             "class_id",
@@ -146,75 +123,159 @@ def regress(cfg, paths) -> tuple[pd.DataFrame, dict, dict | None]:
             "used",
         ]
     ]
-    if results.get("skipped"):
-        logger.info("Instance-level baselines skipped: the failure regressor was.")
-        return table, results, None
-    # ATC cuts confidence where as many rows fall below as were misjudged: chosen on val,
-    # so the test rows it is scored on never pick their own cut.
+
+
+def _atc(val: pd.DataFrame, test: pd.DataFrame) -> tuple[pd.Series, pd.Series, float]:
+    val_confidence = 1.0 - val["mcp_risk"].to_numpy()
     threshold = atc_threshold(
-        1.0 - val["mcp_risk"].to_numpy(),
-        ~is_failure(val["y_true"].to_numpy(), val["y_pred"].to_numpy()),
+        val_confidence, ~is_failure(val["y_true"].to_numpy(), val["y_pred"].to_numpy())
+    )
+    return (
+        atc_rate(
+            1.0 - test["mcp_risk"].to_numpy(), test["region"], threshold=threshold
+        ),
+        atc_rate(val_confidence, val["region"], threshold=threshold),
+        threshold,
     )
 
-    def atc_rate(rows: pd.DataFrame) -> pd.Series:
-        return ((1.0 - rows["mcp_risk"]) < threshold).groupby(rows["region"]).mean()
 
-    rates = {
-        "region": predicted_rate,
-        "train_rate_region": train_rate.loc[scored],
-        "val_rate_region": val_rate.loc[scored],
-        "mcp_region": summary.loc[scored, "mcp_risk"],
-        "atc_region": atc_rate(test).loc[scored],
-    }
-    # Each score on val's regions, fitted to val's failures there, then mapped on test's
-    # regions: no test row chooses its own scale.
-    val_regions = val_failures.set_index("region")
-    val_scores = {
-        "mcp_region": val_regions["mcp_risk"],
-        "atc_region": atc_rate(val).loc[val_regions.index],
-        "train_rate_region": train_rate.loc[val_regions.index],
-    }
+def _mcp(
+    failures: pd.DataFrame, val_failures: pd.DataFrame
+) -> tuple[pd.Series, pd.Series]:
+    return (
+        failures.set_index("region")["mcp_risk"],
+        val_failures.set_index("region")["mcp_risk"],
+    )
+
+
+def _sample_regressor(
+    cfg, paths, rows: pd.DataFrame, oof: pd.DataFrame
+) -> tuple[pd.Series, np.ndarray]:
+    """Each region's mean predicted chance of failure, and each row's, from the row's own
+    features, never the region's geometry."""
+    meta = load_from_json(paths.of("split") / "meta.json")
+    fr = cfg.failure_regressor
+    features = load_split(paths, "test", columns=meta["num_cols"] + meta["cat_cols"])
+    in_scored = rows.index.to_numpy()
+    predicted = fit_sample_regressor(
+        features.iloc[in_scored],
+        is_failure(rows["y_true"].to_numpy(), rows["y_pred"].to_numpy()).astype(float),
+        rows["region"].to_numpy(),
+        fold_of_region=oof["fold"],
+        name=fr.primary,
+        # No search runs here, so the cores the search's candidates would use are free.
+        params={**to_container(fr.models)[fr.primary]["params"], "n_jobs": -1},
+        max_rows=fr.max_sample_rows,
+        random_state=cfg.seed,
+    )
+    rate = pd.Series(predicted).groupby(rows["region"].to_numpy()).mean()
+    rate.index.name = "region"
+    return rate, predicted
+
+
+def _calibrated(
+    rates: dict[str, pd.Series],
+    val_scores: dict[str, pd.Series],
+    *,
+    val_rate: pd.Series,
+) -> tuple[dict[str, pd.Series], list[dict]]:
+    """Each raw rate mapped by a fit on val's regions, so no test row sets its scale."""
     # A val without failures, or with nothing else, has no scale to fit: the calibrated
     # variants stay NaN instead of stopping the stage over a fact of the data.
-    val_failure_rate = val_regions["failure_rate"].mean()
-    can_calibrate = 0.0 < val_failure_rate < 1.0
+    can_calibrate = 0.0 < val_rate.mean() < 1.0
     if not can_calibrate:
         logger.warning(
             "Val's regions fail at a rate of %s: no calibrated baselines.",
-            val_failure_rate,
+            val_rate.mean(),
         )
-    calibration = []
-    for name, raw in CALIBRATED_VARIANTS.items():
+    calibrated, calibration = {}, []
+    for name, raw in CALIBRATED.items():
+        rate = pd.Series(np.nan, index=rates[raw].index)
         intercept, slope = np.nan, np.nan
         if can_calibrate:
-            intercept, slope = fit_platt(
-                val_scores[raw].to_numpy(), val_regions["failure_rate"].to_numpy()
+            rate, intercept, slope = calibrate(
+                rates[raw], val_score=val_scores[raw], val_rate=val_rate
             )
-        if slope == 0.0 and val_scores[raw].nunique() > 1:
-            logger.warning(
-                "%s does not rise with val's failures: its calibration is constant.",
-                raw,
-            )
-        rates[name] = expit(intercept + slope * rates[raw])
+            if slope == 0.0 and val_scores[raw].nunique() > 1:
+                logger.warning(
+                    "%s does not rise with val's failures: its calibration is constant.",
+                    raw,
+                )
+        calibrated[name] = rate
         calibration.append({"variant": name, "intercept": intercept, "slope": slope})
+    return calibrated, calibration
+
+
+def _score_baselines(
+    cfg,
+    paths,
+    *,
+    summary: pd.DataFrame,
+    oof: pd.DataFrame,
+    table: pd.DataFrame,
+    test: pd.DataFrame,
+    val: pd.DataFrame,
+    failures: pd.DataFrame,
+    fit_failures: pd.DataFrame,
+    val_failures: pd.DataFrame,
+) -> dict:
+    scored = oof.index
+    region_class = summary["class_id"]
+    atc, val_atc, threshold = _atc(val, test)
+    mcp, val_mcp = _mcp(failures, val_failures)
+    train_empiric = empirical_rate(fit_failures, region_class=region_class)
+    val_empiric = empirical_rate(val_failures, region_class=region_class)
+    rows = test[test["region"].isin(scored)]
+    sample_rate, sample_rows = _sample_regressor(cfg, paths, rows, oof)
+
+    rates = {
+        "regressor": oof["predicted_rate"],
+        "sample_regressor": sample_rate,
+        "atc": atc,
+        "mcp": mcp,
+        "train_empiric": train_empiric,
+        "val_empiric": val_empiric,
+    }
+    rates = {name: rate.loc[scored] for name, rate in rates.items()}
+    val_regions = val_failures["region"]
+    val_rate = val_failures.set_index("region")["failure_rate"]
+    calibrated, calibration = _calibrated(
+        rates,
+        {
+            "atc": val_atc.loc[val_regions],
+            "mcp": val_mcp,
+            "train_empiric": train_empiric.loc[val_regions],
+        },
+        val_rate=val_rate,
+    )
+    rates |= calibrated
+    rates |= {
+        combo: combine(rates["regressor"], rates[partner])
+        for combo, partner in COMBOS.items()
+    }
+
+    observed = summary.loc[scored, "failure_rate"]
     baselines = {
-        **instance_baselines(
-            test,
-            predicted_rate,
-            atc_threshold=threshold,
-            train_rate=train_rate,
-            val_rate=val_rate,
-            calibrated={name: rates[name] for name in CALIBRATED_VARIANTS},
+        "n_eval": len(rows),
+        "n_regions": len(scored),
+        "baselines": score_variants(
+            rates,
+            observed,
+            region=rows["region"].to_numpy(),
+            failure=is_failure(
+                rows["y_true"].to_numpy(), rows["y_pred"].to_numpy()
+            ).astype(float),
+            row_scores={"sample_regressor": sample_rows},
         ),
         "atc_threshold": threshold,
         "calibration": calibration,
         "n_regions_val": len(val_regions),
         "n_val": len(val),
-        "n_regions_without_fit": n_without_fit,
-        "n_regions_without_val": n_without_val,
+        "n_regions_without_fit": int((table["used"] & (table["n_fit"] == 0)).sum()),
+        "n_regions_without_val": int((table["used"] & (table["n_val"] == 0)).sum()),
         "error_by_size": error_by_region_size(
-            summary.loc[scored, "failure_rate"],
-            rates,
+            observed,
+            {name: rates[name] for name in SIZE_ERROR_VARIANTS},
             size=table.set_index("region")["n_train"],
             n_bins=SIZE_BINS,
         ),
@@ -224,9 +285,73 @@ def regress(cfg, paths) -> tuple[pd.DataFrame, dict, dict | None]:
             "Fewer than %d scored regions: no error-by-size table.", SIZE_BINS
         )
     logger.info(
-        "Instance-level baselines (%d rows in %d scored regions).",
+        "Baselines (%d test rows in %d scored regions):",
         baselines["n_eval"],
         baselines["n_regions"],
+    )
+    for row in baselines["baselines"]:
+        logger.info(
+            "  %-24s rho=%7.4f  mse=%.5f  oracle benefit=%7.4f",
+            row["variant"],
+            row["spearman"],
+            row["mse"],
+            row["oracle_benefit_recovered"],
+        )
+    return baselines
+
+
+@timed
+def regress(cfg, paths) -> tuple[pd.DataFrame, dict, dict | None]:
+    """Fit the failure regressor on the regions' descriptors and failure rates, and score
+    it against the baselines."""
+    train, val, test = (
+        _evaluated_rows(paths, split) for split in ("train", "val", "test")
+    )
+    failures = _failures(test)
+    # Never gets a column the stage adds: the regressor takes every numeric one as a feature.
+    summary = join_region_summary(
+        load_df(paths.of("complexity") / "regions.parquet"),
+        load_df(paths.of("complexity") / "classes.parquet"),
+        failures,
+    )
+    fr = cfg.failure_regressor
+    results, oof = fit_failure_regressor(
+        summary,
+        models=to_container(fr.models),
+        primary=fr.primary,
+        n_outer_splits=fr.n_outer_splits,
+        n_inner_splits=fr.n_inner_splits,
+        n_iter=fr.n_iter,
+        min_eval_support=fr.min_eval_support,
+        random_state=cfg.seed,
+    )
+    # Counted in the region a test row like it is routed to, not in the cluster its own
+    # class drew it into: the target holds every class's rows that land there.
+    fit_rows = train[train["in_fit"]]
+    fit_failures = _failures(fit_rows.assign(region=fit_rows["nearest_region"]))
+    val_failures = _failures(val)
+    table = _region_table(
+        summary,
+        failures,
+        train=train,
+        fit_failures=fit_failures,
+        val_failures=val_failures,
+        oof=oof,
+    )
+    if results.get("skipped"):
+        logger.info("Baselines skipped: the failure regressor was.")
+        return table, results, None
+    baselines = _score_baselines(
+        cfg,
+        paths,
+        summary=summary,
+        oof=oof,
+        table=table,
+        test=test,
+        val=val,
+        failures=failures,
+        fit_failures=fit_failures,
+        val_failures=val_failures,
     )
     return table, results, baselines
 

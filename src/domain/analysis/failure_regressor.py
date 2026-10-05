@@ -3,7 +3,7 @@ import math
 
 import numpy as np
 import pandas as pd
-from scipy.stats import rankdata, spearmanr
+from scipy.stats import spearmanr
 from sklearn.metrics import make_scorer, mean_absolute_error, r2_score
 from sklearn.model_selection import (
     KFold,
@@ -14,10 +14,6 @@ from sklearn.model_selection import (
 from tqdm import tqdm
 
 from src.core.utils import timed
-from src.domain.analysis.confidence import atc_region_risk
-from src.domain.analysis.failure import is_failure
-from src.domain.analysis.grouping import RowsBy
-from src.domain.analysis.risk_coverage import oracle_benefit_recovered
 from src.engine.ml.model import MLRegressorFactory
 from src.engine.ml.preprocessing import REGRESSOR_PREPROCESS, build_regressor_pipeline
 
@@ -184,6 +180,7 @@ def _fit_nested_cv(
         "y_true": np.array([v for fold in folds for v in fold["y_true"]]),
         "y_pred": np.array([v for fold in folds for v in fold["y_pred"]]),
         "indices": [i for fold in folds for i in fold["indices"]],
+        "fold": [fold["fold_id"] for fold in folds for _ in fold["indices"]],
     }
 
 
@@ -258,8 +255,9 @@ def fit_failure_regressor(
     n_iter: int,
     random_state: int,
     min_eval_support: int,
-) -> tuple[dict, pd.Series]:
-    """Fit every model by nested CV on the same outer folds; return the primary's results and held-out predictions."""
+) -> tuple[dict, pd.DataFrame]:
+    """Nested CV of every model on the same outer folds: the primary's results, and its
+    held-out `predicted_rate` and `fold` per region."""
     _check_models(models, primary)
     logger.info("Running failure regressor ...")
     df = summary
@@ -325,7 +323,13 @@ def fit_failure_regressor(
             **exclusions,
             **context_metrics,
         }
-        return skipped, pd.Series(dtype=float, name="predicted_rate")
+        return skipped, pd.DataFrame(
+            {
+                "predicted_rate": pd.Series(dtype=float),
+                "fold": pd.Series(dtype=int),
+            },
+            index=pd.Index([], name="region"),
+        )
 
     strata = _quantile_strata(y, n_outer_splits)
     if strata is not None:
@@ -409,212 +413,8 @@ def fit_failure_regressor(
             m["mse"],
         )
     oof = oofs[primary]
-    predicted_rate = pd.Series(
-        oof["y_pred"],
+    held_out = pd.DataFrame(
+        {"predicted_rate": oof["y_pred"], "fold": oof["fold"]},
         index=pd.Index(oof["indices"], name="region"),
-        name="predicted_rate",
     )
-    return results, predicted_rate
-
-
-# Each calibrated variant and the raw one it maps onto the failure rate's scale.
-CALIBRATED_VARIANTS = {
-    "mcp_region_cal": "mcp_region",
-    "atc_region_cal": "atc_region",
-    "train_rate_region_cal": "train_rate_region",
-}
-BASELINE_VARIANTS = (
-    "mcp_region",
-    "atc_region",
-    "region",
-    "combo_rankavg",
-    "combo_atc_rankavg",
-    "train_rate_region",
-    "val_rate_region",
-    *CALIBRATED_VARIANTS,
-)
-RATE_BASELINE_VARIANTS = (
-    "region",
-    "mcp_region",
-    "atc_region",
-    "train_rate_region",
-    "val_rate_region",
-    *CALIBRATED_VARIANTS,
-)
-
-
-def instance_baselines(
-    samples: pd.DataFrame,
-    predicted_rate: pd.Series,
-    *,
-    atc_threshold: float,
-    train_rate: pd.Series,
-    val_rate: pd.Series,
-    calibrated: dict[str, pd.Series],
-) -> dict:
-    """Region rho, region-rate MSE and oracle benefit of every baseline variant."""
-    # `atc_threshold` is the confidence cut, chosen on rows other than `samples`;
-    # `train_rate` and `val_rate` are the failure rates the classifier made on other rows
-    # of each region, `calibrated` the rate of each `CALIBRATED_VARIANTS` entry, all
-    # indexed by region.
-    # Only the regions the regressor scored, so every variant ranks the same regions.
-    samples = samples[samples["region"].isin(predicted_rate.index)]
-    region_of_row = samples["region"].to_numpy()
-    by_region = RowsBy(region_of_row)
-    failure = is_failure(
-        samples["y_true"].to_numpy(), samples["y_pred"].to_numpy()
-    ).astype(float)
-    mcp = samples["mcp_risk"].to_numpy(dtype=float)
-    confidence = 1.0 - mcp
-    region = by_region.spread(predicted_rate.loc[by_region.ids].to_numpy(dtype=float))
-    mcp_region = by_region.spread(by_region.reduce(mcp))
-    train_rate_region = by_region.spread(
-        train_rate.loc[by_region.ids].to_numpy(dtype=float)
-    )
-    val_rate_region = by_region.spread(
-        val_rate.loc[by_region.ids].to_numpy(dtype=float)
-    )
-    observed = by_region.reduce(failure)
-    atc_region = atc_region_risk(confidence, region_of_row, threshold=atc_threshold)
-
-    n = failure.size
-    region_rank = rankdata(region) / (n + 1)
-    combo_rankavg = region_rank + rankdata(mcp) / (n + 1)
-    combo_atc_rankavg = region_rank + rankdata(atc_region) / (n + 1)
-
-    scores = {
-        "mcp_region": mcp_region,
-        "atc_region": atc_region,
-        "region": region,
-        "combo_rankavg": combo_rankavg,
-        "combo_atc_rankavg": combo_atc_rankavg,
-        "train_rate_region": train_rate_region,
-        "val_rate_region": val_rate_region,
-        **{
-            name: by_region.spread(rate.loc[by_region.ids].to_numpy(dtype=float))
-            for name, rate in calibrated.items()
-        },
-    }
-
-    # A rate variant holds one value per region, so that value is the prediction:
-    # averaging its copies moves the last ulp and breaks ties, and `region` would drift
-    # from the regressor's own rho. The rank averages differ row to row and are averaged
-    # with numpy, whose pairwise sum a pandas groupby would not reproduce to the ulp.
-    predicted_by_name = {
-        name: (
-            by_region.first(scores[name])
-            if name in RATE_BASELINE_VARIANTS
-            else by_region.reduce(scores[name])
-        )
-        for name in BASELINE_VARIANTS
-    }
-
-    support = np.ones(failure.size)
-    baselines = []
-    for name in BASELINE_VARIANTS:
-        sc = scores[name]
-        predicted = predicted_by_name[name]
-        rho = (
-            float(spearmanr(predicted, observed).statistic)
-            if np.std(predicted) > 1e-12 and np.std(observed) > 1e-12
-            else float("nan")
-        )
-        baselines.append(
-            {
-                "variant": name,
-                "spearman": rho,
-                # A NaN score, a baseline val could not calibrate, ranks no row.
-                "oracle_benefit_recovered": (
-                    oracle_benefit_recovered(sc, failure, support)
-                    if np.isfinite(sc).all()
-                    else float("nan")
-                ),
-                # Null rather than absent: the rank-average variants have no rate to
-                # compare, and a uniform row shape is what makes this a table.
-                "region_rate_mse": (
-                    float(np.mean((predicted - observed) ** 2))
-                    if name in RATE_BASELINE_VARIANTS
-                    else None
-                ),
-            }
-        )
-
-    return {
-        "n_eval": int(len(samples)),
-        "n_regions": int(by_region.ids.size),
-        "baselines": baselines,
-    }
-
-
-# The predictions the by-size tables and figures compare, in the order of their bars.
-SIZE_VARIANTS = (
-    "region",
-    "train_rate_region",
-    "val_rate_region",
-    "mcp_region",
-    "atc_region",
-)
-# The by-size squared and signed errors add the calibrated variants, each beside its raw
-# one; a positive slope keeps the raw one's rho up to float resolution, so the rho
-# figures leave them out.
-SIZE_ERROR_VARIANTS = (
-    "region",
-    "train_rate_region",
-    "train_rate_region_cal",
-    "val_rate_region",
-    "mcp_region",
-    "mcp_region_cal",
-    "atc_region",
-    "atc_region_cal",
-)
-
-
-def _mean_and_se(values: np.ndarray) -> tuple[float, float]:
-    se = float(values.std(ddof=1) / np.sqrt(values.size)) if values.size > 1 else np.nan
-    return float(values.mean()), se
-
-
-def error_by_region_size(
-    observed: pd.Series,
-    predictions: dict[str, pd.Series],
-    *,
-    size: pd.Series,
-    n_bins: int,
-) -> list[dict]:
-    """Per bin of region size, each prediction's squared and signed error and its rho."""
-    regions = observed.index
-    if len(regions) < n_bins:
-        return []
-    order = np.lexsort((regions.to_numpy(), size.loc[regions].to_numpy()))
-    bin_of = np.empty(len(regions), dtype=int)
-    bin_of[order] = np.arange(len(regions)) * n_bins // len(regions)
-
-    rate = observed.to_numpy(dtype=float)
-    rows = []
-    for b in range(n_bins):
-        in_bin = bin_of == b
-        sizes = size.loc[regions[in_bin]]
-        for variant, predicted in predictions.items():
-            value = predicted.loc[regions[in_bin]].to_numpy(dtype=float)
-            error = value - rate[in_bin]
-            mse, mse_se = _mean_and_se(error**2)
-            bias, bias_se = _mean_and_se(error)
-            rows.append(
-                {
-                    "size_bin": b,
-                    "variant": variant,
-                    "n_regions": int(in_bin.sum()),
-                    "size_min": int(sizes.min()),
-                    "size_max": int(sizes.max()),
-                    "spearman": (
-                        float(spearmanr(value, rate[in_bin]).statistic)
-                        if np.std(value) > 1e-12 and np.std(rate[in_bin]) > 1e-12
-                        else float("nan")
-                    ),
-                    "mse": mse,
-                    "mse_se": mse_se,
-                    "bias": bias,
-                    "bias_se": bias_se,
-                }
-            )
-    return rows
+    return results, held_out

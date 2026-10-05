@@ -9,12 +9,12 @@ from src.core.log import setup_logger
 from src.core.paths import DATASET_STAGES, RunPaths
 from src.core.record import clear_dir, read_record
 from src.core.utils import load_from_json, save_to_json
-from src.domain.analysis.failure_regressor import (
-    BASELINE_VARIANTS,
-    CALIBRATED_VARIANTS,
-    RATE_BASELINE_VARIANTS,
+from src.domain.analysis.baselines import (
+    CALIBRATED,
+    COMBOS,
     SIZE_ERROR_VARIANTS,
     SIZE_VARIANTS,
+    VARIANTS,
 )
 from src.domain.plot.base import Plot, set_figure_format
 from src.domain.plot.comparison_charts import (
@@ -81,13 +81,16 @@ _CLF_LABEL = {
     "hist_gradient_boosting": "HistGB",
     "xgboost": "XGBoost",
 }
-# A calibrated variant ranks as its raw one, so only the rate figures and tables show it,
+# A calibrated variant ranks as its raw one, so only the MSE figures and tables show it,
 # each beside its raw one.
-_VARIANT_ORDER = [v for v in BASELINE_VARIANTS if v not in CALIBRATED_VARIANTS]
-_RATE_VARIANT_ORDER = sorted(
-    RATE_BASELINE_VARIANTS,
-    key=lambda v: _VARIANT_ORDER.index(CALIBRATED_VARIANTS.get(v, v)),
-)
+_VARIANT_ORDER = [v for v in VARIANTS if v not in CALIBRATED]
+_BASELINE_ORDER = [v for v in _VARIANT_ORDER if v not in COMBOS]
+_BASELINE_MSE_ORDER = [
+    w
+    for v in _BASELINE_ORDER
+    for w in (v, *(c for c, raw in CALIBRATED.items() if raw == v))
+]
+_COMBO_ORDER = ["regressor", *COMBOS]
 # Top-to-bottom row order of the oracle-benefit figure.
 _ORACLE_BENEFIT_ORDER = _VARIANT_ORDER[::-1]
 
@@ -131,10 +134,10 @@ def _load_sweep_runs(root: Path) -> list[dict]:
                 )
                 if instance is not None:
                     variants = {r["variant"] for r in instance["baselines"]}
-                    if variants != set(BASELINE_VARIANTS):
+                    if variants != set(VARIANTS):
                         raise ValueError(
                             f"{baselines_path} has variants {sorted(variants)}; "
-                            f"compare displays {list(BASELINE_VARIANTS)}: re-run "
+                            f"compare displays {list(VARIANTS)}: re-run "
                             "`make regress`."
                         )
                 runs.append(
@@ -347,7 +350,7 @@ def _fig_variant_by_group(
     label_map: dict[str, str],
     field: str,
     y_label: str,
-    variants: list[str] = _VARIANT_ORDER,
+    variants: list[str] = _BASELINE_ORDER,
     y_lim: tuple[float, float] | None = None,
     log_y: bool = False,
 ) -> Plot | None:
@@ -616,13 +619,31 @@ def _render_comparisons(root: Path, *, fmt: str, out: Path | None) -> None:
             y_label=r"Spearman $\rho$ (median, IQR)",
             y_lim=(-0.05, 1.05),
         ),
+        "spearman_by_classifier_combo": _fig_variant_by_group(
+            kmeans_euclidean,
+            group_key=lambda r: r["clf"],
+            label_map=_CLF_LABEL,
+            field="spearman",
+            y_label=r"Spearman $\rho$ (median, IQR)",
+            variants=_COMBO_ORDER,
+            y_lim=(-0.05, 1.05),
+        ),
         "mse_by_classifier": _fig_variant_by_group(
             kmeans_euclidean,
             group_key=lambda r: r["clf"],
             label_map=_CLF_LABEL,
-            field="region_rate_mse",
+            field="mse",
             y_label="MSE (median, IQR)",
-            variants=_RATE_VARIANT_ORDER,
+            variants=_BASELINE_MSE_ORDER,
+            log_y=True,
+        ),
+        "mse_by_classifier_combo": _fig_variant_by_group(
+            kmeans_euclidean,
+            group_key=lambda r: r["clf"],
+            label_map=_CLF_LABEL,
+            field="mse",
+            y_label="MSE (median, IQR)",
+            variants=_COMBO_ORDER,
             log_y=True,
         ),
         "oracle_benefit_by_variant": _fig_oracle_benefit_by_variant(kmeans_euclidean),
@@ -665,7 +686,7 @@ def _render_comparisons(root: Path, *, fmt: str, out: Path | None) -> None:
             kmeans_euclidean, field="spearman"
         ),
         "variant_region_mse_table": _table_variant_field(
-            kmeans_euclidean, field="region_rate_mse", variants=_RATE_VARIANT_ORDER
+            kmeans_euclidean, field="mse", variants=[*_BASELINE_MSE_ORDER, *COMBOS]
         ),
         "variant_spearman_by_dataset_table": _table_variant_spearman_by_dataset(
             kmeans_euclidean
