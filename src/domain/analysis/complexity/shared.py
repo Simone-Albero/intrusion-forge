@@ -43,30 +43,30 @@ def _thread_budget() -> int:
     return os.cpu_count() or 1
 
 
-def query_neighbors(
-    reference: np.ndarray,
-    reference_rows: np.ndarray,
-    query: np.ndarray,
-    query_rows: np.ndarray,
+def nearest_neighbors(
+    nodes: np.ndarray,
+    node_rows: np.ndarray,
+    points: np.ndarray,
+    point_rows: np.ndarray,
     *,
     k: int,
     metric: str,
     batch_size: int = 256,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """The k nearest reference points of every query, as indices into `reference`."""
-    # A query that is a reference point, told by its row, is not its own neighbour.
-    n = query.shape[0]
-    effective_k = min(k, reference.shape[0] - 1)
-    X_ref = scale_for_metric(reference, metric)
-    X_query = scale_for_metric(query, metric)
+    """The k nearest graph nodes of every point, as indices into `nodes`."""
+    # A point that is a node, told by its row, is not its own neighbour.
+    n = points.shape[0]
+    effective_k = min(k, nodes.shape[0] - 1)
+    X_nodes = scale_for_metric(nodes, metric)
+    X_points = scale_for_metric(points, metric)
 
     indices = np.empty((n, effective_k), dtype=np.int64)
     distances = np.empty((n, effective_k), dtype=np.float64)
 
     def fill_batch(start: int) -> None:
         end = min(start + batch_size, n)
-        dists = cdist(X_query[start:end], X_ref, metric="euclidean")
-        dists[reference_rows[None, :] == query_rows[start:end, None]] = np.inf
+        dists = cdist(X_points[start:end], X_nodes, metric="euclidean")
+        dists[node_rows[None, :] == point_rows[start:end, None]] = np.inf
 
         part = np.argpartition(dists, effective_k, axis=1)[:, :effective_k]
         part_d = np.take_along_axis(dists, part, axis=1)
@@ -104,7 +104,7 @@ def build_knn_graph(
 ) -> tuple[np.ndarray, np.ndarray]:
     """The euclidean k-NN graph of a point cloud: every point's k nearest others."""
     rows = np.arange(X.shape[0])
-    return query_neighbors(X, rows, X, rows, k=k, metric=metric)
+    return nearest_neighbors(X, rows, X, rows, k=k, metric=metric)
 
 
 def _to_sparse_csr(
@@ -176,21 +176,22 @@ def build_approx_mst(
     return np.column_stack((mst.row, mst.col)).astype(np.int64, copy=False)
 
 
-def topk_adversarial_clusters(
-    centroid_matrix: np.ndarray,
-    cluster_ids: list[str],
-    id_to_class: dict[str, int],
+def nearest_rivals(
+    centroids: dict[int, np.ndarray],
+    population_class: dict[int, int],
     *,
     top_k: int,
     metric: str,
-) -> dict[str, list[str]]:
-    """Top-K nearest cluster ids of a different class, by ascending centroid distance."""
-    pw = cdist(centroid_matrix, centroid_matrix, metric=metric)
+) -> dict[int, list[int]]:
+    """Each population's `top_k` nearest rivals, of another class, by centroid."""
+    ids = list(population_class)
+    matrix = np.stack([np.asarray(centroids[pid], dtype=np.float64) for pid in ids])
+    pw = cdist(matrix, matrix, metric=metric)
     np.fill_diagonal(pw, np.inf)
-    classes = np.array([id_to_class[cid] for cid in cluster_ids], dtype=np.int64)
-    out: dict[str, list[str]] = {}
-    for i, cid in enumerate(cluster_ids):
-        adv_idx = np.where(classes != classes[i])[0]
-        order = np.argsort(pw[i, adv_idx])
-        out[cid] = [cluster_ids[int(adv_idx[j])] for j in order[:top_k]]
+    classes = np.array([population_class[pid] for pid in ids], dtype=np.int64)
+    out: dict[int, list[int]] = {}
+    for i, pid in enumerate(ids):
+        rival_idx = np.where(classes != classes[i])[0]
+        order = np.argsort(pw[i, rival_idx])
+        out[pid] = [ids[int(rival_idx[j])] for j in order[:top_k]]
     return out

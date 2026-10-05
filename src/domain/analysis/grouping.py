@@ -1,8 +1,9 @@
 import numpy as np
 
 
-class RowGroups:
-    """The rows of every distinct label, found with one sort instead of a mask per label.
+class RowsBy:
+    """The rows sharing each distinct value of `labels` (a region, a class), found with
+    one sort instead of a mask per value.
 
     Each group's rows stay in their original order, so a reduction gives exactly what
     `values[labels == g]` would, at a cost of n log n plus one slice per group.

@@ -6,7 +6,7 @@ from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_sc
 from sklearn.utils.multiclass import unique_labels
 
 from src.domain.analysis.failure import is_failure
-from src.domain.analysis.grouping import RowGroups
+from src.domain.analysis.grouping import RowsBy
 
 _METRIC_FNS: list[tuple[str, Callable]] = [
     ("precision", precision_score),
@@ -44,16 +44,16 @@ def region_failures(
     region: np.ndarray, y_true: np.ndarray, y_pred: np.ndarray, mcp: np.ndarray
 ) -> pd.DataFrame:
     """One row per region holding evaluated rows: its error counts, rate and mean MCP risk."""
-    groups = RowGroups(region)
-    n_eval = groups.sizes
-    n_error = groups.reduce(is_failure(y_true, y_pred), np.sum)
+    by_region = RowsBy(region)
+    n_eval = by_region.sizes
+    n_error = by_region.reduce(is_failure(y_true, y_pred), np.sum)
     return pd.DataFrame(
         {
-            "region": groups.ids,
+            "region": by_region.ids,
             "n_eval": n_eval,
             "n_error": n_error,
             "failure_rate": n_error / n_eval,
-            "mcp_risk": groups.reduce(mcp),
+            "mcp_risk": by_region.reduce(mcp),
         }
     )
 

@@ -2,8 +2,8 @@ import numpy as np
 from tqdm import tqdm
 
 from src.core.utils import timed
-from src.domain.analysis.complexity.queries import Queries
-from src.domain.analysis.complexity.shared import aggregate_min_mean_max, make_null_row
+from src.domain.analysis.complexity.sample import MeasuredSample
+from src.domain.analysis.complexity.shared import aggregate_min_mean_max
 
 _N_KEYS = ("n1", "n2", "n3", "n4")
 
@@ -22,8 +22,8 @@ def _n1_vec(c_mask: np.ndarray, j_mask: np.ndarray, edges_uv: np.ndarray) -> flo
 
 
 def _n2_vec(
-    nbs: np.ndarray,
-    nb_dists: np.ndarray,
+    neighbors: np.ndarray,
+    neighbor_dist: np.ndarray,
     in_c: np.ndarray,
     in_j: np.ndarray,
     eps: float = 1e-8,
@@ -32,24 +32,24 @@ def _n2_vec(
     valid = in_c.any(axis=1) & in_j.any(axis=1)
     if not valid.any():
         return 0.0
-    rows = np.arange(nbs.shape[0])
-    intra_d = nb_dists[rows, in_c.argmax(axis=1)]
-    inter_d = nb_dists[rows, in_j.argmax(axis=1)]
+    rows = np.arange(neighbors.shape[0])
+    intra_d = neighbor_dist[rows, in_c.argmax(axis=1)]
+    inter_d = neighbor_dist[rows, in_j.argmax(axis=1)]
     ratios = intra_d[valid] / (intra_d[valid] + inter_d[valid] + eps)
     return float(ratios.mean())
 
 
 def _n3_vec(
-    nbs: np.ndarray, j_mask: np.ndarray, in_c: np.ndarray, in_j: np.ndarray
+    neighbors: np.ndarray, j_mask: np.ndarray, in_c: np.ndarray, in_j: np.ndarray
 ) -> float:
     """N3: 1-NN error rate restricted to c ∪ j neighbours."""
     in_cj = in_c | in_j
     valid = in_cj.any(axis=1)
     if not valid.any():
         return 0.0
-    rows = np.arange(nbs.shape[0])
-    nb_idx = nbs[rows, in_cj.argmax(axis=1)]
-    misclassified = j_mask[nb_idx] & valid
+    rows = np.arange(neighbors.shape[0])
+    nearest = neighbors[rows, in_cj.argmax(axis=1)]
+    misclassified = j_mask[nearest] & valid
     return float(misclassified.sum() / valid.sum())
 
 
@@ -64,34 +64,36 @@ def _n4_vec(in_c: np.ndarray, in_j: np.ndarray) -> float:
 
 
 def _pair_metrics(
-    nbs: np.ndarray,
-    nb_dists: np.ndarray,
+    neighbors: np.ndarray,
+    neighbor_dist: np.ndarray,
     c_mask: np.ndarray,
     j_mask: np.ndarray,
     edges_uv: np.ndarray,
 ) -> tuple[float, float, float, float]:
-    """N1-N4 of cluster c against one adversarial population."""
-    in_c = c_mask[nbs]
-    in_j = j_mask[nbs]
+    """N1-N4 of population c against one rival."""
+    in_c = c_mask[neighbors]
+    in_j = j_mask[neighbors]
     n1 = _n1_vec(c_mask, j_mask, edges_uv)
-    n2 = _n2_vec(nbs, nb_dists, in_c, in_j)
-    n3 = _n3_vec(nbs, j_mask, in_c, in_j)
+    n2 = _n2_vec(neighbors, neighbor_dist, in_c, in_j)
+    n3 = _n3_vec(neighbors, j_mask, in_c, in_j)
     n4 = _n4_vec(in_c, in_j)
     return n1, n2, n3, n4
 
 
 def _aggregate_pairs(
-    nbs: np.ndarray,
-    nb_dists: np.ndarray,
+    neighbors: np.ndarray,
+    neighbor_dist: np.ndarray,
     c_mask: np.ndarray,
     population_masks: list[np.ndarray],
     edges_uv: np.ndarray,
 ) -> dict[str, list[float]]:
-    """N1-N4 of a population against every adversarial population."""
+    """N1-N4 of a population against each of its rivals."""
     out: dict[str, list[float]] = {k: [] for k in _N_KEYS}
     for j_mask in population_masks:
-        n1, n2, n3, n4 = _pair_metrics(nbs, nb_dists, c_mask, j_mask, edges_uv)
-        # No reference point in the population: there is no MST edge to count.
+        n1, n2, n3, n4 = _pair_metrics(
+            neighbors, neighbor_dist, c_mask, j_mask, edges_uv
+        )
+        # No graph node in the population: there is no MST edge to count.
         if c_mask.any():
             out["n1"].append(n1)
         out["n2"].append(n2)
@@ -102,33 +104,33 @@ def _aggregate_pairs(
 
 @timed
 def compute_n_measures(
-    queries: Queries,
-    ref_population: np.ndarray,
+    sample: MeasuredSample,
+    graph_population: np.ndarray,
     mst_edges: np.ndarray,
-    top_k_map: dict[str, list[str]],
-) -> dict[str, dict[str, float | None]]:
-    """N1-N4 per population against its top-K adversarial ones, as min/mean/max.
+    rivals: dict[int, list[int]],
+) -> dict[int, dict[str, float | None]]:
+    """N1-N4 per population against its nearest rivals, as min/mean/max.
 
-    N1 counts reference points on the MST; N2-N4 read the reference neighbours of the
-    population's own query rows.
+    N1 counts graph nodes on the MST; N2-N4 read the graph neighbours of the
+    population's own sampled rows.
     """
-    result: dict[str, dict[str, float | None]] = {}
-    for pid_str in tqdm(top_k_map, desc="N measures", unit="pop", leave=False):
-        row = make_null_row(_N_KEYS)
-        of_population = queries.population == int(pid_str)
+    result: dict[int, dict[str, float | None]] = {}
+    for pid in tqdm(rivals, desc="N measures", unit="pop", leave=False):
+        in_population = sample.population == pid
         agg = _aggregate_pairs(
-            queries.nbs[of_population],
-            queries.nb_dist[of_population],
-            ref_population == int(pid_str),
-            [ref_population == int(ap) for ap in top_k_map[pid_str]],
+            sample.neighbors[in_population],
+            sample.neighbor_dist[in_population],
+            graph_population == pid,
+            [graph_population == rival for rival in rivals[pid]],
             mst_edges,
         )
+        row: dict[str, float | None] = {}
         for nk in _N_KEYS:
             mn, me, mx = aggregate_min_mean_max(agg[nk])
             row[f"{nk}_min"] = mn
             row[f"{nk}_mean"] = me
             row[f"{nk}_max"] = mx
 
-        result[pid_str] = row
+        result[pid] = row
 
     return result

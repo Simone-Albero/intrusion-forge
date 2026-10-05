@@ -6,7 +6,7 @@ from src.core.io import save_arrays
 from src.core.log import setup_logger
 from src.core.record import clear_dir, is_current, write_record
 from src.core.utils import flush_timing, load_from_json, save_to_json
-from src.domain.analysis.complexity import build_reference
+from src.domain.analysis.complexity import build_train_graph
 from src.domain.clustering.base import subsample_indices
 from src.domain.data.space import Space
 from stages import (
@@ -46,16 +46,16 @@ def main() -> None:
         top_k=cfg.space.top_k,
         cat_cost=cfg.space.cat_cost,
     )
-    reference = build_reference(
+    train_graph = build_train_graph(
         space.embed(train.iloc[rows]), k=cfg.graph.k, metric=cfg.distance
     )
     save_to_json(space.to_record(), stage_dir / "space.json")
     save_arrays(
         {
             "rows": rows,
-            "knn_idx": reference.knn_idx,
-            "knn_dist": reference.knn_dist,
-            "mst": reference.mst_edges,
+            "knn_idx": train_graph.knn_idx,
+            "knn_dist": train_graph.knn_dist,
+            "mst": train_graph.mst_edges,
         },
         stage_dir / "graph.npz",
     )

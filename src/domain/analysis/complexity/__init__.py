@@ -1,17 +1,15 @@
 from src.domain.analysis.complexity.graph import (
-    Reference,
-    analysis_centroids,
-    build_reference,
+    TrainGraph,
+    build_train_graph,
     compute_population_complexity,
 )
-from src.domain.analysis.complexity.queries import Queries
-from src.domain.analysis.complexity.shared import query_neighbors
+from src.domain.analysis.complexity.sample import MeasuredSample
+from src.domain.analysis.complexity.shared import nearest_neighbors
 
 __all__ = [
-    "Queries",
-    "Reference",
-    "analysis_centroids",
-    "build_reference",
+    "MeasuredSample",
+    "TrainGraph",
+    "build_train_graph",
     "compute_population_complexity",
-    "query_neighbors",
+    "nearest_neighbors",
 ]

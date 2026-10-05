@@ -61,10 +61,10 @@ def _f4_pair(X_c: np.ndarray, X_j: np.ndarray) -> float:
 _F_KEYS = ("f1", "f2", "f3", "f4")
 
 
-def _pair_block(X_c: np.ndarray, X_others: list[np.ndarray]) -> dict[str, list[float]]:
-    """F1-F4 of cluster c against each adversarial cluster."""
+def _pair_block(X_c: np.ndarray, X_rivals: list[np.ndarray]) -> dict[str, list[float]]:
+    """F1-F4 of population c against each rival."""
     out: dict[str, list[float]] = {k: [] for k in _F_KEYS}
-    for X_o in X_others:
+    for X_o in X_rivals:
         if len(X_o) < 2:
             continue
         out["f1"].append(_f1_pair(X_c, X_o))
@@ -77,33 +77,31 @@ def _pair_block(X_c: np.ndarray, X_others: list[np.ndarray]) -> dict[str, list[f
 @timed
 def compute_f_measures(
     X: np.ndarray,
-    y_cluster: np.ndarray,
-    top_k_map: dict[str, list[str]],
+    population: np.ndarray,
+    rivals: dict[int, list[int]],
     *,
     metric: str,
-) -> dict[str, dict[str, float | None]]:
-    """F1-F4 per cluster against its top-K adversarial clusters, as min/mean/max."""
+) -> dict[int, dict[str, float | None]]:
+    """F1-F4 per population against its nearest rivals, as min/mean/max."""
     X_v = scale_for_metric(X, metric)
-    cluster_block: dict[str, np.ndarray] = {
-        str(int(cid)): X_v[y_cluster == cid] for cid in np.unique(y_cluster)
+    rows_of: dict[int, np.ndarray] = {
+        int(pid): X_v[population == pid] for pid in np.unique(population)
     }
 
-    result: dict[str, dict[str, float | None]] = {}
-    for cid_str, X_c in tqdm(
-        cluster_block.items(), desc="F measures", unit="cluster", leave=False
-    ):
+    result: dict[int, dict[str, float | None]] = {}
+    for pid, X_c in tqdm(rows_of.items(), desc="F measures", unit="pop", leave=False):
         row = make_null_row(_F_KEYS)
         if len(X_c) < 2 or X_c.shape[1] == 0:
-            result[cid_str] = row
+            result[pid] = row
             continue
 
-        vals = _pair_block(X_c, [cluster_block[ac] for ac in top_k_map[cid_str]])
+        vals = _pair_block(X_c, [rows_of[rival] for rival in rivals[pid]])
         for fk in _F_KEYS:
             mn, me, mx = aggregate_min_mean_max(vals[fk])
             row[f"{fk}_min"] = mn
             row[f"{fk}_mean"] = me
             row[f"{fk}_max"] = mx
 
-        result[cid_str] = row
+        result[pid] = row
 
     return result

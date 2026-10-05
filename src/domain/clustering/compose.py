@@ -5,7 +5,7 @@ import numpy as np
 
 from src.domain.clustering.base import ClusterFn, grid_search, merge_small_clusters
 from src.domain.clustering.factory import ClusteringFactory
-from src.domain.clustering.hardness import KdnReference
+from src.domain.clustering.hardness import KdnNodes
 
 Reporter = Callable[[str, dict], None]
 
@@ -39,7 +39,7 @@ def build_cluster_fn(
     min_cluster_floor: int,
     hardness_k: int,
     eval_rows_per_train_row: float,
-    reference: KdnReference,
+    nodes: KdnNodes,
     metric: str,
 ) -> ClusterFn:
     """Build a ClusterFn from a single {algorithm_name: params} config entry."""
@@ -88,7 +88,7 @@ def build_cluster_fn(
             algo_grid,
             ids=ids,
             label=label,
-            reference=reference,
+            nodes=nodes,
             hardness_k=hardness_k,
             eval_rows_per_train_row=eval_rows_per_train_row,
             min_cluster_floor=min_cluster_floor,

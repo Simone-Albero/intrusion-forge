@@ -23,18 +23,16 @@ def _t3_t4(rows: np.ndarray, n_rows: int) -> tuple[float | None, float | None]:
 
 @timed
 def compute_t_measures(
-    X: np.ndarray, y_population: np.ndarray, sizes: dict[int, int], *, metric: str
-) -> dict[str, dict[str, float | None]]:
+    X: np.ndarray, population: np.ndarray, sizes: dict[int, int], *, metric: str
+) -> dict[int, dict[str, float | None]]:
     """Per-population dimensionality measures T2, T3 and T4."""
     # The components come from the rows of `X`, a sample of each population; the ratios
     # are over `sizes`, the rows the population really holds.
     X = scale_for_metric(X, metric)
-    result: dict[str, dict[str, float | None]] = {}
+    result: dict[int, dict[str, float | None]] = {}
     d = X.shape[1]
-    for pid in tqdm(
-        np.unique(y_population), desc="T measures", unit="pop", leave=False
-    ):
+    for pid in tqdm(np.unique(population), desc="T measures", unit="pop", leave=False):
         n_rows = sizes[int(pid)]
-        t3_val, t4_val = _t3_t4(X[y_population == pid], n_rows)
-        result[str(int(pid))] = {"t2": d / n_rows, "t3": t3_val, "t4": t4_val}
+        t3_val, t4_val = _t3_t4(X[population == pid], n_rows)
+        result[int(pid)] = {"t2": d / n_rows, "t3": t3_val, "t4": t4_val}
     return result

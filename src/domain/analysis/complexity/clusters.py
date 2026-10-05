@@ -58,10 +58,10 @@ def _dispersion(
 
 
 def _nearest_rival(
-    pw_row: np.ndarray, own_class: int, cluster_classes: np.ndarray
+    pw_row: np.ndarray, own_class: int, classes: np.ndarray
 ) -> float | None:
     """Distance to the closest centroid of a different class."""
-    rival = pw_row[cluster_classes != own_class]
+    rival = pw_row[classes != own_class]
     finite = rival[np.isfinite(rival)]
     if finite.size == 0:
         return None
@@ -71,47 +71,47 @@ def _nearest_rival(
 @timed
 def compute_cluster_geometry(
     X: np.ndarray,
-    y_cluster: np.ndarray,
-    centroids: dict[str, list[float]],
+    population: np.ndarray,
+    centroids: dict[int, np.ndarray],
     *,
     metric: str,
     silhouette_max_samples: int,
     silhouette_min_per_cluster: int,
     random_state: int,
-    cluster_to_class: dict[str, int],
-) -> dict[str, dict[str, float | None]]:
-    """Per-cluster geometry: dispersion, rival separation and silhouette tail."""
-    cluster_ids = [str(cid) for cid in np.unique(y_cluster)]
+    population_class: dict[int, int],
+) -> dict[int, dict[str, float | None]]:
+    """Per-population geometry: dispersion, rival separation and silhouette tail."""
+    pids = [int(pid) for pid in np.unique(population)]
     centroid_matrix = np.stack(
-        [np.asarray(centroids[cid], dtype=np.float64) for cid in cluster_ids]
+        [np.asarray(centroids[pid], dtype=np.float64) for pid in pids]
     )
-    cluster_classes = np.array([cluster_to_class[cid] for cid in cluster_ids])
+    classes = np.array([population_class[pid] for pid in pids])
 
     pw = pairwise_distances(centroid_matrix, metric=metric)
     np.fill_diagonal(pw, np.inf)
 
     sil = _approx_silhouette(
         X,
-        y_cluster,
+        population,
         metric=metric,
         max_samples=silhouette_max_samples,
         min_per_cluster=silhouette_min_per_cluster,
         random_state=random_state,
     )
 
-    result: dict[str, dict[str, float | None]] = {}
+    result: dict[int, dict[str, float | None]] = {}
 
-    for idx_c, cid in enumerate(cluster_ids):
-        mask_cid = y_cluster == int(cid)
+    for i, pid in enumerate(pids):
+        in_population = population == pid
         max_disp, p95_disp = _dispersion(
-            X[mask_cid], centroid_matrix[idx_c], metric=metric
+            X[in_population], centroid_matrix[i], metric=metric
         )
-        dist_rival = _nearest_rival(pw[idx_c], cluster_classes[idx_c], cluster_classes)
+        dist_rival = _nearest_rival(pw[i], classes[i], classes)
 
         if sil is None:
             p5_sil, frac_at_risk = None, None
         else:
-            sil_c = sil[mask_cid]
+            sil_c = sil[in_population]
             sil_finite = sil_c[np.isfinite(sil_c)]
             if len(sil_finite) == 0:
                 p5_sil, frac_at_risk = None, None
@@ -119,7 +119,7 @@ def compute_cluster_geometry(
                 p5_sil = float(np.percentile(sil_finite, 5))
                 frac_at_risk = float(np.mean(sil_finite < 0))
 
-        result[cid] = {
+        result[pid] = {
             "max_dispersion": max_disp,
             "p95_dispersion": p95_disp,
             "dist_to_nearest_rival": dist_rival,

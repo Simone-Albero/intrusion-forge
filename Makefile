@@ -110,7 +110,7 @@ FIGURES_DIR     ?= paper/figures
 split:
 	PYTHONPATH=. $(PYTHON) stages/split.py $(HYDRA) $(FORCE_FLAG) $(ARGS)
 
-## graph:              Step 2 — uniform reference of train and its k-NN graph   (DATA, NAME, SEED, DISTANCE, FORCE)
+## graph:              Step 2 — uniform sample of train, its k-NN graph and its MST   (DATA, NAME, SEED, DISTANCE, FORCE)
 graph:
 	PYTHONPATH=. $(PYTHON) stages/graph.py $(HYDRA) $(FORCE_FLAG) $(ARGS)
 

@@ -1,6 +1,6 @@
 import numpy as np
 
-from src.domain.analysis.grouping import RowGroups
+from src.domain.analysis.grouping import RowsBy
 
 
 def mcp_risk(y_proba: np.ndarray) -> np.ndarray:
@@ -24,5 +24,5 @@ def atc_region_risk(
 ) -> np.ndarray:
     """Region-level ATC: the share of a region below the threshold, per sample."""
     below = (np.asarray(confidence, dtype=float) < threshold).astype(float)
-    groups = RowGroups(np.asarray(region))
-    return groups.spread(groups.reduce(below))
+    by_region = RowsBy(np.asarray(region))
+    return by_region.spread(by_region.reduce(below))

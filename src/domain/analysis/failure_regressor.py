@@ -16,7 +16,7 @@ from tqdm import tqdm
 from src.core.utils import timed
 from src.domain.analysis.confidence import atc_region_risk
 from src.domain.analysis.failure import is_failure
-from src.domain.analysis.grouping import RowGroups
+from src.domain.analysis.grouping import RowsBy
 from src.domain.analysis.risk_coverage import oracle_benefit_recovered
 from src.engine.ml.model import MLRegressorFactory
 from src.engine.ml.preprocessing import REGRESSOR_PREPROCESS, build_regressor_pipeline
@@ -460,17 +460,21 @@ def instance_baselines(
     # Only the regions the regressor scored, so every variant ranks the same regions.
     samples = samples[samples["region"].isin(predicted_rate.index)]
     region_of_row = samples["region"].to_numpy()
-    groups = RowGroups(region_of_row)
+    by_region = RowsBy(region_of_row)
     failure = is_failure(
         samples["y_true"].to_numpy(), samples["y_pred"].to_numpy()
     ).astype(float)
     mcp = samples["mcp_risk"].to_numpy(dtype=float)
     confidence = 1.0 - mcp
-    region = groups.spread(predicted_rate.loc[groups.ids].to_numpy(dtype=float))
-    mcp_region = groups.spread(groups.reduce(mcp))
-    train_rate_region = groups.spread(train_rate.loc[groups.ids].to_numpy(dtype=float))
-    val_rate_region = groups.spread(val_rate.loc[groups.ids].to_numpy(dtype=float))
-    observed = groups.reduce(failure)
+    region = by_region.spread(predicted_rate.loc[by_region.ids].to_numpy(dtype=float))
+    mcp_region = by_region.spread(by_region.reduce(mcp))
+    train_rate_region = by_region.spread(
+        train_rate.loc[by_region.ids].to_numpy(dtype=float)
+    )
+    val_rate_region = by_region.spread(
+        val_rate.loc[by_region.ids].to_numpy(dtype=float)
+    )
+    observed = by_region.reduce(failure)
     atc_region = atc_region_risk(confidence, region_of_row, threshold=atc_threshold)
 
     n = failure.size
@@ -487,7 +491,7 @@ def instance_baselines(
         "train_rate_region": train_rate_region,
         "val_rate_region": val_rate_region,
         **{
-            name: groups.spread(rate.loc[groups.ids].to_numpy(dtype=float))
+            name: by_region.spread(rate.loc[by_region.ids].to_numpy(dtype=float))
             for name, rate in calibrated.items()
         },
     }
@@ -498,9 +502,9 @@ def instance_baselines(
     # with numpy, whose pairwise sum a pandas groupby would not reproduce to the ulp.
     predicted_by_name = {
         name: (
-            groups.first(scores[name])
+            by_region.first(scores[name])
             if name in RATE_BASELINE_VARIANTS
-            else groups.reduce(scores[name])
+            else by_region.reduce(scores[name])
         )
         for name in BASELINE_VARIANTS
     }
@@ -537,7 +541,7 @@ def instance_baselines(
 
     return {
         "n_eval": int(len(samples)),
-        "n_regions": int(groups.ids.size),
+        "n_regions": int(by_region.ids.size),
         "baselines": baselines,
     }
 

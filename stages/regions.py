@@ -16,7 +16,7 @@ from src.domain.clustering.base import (
     cluster_size_balance,
     compute_centroids,
 )
-from src.domain.clustering.hardness import KdnReference
+from src.domain.clustering.hardness import KdnNodes
 from src.domain.data.space import Space
 from stages import (
     SPLITS,
@@ -44,7 +44,7 @@ def _cluster_per_class(
     space: Space,
     train: pd.DataFrame,
     *,
-    reference_rows: np.ndarray,
+    graph_rows: np.ndarray,
     class_names: dict[int, str],
     eval_rows_per_train_row: float,
 ) -> tuple[np.ndarray, dict[int, np.ndarray], dict[str, list]]:
@@ -61,10 +61,10 @@ def _cluster_per_class(
     offset = 0
     report: dict[str, list] = {"classes": [], "sweep": []}
 
-    reference = KdnReference(
-        X=_points(cfg, space, train.iloc[reference_rows]),
-        y=y_class[reference_rows],
-        ids=reference_rows,
+    nodes = KdnNodes(
+        X=_points(cfg, space, train.iloc[graph_rows]),
+        y=y_class[graph_rows],
+        ids=graph_rows,
     )
 
     for cls in tqdm(classes, desc="Clustering classes"):
@@ -84,7 +84,7 @@ def _cluster_per_class(
             min_cluster_floor=clustering.min_cluster_floor,
             hardness_k=clustering.hardness_k,
             eval_rows_per_train_row=eval_rows_per_train_row,
-            reference=reference,
+            nodes=nodes,
             metric=cfg.distance,
         )
         raw_labels, n_merged_clusters, n_merged = cluster_fn(
@@ -159,7 +159,7 @@ def build_regions(
     *,
     meta: dict,
     space: Space,
-    reference_rows: np.ndarray,
+    graph_rows: np.ndarray,
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     """Cluster train per class, then place every split's rows in the nearest region."""
     train = splits["train"]
@@ -178,7 +178,7 @@ def build_regions(
         cfg,
         space,
         train,
-        reference_rows=reference_rows,
+        graph_rows=graph_rows,
         class_names=class_names,
         eval_rows_per_train_row=eval_rows_per_train_row,
     )
@@ -236,13 +236,13 @@ def main() -> None:
     clear_dir(stage_dir)
     meta = load_from_json(paths.of("split") / "meta.json")
     splits = {name: load_split(paths, name) for name in SPLITS}
-    reference_rows = load_arrays(paths.of("graph") / "graph.npz")["rows"]
+    graph_rows = load_arrays(paths.of("graph") / "graph.npz")["rows"]
     centroids, assignments, report = build_regions(
         cfg,
         splits,
         meta=meta,
         space=load_space(paths, meta),
-        reference_rows=reference_rows,
+        graph_rows=graph_rows,
     )
     save_df(centroids, stage_dir / "centroids.parquet")
     save_df(assignments, stage_dir / "assignments.parquet")

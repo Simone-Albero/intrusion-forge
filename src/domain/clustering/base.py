@@ -9,7 +9,7 @@ from tqdm import tqdm
 
 from src.core.utils import timed
 from src.domain.analysis.complexity.shared import l2_normalize
-from src.domain.clustering.hardness import KdnReference, compute_kdn
+from src.domain.clustering.hardness import KdnNodes, compute_kdn
 
 logger = logging.getLogger(__name__)
 
@@ -158,7 +158,7 @@ def grid_search(
     random_state: int,
     ids: np.ndarray,
     label: object,
-    reference: KdnReference,
+    nodes: KdnNodes,
     hardness_k: int,
     eval_rows_per_train_row: float,
     min_cluster_floor: int,
@@ -177,7 +177,7 @@ def grid_search(
     scale = n_class / sub_num.shape[0]
     scaled_floor = min_cluster_floor / scale
     hardness = compute_kdn(
-        sub_num, ids=ids[scored], label=label, reference=reference, k=hardness_k
+        sub_num, ids=ids[scored], label=label, nodes=nodes, k=hardness_k
     )
 
     keys = list(param_grid.keys())

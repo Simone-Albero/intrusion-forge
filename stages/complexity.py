@@ -8,13 +8,14 @@ from src.core.log import setup_logger
 from src.core.record import clear_dir, is_current, write_record
 from src.core.utils import flush_timing, load_from_json, timed
 from src.domain.analysis.complexity import (
-    Queries,
-    Reference,
-    analysis_centroids,
+    MeasuredSample,
+    TrainGraph,
     compute_population_complexity,
-    query_neighbors,
+    nearest_neighbors,
 )
-from src.domain.analysis.grouping import RowGroups
+from src.domain.analysis.complexity.shared import scale_for_metric
+from src.domain.analysis.grouping import RowsBy
+from src.domain.clustering.base import compute_centroids
 from src.domain.data.space import Space
 from stages import (
     load_cli_config,
@@ -29,73 +30,63 @@ setup_logger()
 logger = logging.getLogger(__name__)
 
 
-def _sample_queries(
+@timed
+def _draw_sample(
     cfg,
     *,
     space: Space,
     train: pd.DataFrame,
-    groups: RowGroups,
     population: np.ndarray,
-    reference: Reference,
-    reference_rows: np.ndarray,
+    train_graph: TrainGraph,
+    graph_rows: np.ndarray,
     cap: int | None,
-) -> Queries:
-    """Up to `cap` rows of every population, in train order, with their nearest
-    reference points."""
+) -> MeasuredSample:
+    """Up to `cap` rows of every population, in train order, with their nearest graph
+    nodes."""
+    by_population = RowsBy(population)
     rng = np.random.default_rng(cfg.seed)
     picked = []
-    for i in range(len(groups.ids)):
-        members = groups.members(i)
+    for i in range(len(by_population.ids)):
+        members = by_population.members(i)
         if cap is not None and len(members) > cap:
             members = rng.choice(members, size=cap, replace=False)
         picked.append(members)
     rows = np.sort(np.concatenate(picked))
-    if np.array_equal(rows, reference_rows):
-        # Every reference point is a query: its neighbours are the graph's own.
-        return Queries(
-            reference.X, population[rows], reference.knn_idx, reference.knn_dist
+    if np.array_equal(rows, graph_rows):
+        # Every graph node is a sampled row: its neighbours are the graph's own.
+        return MeasuredSample(
+            train_graph.X,
+            population[rows],
+            train_graph.knn_idx,
+            train_graph.knn_dist,
         )
     X = space.embed(train.iloc[rows])
-    nbs, nb_dist = query_neighbors(
-        reference.X, reference_rows, X, rows, k=cfg.graph.k, metric=cfg.distance
+    neighbors, neighbor_dist = nearest_neighbors(
+        train_graph.X, graph_rows, X, rows, k=cfg.graph.k, metric=cfg.distance
     )
-    return Queries(X, population[rows], nbs, nb_dist)
+    return MeasuredSample(X, population[rows], neighbors, neighbor_dist)
 
 
-@timed
-def measure_populations(
+def _measure(
     cfg,
     *,
-    space: Space,
-    train: pd.DataFrame,
+    train_graph: TrainGraph,
+    graph_rows: np.ndarray,
     population: np.ndarray,
-    reference: Reference,
-    reference_rows: np.ndarray,
-    population_to_class: dict[str, int],
-    centroids: dict[str, list[float]] | None,
-    cap: int | None,
-) -> dict[str, dict[str, float | None]]:
+    sample: MeasuredSample,
+    population_class: dict[int, int],
+    centroids: dict[int, np.ndarray],
+) -> dict[int, dict[str, float | None]]:
     """Complexity measures of every population, keyed by its id."""
-    groups = RowGroups(population)
-    queries = _sample_queries(
-        cfg,
-        space=space,
-        train=train,
-        groups=groups,
-        population=population,
-        reference=reference,
-        reference_rows=reference_rows,
-        cap=cap,
-    )
     cx = cfg.complexity
+    ids, counts = np.unique(population, return_counts=True)
     return compute_population_complexity(
-        reference,
-        population[reference_rows],
-        queries,
-        population_to_class=population_to_class,
-        centroids=centroids
-        or analysis_centroids(queries.X, queries.population, metric=cfg.distance),
-        sizes={int(i): int(n) for i, n in zip(groups.ids, groups.sizes)},
+        train_graph,
+        population[graph_rows],
+        sample,
+        population_class=population_class,
+        centroids=centroids,
+        sizes=dict(zip(ids.tolist(), counts.tolist())),
         top_k_clusters=cx.top_k_clusters,
         metric=cfg.distance,
         silhouette_max_samples=cx.silhouette_max_samples,
@@ -122,66 +113,78 @@ def main() -> None:
         paths.of("regions") / "assignments.parquet", filters=[("split", "==", "train")]
     )
     region = assignments.sort_values("row")["region"].to_numpy(dtype=np.int64)
-    if len(region) != len(train):
-        raise ValueError(
-            f"regions assigned {len(region)} train rows, split holds {len(train)}: "
-            "re-run `make regions`."
-        )
     label = train["label"].to_numpy(dtype=np.int64)
-    rows = graph["rows"]
-    reference = Reference(
-        space.embed(train.iloc[rows]),
+    graph_rows = graph["rows"]
+    train_graph = TrainGraph(
+        space.embed(train.iloc[graph_rows]),
         graph["knn_idx"],
         graph["knn_dist"],
         graph["mst"],
     )
 
-    # A reference that is the whole split makes every row a query. Past that, a
-    # population is measured on a sample of its rows.
-    sampled = len(train) > cfg.graph.max_samples
+    # A graph that is the whole split measures every row; a smaller one measures each
+    # population on a capped sample of its rows.
+    sampled = len(graph_rows) < len(train)
     cx = cfg.complexity
     centroids = load_df(paths.of("regions") / "centroids.parquet")
     coordinates = centroids.drop(columns=["region", "class_id"]).to_numpy()
-    region_class = dict(zip(centroids["region"], centroids["class_id"]))
+    region_class = {
+        int(r): int(c) for r, c in zip(centroids["region"], centroids["class_id"])
+    }
 
-    region_measures = measure_populations(
+    region_sample = _draw_sample(
         cfg,
         space=space,
         train=train,
         population=region,
-        reference=reference,
-        reference_rows=rows,
-        population_to_class={str(r): int(c) for r, c in region_class.items()},
-        # Exact centroids: the ones regions routes by, not a sample's.
-        centroids={
-            str(r): point.tolist() for r, point in zip(centroids["region"], coordinates)
-        },
-        cap=cx.max_queries_per_region if sampled else None,
+        train_graph=train_graph,
+        graph_rows=graph_rows,
+        cap=cx.max_sample_per_region if sampled else None,
     )
-    class_measures = measure_populations(
+    region_measures = _measure(
+        cfg,
+        train_graph=train_graph,
+        graph_rows=graph_rows,
+        population=region,
+        sample=region_sample,
+        population_class=region_class,
+        # Exact centroids: the ones regions routes by, not a sample's.
+        centroids={int(r): point for r, point in zip(centroids["region"], coordinates)},
+    )
+
+    label_sample = _draw_sample(
         cfg,
         space=space,
         train=train,
         population=label,
-        reference=reference,
-        reference_rows=rows,
-        population_to_class={str(c): int(c) for c in np.unique(label)},
-        centroids=None,
-        cap=cx.max_queries_per_class if sampled else None,
+        train_graph=train_graph,
+        graph_rows=graph_rows,
+        cap=cx.max_sample_per_class if sampled else None,
+    )
+    class_measures = _measure(
+        cfg,
+        train_graph=train_graph,
+        graph_rows=graph_rows,
+        population=label,
+        sample=label_sample,
+        population_class={int(c): int(c) for c in np.unique(label)},
+        centroids=compute_centroids(
+            scale_for_metric(label_sample.X, cfg.distance),
+            label_sample.population,
+            metric=cfg.distance,
+        ),
     )
     save_df(
         pd.DataFrame(
             [
-                {"region": int(r), "class_id": int(region_class[int(r)]), **row}
+                {"region": r, "class_id": region_class[r], **row}
                 for r, row in region_measures.items()
             ]
         ),
         stage_dir / "regions.parquet",
     )
     save_df(
-        pd.DataFrame(
-            [{"class_id": int(c), **row} for c, row in class_measures.items()]
-        ),
+        pd.DataFrame([{"class_id": c, **row} for c, row in class_measures.items()]),
         stage_dir / "classes.parquet",
     )
     flush_timing(stage_dir / "timing.json")
