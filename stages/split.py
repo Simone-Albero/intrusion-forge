@@ -7,10 +7,9 @@ from sklearn.preprocessing import RobustScaler
 
 from src.core.io import load_df, save_df
 from src.core.log import setup_logger
-from src.core.record import RECORD, clear_dir, is_current, write_record
+from src.core.record import clear_dir, is_current, write_record
 from src.core.utils import (
     flush_timing,
-    load_from_json,
     save_to_joblib,
     save_to_json,
     timed,
@@ -31,28 +30,10 @@ from stages import SPLITS, load_cli_config, paths_from_cfg, stage_config
 setup_logger()
 logger = logging.getLogger(__name__)
 
-# Bumped when the code changes what a config builds: older records never match.
-SCHEMA = 3
-OUTPUTS = (*(f"{s}.parquet" for s in SPLITS), "preprocessor.joblib", "meta.json")
-
-
-def _raw_input(raw_path: Path, stage_dir: Path) -> dict:
-    """Size and mtime of the raw CSV, not a digest: hashing gigabytes to decide whether
-    to read them would cost what the cache saves."""
-    if raw_path.exists():
-        stat = raw_path.stat()
-        return {"size": stat.st_size, "mtime": stat.st_mtime}
-    if (stage_dir / RECORD).exists():
-        # Outputs copied without their raw CSV: only the config can still be checked.
-        logger.warning("Missing %s: the split cache checks the config alone.", raw_path)
-        return load_from_json(stage_dir / RECORD)["inputs"]["raw"]
-    raise FileNotFoundError(f"Missing {raw_path}: split cannot run without it.")
-
 
 def _load_raw(cfg, raw_path: Path) -> tuple[pd.DataFrame, int]:
     """The raw frame and its column count, reading only the columns the stage uses."""
     n_columns = len(load_df(raw_path, nrows=0).columns)
-    # A filter may name any column, so it needs them all.
     usecols = (
         None
         if cfg.data.filter_query
@@ -107,8 +88,7 @@ def build_splits(
         ],
     )
     preprocessor.fit(parts[0])
-    # Only num_cols, cat_cols and the label travel past this point: no raw column the
-    # pipeline never reads (IPs, ports, DNS ids, ...) survives into the parquet.
+
     frames = [
         preprocessor.transform(part)
         .assign(**{label_col: part[label_col].to_numpy()})
@@ -133,17 +113,12 @@ def main() -> None:
     stage_dir = paths.of("split")
     raw_path = Path(cfg.path.raw_data)
     config = stage_config(cfg, "split")
-    inputs = {"raw": _raw_input(raw_path, stage_dir)}
-    if is_current(
-        stage_dir, OUTPUTS, schema=SCHEMA, config=config, inputs=inputs, force=cfg.force
-    ):
+    if is_current(stage_dir, config=config, inputs={}, force=cfg.force):
         return
-    if not raw_path.exists():
-        raise FileNotFoundError(f"Missing {raw_path}: split must recompute without it.")
 
-    clear_dir(stage_dir)
     logger.info("Loading %s ...", raw_path)
     raw, n_raw_columns = _load_raw(cfg, raw_path)
+    clear_dir(stage_dir)
     n_raw_rows = len(raw)
     logger.info("Raw data loaded: %d rows, %d columns", n_raw_rows, n_raw_columns)
     raw_classes = raw[cfg.data.label_col].value_counts()
@@ -166,7 +141,7 @@ def main() -> None:
         stage_dir / "meta.json",
     )
     flush_timing(stage_dir / "timing.json")
-    write_record(stage_dir, schema=SCHEMA, config=config, inputs=inputs)
+    write_record(stage_dir, config=config, inputs={})
 
 
 if __name__ == "__main__":

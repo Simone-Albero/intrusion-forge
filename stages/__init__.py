@@ -95,8 +95,6 @@ def upstream_ids(cfg, paths: RunPaths, stage: str) -> dict[str, str]:
         ids[name] = record["id"]
     for name in READS[stage]:
         for source, source_id in read_record(paths.of(name))["inputs"].items():
-            if source == "raw":
-                continue
             if read_record(paths.of(source))["id"] != source_id:
                 raise ValueError(
                     f"{name} was built from another {source} than the one on disk: "

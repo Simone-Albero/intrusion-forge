@@ -34,8 +34,6 @@ from stages import (
 setup_logger()
 logger = logging.getLogger(__name__)
 
-# Bumped when the code changes what a config builds: older records never match.
-SCHEMA = 6
 
 # Bins of region size the error is reported over.
 SIZE_BINS = 5
@@ -242,7 +240,7 @@ def main() -> None:
     if baselines is not None:
         save_to_json(baselines, stage_dir / "baselines.json")
     flush_timing(stage_dir / "timing.json")
-    write_record(stage_dir, schema=SCHEMA, config=config, inputs=inputs)
+    write_record(stage_dir, config=config, inputs=inputs)
 
 
 if __name__ == "__main__":

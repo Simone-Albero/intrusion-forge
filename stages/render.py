@@ -29,9 +29,6 @@ setup_logger()
 apply_plot_style()
 logger = logging.getLogger(__name__)
 
-# Bumped when the code changes what a config builds: older records never match.
-SCHEMA = 2
-
 
 def _plot_failure_strips(
     summary_df: pd.DataFrame, predicted_rate: pd.Series
@@ -355,7 +352,7 @@ def main() -> None:
     )
     save_figures(figures, stage_dir / "figures")
     flush_timing(stage_dir / "timing.json")
-    write_record(stage_dir, schema=SCHEMA, config=config, inputs=inputs)
+    write_record(stage_dir, config=config, inputs=inputs)
 
 
 if __name__ == "__main__":

@@ -20,10 +20,6 @@ from stages import (
 setup_logger()
 logger = logging.getLogger(__name__)
 
-# Bumped when the code changes what a config builds: older records never match.
-SCHEMA = 2
-OUTPUTS = ("graph.npz", "space.json")
-
 
 def main() -> None:
     """Entry point for the graph stage."""
@@ -32,9 +28,7 @@ def main() -> None:
     stage_dir = paths.of("graph")
     config = stage_config(cfg, "graph")
     inputs = upstream_ids(cfg, paths, "graph")
-    if is_current(
-        stage_dir, OUTPUTS, schema=SCHEMA, config=config, inputs=inputs, force=cfg.force
-    ):
+    if is_current(stage_dir, config=config, inputs=inputs, force=cfg.force):
         return
 
     clear_dir(stage_dir)
@@ -68,7 +62,7 @@ def main() -> None:
         stage_dir / "graph.npz",
     )
     flush_timing(stage_dir / "timing.json")
-    write_record(stage_dir, schema=SCHEMA, config=config, inputs=inputs)
+    write_record(stage_dir, config=config, inputs=inputs)
 
 
 if __name__ == "__main__":

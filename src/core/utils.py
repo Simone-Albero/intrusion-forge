@@ -78,10 +78,7 @@ def flush_timing(path: str | Path) -> None:
 
 
 def first_difference(previous: dict, current: dict) -> str | None:
-    """Name a key whose value differs, `schema` first (missing counts as None)."""
-    # Another schema differs everywhere: its first key would name the wrong cause.
-    if previous.get("schema") != current.get("schema"):
-        return "schema"
+    """Name a key whose value differs (missing counts as None)."""
     for key in sorted(set(previous) | set(current)):
         if previous.get(key) != current.get(key):
             return key

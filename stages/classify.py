@@ -42,8 +42,6 @@ setup_logger()
 apply_plot_style()
 logger = logging.getLogger(__name__)
 
-# Bumped when the code changes what a config trains: older records never match.
-SCHEMA = 1
 # What a reused model keeps: the model, how it was trained, and the figures of that
 # training; its record stays too, since a crash while predicting does not make it stale.
 MODEL_FILES = ("model", "training.json", "figures", RECORD)
@@ -337,12 +335,7 @@ def classify(cfg) -> None:
         cfg, meta=meta, train_df=train_df, num_cols=num_cols, cat_cols=cat_cols
     )
     reuse = trainer.has_model(model_dir) and is_current(
-        stage_dir,
-        ("training.json",),
-        schema=SCHEMA,
-        config=config,
-        inputs=inputs,
-        force=cfg.force,
+        stage_dir, config=config, inputs=inputs, force=cfg.force
     )
     # A new model clears the record with the rest: a crash between saving it and writing
     # its record would otherwise leave the old record vouching for a model it never saw.
@@ -382,7 +375,7 @@ def classify(cfg) -> None:
         stage_dir / "predictions.parquet",
     )
     flush_timing(stage_dir / "timing.json")
-    write_record(stage_dir, schema=SCHEMA, config=config, inputs=inputs)
+    write_record(stage_dir, config=config, inputs=inputs)
     logger.info("All stages completed.")
 
 
