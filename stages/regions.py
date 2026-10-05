@@ -48,8 +48,8 @@ def _cluster_per_class(
     class_names: dict[int, str],
     eval_rows_per_train_row: float,
 ) -> tuple[np.ndarray, dict[int, np.ndarray], dict[str, list]]:
-    """Cluster each class at the finest granularity its region error rates would stay
-    reliable at, merging any undersized cluster into a survivor."""
+    """Cluster each class at the granularity that least misreads its rows' hardness from
+    their region's error rate, merging any undersized cluster into a survivor."""
     y_class = train["label"].to_numpy()
     classes = sorted(np.unique(y_class).tolist())
     n = len(train)
@@ -72,7 +72,6 @@ def _cluster_per_class(
         if not mask.any():
             continue
         ids_cls = np.flatnonzero(mask)
-        # One class at a time: the whole train split never sits in memory as points.
         X_num_cls = _points(cfg, space, train.iloc[ids_cls])
 
         algo_reports: dict[str, dict] = {}
@@ -84,7 +83,6 @@ def _cluster_per_class(
             max_clusters=max_clusters_per_class,
             min_cluster_floor=clustering.min_cluster_floor,
             hardness_k=clustering.hardness_k,
-            reliability_target=clustering.reliability_target,
             eval_rows_per_train_row=eval_rows_per_train_row,
             reference=reference,
             metric=cfg.distance,
@@ -101,8 +99,6 @@ def _cluster_per_class(
             )
 
         [algo_report] = algo_reports.values()
-        # The winning candidate's own reliability, predicted on the scored subsample;
-        # n_merged_clusters/n_merged above are the full class's, from the final merge.
         best = algo_report["best"]
         identity = {"class_id": int(cls), "class_name": class_names[cls]}
         report["classes"].append(
@@ -110,7 +106,7 @@ def _cluster_per_class(
                 **identity,
                 "n_train": int(raw_labels.shape[0]),
                 "n_clusters": n_clusters_cls,
-                "reliability": best["reliability"],
+                "loss": best["loss"],
                 "size_balance": cluster_size_balance(raw_labels),
                 "n_merged_clusters": n_merged_clusters,
                 "n_merged": n_merged,
@@ -125,9 +121,9 @@ def _cluster_per_class(
                 "n_merged_clusters": candidate["n_merged_clusters"],
                 "n_merged": candidate["n_merged"],
                 "size_balance": candidate["size_balance"],
-                "var_between": candidate["var_between"],
-                "var_sampling": candidate["var_sampling"],
-                "reliability": candidate["reliability"],
+                "loss": candidate["loss"],
+                "loss_within": candidate["loss_within"],
+                "loss_noise": candidate["loss_noise"],
                 "duration_s": candidate["duration_s"],
                 "error": candidate.get("error", False),
             }
@@ -170,8 +166,6 @@ def build_regions(
     y_class = train["label"].to_numpy()
     class_names = {c["class_id"]: c["class_name"] for c in meta["classes"]}
 
-    # How many rows the failure rates will be counted on per train row a region holds:
-    # only the test rows are ever evaluated.
     eval_rows_per_train_row = len(splits["test"]) / len(train)
     if eval_rows_per_train_row <= 0:
         raise ValueError(
@@ -208,10 +202,6 @@ def build_regions(
     centroid_table.insert(0, "class_id", region_class.loc[region_ids].to_numpy())
     centroid_table.insert(0, "region", region_ids)
 
-    # Routing never reads the label: a region drawn inside one class holds only rows of
-    # that class, and its error rate would count only the mistakes made on it. The train
-    # rows keep the region they were clustered into as `region`; `nearest_region` routes
-    # every split alike, so a train row can be counted where a test row like it would be.
     nearest = {name: _route(cfg, space, splits[name], centroids) for name in SPLITS}
     assigned = {"train": labels, "val": nearest["val"], "test": nearest["test"]}
     assignments = pd.concat(

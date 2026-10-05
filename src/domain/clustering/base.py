@@ -112,35 +112,40 @@ def merge_small_clusters(
     return out, n_merged_clusters, n_merged
 
 
-def _predict_reliability(
+def _granularity_loss(
     labels: np.ndarray,
     hardness: np.ndarray,
     *,
     n_class: int,
     eval_rows_per_train_row: float,
 ) -> tuple[float, float, float]:
-    """Between/within-region variance of `hardness`, scaled to the test rows each
-    region will be evaluated on. `V_b` is the size-weighted spread of each region's mean
-    hardness; `V_n` is the size-weighted sampling noise of a rate measured on that many
-    rows. Reliability is `V_b / (V_b + V_n)`: how much of the spread a measured error
-    rate would actually reflect, rather than noise from too few evaluated rows."""
+    """Expected squared error of reading each row's hardness off its region's rate:
+    `within` is the hardness variance a region's mean hides, `noise` the sampling noise
+    of a rate measured on the test rows the region will receive, at its full-class size.
+    A finer partition lowers the first and raises the second."""
     ids, counts = np.unique(labels, return_counts=True)
     scale = n_class / labels.shape[0]
-    n_full = counts * scale
-    p = np.array([hardness[labels == cid].mean() for cid in ids])
-    w = counts / counts.sum()
-    grand_mean = float((w * p).sum())
-    var_between = float((w * (p - grand_mean) ** 2).sum())
-    var_sampling = float(
+    weight = counts / counts.sum()
+    groups = [hardness[labels == cid] for cid in ids]
+    p = np.array([h.mean() for h in groups])
+    variance = np.array([h.var(ddof=1) if h.size > 1 else np.nan for h in groups])
+    # A one-row region stands for about `scale` rows of the class whose spread is
+    # unknown, not zero: it takes the spread of the regions that have one.
+    known = ~np.isnan(variance)
+    pooled = (
+        np.average(variance[known], weights=counts[known])
+        if known.any()
+        else hardness.var(ddof=1)
+    )
+    within = float((weight * np.where(known, variance, pooled)).sum())
+    noise = float(
         (
-            w
-            * np.clip(p * (1 - p), 1e-3, None)
-            / np.maximum(n_full * eval_rows_per_train_row, 1e-9)
+            weight
+            * np.maximum(p * (1 - p), 1e-3)
+            / np.maximum(counts * scale * eval_rows_per_train_row, 1e-9)
         ).sum()
     )
-    total = var_between + var_sampling
-    reliability = var_between / total if total > 0 else 0.0
-    return reliability, var_between, var_sampling
+    return within + noise, within, noise
 
 
 @timed
@@ -156,7 +161,6 @@ def grid_search(
     reference: KdnReference,
     hardness_k: int,
     eval_rows_per_train_row: float,
-    reliability_target: float,
     min_cluster_floor: int,
     max_clusters: int,
     merge_metric: str,
@@ -164,7 +168,7 @@ def grid_search(
     # fit_fn through **fixed_params, so it must not shadow an algorithm's own parameter.
     **fixed_params,
 ) -> tuple[dict, np.ndarray | None]:
-    """Grid search scored by the reliability the test rows would let a region be measured at."""
+    """Grid search keeping the candidate of least `_granularity_loss`."""
     scored = subsample_indices(
         X_num.shape[0], max_samples=max_fit_samples, random_state=random_state
     )
@@ -213,9 +217,9 @@ def grid_search(
                     "n_merged_clusters": 0,
                     "n_merged": 0,
                     "size_balance": 0.0,
-                    "var_between": 0.0,
-                    "var_sampling": 0.0,
-                    "reliability": float("-inf"),
+                    "loss": float("nan"),
+                    "loss_within": float("nan"),
+                    "loss_noise": float("nan"),
                     "duration_s": time.perf_counter() - t0,
                     "error": True,
                 }
@@ -226,7 +230,7 @@ def grid_search(
         labels, n_merged_clusters, n_merged = merge_small_clusters(
             sub_num, labels, min_size=scaled_floor, metric=merge_metric
         )
-        reliability, var_between, var_sampling = _predict_reliability(
+        loss, loss_within, loss_noise = _granularity_loss(
             labels,
             hardness,
             n_class=n_class,
@@ -239,9 +243,9 @@ def grid_search(
                 "n_merged_clusters": n_merged_clusters,
                 "n_merged": n_merged,
                 "size_balance": cluster_size_balance(labels),
-                "var_between": var_between,
-                "var_sampling": var_sampling,
-                "reliability": reliability,
+                "loss": loss,
+                "loss_within": loss_within,
+                "loss_noise": loss_noise,
                 "duration_s": time.perf_counter() - t0,
             }
         )
@@ -271,12 +275,7 @@ def grid_search(
             "clustering grid."
         )
 
-    above_target = [e for e in eligible if e["reliability"] >= reliability_target]
-    best_entry = (
-        max(above_target, key=lambda e: (e["n_clusters"], e["reliability"]))
-        if above_target
-        else max(eligible, key=lambda e: e["reliability"])
-    )
+    best_entry = min(eligible, key=lambda e: e["loss"])
 
     # Without subsampling, the sweep's fit of the winner is the refit itself.
     best_idx = next(i for i, e in enumerate(sweep) if e is best_entry)

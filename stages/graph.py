@@ -34,8 +34,6 @@ def main() -> None:
     clear_dir(stage_dir)
     meta = load_from_json(paths.of("split") / "meta.json")
     train = load_split(paths, "train")
-    # Uniform over train, so a region is measured against a sample that does not favour
-    # small ones; the whole split when it is small enough to need no sample.
     rows = np.sort(
         subsample_indices(
             len(train), max_samples=cfg.graph.max_samples, random_state=cfg.seed
