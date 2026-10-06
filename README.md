@@ -117,7 +117,7 @@ The MLP of the first variation spends about 15 s in `classify` and reaches ρ �
 
 `split`, `graph`, `regions` and `complexity` are cached per `(NAME, dataset, seed)`, so changing classifier reuses them. Each stage owns one folder, empties it when it recomputes, and writes `record.json` last — the settings it depends on, the ids of the stages it read and an id of its own — so a run interrupted before the end is recomputed rather than trusted. A cached stage skips when its record matches what a rerun would write; otherwise it recomputes, naming what changed. A record holds settings and stage ids, neither the code nor the data: once `split` has run, it never looks at the raw CSV again, so after replacing the CSV or changing the code, force the stage affected (`make split FORCE=1` for a new CSV). Its id is new on every write, so the next `make run` recomputes every stage downstream as well. Without the CSV, a cached `split` skips, and one that must recompute stops with an error before touching its folder. No stage runs on stale inputs: when a stage it reads last ran with other settings, or was built from another version of its own inputs, it stops and names the target to re-run, so after `make regions` under another clustering setting, `make regress` asks for `make complexity` first.
 
-`classify` is cached too: re-running it under the same `NAME` skips it when it last ran on the same `split` under the same settings, and retrains by itself — naming the top-level key that differs — when it did not, rewriting its whole folder. Every setting of the classifier, loss, optimizer, scheduler, fit and grid-search groups counts, and the seed, except the device, the parallelism and the data loaders' workers and memory pinning, so even one the classifier ignores retrains it: changing the loss, which only deep classifiers use, retrains a Random Forest as well. So does any recompute of `split`, even under the same settings. The classifier depends on neither the space, the graph, the clustering nor the descriptors, so re-deriving results after changing those leaves `classify` cached. `regress`, `render` and `compare` always recompute. `FORCE=1` recomputes every cached stage and retrains the classifier.
+`classify` is cached too: re-running it under the same `NAME` skips it when it last ran on the same `split` under the same settings, and retrains by itself — naming the top-level key that differs — when it did not, rewriting its whole folder. Every setting of the classifier, loss, optimizer, scheduler, fit and grid-search groups counts, and the seed, except the device, the parallelism and the data loaders' workers and memory pinning, so even one the classifier ignores retrains it: changing the loss, which only deep classifiers use, retrains a Random Forest as well. So does any recompute of `split`, even under the same settings. The classifier depends on neither the space, the graph, the clustering nor the descriptors, so re-deriving results after changing those leaves `classify` cached. `regress`, `render`, `transfer` and `compare` always recompute. `FORCE=1` recomputes every cached stage and retrains the classifier.
 
 How the data is divided into regions matters. `kmeans` divides this dataset into 707 regions. Density-based clustering such as `hdbscan` looks for genuine gaps between groups, and this dataset's difficulty gradient is continuous, so expect it to find far fewer: count-based algorithms (`kmeans`, `birch`) suit data of this kind, density-based ones suit data with genuine separation.
 
@@ -186,7 +186,7 @@ The estimators see every key twice, as `region_<key>` and as `class_<key>` for t
 
 ## Pipeline reference
 
-Each stage is a script under [stages/](stages/), wrapped by the [Makefile](Makefile). Every stage target takes `DATA`, `NAME`, `SEED`, `CLASSIFIER`, `CLUSTERING`, `DISTANCE`, and `ARGS` for any other override ([Configuration](#configuration)).
+Each stage is a script under [stages/](stages/), wrapped by the [Makefile](Makefile). Every stage target takes `DATA`, `NAME`, `SEED`, `CLASSIFIER`, `CLUSTERING`, `DISTANCE`, and `ARGS` for any other override ([Configuration](#configuration)), except `transfer`, which takes `NAME`, `SEED`, `ARGS` and, optionally, `DATA`.
 
 | Target | Script | Scope |
 |---|---|---|
@@ -199,6 +199,7 @@ Each stage is a script under [stages/](stages/), wrapped by the [Makefile](Makef
 | `make render` | `render.py` | per classifier |
 | `make run` | all of the above | omitted variables iterate, those passed stay fixed |
 | `make sweep` | `run` | one distance and one clustering, every dataset, four classifiers |
+| `make transfer` | `transfer.py` | per dataset, across the classifiers that ran there |
 | `make compare` | `compare.py` | reduces a whole sweep to cross-run figures and tables |
 | `make help` | — | every target, with defaults |
 
@@ -224,6 +225,8 @@ MCP, ATC and the training rate need not lie on the scale of the test error rate,
 
 **render** turns the `classify`, `complexity` and `regress` artefacts into figures. Under `classification/` it draws the classifier's own: the confusion matrix, the per-class F1 and a t-SNE projection of the test samples, and for a deep classifier a t-SNE of their latent embedding and the training-loss curve, all of them even when the estimators were skipped. The others include every estimator's ρ and MSE from `results.json`'s `models`, in `correlation/regressor_comparison`, and `baselines.json`'s error and ρ by region size, under `baselines/`, where the squared and signed error figures set each calibrated variant beside its raw one. `figure_format` selects `pdf`, the default, or `png`.
 
+**transfer** asks whether one classifier's estimator predicts where another classifier fails. It looks at every classifier that has run `regress` on a dataset, needs at least two, and takes as the source the one whose estimator has the best ρ, among those not skipped. The source's held-out `predicted_rate` is then scored against each other classifier's observed error rate on the same regions — the source's scored ones — by ρ, MSE and R², beside that classifier's own estimator scored against its own rate. It uses the held-out predictions rather than `regress/model.joblib`, which was refitted on these very regions. `transfer/results.json`, beside the dataset's shared stages, holds `source`, `source_spearman`, `source_error_rate` and `n_regions_used`, the regions scored, and `targets`, a row per other classifier: `own_spearman`, `own_mse` and `own_r2` for its own estimator, `transfer_spearman`, `transfer_mse` and `transfer_r2` for the source's, and how its observed error rates compare with the source's over the same regions: `error_rate_delta`, its overall error rate minus the source's, `failure_rate_mae`, the mean absolute difference between the two rates region by region, and `failure_rate_spearman`, their ρ. `make transfer NAME=<name> DATA=<dataset>` runs it on one dataset; without `DATA`, on every dataset in `DATASETS`, each of which must already have run. It writes no `record.json` or `timing.json`, and stops, asking for `make regress`, when a classifier's `regress` was built from other stages than those on disk or two classifiers' `regress` ran under different settings.
+
 ### Sweeps
 
 ```bash
@@ -232,6 +235,7 @@ make run NAME=x DATA=covertype              # one dataset, every compatible clas
 make run NAME=x CLASSIFIER=random_forest    # every dataset, one classifier
 make run NAME=x CLASSIFIERS="random_forest xgboost"   # every dataset, the classifiers listed
 make sweep DISTANCE=cosine CLUSTERING=kmeans          # every dataset, four classifiers, into sweep_cosine_kmeans
+make transfer NAME=sweep_cosine_kmeans               # each dataset: the best estimator on the other classifiers
 make compare FIGURES_DIR=paper/figures
 ```
 
@@ -274,13 +278,14 @@ resources/experiments/${name}/${data.file_name}_${seed}/
 ├── graph/                  # the space and the training graph — shared
 ├── regions/                # centroids, every sample's region, the clustering report — shared
 ├── complexity/             # descriptors per region and per class — shared
+├── transfer/               # the best estimator scored on every other classifier (make transfer)
 └── ${classifier.name}/
     ├── classify/           # model, predictions, metrics, training record, latent sample (deep only)
     ├── regress/            # error rates per region, estimator results, baselines
     └── render/             # figures
 ```
 
-Each stage owns one folder and rewrites it whole whenever it recomputes. Its `record.json`, written last, holds the configuration keys the stage depends on (overrides included), the ids of the stages it read and an id of its own, new on every write, so a run interrupted before the end is recomputed rather than trusted.
+Each stage owns one folder and rewrites it whole whenever it recomputes. Its `record.json`, written last by every stage but `transfer`, holds the configuration keys the stage depends on (overrides included), the ids of the stages it read and an id of its own, new on every write, so a run interrupted before the end is recomputed rather than trusted.
 
 ## Repository layout
 
@@ -295,6 +300,7 @@ intrusion-forge/
 │   ├── classify.py               #   train + evaluate one classifier
 │   ├── regress.py                #   descriptors → error rate, baselines
 │   ├── render.py                 #   figures
+│   ├── transfer.py               #   the best estimator on the other classifiers' error rates
 │   └── compare.py                #   cross-run aggregation
 ├── generate_synthetic.py         # synthetic dataset generator
 ├── Makefile                      # experiment runner
@@ -305,7 +311,7 @@ intrusion-forge/
 │   │   ├── data/                 # cleaning, splitting, scaling, encoding, the one space
 │   │   ├── clustering/           # the four algorithms, the loss-scored grid search, kDN hardness
 │   │   ├── analysis/complexity/  # the F / N / ND / T / G families
-│   │   ├── analysis/             # metadata, classification metrics, confidence & risk-coverage scores, the failure and sample regressors, the baselines and their calibration
+│   │   ├── analysis/             # metadata, classification metrics, confidence & risk-coverage scores, the failure and sample regressors, the baselines and their calibration, the transfer scores
 │   │   ├── training/             # ml.py (sklearn / XGBoost), dl.py (Ignite loop), weighting.py (class weights)
 │   │   ├── plot/                 # Plot payload, chart primitives, classify/analysis/comparison composers, metrics, palette
 │   │   └── projection.py         # t-SNE

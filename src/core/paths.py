@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-DATASET_STAGES = ("split", "graph", "regions", "complexity")
+DATASET_STAGES = ("split", "graph", "regions", "complexity", "transfer")
 CLASSIFIER_STAGES = ("classify", "regress", "render")
 
 

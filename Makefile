@@ -23,6 +23,7 @@
 #   make classify          DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=random_forest
 #   make regress           DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=random_forest
 #   make render            DATA=cic_2018_v2 NAME=my_exp CLASSIFIER=random_forest
+#   make transfer          NAME=my_exp [DATA=cic_2018_v2]   # no DATA: every dataset, each already run
 #
 # Flags:
 #   FORCE=1               re-run cached stages (split, graph, regions, complexity) and retrain the
@@ -116,7 +117,7 @@ FORCE_FLAG  := $(if $(FORCE),force=true,)
 SWEEP_DIR       ?= resources/experiments
 FIGURES_DIR     ?= paper/figures
 
-.PHONY: split graph regions complexity classify regress render compare run sweep generate help
+.PHONY: split graph regions complexity classify regress render transfer compare run sweep generate help
 
 ## split:              Step 1 — filter, split and preprocess the raw CSV   (DATA, NAME, SEED, FORCE)
 split:
@@ -145,6 +146,12 @@ regress:
 ## render:             Step 7 — render plots from the classify and regress artifacts   (DATA, NAME, SEED, CLASSIFIER)
 render:
 	PYTHONPATH=. $(PYTHON) stages/render.py $(HYDRA) $(ARGS)
+
+## transfer:           Step 8 — one classifier's failure regressor predicting the others' failure rates   (NAME, SEED; DATA? else every dataset)
+transfer:
+	@for ds in $(if $(DATA_GIVEN),$(DATA),$(DATASETS)); do \
+		PYTHONPATH=. $(PYTHON) stages/transfer.py data=$$ds name=$(NAME) seed=$(SEED) $(ARGS) || exit 1; \
+	done
 
 ## compare:            Aggregate the experiment tree into cross-run figures + result tables  (SWEEP_DIR, FIGURES_DIR)
 compare:

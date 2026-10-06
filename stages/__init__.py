@@ -5,7 +5,7 @@ import pandas as pd
 
 from src.core.config import load_config, select_config
 from src.core.io import load_df
-from src.core.paths import RunPaths
+from src.core.paths import DATASET_STAGES, RunPaths
 from src.core.record import read_record
 from src.core.utils import first_difference, load_from_json
 from src.domain.data.space import Space
@@ -101,6 +101,29 @@ def upstream_ids(cfg, paths: RunPaths, stage: str) -> dict[str, str]:
                     f"re-run `make {name}`."
                 )
     return ids
+
+
+def regressed_runs(dataset_dir: Path) -> list[RunPaths]:
+    """The classifier runs of a dataset whose regress finished, each checked against the
+    stages on disk."""
+    runs = []
+    for classifier_dir in sorted(
+        p for p in dataset_dir.iterdir() if p.is_dir() and p.name not in DATASET_STAGES
+    ):
+        paths = RunPaths(dataset=dataset_dir, classifier=classifier_dir)
+        regress_dir = paths.of("regress")
+        if not (regress_dir / "results.json").exists():
+            continue
+        # A run is described by what it was built from, not by what the folders beside
+        # it hold now.
+        for source, source_id in read_record(regress_dir)["inputs"].items():
+            if read_record(paths.of(source))["id"] != source_id:
+                raise ValueError(
+                    f"{regress_dir} was built from another {source} than the one on "
+                    "disk: re-run `make regress`."
+                )
+        runs.append(paths)
+    return runs
 
 
 def load_split(

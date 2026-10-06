@@ -6,7 +6,6 @@ import numpy as np
 
 from src.core.io import save_figures
 from src.core.log import setup_logger
-from src.core.paths import DATASET_STAGES, RunPaths
 from src.core.record import clear_dir, read_record
 from src.core.utils import load_from_json, save_to_json
 from src.domain.analysis.baselines import (
@@ -30,6 +29,7 @@ from src.domain.plot.style import (
     PALETTE,
     apply_plot_style,
 )
+from stages import regressed_runs
 
 setup_logger()
 apply_plot_style()
@@ -109,24 +109,10 @@ def _load_sweep_runs(root: Path) -> list[dict]:
             regions_config = read_record(dataset_dir / "regions")["config"]
             meta = load_from_json(dataset_dir / "split/meta.json")
             algorithm = next(iter(regions_config["clustering"]["algorithms"]), None)
-            for classifier_dir in sorted(
-                p
-                for p in dataset_dir.iterdir()
-                if p.is_dir() and p.name not in DATASET_STAGES
-            ):
-                regress_dir = classifier_dir / "regress"
+            for run_paths in regressed_runs(dataset_dir):
+                classifier_dir = run_paths.classifier
+                regress_dir = run_paths.of("regress")
                 results_path = regress_dir / "results.json"
-                if not results_path.exists():
-                    continue
-                # A run is described by what it was built from, not by what the folders
-                # beside it hold now.
-                run_paths = RunPaths(dataset=dataset_dir, classifier=classifier_dir)
-                for source, source_id in read_record(regress_dir)["inputs"].items():
-                    if read_record(run_paths.of(source))["id"] != source_id:
-                        raise ValueError(
-                            f"{regress_dir} was built from another {source} than "
-                            "the one on disk: re-run `make regress`."
-                        )
                 # Absent when the failure regressor skipped a degenerate target.
                 baselines_path = regress_dir / "baselines.json"
                 baselines = (
